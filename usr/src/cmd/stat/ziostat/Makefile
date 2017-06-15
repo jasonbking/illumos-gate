@@ -18,7 +18,7 @@
 #
 # CDDL HEADER END
 #
-# Copyright (c) 2017, Joyent, Inc.
+# Copyright (c) 2019, Joyent, Inc.
 #
 
 PROG=	ziostat
@@ -31,9 +31,9 @@ include $(SRC)/cmd/stat/Makefile.stat
 COMMON_OBJS= common.o
 COMMON_SRCS= $(COMMON_OBJS:%.o=$(STATCOMMONDIR)/%.c)
 
-C99MODE		= $(C99_ENABLE)
+CSTD		= $(CSTD_GNU99)
 CPPFLAGS	+= -I$(STATCOMMONDIR)
-LDFLAGS		+= -lkstat -lm
+LDFLAGS		+= -lkstat -lm -lzonecfg
 
 .KEEP_STATE:
 
@@ -50,6 +50,7 @@ $(PROG): $(OBJS) $(COMMON_OBJS)
 	$(POST_PROCESS_O)
 
 clean:
+	-rm -f $(OBJS) $(COMMON_OBJS) $(PROG)
 
 $(ROOTBINPROG): $(PROG)
 	$(INS.file)
