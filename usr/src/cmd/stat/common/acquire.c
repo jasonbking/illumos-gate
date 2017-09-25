@@ -35,12 +35,6 @@
 
 #define	ARRAY_SIZE(a)	(sizeof (a) / sizeof (*a))
 
-/*
- * The time we delay before retrying after an allocation
- * failure, in milliseconds
- */
-#define	RETRY_DELAY 200
-
 static char *cpu_states[] = {
 	"cpu_ticks_idle",
 	"cpu_ticks_user",
@@ -387,21 +381,6 @@ free_snapshot(struct snapshot *ss)
 	free(ss);
 }
 
-kstat_ctl_t *
-open_kstat(void)
-{
-	kstat_ctl_t *kc;
-
-	while ((kc = kstat_open()) == NULL) {
-		if (errno == EAGAIN)
-			(void) poll(NULL, 0, RETRY_DELAY);
-		else
-			fail(1, "kstat_open failed");
-	}
-
-	return (kc);
-}
-
 void *
 safe_alloc(size_t size)
 {
@@ -431,33 +410,6 @@ safe_strdup(char *str)
 			fail(1, "malloc failed");
 	}
 	return (ret);
-}
-
-uint64_t
-kstat_delta(kstat_t *old, kstat_t *new, char *name)
-{
-	kstat_named_t *knew = kstat_data_lookup(new, name);
-	if (old && old->ks_data) {
-		kstat_named_t *kold = kstat_data_lookup(old, name);
-		return (knew->value.ui64 - kold->value.ui64);
-	}
-	return (knew->value.ui64);
-}
-
-int
-kstat_copy(const kstat_t *src, kstat_t *dst)
-{
-	*dst = *src;
-
-	if (src->ks_data != NULL) {
-		if ((dst->ks_data = malloc(src->ks_data_size)) == NULL)
-			return (-1);
-		bcopy(src->ks_data, dst->ks_data, src->ks_data_size);
-	} else {
-		dst->ks_data = NULL;
-		dst->ks_data_size = 0;
-	}
-	return (0);
 }
 
 int
@@ -506,61 +458,4 @@ nr_active_cpus(struct snapshot *ss)
 	}
 
 	return (count);
-}
-
-/*
- * Return the number of ticks delta between two hrtime_t
- * values. Attempt to cater for various kinds of overflow
- * in hrtime_t - no matter how improbable.
- */
-uint64_t
-hrtime_delta(hrtime_t old, hrtime_t new)
-{
-	uint64_t del;
-
-	if ((new >= old) && (old >= 0L))
-		return (new - old);
-	else {
-		/*
-		 * We've overflowed the positive portion of an
-		 * hrtime_t.
-		 */
-		if (new < 0L) {
-			/*
-			 * The new value is negative. Handle the
-			 * case where the old value is positive or
-			 * negative.
-			 */
-			uint64_t n1;
-			uint64_t o1;
-
-			n1 = -new;
-			if (old > 0L)
-				return (n1 - old);
-			else {
-				o1 = -old;
-				del = n1 - o1;
-				return (del);
-			}
-		} else {
-			/*
-			 * Either we've just gone from being negative
-			 * to positive *or* the last entry was positive
-			 * and the new entry is also positive but *less*
-			 * than the old entry. This implies we waited
-			 * quite a few days on a very fast system between
-			 * iostat displays.
-			 */
-			if (old < 0L) {
-				uint64_t o2;
-
-				o2 = -old;
-				del = UINT64_MAX - o2;
-			} else {
-				del = UINT64_MAX - old;
-			}
-			del += new;
-			return (del);
-		}
-	}
 }

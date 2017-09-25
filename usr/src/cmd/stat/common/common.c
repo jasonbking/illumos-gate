@@ -25,11 +25,18 @@
 
 #include "statcommon.h"
 
+#include <poll.h>
 #include <stdarg.h>
 #include <signal.h>
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
+
+/*
+ * The time we delay before retrying after an allocation
+ * failure, in milliseconds
+ */
+#define RETRY_DELAY 200
 
 extern char *cmdname;
 extern int caught_cont;
@@ -102,7 +109,7 @@ sleep_until(hrtime_t *wakeup, hrtime_t interval, int forever,
 		pause_tv.tv_sec = pause_left / NANOSEC;
 		pause_tv.tv_nsec = pause_left % NANOSEC;
 		status = nanosleep(&pause_tv, (struct timespec *)NULL);
-		if (status < 0)
+		if (status < 0) {
 			if (errno == EINTR) {
 				now = gethrtime();
 				pause_left = *wakeup - now;
@@ -112,6 +119,7 @@ sleep_until(hrtime_t *wakeup, hrtime_t interval, int forever,
 			} else {
 				fail(1, "nanosleep failed");
 			}
+		}
 	} while (status != 0);
 }
 
@@ -124,4 +132,103 @@ cont_handler(int sig_number)
 	/* Re-set the signal handler */
 	(void) signal(sig_number, cont_handler);
 	caught_cont = 1;
+}
+
+kstat_ctl_t *
+open_kstat(void)
+{
+	kstat_ctl_t *kc;
+
+	while ((kc = kstat_open()) == NULL) {
+		if (errno == EAGAIN)
+			(void) poll(NULL, 0, RETRY_DELAY);
+		else
+			fail(1, "kstat_open failed");
+	}
+
+	return (kc);
+}
+
+uint64_t
+kstat_delta(kstat_t *old, kstat_t *new, char *name)
+{
+	kstat_named_t *knew = kstat_data_lookup(new, name);
+	if (old && old->ks_data) {
+		kstat_named_t *kold = kstat_data_lookup(old, name);
+		return (knew->value.ui64 - kold->value.ui64);
+	}
+	return (knew->value.ui64);
+}
+
+int
+kstat_copy(const kstat_t *src, kstat_t *dst)
+{
+	*dst = *src;
+
+	if (src->ks_data != NULL) {
+		if ((dst->ks_data = malloc(src->ks_data_size)) == NULL)
+			return (-1);
+		(void) memcpy(dst->ks_data, src->ks_data, src->ks_data_size);
+	} else {
+		dst->ks_data = NULL;
+		dst->ks_data_size = 0;
+	}
+	return (0);
+}
+
+/*
+ * Return the number of ticks delta between two hrtime_t
+ * values. Attempt to cater for various kinds of overflow
+ * in hrtime_t - no matter how improbable.
+ */
+uint64_t
+hrtime_delta(hrtime_t old, hrtime_t new)
+{
+	uint64_t del;
+
+	if ((new >= old) && (old >= 0L))
+		return (new - old);
+	else {
+		/*
+		 * We've overflowed the positive portion of an
+		 * hrtime_t.
+		 */
+		if (new < 0L) {
+			/*
+			 * The new value is negative. Handle the
+			 * case where the old value is positive or
+			 * negative.
+			 */
+			uint64_t n1;
+			uint64_t o1;
+
+			n1 = -new;
+			if (old > 0L)
+				return (n1 - old);
+			else {
+				o1 = -old;
+				del = n1 - o1;
+				return (del);
+			}
+		} else {
+			/*
+			 * Either we've just gone from being negative
+			 * to positive *or* the last entry was positive
+			 * and the new entry is also positive but *less*
+			 * than the old entry. This implies we waited
+			 * quite a few days on a very fast system between
+			 * iostat displays.
+			 */
+			if (old < 0L) {
+				uint64_t o2;
+
+				o2 = -old;
+				del = UINT64_MAX - o2;
+			} else {
+				del = UINT64_MAX - old;
+			}
+			del += new;
+			return (del);
+		}
+	}
 }

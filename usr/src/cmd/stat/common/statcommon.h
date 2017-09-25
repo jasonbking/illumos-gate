@@ -48,6 +48,12 @@ extern "C" {
 #include <sys/avl.h>
 #include <sys/ccompile.h>
 
+/*
+ * The time we delay before retrying after an allocation
+ * failure, in milliseconds
+ */
+#define RETRY_DELAY 200
+
 /* No CPU present at this CPU position */
 #define	ID_NO_CPU -1
 /* CPU belongs to no pset (we number this as "pset 0")  */

@@ -75,6 +75,7 @@ static enum iodev_type
 parent_iodev_type(enum iodev_type type)
 {
 	switch (type) {
+		case IODEV_UNKNOWN: return (IODEV_UNKNOWN);
 		case IODEV_CONTROLLER: return (0);
 		case IODEV_IOPATH_LT: return (0);
 		case IODEV_IOPATH_LI: return (0);

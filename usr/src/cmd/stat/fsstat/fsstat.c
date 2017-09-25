@@ -72,7 +72,6 @@
 #define	DDATE	1	/* Standard date format */
 #define	UDATE	2	/* Internal representation of Unix time */
 
-#define	RETRY_DELAY	250	/* Timeout for poll() */
 #define	HEADERLINES	12	/* Number of lines between display headers */
 
 #define	LBUFSZ		64	/* Generic size for local buffer */
