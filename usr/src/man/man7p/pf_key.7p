@@ -1,62 +1,75 @@
-'\" te
 .\" Copyright (C) 2008, Sun Microsystems, Inc. All Rights Reserved
 .\" The contents of this file are subject to the terms of the Common Development and Distribution License (the "License").  You may not use this file except in compliance with the License.
 .\" You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE or http://www.opensolaris.org/os/licensing.  See the License for the specific language governing permissions and limitations under the License.
 .\" When distributing Covered Code, include this CDDL HEADER in each file and include the License file at usr/src/OPENSOLARIS.LICENSE.  If applicable, add the following below this CDDL HEADER, with the fields enclosed by brackets "[]" replaced with your own identifying information: Portions Copyright [yyyy] [name of copyright owner]
-.TH PF_KEY 7P "May 6, 2008"
-.SH NAME
-pf_key \- Security association database interface
-.SH SYNOPSIS
-.LP
-.nf
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <net/pfkeyv2.h>
-
-
-
-\fBint\fR \fBsocket\fR(\fB\fR\fIPF_KEY\fR,SOCK_RAW,\fIPF_KEY_V2\fR);
-.fi
-
-.SH DESCRIPTION
-.LP
+.\"
+.\" Copyright (c) 2017, Joyent, Inc.
+.\"
+.Dd Oct 12, 2017
+.Dt PF_KEY 7P
+.Os
+.Sh NAME
+.Nm pf_key
+.Nd Security association database interface
+.Sh SYNOPSIS
+.In sys/types.h
+.In sys/socket.h
+.In net/pfkeyv2.h
+.Pp
+.Ft int
+.Fo socket
+.Fa PF_KEY
+.Fa SOCK_RAW
+.Fa PF_KEY_V2
+.Fc
+.Sh DESCRIPTION
 Keying information for IPsec security services is maintained in security
-association databases (\fBSADB\fRs).  The security associations (\fBSA\fRs) are
-used to protect both inbound and outbound packets.
-.sp
-.LP
+association databases
+.Pq Sy SADB Ns s .
+The security associations
+.Pq Sy SA Ns s
+are used to protect both inbound and outbound packets.
+.Pp
 A user process (or possibly multiple co-operating processes) maintains
-\fBSADB\fRs by sending messages over a special kind of socket.  This is
-analogous to the method described in \fBroute\fR(7P). Only a superuser may
-access an \fBSADB\fR.
-.sp
-.LP
-SunOS applications that use PF_KEY include \fBipseckey\fR(1M) and
-\fBin.iked\fR(1M).
-.sp
-.LP
+.Sy SADB Ns s
+by sending messages over a special kind of socket.
+This is analogous to the method described in
+.Xr route 7P .
+Only a superuser may access an
+.Sy SADB .
+.Pp
+SunOS applications that use
+.Nm
+include
+.Xr ipseckey 1M
+and
+.Xr in.iked 1M .
+.Pp
 The operating system may spontaneously send pf_key messages to listening
-processes, such as a request for a new \fBSA\fR for an outbound datagram or to
-report the expiration of an existing \fBSA\fR.
-.sp
-.LP
-One opens the channel for passing \fBSADB\fR control messages by using the
-socket call shown in the  section above. More than one key socket can be open
-per system.
-.sp
-.LP
+processes, such as a request for a new
+.Sy SA
+for an outbound datagram or to report the expiration of an existing
+.Sy SA .
+.Pp
+One opens the channel for passing
+.Sy SADB
+control messages by using the socket call shown in the  section above.
+More than one key socket can be open per system.
+.Pp
 Messages are formed by a small base header, followed by zero or more extension
-messages, some of which require additional data following them. The base
-message and all extensions must be eight-byte aligned.  An example message is
-the \fBGET\fR message, which  requires the base header, the \fBSA \fRextension,
-and the \fBADDRESS_DST\fR extension.
-.SS "Messages"
-.LP
+messages, some of which require additional data following them.
+The base message and all extensions must be eight-byte aligned.
+An example message is the
+.Sy GET
+message, which requires the base header, the
+.Sy SA
+extension, and the
+.Sy ADDRESS_DST
+extension.
+.Ss "Messages"
 Messages include:
-.sp
-.in +2
-.nf
-#define    SADB_GETSPI  /* Get a new SPI value from the system. */
+.Bd -literal -offset 2n
+#define    SADB_GETSPI     /* Get a new SPI value from the system. */
 #define    SADB_UPDATE     /* Update an SA. */
 #define    SADB_ADD        /* Add a fully-formed SA. */
 #define    SADB_DELETE     /* Delete an SA. */
@@ -68,18 +81,13 @@ Messages include:
 #define    SADB_DUMP       /* Get all SAs.  (Unreliable) */
 #define    SADB_X_PROMISC  /* Listen promiscuously */
 #define    SADB_X_INVERSE_ACQUIRE  /* Query kernel policy,
-								         get an ACQUIRE in return. */
+			              get an ACQUIRE in return. */
 #define    SADB_X_UPDATEPAIR     /* Update an SA and its pair SA */
 #define    SADB_X_DELPAIR        /* Delete an SA pair. */
-.fi
-.in -2
-
-.sp
-.LP
+.Ed
+.Pp
 The base message header consists of:
-.sp
-.in +2
-.nf
+.Bd -literal -offset 2n
 struct sadb_msg {
     uint8_t  sadb_msg_version;  /* Set to PF_KEY_V2, for compat. */
     uint8_t  sadb_msg_type;     /* Msg. type */
@@ -88,51 +96,41 @@ struct sadb_msg {
     uint16_t sadb_msg_len;      /* Length in 8-byte units */
     uint16_t sadb_msg_reserved; /* Zero out */
  #define sadb_x_msg_diagnostic sadb_msg_reserved
-					/* Extended diagnostics for errors */
+				/* Extended diagnostics for errors */
     uint32_t sadb_msg_seq;      /* For msg. originator */
     uint32_t sadb_msg_pid;      /* ID originator */
 };
-.fi
-.in -2
-
-.sp
-.LP
+.Ed
+.Pp
 Extension types include:
-.sp
-.in +2
-.nf
-#define  SADB_EXT_SA                /* SA info */
-#define  SADB_EXT_LIFETIME_HARD     /* Hard lifetime */
-#define  SADB_EXT_LIFETIME_SOFT     /* Soft lifetime */
-#define  SADB_EXT_ADDRESS_SRC       /* Source address */
-#define  SADB_EXT_ADDRESS_DST       /* Destination address */
-#define  SADB_EXT_ADDRESS_PROXY     /* Proxy address - DEPRECATED */
-#define  SADB_EXT_KEY_AUTH          /* Authen. key */
-#define  SADB_EXT_KEY_ENCRYPT       /* Encryption key */
-#define  SADB_EXT_IDENTITY_SRC      /* Source certif. ID */
-#define  SADB_EXT_IDENTITY_DST      /* Destination certif. ID */
-#define  SADB_EXT_SENSITIVITY       /* Sensitivity info */
-#define  SADB_EXT_PROPOSAL          /* Security proposal */
-#define  SADB_EXT_SUPPORTED_AUTH   /* Supported authen. algo's */
-#define  SADB_EXT_SUPPORTED_ENCRYPT /* Supported encryption algo's */
-#define  SADB_EXT_SPIRANGE          /* Range of possible SPIs *
-#define  SADB_X_EXT_EREG           /* Reg. for extended ACQUIRE */
-#define  SADB_X_EXT_EPROP          /* Extended ACQUIRE proposals */
-#define  SADB_X_EXT_KM_COOKIE      /* Indicates which KM derived SA. */
+.Bd -literal -offset 2n
+#define  SADB_EXT_SA                  /* SA info */
+#define  SADB_EXT_LIFETIME_HARD       /* Hard lifetime */
+#define  SADB_EXT_LIFETIME_SOFT       /* Soft lifetime */
+#define  SADB_EXT_ADDRESS_SRC         /* Source address */
+#define  SADB_EXT_ADDRESS_DST         /* Destination address */
+#define  SADB_EXT_ADDRESS_PROXY       /* Proxy address - DEPRECATED */
+#define  SADB_EXT_KEY_AUTH            /* Authen. key */
+#define  SADB_EXT_KEY_ENCRYPT         /* Encryption key */
+#define  SADB_EXT_IDENTITY_SRC        /* Source certif. ID */
+#define  SADB_EXT_IDENTITY_DST        /* Destination certif. ID */
+#define  SADB_EXT_SENSITIVITY         /* Sensitivity info */
+#define  SADB_EXT_PROPOSAL            /* Security proposal */
+#define  SADB_EXT_SUPPORTED_AUTH      /* Supported authen. algo's */
+#define  SADB_EXT_SUPPORTED_ENCRYPT   /* Supported encryption algo's */
+#define  SADB_EXT_SPIRANGE            /* Range of possible SPIs *
+#define  SADB_X_EXT_EREG              /* Reg. for extended ACQUIRE */
+#define  SADB_X_EXT_EPROP             /* Extended ACQUIRE proposals */
+#define  SADB_X_EXT_KM_COOKIE         /* Indicates which KM derived SA. */
 #define  SADB_X_EXT_ADDRESS_NATT_LOC  /* NAT-Traversal local (my public) */
 #define  SADB_X_EXT_ADDRESS_NATT_REM  /* NAT-T remote (peer's private) */
 #define  SADB_X_EXT_ADDRESS_INNER_SRC /* Tunnel-mode inner source */
 #define  SADB_X_EXT_ADDRESS_INNER_DST /* Tunnel-mode inner dest */
 #define  SADB_X_EXT_PAIR              /* SA pair extension.
-.fi
-.in -2
-
-.sp
-.LP
+.Ed
+.Pp
 Security Association Information Extension flags:
-.sp
-.in +2
-.nf
+.Bd -literal -offset 2n
 #define SADB_SAFLAGS_PFS        0x1          /* Perfect forward secrecy? */
 #define SADB_SAFLAGS_NOREPLAY   0x2          /* Replay field NOT PRESENT. */
 #define SADB_X_SAFLAGS_USED     0x80000000   /* SA used/not used */
@@ -153,25 +151,18 @@ Security Association Information Extension flags:
 #define SADB_X_SAFLAGS_PAIRED      0x10000   /* inbound/outbound pair*/
 #define SADB_X_SAFLAGS_OUTBOUND     0x8000   /* SA direction bit */
 #define SADB_X_SAFLAGS_INBOUND      0x4000   /* SA direction bit */
-.fi
-.in -2
-
-.sp
-.LP
+.Ed
+.Pp
 Extension headers include:
-.SS "Generic Extension Header"
-.in +2
-.nf
+.Ss "Generic Extension Header"
+.Bd -literal -offset 2n
 struct sadb_ext {
     uint16_t sadb_ext_len;  /* In 64-bit words, inclusive */
     uint16_t sadb_ext_type; /* 0 is reserved */
 };
-.fi
-.in -2
-
-.SS "Security Association Information Extension"
-.in +2
-.nf
+.Ed
+.Ss "Security Association Information Extension"
+.Bd -literal -offset 2n
 struct sadb_sa {
     uint16_t sadb_sa_len;
     uint16_t sadb_sa_exttype; /* ASSOCIATION */
@@ -182,12 +173,9 @@ struct sadb_sa {
     uint8_t sadb_sa_encrypt;
     uint32_t sadb_sa_flags;
 };
-.fi
-.in -2
-
-.SS "Lifetime Extension"
-.in +2
-.nf
+.Ed
+.Ss "Lifetime Extension"
+.Bd -literal -offset 2n
 struct sadb_lifetime {
     uint16_t sadb_lifetime_len;
     uint16_t sadb_lifetime_exttype;   /* SOFT, HARD, CURRENT */
@@ -196,12 +184,9 @@ struct sadb_lifetime {
     uint64_t sadb_lifetime_addtime;
     uint64_t sadb_lifetime_usetime;
 };
-.fi
-.in -2
-
-.SS "Address Extension"
-.in +2
-.nf
+.Ed
+.Ss "Address Extension"
+.Bd -literal -offset 2n
 struct sadb_address {
     uint16_t sadb_address_len;
     uint16_t sadb_address_exttype;    /* SRC, DST, NATT_*, INNER_* */
@@ -211,12 +196,9 @@ struct sadb_address {
                                       /* Followed by a sockaddr
                                          structure.*/
 };
-.fi
-.in -2
-
-.SS "Keying Material Extension"
-.in +2
-.nf
+.Ed
+.Ss "Keying Material Extension"
+.Bd -literal -offset 2n
 struct sadb_key {
     uint16_t sadb_key_len;
     uint16_t sadb_key_exttype;         /* AUTH, ENCRYPT */
@@ -225,12 +207,9 @@ struct sadb_key {
         /* Followed by actual key(s) in
          canonical (outbound proc.) order. */
 };
-.fi
-.in -2
-
-.SS "Indentity Extension"
-.in +2
-.nf
+.Ed
+.Ss "Indentity Extension"
+.Bd -literal -offset 2n
 struct sadb_ident {
     uint16_t sadb_ident_len;
     uint16_t sadb_ident_exttype;      /* SRC, DST, PROXY */
@@ -239,12 +218,9 @@ struct sadb_ident {
     uint64_t sadb_ident_id;           /* For userid, etc. */
         /* Followed by an identity null-terminate C string if present. */
 };
-.fi
-.in -2
-
-.SS "Sensitivity/Integrity Extension"
-.in +2
-.nf
+.Ed
+.Ss "Sensitivity/Integrity Extension"
+.Bd -literal -offset 2n
 struct sadb_sens {
     uint16_t sadb_sens_len;
     uint16_t sadb_sens_exttype;   /* SENSITIVITY */
@@ -260,12 +236,9 @@ struct sadb_sens {
                       * uint64_t integ_bitmap[integ_bitmap_len];
                       */
 };
-.fi
-.in -2
-
-.SS "Proposal Extension"
-.in +2
-.nf
+.Ed
+.Ss "Proposal Extension"
+.Bd -literal -offset 2n
 struct sadb_prop {
     uint16_t sadb_prop_len;
     uint16_t sadb_prop_exttype;     /* PROPOSAL, X_EPROP */
@@ -274,12 +247,9 @@ struct sadb_prop {
     uint16_t sadb_x_prop_numecombs;
 /* Followed by sadb_comb[] array or sadb_ecomb[] array. */
 };
-.fi
-.in -2
-
-.SS "Combination Instance for a Proposal"
-.in +2
-.nf
+.Ed
+.Ss "Combination Instance for a Proposal"
+.Bd -literal -offset 2n
 struct sadb_comb {
     uint8_t sadb_comb_auth;
     uint8_t sadb_comb_encrypt;
@@ -298,12 +268,9 @@ struct sadb_comb {
     uint64_t sadb_comb_soft_usetime;
     uint64_t sadb_comb_hard_usetime;
 };
-.fi
-.in -2
-
-.SS "Extended Combination"
-.in +2
-.nf
+.Ed
+.Ss "Extended Combination"
+.Bd -literal -offset 2n
 struct sadb_x_ecomb {
     uint8_t sadb_x_ecomb_numalgs;
     uint8_t sadb_x_ecomb_reserved;
@@ -318,12 +285,9 @@ struct sadb_x_ecomb {
     uint64_t sadb_x_ecomb_soft_usetime;
     uint64_t sadb_x_ecomb_hard_usetime;
 };
-.fi
-.in -2
-
-.SS "Extended Combination Algorithm Descriptors"
-.in +2
-.nf
+.Ed
+.Ss "Extended Combination Algorithm Descriptors"
+.Bd -literal -offset 2n
 struct sadb_x_algdesc {
     uint8_t sadb_x_algdesc_satype;  /* ESP, AH, etc. */
     uint8_t sadb_x_algdesc_algtype; /* AUTH, CRYPT, COMPRESS */
@@ -331,48 +295,36 @@ struct sadb_x_algdesc {
     uint8_t sadb_x_algdesc_reserved;
     uint16_t sadb_x_algdesc_minbits;        /* Bit strengths. */
     uint16_t sadb_x_algdesc_maxbits;
-   };
-.fi
-.in -2
-
-.SS "Extended Register"
-.in +2
-.nf
+};
+.Ed
+.Ss "Extended Register"
+.Bd -literal -offset 2n
 struct sadb_x_ereg {
     uint16_t sadb_x_ereg_len;
     uint16_t sadb_x_ereg_exttype;   /* X_EREG */
     uint8_t sadb_x_ereg_satypes[4]; /* Array of SA types, 0-terminated.
-|};
-.fi
-.in -2
-
-.SS "Key Management Cookie"
-.in +2
-.nf
+};
+.Ed
+.Ss "Key Management Cookie"
+.Bd -literal -offset 2n
 struct sadb_x_kmc {
     uint16_t sadb_x_kmc_len;
     uint16_t sadb_x_kmc_exttype;    /* X_KM_COOKIE */
     uint32_t sadb_x_kmc_proto;      /* KM protocol */
     uint32_t sadb_x_kmc_cookie;     /* KMP-specific */
     uint32_t sadb_x_kmc_reserved;   /* Reserved; must be zero */
-   };
-.fi
-.in -2
-
-.SS "Supported Algorithms Extension"
-.in +2
-.nf
+};
+.Ed
+.Ss "Supported Algorithms Extension"
+.Bd -literal -offset 2n
 struct sadb_supported {
     uint16_t sadb_supported_len;
     uint16_t sadb_supported_exttype;
     uint32_t sadb_supported_reserved;
 };
-.fi
-.in -2
-
-.SS "Algorithm Instance"
-.in +2
-.nf
+.Ed
+.Ss "Algorithm Instance"
+.Bd -literal -offset 2n
 struct sadb_alg {
     uint8_t sadb_alg_id;        /* Algorithm type. */
     uint8_t sadb_alg_ivlen;     /* IV len, in bits */
@@ -380,12 +332,9 @@ struct sadb_alg {
     uint16_t sadb_alg_maxbits;  /* Max. key length */
     uint16_t sadb_alg_reserved;
 };
-.fi
-.in -2
-
-.SS "SPI Extension Range"
-.in +2
-.nf
+.Ed
+.Ss "SPI Extension Range"
+.Bd -literal -offset 2n
 struct sadb_spirange {
     uint16_t sadb_spirange_len;
     uint16_t sadb_spirange_exttype;    /* SPI_RANGE */
@@ -393,442 +342,361 @@ struct sadb_spirange {
     uint32_t sadb_spirange_max;
     uint32_t sadb_spirange_reserved;
 };
-.fi
-.in -2
-
-.SS "Security Association Pair Extension"
-.in +2
-.nf
+.Ed
+.Ss "Security Association Pair Extension"
+.Bd -literal -offset 2n
 struct sadb_x_pair {
     uint16_t sadb_x_pair_len;
     uint16_t sadb_x_pair_exttype;   /* SADB_X_EXT_PAIR */
     uint32_t sadb_x_pair_spi;       /* SPI of paired SA */
 };
-.fi
-.in -2
-
-.SS "Message Use and Behavior"
-.LP
-Each message has a behavior. A behavior is defined as where the initial message
+.Ed
+.Ss "Message Use and Behavior"
+Each message has a behavior.
+A behavior is defined as where the initial message
 travels, for example, user to kernel, and what subsequent actions are expected
-to take place. Contents of messages are illustrated as:
-.sp
-.in +2
-.nf
+to take place.
+Contents of messages are illustrated as:
+.Bd -literal -offset 2n
 <base, REQUIRED EXTENSION, REQ., (OPTIONAL EXTENSION,) (OPT)>
-.fi
-.in -2
-
-.sp
-.LP
-The \fBSA\fR extension is sometimes used only for its \fBSPI\fR field. If all
-other fields must be ignored, this is represented by \fBSA\fR(*).
-.sp
-.LP
+.Ed
+.Pp
+The
+.Sy SA
+extension is sometimes used only for its
+.Sy SPI
+field.
+If all other fields must be ignored, this is represented by
+.Sy SA Ns Pq * .
+.Pp
 The lifetime extensions are represented with one to three letters after the
 word lifetime, representing (H)ARD, (S)OFT, and (C)URRENT.
-.sp
-.LP
+.Pp
 The address extensions are represented with one to three letters after the word
 "address," representing (S)RC, (D)ST, (Nl)NAT-T local, (Nr)NAT-T remote,
 (Is)Inner source, and (Id)Inner destination.
-.sp
-.LP
+.Pp
 Source and destination address extensions reflect outer-header selectors for an
-IPsec SA. An SA is inbound or outbound depending on which of the source or
-destination address is local to the node. Inner-source and inner-destination
-selectors represent inner-header selectors for Tunnel Mode SAs. A Tunnel Mode
-SA \fBmust\fR have either IPPROTO_ENCAP or IPPROTO_IPV6 in its outer-headers as
-protocol selector, in addition to filled-in Inner-address extensions.
-.sp
-.LP
+IPsec SA.
+An SA is inbound or outbound depending on which of the source or
+destination address is local to the node.
+Inner-source and inner-destination
+selectors represent inner-header selectors for Tunnel Mode SAs.
+A Tunnel Mode SA
+.Em must
+have either
+.Sy IPPROTO_ENCAP
+or
+.Sy IPPROTO_IPV6
+in its outer-headers as protocol selector, in addition to filled-in
+Inner-address extensions.
+.Pp
 NAT-T local and NAT-T remote addresses store local and remote ports used for
-ESP-in-UDP encapsulation. A non-zero local NAT-T address extension represents
-the local node's external IP address if it is not equivalent to the SA's local
-address. A non-zero remote NAT-T address represents a peer's behind-a-NAT
-address if it is not equivalent to the SA's remote address. An SA with NAT-T
-extensions will protect-and-transmit outbound traffic.  Processing of inbound
+ESP-in-UDP encapsulation.
+A non-zero local NAT-T address extension represents the local node's external
+IP address if it is not equivalent to the SA's local address.
+A non-zero remote NAT-T address represents a peer's behind-a-NAT
+address if it is not equivalent to the SA's remote address.
+An SA with NAT-T extensions will protect-and-transmit outbound traffic.
+Processing of inbound
 NAT-T traffic requires a UDP socket bound to the appropriate local port and it
-\fBmust\fR have the UDP_NAT_T_ENDPOINT (see \fBudp\fR(7P)) socket option
-enabled.
-.sp
-.LP
-Note that when an error occurs, only the base header is sent. In the event of
-an error, an extended diagnostic may be set (see DIAGNOSTICS). Typical errors
-include:
-.sp
-.ne 2
-.na
-\fB\fBEINVAL\fR\fR
-.ad
-.RS 11n
-Various message improprieties, including \fBSPI\fR ranges that are malformed,
-weak keys, and others. If EINVAL is returned, an application should look at the
-\fBsadb_x_msg_diagnostic\fR field of the sadb_msg structure. It contains one of
-many possible causes for EINVAL. See \fBnet/pfkeyv2.h\fR for values, all of the
-form SADB_X_DIAGNOSTIC_.
-.RE
-
-.sp
-.ne 2
-.na
-\fB\fBENOMEM\fR\fR
-.ad
-.RS 11n
+.Em must
+have the
+.Dv UDP_NAT_T_ENDPOINT
+.Pq see Xr udp 7P
+socket option enabled.
+.Pp
+Note that when an error occurs, only the base header is sent.
+In the event of an error, an extended diagnostic may be set
+.Pq see Sx DIAGNOSTICS .
+Typical errors include:
+.Bl -tag -width Er -offset indent
+.It Er EINVAL
+Various message improprieties, including
+.Sy SPI
+ranges that are malformed, weak keys, and others.
+If
+.Er EINVAL
+is returned, an application should look at the
+.Sy sadb_x_msg_diagnostic
+field of the sadb_msg structure.
+It contains one of
+many possible causes for
+.Er EINVAL .
+See
+.Ao net/pfkeyv2.h Ac
+for values, all of the form
+.Dv SADB_X_DIAGNOSTIC_ .
+.It Er ENOMEM
 Needed memory was not available.
-.RE
-
-.sp
-.ne 2
-.na
-\fB\fBENSGSIZ\fR\fR
-.ad
-.RS 11n
+.It Er ENSGSIZ
 Message exceeds the maximum length allowed.
-.RE
-
-.sp
-.ne 2
-.na
-\fB\fBEEXIST\fR\fR
-.ad
-.RS 11n
-\fBSA\fR (that is being added or created with \fBGETSPI\fR) already exists.
-.RE
-
-.sp
-.ne 2
-.na
-\fB\fBESRCH\fR\fR
-.ad
-.RS 11n
-\fBSA\fR could not be found.
-.RE
-
-.sp
-.LP
+.It Er EEXIST
+.Sy SA
+.Po
+that is being added or created with
+.Sy GETSPI
+.Pc
+already exists.
+.It Er ESRCH
+.Sy SA
+could not be found.
+.El
+.Pp
 The following are examples of message use and behavior:
-.SS "\fBSADB_GETSPI\fR"
-.LP
-Send a \fBSADB_GETSPI\fR message from a user process to the kernel.
-.sp
-.in +2
-.nf
-<base, address, SPI range>
-.fi
-.in -2
-
-.sp
-.LP
-The kernel returns the \fBSADB_GETSPI\fR message to all listening processes.
-.sp
-.in +2
-.nf
+.Ss "SADB_GETSPI"
+Send a
+.Sy SADB_GETSPI
+message from a user process to the kernel.
+.Bd -literal -offset 2n
+<base, address(SD), SPI range>
+.Ed
+.Pp
+The kernel returns the
+.Sy SADB_GETSPI
+message to all listening processes.
+.Bd -literal -offset 2n
 <base, SA(*), address (SD)>
-.fi
-.in -2
-
-.SS "\fBSADB_UPDATE\fR"
-.LP
-Send a \fBSADB_UPDATE\fR message from a user process to the kernel.
-.sp
-.in +2
-.nf
+.Ed
+.Ss "SADB_UPDATE"
+Send a
+.Sy SADB_UPDATE
+message from a user process to the kernel.
+.Bd -literal -offset 2n
 <base, SA, (lifetime(HS),) address(SD), (address(Is,Id),
  address(Nl,Nr), key (AE), (identity(SD),) (sensitivity)>
-.fi
-.in -2
-
-.sp
-.LP
-The kernel returns the \fBSADB_UPDATE\fR message to all listening processes.
-.sp
-.in +2
-.nf
+.Ed
+.Pp
+The kernel returns the
+.Sy SADB_UPDATE
+message to all listening processes.
+.Bd -literal -offset 2n
 <base, SA(*), address (SD), (pair)>
-.fi
-.in -2
-
-.sp
-.LP
-Adding a sadb_x_pair extension to an \fBSADB_UPDATE\fR or \fBSADB_ADD\fR
+.Ed
+.Pp
+Adding a
+.Sy sadb_x_pair
+extension to an
+.Sy SADB_UPDATE
+or
+.Sy SADB_ADD
 message will update the security association pair linkage with the SPI of the
-security association contained in that extension. The resulting security
-association "pair" can be updated or as a single entity using the
-\fBSADB_X_UPDATEPAIR\fR or \fBSADB_X_DELPAIR\fR message types.
-.SS "\fBSADB_ADD\fR"
-.LP
-Send a \fBSADB_ADD\fR message from a user process to the kernel.
-.sp
-.in +2
-.nf
+security association contained in that extension.
+The resulting security association "pair" can be updated or as a single entity
+using the
+.Sy SADB_X_UPDATEPAIR
+or
+.Sy SADB_X_DELPAIR
+message types.
+.Ss "SADB_ADD"
+Send a
+.Sy SADB_ADD
+message from a user process to the kernel.
+.Bd -literal -offset 2n
 <base, SA, (lifetime(HS),) address(SD), (address(Is,Id),)
-           (address(Nl,Nr),) key (AE), (identity(SD),) (sensitivity) (pair)>
-.fi
-.in -2
-
-.sp
-.LP
-The kernel returns the \fBSADB_ADD\fR message to all listening processes.
-.sp
-.in +2
-.nf
+           (address(Nl,Nr),) key (AE), (identity(SD),) (sensitivity)
+           (pair)>
+.Ed
+.Pp
+The kernel returns the
+.Sy SADB_ADD
+message to all listening processes.
+.Bd -literal -offset 2n
 <base, SA, (lifetime(HS),) address (SD), (address(Is,Id),)
-                  (address(Nl,Nr),) (identity (SD),) (sensitivity)>
-.fi
-.in -2
-
-.SS "\fBSADB_X_UPDATEPAIR\fR"
-.LP
-Send a \fBSADB_X_UPDATEPAIR\fR message from a user process to  the  kernel.
+           (address(Nl,Nr),) (identity (SD),) (sensitivity)>
+.Ed
+.Ss "SADB_X_UPDATEPAIR"
+Send a
+.Sy SADB_X_UPDATEPAIR
+message from a user process to the kernel.
 This message type is used to update the lifetime values of a security
 association and the lifetime values of the security association it is paired
 with.
-.sp
-.in +2
-.nf
+.Bd -literal -offset 2n
 <base, SA, lifetime(HS), address(SD)>
-.fi
-.in -2
-
-.SS "\fBSADB_DELETE | SADB_X_DELPAIR\fR"
-.LP
-Send a \fBSADB_DELETE\fR message from a user process to the  kernel. The
-\fBSADB_X_DELPAIR\fR message type will request deletion of the security
+.Ed
+.Ss "SADB_DELETE | SADB_X_DELPAIR"
+Send a
+.Sy SADB_DELETE
+message from a user process to the  kernel.
+The
+.Sy SADB_X_DELPAIR
+message type will request deletion of the security
 association and the security association it is paired with.
-.sp
-.in +2
-.nf
+.Bd -literal -offset 2n
 <base, SA (*), address (SD)>
-.fi
-.in -2
-
-.sp
-.LP
-The kernel returns the \fBSADB_DELETE\fR message to all listening processes.
-.sp
-.in +2
-.nf
+.Ed
+.Pp
+The kernel returns the
+.Sy SADB_DELETE
+message to all listening processes.
+.Bd -literal -offset 2n
 <base, SA (*), address (SD)>
-.fi
-.in -2
-
-.SS "\fBSADB_GET\fR"
-.LP
-Send a \fBSADB_GET\fR message from a user process to the kernel.
-.sp
-.in +2
-.nf
+.Ed
+.Ss "SADB_GET"
+Send a
+.Sy SADB_GET
+message from a user process to the kernel.
+.Bd -literal -offset 2n
 <base, SA (*), address (SD)>
-.fi
-.in -2
-
-.sp
-.LP
-The kernel returns the \fBSADB_GET\fR message to the socket that sent the
-\fBSADB_GET\fR message.
-.sp
-.in +2
-.nf
-<base, SA , (lifetime (HSC),) address SD), (address (P),) key (AE),
+.Ed
+.Pp
+The kernel returns the
+.Sy SADB_GET
+message to the socket that sent the
+.Sy SADB_GET
+message.
+.Bd -literal -offset 2n
+<base, SA, (lifetime (HSC),) address SD), (address (P),) key (AE),
      (identity (SD),) (sensitivity)>
-.fi
-.in -2
-
-.SS "\fBSADB_ACQUIRE\fR"
-.LP
-The kernel sends a \fBSADB_ACQUIRE\fR message to registered sockets. Note that
-any \fBGETSPI\fR, \fBADD\fR, or \fBUPDATE\fR calls in reaction to an
-\fBACQUIRE\fR must fill in the \fBsadb_msg_seq\fR of those messages with the
-one in the \fBACQUIRE\fR message. The address (\fBSD\fR) extensions must have
-the port fields filled in with the port numbers of the session requiring keys
-if appropriate.
-.sp
-.in +2
-.nf
+.Ed
+.Ss "SADB_ACQUIRE"
+The kernel sends a
+.Sy SADB_ACQUIRE
+message to registered sockets.
+Note that
+any
+.Sy GETSPI ,
+.Sy ADD ,
+or
+.Sy UPDATE
+calls in reaction to an
+.Sy ACQUIRE
+must fill in the
+.Sy sadb_msg_seq
+of those messages with the one in the
+.Sy ACQUIRE
+message.
+The address
+.Pq Sy SD
+extensions must have the port fields filled in with the port numbers of the
+session requiring keys if appropriate.
+.Bd -literal -offset 2n
 <base, address (SD), (address(Is,Id)), (identity(SD),)
      (sensitivity,) proposal>
-.fi
-.in -2
-
-.sp
-.LP
-Extended ACQUIRE will have a slightly different format. The
-\fBsadb_msg_satype\fR field is 0, and the extension contains the desired
-combination(s) of security protocols.
-.sp
-.in +2
-.nf
+.Ed
+.Pp
+Extended ACQUIRE will have a slightly different format.
+The
+.Sy sadb_msg_satype
+field is 0, and the extension contains the desired combination(s) of security
+protocols.
+.Bd -literal -offset 2n
 <base, address (SD), (address(Is,Id)), (identity(SD),)
                        (sensitivity,) eprop>
-.fi
-.in -2
-
-.sp
-.LP
-If key management fails, send an \fBSADB_ACQUIRE\fR to indicate failure.
-.sp
-.in +2
-.nf
+.Ed
+.Pp
+If key management fails, send an
+.Sy SADB_ACQUIRE
+to indicate failure.
+.Bd -literal -offset 2n
 <base>
-.fi
-.in -2
-
-.SS "\fBSADB_X_INVERSE_ACQUIRE\fR"
-.LP
+.Ed
+.Ss "SADB_X_INVERSE_ACQUIRE"
 For inbound Key Management processing, a Key Management application may wish to
-consult the kernel for its policy.  The application should send to the kernel:
-.sp
-.in +2
-.nf
+consult the kernel for its policy.
+The application should send to the kernel:
+.Bd -literal -offset 2n
 <base, address (SD), (address(Is,Id))>
-.fi
-.in -2
-
-.sp
-.LP
+.Ed
+.Pp
 The kernel returns a message similar to a kernel-generated extended ACQUIRE:
-.sp
-.in +2
-.nf
+.Bd -literal -offset 2n
 <base, address (SD), (address(Is,Id)), (identity(SD),)
                        (sensitivity,) eprop>
-.fi
-.in -2
-
-.SS "\fBSADB_REGISTER\fR"
-.LP
-Send a \fBSADB_REGISTER\fR message from a user process to the kernel.
-.sp
-.in +2
-.nf
+.Ed
+.Ss "SADB_REGISTER"
+Send a
+.Sy SADB_REGISTER
+message from a user process to the kernel.
+.Bd -literal -offset 2n
 <base>
-.fi
-.in -2
-
-.sp
-.LP
-The kernel returns the \fBSADB_REGISTER\fR message to registered sockets, with
-algorithm types supported by the kernel being indicated in the supported
-algorithms field. Note that this message may arrive asynchronously due to an
+.Ed
+.Pp
+The kernel returns the
+.Sy SADB_REGISTER
+message to registered sockets, with algorithm types supported by the kernel
+being indicated in the supported algorithms field.
+Note that this message may arrive asynchronously due to an
 algorithm being loaded or unloaded into a dynamically linked kernel.
-.sp
-.in +2
-.nf
+.Bd -literal -offset 2n
 <base, supported>
-.fi
-.in -2
-
-.sp
-.LP
+.Ed
+.Pp
 There is also the extended REGISTER, which will allow this process to receive
 extended ACQUIREs.
-.sp
-.in +2
-.nf
+.Bd -literal -offset 2n
 <base, ereg>
-.fi
-.in -2
-
-.sp
-.LP
-Which returns a series of SADB_REGISTER replies (one for each security protocol
-registered) from the kernel.
-.SS "\fBSADB_EXPIRE\fR"
-.LP
-The kernel sends a \fBSADB_EXPIRE\fR message to all listeners when the soft
-limit of a security association has been expired.
-.sp
-.in +2
-.nf
+.Ed
+.Pp
+Which returns a series of
+.Sy SADB_REGISTER
+replies (one for each security protocol registered) from the kernel.
+.Ss "SADB_EXPIRE"
+The kernel sends a
+.Sy SADB_EXPIRE
+message to all listeners when the soft limit of a security association has
+been expired.
+.Bd -literal -offset 2n
 <base, SA, lifetime (C and one of HS), address (SD)>
-.fi
-.in -2
-
-.SS "\fBSADB_FLUSH\fR"
-.LP
-Send a \fBSADB_FLUSH\fR message from a user process to the kernel.
-.sp
-.in +2
-.nf
+.Ed
+.Ss "SADB_FLUSH"
+Send a
+.Sy SADB_FLUSH
+message from a user process to the kernel.
+.Bd -literal -offset 2n
 <base>
-.fi
-.in -2
-
-.sp
-.LP
-The kernel returns the \fBSADB_FLUSH\fR message to all listening sockets.
-.sp
-.in +2
-.nf
+.Ed
+.Pp
+The kernel returns the
+.Sy SADB_FLUSH
+message to all listening sockets.
+.Bd -literal -offset 2n
 <base>
-.fi
-.in -2
-
-.SS "\fBSADB_DUMP\fR"
-.LP
-Send a \fBSADB_DUMP\fR message from a user process to the kernel.
-.sp
-.in +2
-.nf
+.Ed
+.Ss "SADB_DUMP"
+Send a
+.Sy SADB_DUMP
+message from a user process to the kernel.
+.Bd -literal -offset 2n
 <base>
-.fi
-.in -2
-
-.sp
-.LP
-Several \fBSADB_DUMP\fR messages will return from the kernel to the sending
-socket.
-.sp
-.in +2
-.nf
+.Ed
+.Pp
+Several
+.Sy SADB_DUMP
+messages will return from the kernel to the sending socket.
+.Bd -literal -offset 2n
 <base, SA, (lifetime (HSC),) address (SD), (address (Is,Id),)
     (address (Nl,Nr),) key (AE), (identity (SD),) sensitivity)>
-.fi
-.in -2
-
-.sp
-.LP
+.Ed
+.Pp
 To mark the end of a dump a single base header arrives with its
-\fBsadb_mdg_seq\fR set to 0.
-.sp
-.in +2
-.nf
+.Sy sadb_msg_seq
+set to 0.
+.Bd -literal -offset 2n
 <base>
-.fi
-.in -2
-
-.SS "\fBSADB_X_PROMISC\fR"
-.LP
-Send a \fBSADB_X_PROMISC\fR message from a user process to the kernel.
-.sp
-.in +2
-.nf
+.Ed
+.Ss "SADB_X_PROMISC"
+Send a
+.Sy SADB_X_PROMISC
+message from a user process to the kernel.
+.Bd -literal -offset 2n
 <base>
-.fi
-.in -2
-
-.sp
-.LP
-The kernel returns the \fBSADB_X_PROMISC\fR message to all listening processes.
-.sp
-.in +2
-.nf
+.Ed
+.Pp
+The kernel returns the
+.Sy SADB_X_PROMISC
+message to all listening processes.
+.Bd -literal -offset 2n
 <base>
-.fi
-.in -2
-
-.SH DIAGNOSTICS
-.LP
+.Ed
+.Sh DIAGNOSTICS
 The message returning from the kernel will contain a diagnostic value in the
 base message header, the diagnostic value will indicate if action requested by
 the original message was a success.
-.sp
-.LP
+.Pp
 Diagnostic Values:
-.sp
-.in +2
-.nf
+.Bd -literal -offset 2n
 #define SADB_X_DIAGNOSTIC_NONE                  0
 #define SADB_X_DIAGNOSTIC_UNKNOWN_MSG           1
 #define SADB_X_DIAGNOSTIC_UNKNOWN_EXT           2
@@ -932,33 +800,29 @@ Diagnostic Values:
 
 #define SADB_X_DIAGNOSTIC_SA_NOTFOUND           78
 #define SADB_X_DIAGNOSTIC_SA_EXPIRED            79
-.fi
-.in -2
-
-.SH ATTRIBUTES
-.LP
-See \fBattributes\fR(5)  for descriptions of the following attributes:
-.sp
-
-.sp
-.TS
-box;
-c | c
-l | l .
-ATTRIBUTE TYPE	ATTRIBUTE VALUE
-Interface Stability	Evolving
-.TE
-
-.SH SEE ALSO
-.LP
-\fBin.iked\fR(1M), \fBipseckey\fR(1M), \fBsockaddr\fR(3SOCKET),
-\fBipsec\fR(7P), \fBipsecah\fR(7P),
-\fBipsecesp\fR(7P), \fBroute\fR(7P), \fBudp\fR(7P)
-.sp
-.LP
-McDonald, D.L., Metz, C.W., and Phan, B.G., \fIRFC 2367, PF_KEY Key Management
-API, Version 2\fR, The Internet Society, July 1998.
-.SH NOTES
-.LP
+.Ed
+.Sh "Interface Stability"
+.\" Original was Evolving, but not on the list for mdoc
+Uncommitted
+.Sh SEE ALSO
+.Xr in.iked 1M ,
+.Xr ipseckey 1M ,
+.Xr sockaddr 3SOCKET ,
+.Xr ipsec 7P ,
+.Xr ipsecah 7P ,
+.Xr ipsecesp 7P ,
+.Xr route 7P ,
+.Xr udp 7P
+.Rs
+.%A D. L. McDonald
+.%A C. W. Metz
+.%A B. G. Phan
+.%N RFC 2367
+.%T PF_KEY Key Management API, Version 2
+.%I The Internet Society
+.%D July 1998
+.Re
+.Sh NOTES
 Time-based lifetimes may not expire with exact precision in seconds because
-kernel load may affect the aging of \fBSA\fR's.
+kernel load may affect the aging of
+.Sy SA Ns 's .
