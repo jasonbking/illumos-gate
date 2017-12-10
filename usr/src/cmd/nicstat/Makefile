@@ -10,12 +10,16 @@
 #
 
 #
-# Copyright (c) 2013 Joyent, Inc.  All rights reserved.
+# Copyright (c) 2019, Joyent, Inc.
 #
 
 PROG =	nicstat
 
 include ../Makefile.cmd
+
+LDLIBS += -lkstat
+
+CSTD=	$(CSTD_GNU99)
 
 all: $(PROG)
 
