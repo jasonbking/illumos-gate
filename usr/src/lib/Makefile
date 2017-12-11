@@ -223,6 +223,7 @@ SUBDIRS +=				\
 	libstmfproxy	\
 	libsun_ima	\
 	libsysevent	\
+	libsyskstat	\
 	libtecla	\
 	libtermcap	\
 	libthread	\
@@ -682,6 +683,7 @@ libstmf:	libscf
 libstmfproxy:	libstmf libpthread
 libsun_ima:	libdevinfo libsysevent
 libsysevent:	libsecdb
+libsyskstat:	libkstat
 libtecla:	libcurses
 libtermcap:	libcurses
 libtnfctl:	../cmd/sgs/libelf
