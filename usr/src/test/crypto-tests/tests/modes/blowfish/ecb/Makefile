@@ -12,11 +12,9 @@
 #
 # Copyright (c) 2012 by Delphix. All rights reserved.
 # Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
-# Copyright 2018, Joyent, Inc.
 #
 
-.PARALLEL: $(SUBDIRS)
+PROG = blowfish_ecb
 
-SUBDIRS = aes blowfish
-
-include $(SRC)/test/Makefile.com
+include $(SRC)/cmd/Makefile.cmd
+include ../Makefile.subdirs

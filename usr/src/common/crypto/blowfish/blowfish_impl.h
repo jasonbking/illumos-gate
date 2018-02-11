@@ -21,16 +21,17 @@
 /*
  * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 #ifndef	_BLOWFISH_IMPL_H
 #define	_BLOWFISH_IMPL_H
 
-#pragma ident	"%Z%%M%	%I%	%E% SMI"
-
 /*
  * Common definitions used by Blowfish.
  */
+
+#include <sys/types.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -66,16 +67,19 @@ extern "C" {
 #define	BLOWFISH_KEY_INCREMENT	8
 #define	BLOWFISH_DEFAULT	128
 
+struct crypto_data;
+
 extern int blowfish_encrypt_contiguous_blocks(void *, char *, size_t,
-    crypto_data_t *);
+    struct crypto_data *);
 extern int blowfish_decrypt_contiguous_blocks(void *, char *, size_t,
-    crypto_data_t *);
+    struct crypto_data *);
 extern int blowfish_encrypt_block(const void *, const uint8_t *, uint8_t *);
 extern int blowfish_decrypt_block(const void *, const uint8_t *, uint8_t *);
 extern void blowfish_init_keysched(uint8_t *, uint_t, void *);
 extern void *blowfish_alloc_keysched(size_t *, int);
 extern void blowfish_copy_block(uint8_t *, uint8_t *);
 extern void blowfish_xor_block(uint8_t *, uint8_t *);
+
 #ifdef	__cplusplus
 }
 #endif
