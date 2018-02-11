@@ -102,6 +102,7 @@ soft_digest_init(soft_session_t *session_p, CK_MECHANISM_PTR pMechanism)
 	case CKM_SHA384:
 	case CKM_SHA512:
 	case CKM_SHA512_224:
+	case CKM_SHA512_256:
 
 		(void) pthread_mutex_lock(&session_p->session_mutex);
 
@@ -132,6 +133,10 @@ soft_digest_init(soft_session_t *session_p, CK_MECHANISM_PTR pMechanism)
 			break;
 		case CKM_SHA512_224:
 			SHA2Init(SHA512_224,
+			    (SHA2_CTX *)session_p->digest.context);
+			break;
+		case CKM_SHA512_256:
+			SHA2Init(SHA512_256,
 			    (SHA2_CTX *)session_p->digest.context);
 			break;
 		}
@@ -201,6 +206,10 @@ soft_digest_common(soft_session_t *session_p, CK_BYTE_PTR pData,
 
 	case CKM_SHA512_224:
 		digestLen = SHA512_224_DIGEST_LENGTH;
+		break;
+
+	case CKM_SHA512_256:
+		digestLen = SHA512_256_DIGEST_LENGTH;
 		break;
 
 	default:
@@ -285,6 +294,7 @@ soft_digest_common(soft_session_t *session_p, CK_BYTE_PTR pData,
 	case CKM_SHA384:
 	case CKM_SHA512:
 	case CKM_SHA512_224:
+	case CKM_SHA512_256:
 		if (pData != NULL) {
 			/*
 			 * this is called by soft_digest()
@@ -397,6 +407,7 @@ soft_digest_update(soft_session_t *session_p, CK_BYTE_PTR pPart,
 	case CKM_SHA384:
 	case CKM_SHA512:
 	case CKM_SHA512_224:
+	case CKM_SHA512_256:
 		SHA2Update((SHA2_CTX *)session_p->digest.context,
 		    pPart, ulPartLen);
 		break;
