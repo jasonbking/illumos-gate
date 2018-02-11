@@ -17,11 +17,12 @@ include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/test/Makefile.com
 include $(SRC)/cmd/Makefile.ctf
 
-ALGS = sha1 sha256
+ALGS = sha1 sha256 sha384
 CRYPTO = pkcs kcf
 
 $(CRYPTO:%=sha1_%)	:= OBJS = sha1.o
 $(CRYPTO:%=sha256_%)	:= OBJS = sha256.o
+$(CRYPTO:%=sha384_%)	:= OBJS = sha384.o
 
 PROGS_pkcs = $(ALGS:%=%_pkcs)
 PROGS_kcf = $(ALGS:%=%_kcf)
