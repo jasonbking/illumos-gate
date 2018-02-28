@@ -14,9 +14,10 @@
 # Copyright 2018, Joyent, Inc.
 #
 
-SUBDIRS = modes common digest
+SUBDIRS = modes digest pubkey
 
-modes: common
-digest: common
+$(SUBDIRS): common
+
+SUBDIRS += common
 
 include $(SRC)/test/Makefile.com
