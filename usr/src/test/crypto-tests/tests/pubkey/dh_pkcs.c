@@ -128,7 +128,6 @@ main(void)
 		dh_test_t *t = &dh_tests[i];
 		uint8_t *sec_val = NULL;
 		size_t sec_len = 0;
-		CK_RV rv;
 
 		(void) fprintf(stderr, "Test: %s\n\n", t->testname);
 

@@ -21,8 +21,6 @@
 #define	ARRAY_SIZE(x) (sizeof (x) / sizeof (x[0]))
 #endif
 
-static uint8_t gen_2[] = { 0x02 };
-
 /*
  * From RFC5114.
  * _p		Prime

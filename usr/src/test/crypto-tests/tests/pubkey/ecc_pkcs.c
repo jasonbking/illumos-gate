@@ -22,6 +22,8 @@
 #include "common.h"
 #include "ecc.h"
 
+#define	EC_POINT_FORM_UNCOMPRESSED	0x04
+
 #ifndef ARRAY_SIZE
 #define	ARRAY_SIZE(x) (sizeof (x) / sizeof (x[0]))
 #endif
@@ -81,7 +83,7 @@ derive(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE priv, uint8_t *pub_x,
 		.pSharedData = NULL_PTR,
 		.ulSharedDataLen = 0,
 		.pPublicData = pub,
-		.ulPublicDataLen = publen * 2
+		.ulPublicDataLen = publen * 2 + 1
 	};
 	CK_MECHANISM mech = {
 		.mechanism = CKM_ECDH1_DERIVE,
@@ -90,7 +92,7 @@ derive(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE priv, uint8_t *pub_x,
 	};
 	CK_RV rv;
 
-	pub[0] = 0x04;
+	pub[0] = EC_POINT_FORM_UNCOMPRESSED;
 	(void) memcpy(pub + 1, pub_x, publen);
 	(void) memcpy(pub + publen + 1, pub_y, publen);
 
@@ -138,30 +140,37 @@ main(void)
 		ecc_test_t *t = &ecc_tests[i];
 		uint8_t *sec_val = NULL;
 		size_t sec_len = 0;
-		CK_RV rv;
 
 		(void) fprintf(stderr, "Test: %s\n\n", t->testname);
 
 		key_to_obj(h, t->oid, t->oidlen, t->a_priv, t->len, &a_priv);
 		key_to_obj(h, t->oid, t->oidlen, t->b_priv, t->len, &b_priv);
 
-		(void) fprintf(stderr, "    Priv A + Pub B: ");
+		(void) fprintf(stderr, "    Priv A + Pub B:\n");
 		derive(h, a_priv, t->b_pub_x, t->b_pub_y, t->len, &secret);
 		obj_to_key(h, secret, &sec_val, &sec_len);
-		nerrs += bufcmp(8, "Z_x", t->secret_x, t->len,
-		    sec_val, sec_len / 2);
-		nerrs += bufcmp(8, "Z_y", t->secret_y, t->len,
+
+		(void) fprintf(stderr, "\tZx: ");
+		nerrs += bufcmp(12, "Zx", t->secret_x, t->len,
+		    sec_val, sec_len);
+
+		(void) fprintf(stderr, "\tZy: ");
+		nerrs += bufcmp(12, "Zy", t->secret_y, t->len,
 		    sec_val + sec_len / 2, sec_len / 2);
 		free(sec_val);
 		sec_val = NULL;
 		sec_len = 0;
 
-		(void) fprintf(stderr, "    Priv B + Pub A: ");
+		(void) fprintf(stderr, "    Priv B + Pub A:\n");
 		derive(h, b_priv, t->a_pub_x, t->b_pub_y, t->len, &secret);
 		obj_to_key(h, secret, &sec_val, &sec_len);
-		nerrs += bufcmp(8, "Z_x", t->secret_x, t->len,
-		    sec_val, sec_len / 2);
-		nerrs += bufcmp(8, "Z_y", t->secret_y, t->len,
+
+		(void) fprintf(stderr, "\tZx: ");
+		nerrs += bufcmp(12, "Z_x", t->secret_x, t->len,
+		    sec_val, sec_len);
+
+		(void) fprintf(stderr, "\tZy: ");
+		nerrs += bufcmp(12, "Z_y", t->secret_y, t->len,
 		    sec_val + sec_len / 2, sec_len / 2);
 		free(sec_val);
 
