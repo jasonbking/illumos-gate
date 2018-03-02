@@ -25,6 +25,7 @@ extern "C" {
 void init_term(void);
 int bufcmp(size_t, const char *, const uint8_t *, size_t, const uint8_t *,
     size_t);
+void divider(void);
 
 #ifdef __cplusplus
 }

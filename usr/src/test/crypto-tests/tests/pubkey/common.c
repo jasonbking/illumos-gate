@@ -42,8 +42,8 @@ printbuf(size_t indent, const uint8_t *buf, char *name, size_t size)
 {
 	size_t i, col;
 
-	(void) printf("%*s%s ", (int) indent, "", name);
-	indent += strlen(name) + 1;
+	(void) printf("%*s%s: ", (int) indent, "", name);
+	indent += strlen(name) + 2;
 
 	for (i = 0, col = indent; i < size; i++) {
 		if (col + 2 >= WIDTH) {
@@ -74,9 +74,9 @@ bufcmp(size_t indent, const char *name, const uint8_t *src, size_t srclen,
 
 	if (srclen != cmplen) {
 		(void) printf("%sFAIL%s - mismatched length\n", red, none);
-		(void) printf("%*s%s len %zu\n", (int)indent, "", cmpstr,
+		(void) printf("%*s%s len: %zu\n", (int)indent, "", cmpstr,
 		    cmplen);
-		(void) printf("%*s%s len %zu\n", (int)indent, "", origstr,
+		(void) printf("%*s%s len: %zu\n", (int)indent, "", origstr,
 		    srclen);
 		(void) fputc('\n', stdout);
 		return (1);
@@ -92,4 +92,10 @@ bufcmp(size_t indent, const char *name, const uint8_t *src, size_t srclen,
 
 	(void) printf("%sSUCCESS%s\n", green, none);
 	return (0);
+}
+
+void
+divider(void)
+{
+	(void) fprintf(stderr, "\n------------------------------\n\n");
 }

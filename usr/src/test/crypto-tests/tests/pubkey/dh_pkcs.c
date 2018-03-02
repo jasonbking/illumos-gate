@@ -103,13 +103,30 @@ destroy(CK_SESSION_HANDLE h, CK_OBJECT_HANDLE obj)
 	}
 }
 
+static size_t
+check(const char *desc, CK_SESSION_HANDLE h, CK_OBJECT_HANDLE priv,
+    uint8_t *pub, uint8_t *cmp, size_t len)
+{
+	uint8_t *secret = NULL;
+	size_t sec_len = 0;
+	size_t nerrs = 0;
+	CK_OBJECT_HANDLE sec_obj;
+
+	(void) fprintf(stderr, "%20s: ", desc);
+	derive(h, priv, pub, len, &sec_obj);
+	obj_to_key(h, sec_obj, &secret, &sec_len);
+	nerrs = bufcmp(8, "Z", cmp, len, secret, sec_len);
+	free(secret);
+	return (nerrs);
+}
+
 int
 main(void)
 {
 	size_t i, nerrs = 0;
 
 	CK_SESSION_HANDLE h;
-	CK_OBJECT_HANDLE a_priv, b_priv, secret;
+	CK_OBJECT_HANDLE a_priv, b_priv;
 	CK_RV rv;
 
 	cryptodebug_init(__progname);
@@ -122,12 +139,10 @@ main(void)
 		    pkcs11_strerror(rv), rv);
 	}
 
-	(void) fprintf(stderr, "----------\n");
+	divider();
 
 	for (i = 0; i < dh_ntests; i++) {
 		dh_test_t *t = &dh_tests[i];
-		uint8_t *sec_val = NULL;
-		size_t sec_len = 0;
 
 		(void) fprintf(stderr, "Test: %s\n\n", t->testname);
 
@@ -136,24 +151,16 @@ main(void)
 		key_to_obj(h, t->prime, t->primelen, t->generator, t->genlen,
 		    t->b_priv, t->privlen, &b_priv);
 
-		(void) fprintf(stderr, "    Priv A + Pub B: ");
-		derive(h, a_priv, t->b_pub, t->publen, &secret);
-		obj_to_key(h, secret, &sec_val, &sec_len);
-		nerrs += bufcmp(8, "Z", t->secret, t->publen, sec_val, sec_len);
-		free(sec_val);
-		sec_val = NULL;
-		sec_len = 0;
+		check("Priv A + Pub B", h, a_priv, t->b_pub, t->secret,
+		    t->publen);
 
-		(void) fprintf(stderr, "    Priv B + Pub A: ");
-		derive(h, b_priv, t->a_pub, t->publen, &secret);
-		obj_to_key(h, secret, &sec_val, &sec_len);
-		nerrs += bufcmp(8, "Z", t->secret, t->publen, sec_val, sec_len);
-		free(sec_val);
+		check("Priv B + Pub A", h, b_priv, t->a_pub, t->secret,
+		    t->publen);
 
 		destroy(h, a_priv);
 		destroy(h, b_priv);
 
-		(void) fprintf(stderr, "----------\n");
+		divider();
 	}
 
 	rv = C_CloseSession(h);

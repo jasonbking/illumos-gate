@@ -35,8 +35,8 @@ typedef struct ecc_test {
 	uint8_t		*b_pub_x;
 	uint8_t		*b_pub_y;
 
+			/* ECDH only uses the x coordinate */
 	uint8_t		*secret_x;
-	uint8_t		*secret_y;
 
 	size_t		oidlen;
 	size_t		len;
