@@ -142,9 +142,11 @@ aslcompiler.y: aslparser.y
 $(LEX_C_FILES):
 	$(FLEX) $(LFLAGS) -P$(PARSER) -o $@ $(LEXFILE)
 
+$(OBJS):	$(YACC_H_FILES)
+
 %parse.h: %parse.c
 
-%parse.c %.y.h: %.y
+%parse.c + %.y.h: %.y
 	_suffix=`echo $@ | awk -F. '{print $$NF}'` && \
 	_d=`mktemp -d $(PARSER).XXXXXX` && \
 	(cd $$_d && $(BISON) -o y.tab.c -v -d -p$(PARSER) ../$(LY_BASE).y) && \
