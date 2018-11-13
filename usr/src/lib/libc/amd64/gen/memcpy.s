@@ -22,6 +22,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*
@@ -99,6 +100,8 @@
  */
 
 	ENTRY(memmove)
+	push	%rbp
+	mov	%rsp,%rbp
 	cmp	%rsi,%rdi		# if dst <= src
 	jbe	L(CopyForward)		# then do copy forward
 	mov	%rsi,%r9		# move src to r9
@@ -108,6 +111,8 @@
 	jmp	L(CopyForward)
 
 	ENTRY (memcpy)
+	push	%rbp
+	mov	%rsp,%rbp
 L(CopyForward):
 	mov    %rdx,%r8
 	mov    %rdi,%rcx
@@ -125,7 +130,7 @@ L(CopyForward):
 
 	.balign 16
 L(ShrtAlignNew):
-	lea    L(AliPxQx)(%rip),%r11  
+	lea    L(AliPxQx)(%rip),%r11
 	mov    %rcx,%r9
 	and    $0xf,%r9
 
@@ -141,7 +146,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4Q0)-L(fwdPxQx)
            .int        L(P5Q0)-L(fwdPxQx)
            .int        L(P6Q0)-L(fwdPxQx)
-           .int        L(P7Q0)-L(fwdPxQx) 
+           .int        L(P7Q0)-L(fwdPxQx)
 
            .int        L(P0Q1)-L(fwdPxQx)
            .int        L(P1Q1)-L(fwdPxQx)
@@ -150,8 +155,8 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4Q1)-L(fwdPxQx)
            .int        L(P5Q1)-L(fwdPxQx)
            .int        L(P6Q1)-L(fwdPxQx)
-           .int        L(P7Q1)-L(fwdPxQx) 
- 
+           .int        L(P7Q1)-L(fwdPxQx)
+
            .int        L(P0Q2)-L(fwdPxQx)
            .int        L(P1Q2)-L(fwdPxQx)
            .int        L(P2Q2)-L(fwdPxQx)
@@ -159,7 +164,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4Q2)-L(fwdPxQx)
            .int        L(P5Q2)-L(fwdPxQx)
            .int        L(P6Q2)-L(fwdPxQx)
-           .int        L(P7Q2)-L(fwdPxQx) 
+           .int        L(P7Q2)-L(fwdPxQx)
 
            .int        L(P0Q3)-L(fwdPxQx)
            .int        L(P1Q3)-L(fwdPxQx)
@@ -168,7 +173,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4Q3)-L(fwdPxQx)
            .int        L(P5Q3)-L(fwdPxQx)
            .int        L(P6Q3)-L(fwdPxQx)
-           .int        L(P7Q3)-L(fwdPxQx) 
+           .int        L(P7Q3)-L(fwdPxQx)
 
            .int        L(P0Q4)-L(fwdPxQx)
            .int        L(P1Q4)-L(fwdPxQx)
@@ -177,7 +182,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4Q4)-L(fwdPxQx)
            .int        L(P5Q4)-L(fwdPxQx)
            .int        L(P6Q4)-L(fwdPxQx)
-           .int        L(P7Q4)-L(fwdPxQx) 
+           .int        L(P7Q4)-L(fwdPxQx)
 
            .int        L(P0Q5)-L(fwdPxQx)
            .int        L(P1Q5)-L(fwdPxQx)
@@ -186,7 +191,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4Q5)-L(fwdPxQx)
            .int        L(P5Q5)-L(fwdPxQx)
            .int        L(P6Q5)-L(fwdPxQx)
-           .int        L(P7Q5)-L(fwdPxQx) 
+           .int        L(P7Q5)-L(fwdPxQx)
 
            .int        L(P0Q6)-L(fwdPxQx)
            .int        L(P1Q6)-L(fwdPxQx)
@@ -195,7 +200,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4Q6)-L(fwdPxQx)
            .int        L(P5Q6)-L(fwdPxQx)
            .int        L(P6Q6)-L(fwdPxQx)
-           .int        L(P7Q6)-L(fwdPxQx) 
+           .int        L(P7Q6)-L(fwdPxQx)
 
            .int        L(P0Q7)-L(fwdPxQx)
            .int        L(P1Q7)-L(fwdPxQx)
@@ -204,7 +209,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4Q7)-L(fwdPxQx)
            .int        L(P5Q7)-L(fwdPxQx)
            .int        L(P6Q7)-L(fwdPxQx)
-           .int        L(P7Q7)-L(fwdPxQx) 
+           .int        L(P7Q7)-L(fwdPxQx)
 
            .int        L(P0Q8)-L(fwdPxQx)
            .int        L(P1Q8)-L(fwdPxQx)
@@ -213,7 +218,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4Q8)-L(fwdPxQx)
            .int        L(P5Q8)-L(fwdPxQx)
            .int        L(P6Q8)-L(fwdPxQx)
-           .int        L(P7Q8)-L(fwdPxQx) 
+           .int        L(P7Q8)-L(fwdPxQx)
 
            .int        L(P0Q9)-L(fwdPxQx)
            .int        L(P1Q9)-L(fwdPxQx)
@@ -222,7 +227,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4Q9)-L(fwdPxQx)
            .int        L(P5Q9)-L(fwdPxQx)
            .int        L(P6Q9)-L(fwdPxQx)
-           .int        L(P7Q9)-L(fwdPxQx) 
+           .int        L(P7Q9)-L(fwdPxQx)
 
            .int        L(P0QA)-L(fwdPxQx)
            .int        L(P1QA)-L(fwdPxQx)
@@ -231,7 +236,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4QA)-L(fwdPxQx)
            .int        L(P5QA)-L(fwdPxQx)
            .int        L(P6QA)-L(fwdPxQx)
-           .int        L(P7QA)-L(fwdPxQx) 
+           .int        L(P7QA)-L(fwdPxQx)
 
            .int        L(P0QB)-L(fwdPxQx)
            .int        L(P1QB)-L(fwdPxQx)
@@ -240,7 +245,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4QB)-L(fwdPxQx)
            .int        L(P5QB)-L(fwdPxQx)
            .int        L(P6QB)-L(fwdPxQx)
-           .int        L(P7QB)-L(fwdPxQx) 
+           .int        L(P7QB)-L(fwdPxQx)
 
            .int        L(P0QC)-L(fwdPxQx)
            .int        L(P1QC)-L(fwdPxQx)
@@ -249,7 +254,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4QC)-L(fwdPxQx)
            .int        L(P5QC)-L(fwdPxQx)
            .int        L(P6QC)-L(fwdPxQx)
-           .int        L(P7QC)-L(fwdPxQx) 
+           .int        L(P7QC)-L(fwdPxQx)
 
            .int        L(P0QD)-L(fwdPxQx)
            .int        L(P1QD)-L(fwdPxQx)
@@ -258,7 +263,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4QD)-L(fwdPxQx)
            .int        L(P5QD)-L(fwdPxQx)
            .int        L(P6QD)-L(fwdPxQx)
-           .int        L(P7QD)-L(fwdPxQx) 
+           .int        L(P7QD)-L(fwdPxQx)
 
            .int        L(P0QE)-L(fwdPxQx)
            .int        L(P1QE)-L(fwdPxQx)
@@ -267,7 +272,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4QE)-L(fwdPxQx)
            .int        L(P5QE)-L(fwdPxQx)
            .int        L(P6QE)-L(fwdPxQx)
-           .int        L(P7QE)-L(fwdPxQx) 
+           .int        L(P7QE)-L(fwdPxQx)
 
            .int        L(P0QF)-L(fwdPxQx)
            .int        L(P1QF)-L(fwdPxQx)
@@ -276,7 +281,7 @@ L(fwdPxQx): .int       L(P0Q0)-L(fwdPxQx)
            .int        L(P4QF)-L(fwdPxQx)
            .int        L(P5QF)-L(fwdPxQx)
            .int        L(P6QF)-L(fwdPxQx)
-           .int        L(P7QF)-L(fwdPxQx) 
+           .int        L(P7QF)-L(fwdPxQx)
 
            .int        L(P0QG)-L(fwdPxQx)	# 0x80
 
@@ -492,8 +497,8 @@ L(A7Q1):			# ; need to move 1 byte
 	jmp    L(now_qw_aligned)
 
 
-	.balign 16              
-L(P0QG):  
+	.balign 16
+L(P0QG):
 	mov    -0x80(%rdx),%r9
 	mov    %r9,-0x80(%rcx)
 L(P0QF):
@@ -541,10 +546,11 @@ L(P0Q2):
 L(P0Q1):
 	mov    -0x8(%rdx),%r10
 	mov    %r10,-0x8(%rcx)
-L(P0Q0):                                   
-	ret   
+L(P0Q0):
+	leave
+	ret
 
-	.balign 16               
+	.balign 16
 L(P1QF):
 	mov    -0x79(%rdx),%r9
 	mov    %r9,-0x79(%rcx)
@@ -593,9 +599,10 @@ L(P1Q1):
 L(P1Q0):
 	movzbq -0x1(%rdx),%r9
 	mov    %r9b,-0x1(%rcx)
-	ret   
+	leave
+	ret
 
-	.balign 16               
+	.balign 16
 L(P2QF):
 	mov    -0x7a(%rdx),%r9
 	mov    %r9,-0x7a(%rcx)
@@ -644,9 +651,10 @@ L(P2Q1):
 L(P2Q0):
 	movzwq -0x2(%rdx),%r9
 	mov    %r9w,-0x2(%rcx)
-	ret   
+	leave
+	ret
 
-	.balign 16               
+	.balign 16
 L(P3QF):
 	mov    -0x7b(%rdx),%r9
 	mov    %r9,-0x7b(%rcx)
@@ -701,9 +709,10 @@ L(P3Q0):
 	movzbq -0x1(%rdx),%r10
 	mov    %r9w,-0x3(%rcx)
 	mov    %r10b,-0x1(%rcx)
-	ret   
+	leave
+	ret
 
-	.balign 16               
+	.balign 16
 L(P4QF):
 	mov    -0x7c(%rdx),%r9
 	mov    %r9,-0x7c(%rcx)
@@ -752,9 +761,10 @@ L(P4Q1):
 L(P4Q0):
 	mov    -0x4(%rdx),%r9d
 	mov    %r9d,-0x4(%rcx)
-	ret   
+	leave
+	ret
 
-	.balign 16               
+	.balign 16
 L(P5QF):
 	mov    -0x7d(%rdx),%r9
 	mov    %r9,-0x7d(%rcx)
@@ -809,9 +819,10 @@ L(P5Q0):
 	movzbq -0x1(%rdx),%r10
 	mov    %r9d,-0x5(%rcx)
 	mov    %r10b,-0x1(%rcx)
-	ret   
+	leave
+	ret
 
-	.balign 16               
+	.balign 16
 L(P6QF):
 	mov    -0x7e(%rdx),%r9
 	mov    %r9,-0x7e(%rcx)
@@ -866,9 +877,10 @@ L(P6Q0):
 	movzwq -0x2(%rdx),%r10
 	mov    %r9d,-0x6(%rcx)
 	mov    %r10w,-0x2(%rcx)
-	ret   
+	leave
+	ret
 
-	.balign 16               
+	.balign 16
 L(P7QF):
 	mov    -0x7f(%rdx),%r9
 	mov    %r9,-0x7f(%rcx)
@@ -925,18 +937,19 @@ L(P7Q0):
 	mov    %r9d,-0x7(%rcx)
 	mov    %r10w,-0x3(%rcx)
 	mov    %r11b,-0x1(%rcx)
-	ret   
+	leave
+	ret
 
-	.balign 16               
+	.balign 16
 L(ck_use_sse2):
 	/*
-	 * Align dest to 16 byte boundary. 
+	 * Align dest to 16 byte boundary.
 	 */
 	test   $0xf,%rcx
 	jnz    L(ShrtAlignNew)
 
 L(now_qw_aligned):
-	cmpl   $NO_SSE,.memops_method(%rip) 
+	cmpl   $NO_SSE,.memops_method(%rip)
 	je     L(Loop8byte_pre)
 
 	/*
@@ -945,11 +958,11 @@ L(now_qw_aligned):
 
 	/*
 	 * If current move size is larger than half of the highest level cache
-	 * size, then do non-temporal moves. 
+	 * size, then do non-temporal moves.
 	 */
 	mov    .largest_level_cache_size(%rip),%r9d
 	shr    %r9		# take half of it
-	cmp    %r9,%r8  
+	cmp    %r9,%r8
 	jg     L(sse2_nt_move)
 
 	/*
@@ -960,7 +973,7 @@ L(now_qw_aligned):
 	jz     L(pre_both_aligned)
 
 	lea    L(SSE_src)(%rip),%r10		# SSE2 (default)
-	testl  $USE_SSSE3,.memops_method(%rip) 
+	testl  $USE_SSSE3,.memops_method(%rip)
 	jz     1f
 	lea    L(SSSE3_src)(%rip),%r10		# SSSE3
 
@@ -994,11 +1007,11 @@ L(SSSE3_src): .int	L(pre_both_aligned)-L(SSSE3_src)
 	    .int        L(movdqa8)  -L(SSSE3_src)
 	    .int        L(mov3dqa9) -L(SSSE3_src)
 	    .int        L(mov3dqa10)-L(SSSE3_src)
-	    .int        L(mov3dqa11)-L(SSSE3_src) 
+	    .int        L(mov3dqa11)-L(SSSE3_src)
 	    .int        L(mov3dqa12)-L(SSSE3_src)
 	    .int        L(mov3dqa13)-L(SSSE3_src)
 	    .int        L(mov3dqa14)-L(SSSE3_src)
-	    .int        L(mov3dqa15)-L(SSSE3_src) 
+	    .int        L(mov3dqa15)-L(SSSE3_src)
 L(SSE_src): .int    L(pre_both_aligned)-L(SSE_src)
 	    .int        L(movdqa1) -L(SSE_src)
 	    .int        L(movdqa2) -L(SSE_src)
@@ -1010,14 +1023,14 @@ L(SSE_src): .int    L(pre_both_aligned)-L(SSE_src)
 	    .int        L(movdqa8) -L(SSE_src)
 	    .int        L(movdqa9) -L(SSE_src)
 	    .int        L(movdqa10)-L(SSE_src)
-	    .int        L(movdqa11)-L(SSE_src) 
+	    .int        L(movdqa11)-L(SSE_src)
 	    .int        L(movdqa12)-L(SSE_src)
 	    .int        L(movdqa13)-L(SSE_src)
 	    .int        L(movdqa14)-L(SSE_src)
-	    .int        L(movdqa15)-L(SSE_src) 
+	    .int        L(movdqa15)-L(SSE_src)
 
-	.balign 16               
-L(movdqa1):                                
+	.balign 16
+L(movdqa1):
 	movdqa 0x10(%rdx),%xmm3 # load the upper source buffer
 	movdqa 0x20(%rdx),%xmm0 # load the upper source buffer
 	lea    0x20(%rdx),%rdx
@@ -1037,11 +1050,11 @@ L(movdqa1):
 	movdqa %xmm0,0x10(%rcx) # store it
 	lea    0x20(%rcx),%rcx
 
-	jge    L(movdqa1)    
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa1)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa2):                                
+	.balign 16
+L(movdqa2):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1061,11 +1074,11 @@ L(movdqa2):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa2)    
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa2)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa3):                                
+	.balign 16
+L(movdqa3):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1085,11 +1098,11 @@ L(movdqa3):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa3)    
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa3)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa4):                                
+	.balign 16
+L(movdqa4):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1110,11 +1123,11 @@ L(movdqa4):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa4)    
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa4)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa5):                                
+	.balign 16
+L(movdqa5):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1135,11 +1148,11 @@ L(movdqa5):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa5)    
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa5)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa6):                                
+	.balign 16
+L(movdqa6):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1159,11 +1172,11 @@ L(movdqa6):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa6)    
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa6)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa7):                                
+	.balign 16
+L(movdqa7):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1183,11 +1196,11 @@ L(movdqa7):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa7)    
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa7)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa8):                                
+	.balign 16
+L(movdqa8):
 	movdqa 0x10(%rdx),%xmm3
 	sub    $0x30,%r8
 	movdqa 0x20(%rdx),%xmm0
@@ -1211,8 +1224,8 @@ L(movdqa8):
 	jge    L(movdqa8)
 	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa9):                                
+	.balign 16
+L(movdqa9):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1232,11 +1245,11 @@ L(movdqa9):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa9)    
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa9)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa10):                               
+	.balign 16
+L(movdqa10):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1256,11 +1269,11 @@ L(movdqa10):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa10)   
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa10)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa11):                               
+	.balign 16
+L(movdqa11):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1280,11 +1293,11 @@ L(movdqa11):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa11)   
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa11)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa12):                               
+	.balign 16
+L(movdqa12):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1304,11 +1317,11 @@ L(movdqa12):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa12)   
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa12)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa13):                               
+	.balign 16
+L(movdqa13):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1328,11 +1341,11 @@ L(movdqa13):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa13)   
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa13)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa14):                               
+	.balign 16
+L(movdqa14):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1352,11 +1365,11 @@ L(movdqa14):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa14)   
-	jmp    L(movdqa_epi)       
+	jge    L(movdqa14)
+	jmp    L(movdqa_epi)
 
-	.balign 16               
-L(movdqa15):                               
+	.balign 16
+L(movdqa15):
 	sub    $0x20,%r8
 	movdqa 0x10(%rdx),%xmm3
 	movdqa 0x20(%rdx),%xmm0
@@ -1376,11 +1389,11 @@ L(movdqa15):
 
 	add    $0x20,%rcx
 	cmp    $0x20,%r8
-	jge    L(movdqa15)   
+	jge    L(movdqa15)
 	#jmp   L(movdqa_epi)
 
 	.balign 16
-L(movdqa_epi):                             
+L(movdqa_epi):
 	lea    L(fwdPxQx)(%rip),%r10
 	add    %r11,%rdx # bump rdx to the right addr (it lagged behind in the above loop)
 	add    %r8,%rcx
@@ -1391,7 +1404,7 @@ L(movdqa_epi):
 	jmpq   *%r10
 
 	.balign 16
-L(mov3dqa1): 
+L(mov3dqa1):
 	movdqa	0x10(%rdx),%xmm3 # load the upper source buffer
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0 # load the upper source buffer
@@ -1431,7 +1444,7 @@ L(mov3dqa1):
 	.byte	0xd9,0x01
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1441,12 +1454,12 @@ L(mov3dqa1):
 	#palignr	$0x1,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x01
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa2): 
+L(mov3dqa2):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -1486,7 +1499,7 @@ L(mov3dqa2):
 	.byte	0xd9,0x02
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1496,12 +1509,12 @@ L(mov3dqa2):
 	#palignr	$0x2,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x02
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa3): 
+L(mov3dqa3):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -1541,7 +1554,7 @@ L(mov3dqa3):
 	.byte	0xd9,0x03
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1551,12 +1564,12 @@ L(mov3dqa3):
 	#palignr	$0x3,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x03
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa4): 
+L(mov3dqa4):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -1596,7 +1609,7 @@ L(mov3dqa4):
 	.byte	0xd9,0x04
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1606,12 +1619,12 @@ L(mov3dqa4):
 	#palignr	$0x4,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x04
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa5): 
+L(mov3dqa5):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -1651,7 +1664,7 @@ L(mov3dqa5):
 	.byte	0xd9,0x05
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1661,12 +1674,12 @@ L(mov3dqa5):
 	#palignr	$0x5,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x05
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa6): 
+L(mov3dqa6):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -1706,7 +1719,7 @@ L(mov3dqa6):
 	.byte	0xd9,0x06
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1716,12 +1729,12 @@ L(mov3dqa6):
 	#palignr	$0x6,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x06
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa7): 
+L(mov3dqa7):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -1761,7 +1774,7 @@ L(mov3dqa7):
 	.byte	0xd9,0x07
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1771,12 +1784,12 @@ L(mov3dqa7):
 	#palignr	$0x7,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x07
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa9): 
+L(mov3dqa9):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -1816,7 +1829,7 @@ L(mov3dqa9):
 	.byte	0xd9,0x09
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1826,12 +1839,12 @@ L(mov3dqa9):
 	#palignr	$0x9,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x09
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa10): 
+L(mov3dqa10):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -1871,7 +1884,7 @@ L(mov3dqa10):
 	.byte	0xd9,0x0a
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1881,12 +1894,12 @@ L(mov3dqa10):
 	#palignr	$0xa,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x0a
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa11): 
+L(mov3dqa11):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -1926,7 +1939,7 @@ L(mov3dqa11):
 	.byte	0xd9,0x0b
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1936,12 +1949,12 @@ L(mov3dqa11):
 	#palignr	$0xb,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x0b
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa12): 
+L(mov3dqa12):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -1981,7 +1994,7 @@ L(mov3dqa12):
 	.byte	0xd9,0x0c
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -1991,12 +2004,12 @@ L(mov3dqa12):
 	#palignr	$0xc,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x0c
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa13): 
+L(mov3dqa13):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -2036,7 +2049,7 @@ L(mov3dqa13):
 	.byte	0xd9,0x0d
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -2046,12 +2059,12 @@ L(mov3dqa13):
 	#palignr	$0xd,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x0d
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa14): 
+L(mov3dqa14):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -2091,7 +2104,7 @@ L(mov3dqa14):
 	.byte	0xd9,0x0e
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -2101,12 +2114,12 @@ L(mov3dqa14):
 	#palignr	$0xe,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x0e
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
 	.balign 16
-L(mov3dqa15): 
+L(mov3dqa15):
 	movdqa	0x10(%rdx),%xmm3
 	sub	$0x30,%r8
 	movdqa	0x20(%rdx),%xmm0
@@ -2146,7 +2159,7 @@ L(mov3dqa15):
 	.byte	0xd9,0x0f
 
 	cmp	$0x10,%r8
-	movdqa	%xmm3,(%rcx)      	# store it
+	movdqa	%xmm3,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jl	L(movdqa_epi)
 
@@ -2156,12 +2169,12 @@ L(mov3dqa15):
 	#palignr	$0xf,%xmm2,%xmm0
 	.byte	0x66,0x0f,0x3a,0x0f
 	.byte	0xc2,0x0f
-	movdqa	%xmm0,(%rcx)      	# store it
+	movdqa	%xmm0,(%rcx)		# store it
 	lea	0x10(%rcx),%rcx
 	jmp	L(movdqa_epi)
 
-	.balign 16               
-L(sse2_nt_move):                           
+	.balign 16
+L(sse2_nt_move):
 	lea	0x40(%rcx),%rcx
 	lea	0x40(%rdx),%rdx
 	lea	-0x40(%r8),%r8
@@ -2184,16 +2197,16 @@ L(sse2_nt_move):
 	movntdq	%xmm2,-0x20(%rcx)
 	movntdq	%xmm3,-0x10(%rcx)
 
-	jge	L(sse2_nt_move) 
+	jge	L(sse2_nt_move)
 
-	lea	L(Fix16EndTable)(%rip),%r10 
+	lea	L(Fix16EndTable)(%rip),%r10
 	mov	%r8,%r9
 	and	$0xFFFFFFFFFFFFFFF0,%r9
 	add	%r9,%rcx
 	add	%r9,%rdx
 	sub	%r9,%r8
 	shr	$0x4,%r9
-	sfence 
+	sfence
 
 	movslq	(%r10,%r9,4),%r11
 	lea	(%r11,%r10,1),%r10
@@ -2207,16 +2220,16 @@ L(Fix16EndTable):
 	.int    L(fix16_3)-L(Fix16EndTable)
 
 	.balign 16
-L(fix16_3):                                
+L(fix16_3):
 	movdqu -0x30(%rdx),%xmm1
 	movdqa %xmm1,-0x30(%rcx)
-L(fix16_2):                                
+L(fix16_2):
 	movdqu -0x20(%rdx),%xmm2
 	movdqa %xmm2,-0x20(%rcx)
-L(fix16_1):                                
+L(fix16_1):
 	movdqu -0x10(%rdx),%xmm3
 	movdqa %xmm3,-0x10(%rcx)
-L(fix16_0):                                
+L(fix16_0):
 	lea    L(fwdPxQx)(%rip),%r10
 	add    %r8,%rdx
 	add    %r8,%rcx
@@ -2230,8 +2243,8 @@ L(pre_both_aligned):
 	cmp    $0x80,%r8
 	jl     L(fix_16b)
 
-	.balign 16               
-L(both_aligned):                           
+	.balign 16
+L(both_aligned):
 
 	/*
 	 * this 'paired' load/load/store/store seems to do best.
@@ -2262,9 +2275,9 @@ L(both_aligned):
 	movdqa %xmm2,0x60(%rcx)
 	movdqa %xmm3,0x70(%rcx)
 	lea    0x80(%rcx),%rcx
-	jge    L(both_aligned) 
+	jge    L(both_aligned)
 
-L(fix_16b):                                
+L(fix_16b):
 	add    %r8,%rcx
 	lea    L(fwdPxQx)(%rip),%r10
 	add    %r8,%rdx
@@ -2278,7 +2291,7 @@ L(Loop8byte_pre):
 	# Use 8-byte moves
 	mov    .largest_level_cache_size(%rip),%r9d
 	shr    %r9		# take half of it
-	cmp    %r9,%r8  
+	cmp    %r9,%r8
 	jge    L(byte8_nt_top)
 	# Find out whether to use rep movsq
 	cmp    $4096,%r8
@@ -2287,8 +2300,8 @@ L(Loop8byte_pre):
 	cmp    %r9,%r8
 	jle    L(use_rep)
 
-	.balign     16               
-L(byte8_top):                              
+	.balign     16
+L(byte8_top):
 	mov    (%rdx),%r9
 	mov    0x8(%rdx),%r10
 	lea    -0x40(%r8),%r8
@@ -2310,9 +2323,9 @@ L(byte8_top):
 	mov    %r9,0x30(%rcx)
 	mov    %r10,0x38(%rcx)
 	lea    0x40(%rcx),%rcx
-	jg     L(byte8_top)  
+	jg     L(byte8_top)
 
-L(byte8_end):                              
+L(byte8_end):
 	lea    L(fwdPxQx)(%rip),%r10
 	lea    (%rdx,%r8,1),%rdx
 	lea    (%rcx,%r8,1),%rcx
@@ -2328,15 +2341,16 @@ L(use_rep):
 	mov    %r8,%rcx			# %rcx = count
 	shrq   $3,%rcx			# 8-byte word count
 	rep
-	  movsq
+	movsq
 	mov    %rsi,%rdx		# source
 	mov    %rdi,%rcx		# destination
 	andq   $7,%r8			# remainder
 	jnz    L(byte8_end)
+	leave
 	ret
 
-	.balign 16               
-L(byte8_nt_top):                           
+	.balign 16
+L(byte8_nt_top):
 	sub    $0x40,%r8
 	prefetchnta 0x180(%rdx)
 	mov    (%rdx),%r9
@@ -2359,11 +2373,11 @@ L(byte8_nt_top):
 	lea    0x40(%rdx),%rdx
 	lea    0x40(%rcx),%rcx
 	cmp    $0x40,%r8
-	jge    L(byte8_nt_top) 
+	jge    L(byte8_nt_top)
 	sfence
-	jmp    L(byte8_end)        
+	jmp    L(byte8_end)
 
-	SET_SIZE(memcpy) 
+	SET_SIZE(memcpy)
 
 	.balign 16
 L(CopyBackwards):
@@ -2488,7 +2502,7 @@ L(bk_use_rep):
 	shr    $3,%rcx
 	std				# reverse direction
 	rep
-	  movsq
+	movsq
 	cld				# reset direction flag
 
 	xchg   %rcx,%r9
@@ -2501,6 +2515,7 @@ L(bk_use_rep):
 	lea    (%r9,%r10,1),%r10
 	jmpq   *%r10
 2:
+	leave
 	ret
 
 	.balign 16
@@ -2559,6 +2574,7 @@ L(bkP0Q1):
 	mov    (%rdx),%r9
 	mov    %r9,(%rcx)
 L(bkP0Q0):
+	leave
 	ret
 
 	.balign 16
@@ -2619,6 +2635,7 @@ L(bkP1Q1):
 L(bkP1Q0):
 	mov    (%rdx),%r9b
 	mov    %r9b,(%rcx)
+	leave
 	ret
 
 	.balign 16
@@ -2679,6 +2696,7 @@ L(bkP2Q1):
 L(bkP2Q0):
 	mov    (%rdx),%r9w
 	mov    %r9w,(%rcx)
+	leave
 	ret
 
 	.balign 16
@@ -2741,6 +2759,7 @@ L(bkP3Q0): # trailing loads/stores do all their loads 1st, then do the stores
 	mov    %r9w,0x1(%rcx)
 	mov    (%rdx),%r10b
 	mov    %r10b,(%rcx)
+	leave
 	ret
 
 	.balign 16
@@ -2801,6 +2820,7 @@ L(bkP4Q1):
 L(bkP4Q0):
 	mov    (%rdx),%r9d
 	mov    %r9d,(%rcx)
+	leave
 	ret
 
 	.balign 16
@@ -2863,6 +2883,7 @@ L(bkP5Q0): # trailing loads/stores do all their loads 1st, then do the stores
 	mov    %r9d,0x1(%rcx)
 	mov    (%rdx),%r10b
 	mov    %r10b,(%rcx)
+	leave
 	ret
 
 	.balign 16
@@ -2925,6 +2946,7 @@ L(bkP6Q0): # trailing loads/stores do all their loads 1st, then do the stores
 	mov    %r9d,0x2(%rcx)
 	mov    (%rdx),%r10w
 	mov    %r10w,(%rcx)
+	leave
 	ret
 
 	.balign 16
@@ -2989,6 +3011,7 @@ L(bkP7Q0): # trailing loads/stores do all their loads 1st, then do the stores
 	mov    %r10w,0x1(%rcx)
 	mov    (%rdx),%r11b
 	mov    %r11b,(%rcx)
+	leave
 	ret
 
 		.balign 16

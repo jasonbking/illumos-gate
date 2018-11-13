@@ -21,6 +21,7 @@
 /*
  * Copyright 2005 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strlen.s"
@@ -54,7 +55,9 @@
 #include "SYS.h"
 
 	ENTRY(strlen)
-	mov	4(%esp), %edx		/ src in %edx
+	push	%ebp
+	mov	%esp, %ebp
+	mov	8(%esp), %edx		/ src in %edx
 	mov	%edx, %eax		/ cpy src to %eax
 
 	and	$3, %edx		/ is src aligned?
@@ -90,6 +93,7 @@ has_zero_byte:
 	shr	$3, %ecx		/ switch bit position to byte posn
 	lea	-4(%eax, %ecx, 1), %eax	/ undo pre-increment and count bytes
 done:
-	sub	4(%esp), %eax		/ return (src - old_src)
+	sub	8(%esp), %eax		/ return (src - old_src)
+	pop	%ebp
 	ret
 	SET_SIZE(strlen)

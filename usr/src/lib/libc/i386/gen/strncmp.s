@@ -21,6 +21,7 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strncmp.s"
@@ -28,13 +29,15 @@
 #include "SYS.h"
 
 	ENTRY(strncmp)
+	pushl	%ebp
+	movl	%esp, %ebp	/ setup stack frame
 	pushl	%esi		/ save register variables
-	movl	8(%esp),%esi	/ %esi = first string
+	movl	12(%esp),%esi	/ %esi = first string
 	movl	%edi,%edx
-	movl	12(%esp),%edi	/ %edi = second string
+	movl	16(%esp),%edi	/ %edi = second string
 	cmpl	%esi,%edi	/ same string?
 	je	.equal
-	movl	16(%esp),%ecx	/ %ecx = length
+	movl	20(%esp),%ecx	/ %ecx = length
 	incl	%ecx		/ will later predecrement this uint
 .loop:
 	decl	%ecx
@@ -75,6 +78,7 @@
 	popl	%esi		/ restore registers
 	xorl	%eax,%eax	/ return 0
 	movl	%edx,%edi
+	popl	%ebp		/ restore stack frame
 	ret
 
 	.align	4
@@ -87,11 +91,12 @@
 .notequal_0:
 	popl	%esi		/ restore registers
 	clc			/ clear carry bit
-	subb	(%edi),%al	
+	subb	(%edi),%al
 	movl	%edx,%edi
 	movl	$-1, %eax	/ possibly wasted instr
 	jc	.neg		/ did we overflow in the sub
 	movl	$1, %eax	/ if not a > b
 .neg:
+	popl	%ebp		/ restore stack frame
 	ret
 	SET_SIZE(strncmp)

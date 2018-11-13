@@ -22,6 +22,7 @@
 /*
  * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2020 Joyent, Inc.
  */
 
 	.file	"wslen.s"
@@ -37,7 +38,7 @@
  *		;
  *	return (s - s0);
  *}
- */	
+ */
 
 #include "SYS.h"
 
@@ -45,7 +46,9 @@
 	ANSI_PRAGMA_WEAK(wslen,function)
 
 	ENTRY(wcslen)
-	movl	4(%esp),%edx
+	pushl	%ebp
+	movl	%esp, %ebp
+	movl	8(%esp),%edx
 	xorl	%eax,%eax
 
 	.align	8
@@ -65,28 +68,34 @@
 	.align	4
 .out1:
 	incl	%eax
-.out0:		
+.out0:
+	popl	%ebp
 	ret
-	
+
 	.align	4
 .out2:
 	add	$2,%eax
+	popl	%ebp
 	ret
 
-	.align	4	
+	.align	4
 .out3:
 	add	$3, %eax
-	ret			
+	popl	%ebp
+	ret
 	SET_SIZE(wcslen)
 
 	ENTRY(wslen)
+	pushl	%ebp
+	movl	%esp, %ebp
 	_prologue_
-	movl	_esp_(8),%eax
-	movl	_esp_(4),%edx
+	movl	_esp_(12),%eax
+	movl	_esp_(8),%edx
 	pushl	%eax
 	pushl	%edx
 	call	_fref_(wcslen)
 	addl	$8,%esp
 	_epilogue_
+	popl	%ebp
 	ret
 	SET_SIZE(wslen)

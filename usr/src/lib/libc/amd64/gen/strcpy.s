@@ -22,6 +22,7 @@
 /*
  * Copyright (c) 2009, Intel Corporation
  * All rights reserved.
+ * Copyright 2018, Joyent, Inc.
  */
 
 /*
@@ -34,25 +35,29 @@
 
 #ifdef USE_AS_STRNCPY
 	ENTRY(strncpy)
+	pushq	%rbp
+	movq	%rsp, %rbp
 	test	%edx, %edx
 	jz	LABEL(strncpy_exitz)
 	mov	%rdx, %r8
 #else
 	ENTRY(strcpy)				/* (char *, const char *) */
+	pushq	%rbp
+	movq	%rsp, %rbp
 	xor	%rdx, %rdx
 #endif
 	mov	%esi, %ecx
 	and	$0xfffffffffffffff0, %rsi	/* force rsi 16 byte align */
 	and	$0xf, %rcx
-	mov	%rdi, %rax			/* save destination address for return value */
+	mov	%rdi, %rax	/* save destination address for return value */
 
 
-	pxor	%xmm0, %xmm0			/* clear %xmm0 for null char checks */
-	pcmpeqb	(%rsi), %xmm0			/* check 16 bytes in src for null */
+	pxor	%xmm0, %xmm0	/* clear %xmm0 for null char checks */
+	pcmpeqb	(%rsi), %xmm0	/* check 16 bytes in src for null */
 	pmovmskb %xmm0, %edx
-	shr	%cl, %edx			/* adjust for offset from 16byte boundary */
-	test	%edx, %edx			/* edx will be 0 if chars are non-null */
-	jnz	LABEL(less16bytes)		/* null char found in first 16 bytes examined */
+	shr	%cl, %edx	/* adjust for offset from 16byte boundary */
+	test	%edx, %edx	/* edx will be 0 if chars are non-null */
+	jnz	LABEL(less16bytes) /* \0 found in first 16 bytes examined */
 #ifdef USE_AS_STRNCPY
 	/*
 	 * Check if the count is satisfied in first 16 bytes examined.
@@ -65,15 +70,16 @@
 	or	%edi, %ecx
 	and	$0xf, %ecx
 	lea	-16(%r9), %r10
-	jz	LABEL(ashr_0)			/* src and dest are both 16 byte aligned */
+	jz	LABEL(ashr_0)	/* src and dest are both 16 byte aligned */
 
-	neg	%r10				/* max src bytes remaining in current dqword */
+	neg	%r10		/* max src bytes remaining in current dqword */
 
-	pxor	%xmm0, %xmm0			/* clear %xmm0, may be polluted by unaligned operation */
-	pcmpeqb	16(%rsi), %xmm0			/* check next 16 bytes in src for a null */
+	/* clear %xmm0, may be polluted by unaligned operation */
+	pxor	%xmm0, %xmm0
+	pcmpeqb	16(%rsi), %xmm0	/* check next 16 bytes in src for a null */
 	pmovmskb %xmm0, %edx
 	test	%edx, %edx
-	jnz	LABEL(less32bytes)		/* null char found in first 32 bytes examined */
+	jnz	LABEL(less32bytes) /* \0 found in first 32 bytes examined */
 
 #ifdef USE_AS_STRNCPY
 	/*
@@ -94,8 +100,8 @@
 	/*
 	 * so far destination rdi may be aligned by 16, re-calculate rsi and
 	 * jump to corresponding src/dest relative offset case.
-	 * 	rcx is offset of rsi
-	 * 	rdx is offset of rdi
+	 *	rcx is offset of rsi
+	 *	rdx is offset of rdi
 	 */
 	and	$0xfffffffffffffff0, %rdi	/* force rdi 16 byte align */
 	mov	%rax, %rdx			/* rax contains orignal rdi */
@@ -141,13 +147,13 @@
 
 /*
  * ashr_0 handles the following cases:
- * 	src alignment offset = dest alignment offset
+ *	src alignment offset = dest alignment offset
  */
 	.p2align 5
 LABEL(ashr_0):
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_aligned)
+	jbe	LABEL(strncpy_truncation_aligned)
 #endif
 	movdqa	(%rsi), %xmm1		/* fetch 16 bytes from src string */
 	movdqa	%xmm1, (%rdi)		/* store 16 bytes into dest string */
@@ -213,7 +219,7 @@ LABEL(ashr_0_loop):
 
 /*
  * ashr_15 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 15 
+ *	(16 + (src offset - dest offset)) % 16 = 15
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -237,7 +243,7 @@ LABEL(ashr_15_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $15, (%rsi, %rcx), %xmm3
@@ -258,7 +264,7 @@ LABEL(ashr_15_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $15, (%rsi, %rcx), %xmm3
@@ -282,7 +288,7 @@ LABEL(ashr_15_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -304,7 +310,7 @@ LABEL(ashr_15_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -325,7 +331,7 @@ LABEL(ashr_15_use_sse2):
 
 /*
  * ashr_14 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 14 
+ *	(16 + (src offset - dest offset)) % 16 = 14
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -349,7 +355,7 @@ LABEL(ashr_14_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $14, (%rsi, %rcx), %xmm3
@@ -370,7 +376,7 @@ LABEL(ashr_14_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $14, (%rsi, %rcx), %xmm3
@@ -393,7 +399,7 @@ LABEL(ashr_14_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -416,7 +422,7 @@ LABEL(ashr_14_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -437,7 +443,7 @@ LABEL(ashr_14_use_sse2):
 
 /*
  * ashr_13 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 13 
+ *	(16 + (src offset - dest offset)) % 16 = 13
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -461,7 +467,7 @@ LABEL(ashr_13_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $13, (%rsi, %rcx), %xmm3
@@ -482,7 +488,7 @@ LABEL(ashr_13_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $13, (%rsi, %rcx), %xmm3
@@ -505,7 +511,7 @@ LABEL(ashr_13_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -528,7 +534,7 @@ LABEL(ashr_13_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -549,7 +555,7 @@ LABEL(ashr_13_use_sse2):
 
 /*
  * ashr_12 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 12 
+ *	(16 + (src offset - dest offset)) % 16 = 12
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -573,7 +579,7 @@ LABEL(ashr_12_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $12, (%rsi, %rcx), %xmm3
@@ -594,7 +600,7 @@ LABEL(ashr_12_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $12, (%rsi, %rcx), %xmm3
@@ -617,7 +623,7 @@ LABEL(ashr_12_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -640,7 +646,7 @@ LABEL(ashr_12_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -661,7 +667,7 @@ LABEL(ashr_12_use_sse2):
 
 /*
  * ashr_11 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 11 
+ *	(16 + (src offset - dest offset)) % 16 = 11
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -685,7 +691,7 @@ LABEL(ashr_11_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $11, (%rsi, %rcx), %xmm3
@@ -706,7 +712,7 @@ LABEL(ashr_11_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $11, (%rsi, %rcx), %xmm3
@@ -729,7 +735,7 @@ LABEL(ashr_11_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -752,7 +758,7 @@ LABEL(ashr_11_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -773,7 +779,7 @@ LABEL(ashr_11_use_sse2):
 
 /*
  * ashr_10 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 10
+ *	(16 + (src offset - dest offset)) % 16 = 10
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -797,7 +803,7 @@ LABEL(ashr_10_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $10, (%rsi, %rcx), %xmm3
@@ -818,7 +824,7 @@ LABEL(ashr_10_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $10, (%rsi, %rcx), %xmm3
@@ -841,7 +847,7 @@ LABEL(ashr_10_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -864,7 +870,7 @@ LABEL(ashr_10_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -885,7 +891,7 @@ LABEL(ashr_10_use_sse2):
 
 /*
  * ashr_9 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 9
+ *	(16 + (src offset - dest offset)) % 16 = 9
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -909,7 +915,7 @@ LABEL(ashr_9_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $9, (%rsi, %rcx), %xmm3
@@ -930,7 +936,7 @@ LABEL(ashr_9_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $9, (%rsi, %rcx), %xmm3
@@ -953,7 +959,7 @@ LABEL(ashr_9_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -976,7 +982,7 @@ LABEL(ashr_9_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -997,7 +1003,7 @@ LABEL(ashr_9_use_sse2):
 
 /*
  * ashr_8 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 8
+ *	(16 + (src offset - dest offset)) % 16 = 8
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -1021,7 +1027,7 @@ LABEL(ashr_8_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $8, (%rsi, %rcx), %xmm3
@@ -1042,7 +1048,7 @@ LABEL(ashr_8_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $8, (%rsi, %rcx), %xmm3
@@ -1065,7 +1071,7 @@ LABEL(ashr_8_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1088,7 +1094,7 @@ LABEL(ashr_8_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1109,7 +1115,7 @@ LABEL(ashr_8_use_sse2):
 
 /*
  * ashr_7 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 7
+ *	(16 + (src offset - dest offset)) % 16 = 7
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -1133,7 +1139,7 @@ LABEL(ashr_7_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $7, (%rsi, %rcx), %xmm3
@@ -1154,7 +1160,7 @@ LABEL(ashr_7_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $7, (%rsi, %rcx), %xmm3
@@ -1177,7 +1183,7 @@ LABEL(ashr_7_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1200,7 +1206,7 @@ LABEL(ashr_7_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1221,7 +1227,7 @@ LABEL(ashr_7_use_sse2):
 
 /*
  * ashr_6 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 6
+ *	(16 + (src offset - dest offset)) % 16 = 6
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -1245,7 +1251,7 @@ LABEL(ashr_6_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $6, (%rsi, %rcx), %xmm3
@@ -1266,7 +1272,7 @@ LABEL(ashr_6_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $6, (%rsi, %rcx), %xmm3
@@ -1289,7 +1295,7 @@ LABEL(ashr_6_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1312,7 +1318,7 @@ LABEL(ashr_6_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1333,7 +1339,7 @@ LABEL(ashr_6_use_sse2):
 
 /*
  * ashr_5 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 5
+ *	(16 + (src offset - dest offset)) % 16 = 5
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -1357,7 +1363,7 @@ LABEL(ashr_5_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $5, (%rsi, %rcx), %xmm3
@@ -1378,7 +1384,7 @@ LABEL(ashr_5_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $5, (%rsi, %rcx), %xmm3
@@ -1401,7 +1407,7 @@ LABEL(ashr_5_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1424,7 +1430,7 @@ LABEL(ashr_5_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1445,7 +1451,7 @@ LABEL(ashr_5_use_sse2):
 
 /*
  * ashr_4 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 4
+ *	(16 + (src offset - dest offset)) % 16 = 4
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -1469,7 +1475,7 @@ LABEL(ashr_4_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $4, (%rsi, %rcx), %xmm3
@@ -1490,7 +1496,7 @@ LABEL(ashr_4_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $4, (%rsi, %rcx), %xmm3
@@ -1513,7 +1519,7 @@ LABEL(ashr_4_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1536,7 +1542,7 @@ LABEL(ashr_4_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1557,7 +1563,7 @@ LABEL(ashr_4_use_sse2):
 
 /*
  * ashr_3 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 3
+ *	(16 + (src offset - dest offset)) % 16 = 3
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -1581,7 +1587,7 @@ LABEL(ashr_3_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $3, (%rsi, %rcx), %xmm3
@@ -1602,7 +1608,7 @@ LABEL(ashr_3_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $3, (%rsi, %rcx), %xmm3
@@ -1625,7 +1631,7 @@ LABEL(ashr_3_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1648,7 +1654,7 @@ LABEL(ashr_3_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1669,7 +1675,7 @@ LABEL(ashr_3_use_sse2):
 
 /*
  * ashr_2 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 2
+ *	(16 + (src offset - dest offset)) % 16 = 2
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -1693,7 +1699,7 @@ LABEL(ashr_2_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $2, (%rsi, %rcx), %xmm3
@@ -1714,7 +1720,7 @@ LABEL(ashr_2_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $2, (%rsi, %rcx), %xmm3
@@ -1737,7 +1743,7 @@ LABEL(ashr_2_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1760,7 +1766,7 @@ LABEL(ashr_2_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1781,7 +1787,7 @@ LABEL(ashr_2_use_sse2):
 
 /*
  * ashr_1 handles the following cases:
- * 	(16 + (src offset - dest offset)) % 16 = 1
+ *	(16 + (src offset - dest offset)) % 16 = 1
  *
  * Based on above operation, start from (%r9 + rsi) to the left of this cache
  * bank, there is no null byte.
@@ -1805,7 +1811,7 @@ LABEL(ashr_1_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	#palignr $1, (%rsi, %rcx), %xmm3
@@ -1826,7 +1832,7 @@ LABEL(ashr_1_use_ssse3):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 	#palignr $1, (%rsi, %rcx), %xmm3
 	.byte	0x66, 0x0F, 0x3A ,0x0F
@@ -1848,7 +1854,7 @@ LABEL(ashr_1_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 	movdqa	16(%rsi, %rcx), %xmm3
 	movdqa	(%rsi, %rcx), %xmm2
@@ -1870,7 +1876,7 @@ LABEL(ashr_1_use_sse2):
 	jnz	LABEL(unaligned_exit)
 #ifdef USE_AS_STRNCPY
 	sub	$16, %r8
- 	jbe	LABEL(strncpy_truncation_unaligned)
+	jbe	LABEL(strncpy_truncation_unaligned)
 #endif
 
 	movdqa	16(%rsi, %rcx), %xmm3
@@ -1956,6 +1962,7 @@ LABEL(strncpy_truncation_aligned):
 	.p2align 4
 LABEL(strncpy_exitz):
 	mov	%rdi, %rax
+	leave
 	ret
 #endif
 
@@ -1987,6 +1994,7 @@ LABEL(tail_7):				/* 8 bytes */
 	sub	$8, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 #ifdef USE_AS_STRNCPY
@@ -2015,6 +2023,7 @@ LABEL(strncpy_fill_less_7):
 	jnz	LABEL(strncpy_fill_less_7)
 LABEL(strncpy_fill_return):
 	mov	%rdx, %rax
+	leave
 	ret
 #endif
 
@@ -2027,6 +2036,7 @@ LABEL(tail_0):				/* 1 byte */
 	sub	$1, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2038,6 +2048,7 @@ LABEL(tail_1):				/* 2 bytes */
 	sub	$2, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2051,6 +2062,7 @@ LABEL(tail_2):				/* 3 bytes */
 	sub	$3, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2062,6 +2074,7 @@ LABEL(tail_3):				/* 4 bytes */
 	sub	$4, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2075,6 +2088,7 @@ LABEL(tail_4):				/* 5 bytes */
 	sub	$5, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2088,6 +2102,7 @@ LABEL(tail_5):				/* 6 bytes */
 	sub	$6, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2101,6 +2116,7 @@ LABEL(tail_6):				/* 7 bytes */
 	sub	$7, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2114,6 +2130,7 @@ LABEL(tail_8):				/* 9 bytes */
 	sub	$9, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2146,6 +2163,7 @@ LABEL(tail_15):				/* 16 bytes */
 	sub	$16, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2159,6 +2177,7 @@ LABEL(tail_9):				/* 10 bytes */
 	sub	$10, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2172,6 +2191,7 @@ LABEL(tail_10):				/* 11 bytes */
 	sub	$11, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2185,6 +2205,7 @@ LABEL(tail_11):				/* 12 bytes */
 	sub	$12, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2198,6 +2219,7 @@ LABEL(tail_12):				/* 13 bytes */
 	sub	$13, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2211,6 +2233,7 @@ LABEL(tail_13):				/* 14 bytes */
 	sub	$14, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2224,6 +2247,7 @@ LABEL(tail_14):				/* 15 bytes */
 	sub	$15, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2259,6 +2283,7 @@ LABEL(tail_23):				/* 24 bytes */
 	sub	$24, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2274,6 +2299,7 @@ LABEL(tail_16):				/* 17 bytes */
 	sub	$17, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2289,6 +2315,7 @@ LABEL(tail_17):				/* 18 bytes */
 	sub	$18, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2304,6 +2331,7 @@ LABEL(tail_18):				/* 19 bytes */
 	sub	$19, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2319,6 +2347,7 @@ LABEL(tail_19):				/* 20 bytes */
 	sub	$20, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2334,6 +2363,7 @@ LABEL(tail_20):				/* 21 bytes */
 	sub	$21, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2349,6 +2379,7 @@ LABEL(tail_21):				/* 22 bytes */
 	sub	$22, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2364,6 +2395,7 @@ LABEL(tail_22):				/* 23 bytes */
 	sub	$23, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2398,6 +2430,7 @@ LABEL(tail_31):				/* 32 bytes */
 	sub	$32, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2415,6 +2448,7 @@ LABEL(tail_24):				/* 25 bytes */
 	sub	$25, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2432,6 +2466,7 @@ LABEL(tail_25):				/* 26 bytes */
 	sub	$26, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2449,6 +2484,7 @@ LABEL(tail_26):				/* 27 bytes */
 	sub	$27, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2466,6 +2502,7 @@ LABEL(tail_27):				/* 28 bytes */
 	sub	$28, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2483,6 +2520,7 @@ LABEL(tail_28):				/* 29 bytes */
 	sub	$29, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2500,6 +2538,7 @@ LABEL(tail_29):				/* 30 bytes */
 	sub	$30, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.p2align 4
@@ -2517,6 +2556,7 @@ LABEL(tail_30):				/* 31 bytes */
 	sub	$31, %r8
 	jnz	LABEL(strncpy_fill_tail)
 #endif
+	leave
 	ret
 
 	.pushsection .rodata

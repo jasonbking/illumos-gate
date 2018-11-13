@@ -22,6 +22,7 @@
 /*
  * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2020 Joyent, Inc.
  */
 
 	.file	"wsncmp.s"
@@ -38,13 +39,15 @@
 	ANSI_PRAGMA_WEAK(wsncmp,function)
 
 	ENTRY(wcsncmp)
+	pushl	%ebp
+	movl	%esp, %ebp	/ create stack frame
 	pushl	%esi		/ save register variables
-	movl	8(%esp),%esi	/ %esi = first string
+	movl	12(%esp),%esi	/ %esi = first string
 	movl	%edi,%edx
-	movl	12(%esp),%edi	/ %edi = second string
+	movl	16(%esp),%edi	/ %edi = second string
 	cmpl	%esi,%edi	/ same string?
 	je	.equal
-	movl	16(%esp),%ecx	/ %ecx = length
+	movl	20(%esp),%ecx	/ %ecx = length
 	incl	%ecx		/ will later predecrement this uint
 .loop:
 	decl	%ecx
@@ -85,6 +88,7 @@
 	popl	%esi		/ restore registers
 	xorl	%eax,%eax	/ return 0
 	movl	%edx,%edi
+	popl	%ebp		/ restore stack frame
 	ret
 
 	.align	4
@@ -98,19 +102,23 @@
 	popl	%esi		/ restore registers
 	subl	(%edi),%eax	/ return value is (*s1 - *--s2)
 	movl	%edx,%edi
+	popl	%ebp		/ restore stack frame
 	ret
 	SET_SIZE(wcsncmp)
 
 	ENTRY(wsncmp)
 	_prologue_
-	movl	_esp_(12),%ecx
-	movl	_esp_(8),%eax
-	movl	_esp_(4),%edx
+	push	%ebp
+	movl	%esp, %ebp
+	movl	_esp_(16),%ecx
+	movl	_esp_(12),%eax
+	movl	_esp_(8),%edx
 	pushl	%ecx
 	pushl	%eax
 	pushl	%edx
 	call	_fref_(wcsncmp)
 	addl	$12,%esp
+	popl	%ebp
 	_epilogue_
 	ret
 	SET_SIZE(wsncmp)

@@ -21,6 +21,7 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2020 Joyent, Inc.
  */
 
 	.file	"memccpy.s"
@@ -32,11 +33,13 @@
 #include "SYS.h"
 
 	ENTRY(memccpy)
+	push	%ebp
+	movl	%esp, %ebp
 	pushl	%esi		/ save register variable
-	movl	8(%esp),%eax	/ %eax = address of dest string
-	movl	12(%esp),%esi	/ %esi = address of source string
-	movb	16(%esp),%dh	/ %dh = character to search for
-	movl	20(%esp),%ecx	/ %ecx = length to go still
+	movl	12(%esp),%eax	/ %eax = address of dest string
+	movl	16(%esp),%esi	/ %esi = address of source string
+	movb	20(%esp),%dh	/ %dh = character to search for
+	movl	24(%esp),%ecx	/ %ecx = length to go still
 .loop:
 	decl	%ecx		/ decrement bytes to go
 	jl	.notfound
@@ -72,6 +75,7 @@
 .found:
 	popl	%esi		/ restore register variable
 	incl	%eax		/ return pointer to next byte in dest
+	popl	%ebp
 	ret
 
 	.align	4
@@ -80,11 +84,13 @@
 .found1:
 	popl	%esi		/ restore register variable
 	addl	$2,%eax		/ return pointer to next byte in dest
+	popl	%ebp
 	ret
 
 	.align	4
 .notfound:
 	popl	%esi		/ restore register variable
 	xorl	%eax,%eax	/ search fails
+	popl	%ebp
 	ret
 	SET_SIZE(memccpy)

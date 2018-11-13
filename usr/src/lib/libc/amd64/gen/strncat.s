@@ -21,6 +21,7 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strncat.s"
@@ -64,6 +65,8 @@
 #include "SYS.h"
 
 	ENTRY(strncat)		/* (char *, char *, size_t) */
+	pushq	%rbp
+	movq	%rsp, %rbp
 	movq	%rdi, %rax		/ save return value
 	movabsq	$0x7f7f7f7f7f7f7f7f, %r8	/ %r8 = 0x7f...
 	movq	%r8, %r9
@@ -147,5 +150,6 @@
 .L8:
 	movb	$0, (%rdi)		/ null termination
 .L9:
+	leave
 	ret
-	SET_SIZE(strncat)	
+	SET_SIZE(strncat)

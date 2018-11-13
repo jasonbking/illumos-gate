@@ -21,6 +21,7 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strncat.s"
@@ -62,9 +63,11 @@
 #include "SYS.h"
 
 	ENTRY(strncat)
+	pushl	%ebp
+	movl	%esp, %ebp		/ setup stack frame
 	pushl	%edi			/ save register variables
 	pushl	%esi
-	movl	12(%esp), %edi		/ %edi = destination string address
+	movl	16(%esp), %edi		/ %edi = destination string address
 	testl	$3, %edi		/ if %edi not word aligned
 	jnz	.L1			/ goto .L1
 	.align	4
@@ -89,8 +92,8 @@
 	.align	4
 .L3:
 	/ %edi points to a null byte in destination string
-	movl	16(%esp), %eax		/ %eax = source string address
-	movl	20(%esp), %esi		/ %esi = number of bytes
+	movl	20(%esp), %eax		/ %eax = source string address
+	movl	24(%esp), %esi		/ %esi = number of bytes
 
 	testl	$3, %eax		/ if %eax not word aligned
 	jnz	.L4			/ goto .L4
@@ -146,8 +149,9 @@
 .L8:
 	movb	$0, (%edi)		/ null termination
 .L9:
-	movl	12(%esp), %eax		/ return the destination address
+	movl	16(%esp), %eax		/ return the destination address
 	popl	%esi			/ restore register variables
 	popl	%edi
+	popl	%ebp			/ restore stack frame
 	ret
-	SET_SIZE(strncat)	
+	SET_SIZE(strncat)

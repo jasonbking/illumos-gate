@@ -22,6 +22,7 @@
 /*
  * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"wschr.s"
@@ -40,6 +41,8 @@
 	.align	8		/ accounts for .loop alignment and prolog
 
 	ENTRY(wcschr)		/* (wchar_t *s, wchar_t wc) */
+	pushq	%rbp
+	movq	%rsp, %rbp
 	movq	%rdi,%rax
 .loop:
 	movl	(%rax),%edx	/ %edx = wchar of string
@@ -69,17 +72,21 @@
 
 .notfound:
 	xorl	%eax,%eax	/ %rax = NULL
+	leave
 	ret
 
 .found3:
 	addq	$12,%rax
+	leave
 	ret
 .found2:
 	addq	$8,%rax
+	leave
 	ret
 .found1:
 	addq	$4,%rax
 .found:
+	leave
 	ret
 	SET_SIZE(wcschr)
 

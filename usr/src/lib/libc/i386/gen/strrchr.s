@@ -21,6 +21,7 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strrchr.s"
@@ -37,25 +38,27 @@
 /	char *
 /	strrchr(const char *sp, int c)
 /	{
-/		char	*r = NULL; 
+/		char	*r = NULL;
 /
 /		do {
 /			if (*sp == (char)c)
-/				r = (char *)sp; 
-/		} while (*sp++); 
+/				r = (char *)sp;
+/		} while (*sp++);
 /
-/		return (r); 
+/		return (r);
 /	}
-/	
+/
 
 #include "SYS.h"
 
 	ENTRY(strrchr)
+	pushl	%ebp
+	mov	%esp, %ebp	/ setup stack frame
 	pushl	%edi		/ save register variable
-	movl	8(%esp), %eax	/ %eax = string address
-	movb	12(%esp), %cl	/ %cl = char sought
+	movl	12(%esp), %eax	/ %eax = string address
+	movb	16(%esp), %cl	/ %cl = char sought
 	movl	$0, %edi	/ %edi = NULL (current occurrence)
-	
+
 	testl	$3, %eax	/ if %eax not word aligned
 	jnz	.L1		/ goto .L1
 	.align	4
@@ -110,5 +113,6 @@
 .L8:
 	movl	%edi, %eax	/ %edi points to the last occurrence or NULL
 	popl	%edi		/ restore register variable
+	popl	%ebp		/ restore stack frame
 	ret
 	SET_SIZE(strrchr)

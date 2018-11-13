@@ -22,6 +22,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 /*
@@ -89,12 +90,15 @@
  */
 
 		ENTRY(memset)		# (void *, const void*, size_t)
+		push   %rbp
+		mov    %rsp, %rbp
 		cmp    $0x1,%rdx
 		mov    %rdi,%rax	# memset returns the dest address
 		jne    L(ck2)
 		mov    %sil,(%rdi)
+		leave
 		ret
-L(ck2):                                    
+L(ck2):
 		mov    $0x0101010101010101,%r9
 		mov    %rdx,%r8
 		movzbq %sil,%rdx
@@ -118,7 +122,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4Q0)-L(setPxQx)
 		.int       L(P5Q0)-L(setPxQx)
 		.int       L(P6Q0)-L(setPxQx)
-		.int       L(P7Q0)-L(setPxQx) 
+		.int       L(P7Q0)-L(setPxQx)
 
 		.int       L(P0Q1)-L(setPxQx)
 		.int       L(P1Q1)-L(setPxQx)
@@ -127,7 +131,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4Q1)-L(setPxQx)
 		.int       L(P5Q1)-L(setPxQx)
 		.int       L(P6Q1)-L(setPxQx)
-		.int       L(P7Q1)-L(setPxQx) 
+		.int       L(P7Q1)-L(setPxQx)
 
 		.int       L(P0Q2)-L(setPxQx)
 		.int       L(P1Q2)-L(setPxQx)
@@ -136,7 +140,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4Q2)-L(setPxQx)
 		.int       L(P5Q2)-L(setPxQx)
 		.int       L(P6Q2)-L(setPxQx)
-		.int       L(P7Q2)-L(setPxQx) 
+		.int       L(P7Q2)-L(setPxQx)
 
 		.int       L(P0Q3)-L(setPxQx)
 		.int       L(P1Q3)-L(setPxQx)
@@ -145,7 +149,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4Q3)-L(setPxQx)
 		.int       L(P5Q3)-L(setPxQx)
 		.int       L(P6Q3)-L(setPxQx)
-		.int       L(P7Q3)-L(setPxQx) 
+		.int       L(P7Q3)-L(setPxQx)
 
 		.int       L(P0Q4)-L(setPxQx)
 		.int       L(P1Q4)-L(setPxQx)
@@ -154,7 +158,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4Q4)-L(setPxQx)
 		.int       L(P5Q4)-L(setPxQx)
 		.int       L(P6Q4)-L(setPxQx)
-		.int       L(P7Q4)-L(setPxQx) 
+		.int       L(P7Q4)-L(setPxQx)
 
 		.int       L(P0Q5)-L(setPxQx)
 		.int       L(P1Q5)-L(setPxQx)
@@ -163,7 +167,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4Q5)-L(setPxQx)
 		.int       L(P5Q5)-L(setPxQx)
 		.int       L(P6Q5)-L(setPxQx)
-		.int       L(P7Q5)-L(setPxQx) 
+		.int       L(P7Q5)-L(setPxQx)
 
 		.int       L(P0Q6)-L(setPxQx)
 		.int       L(P1Q6)-L(setPxQx)
@@ -172,7 +176,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4Q6)-L(setPxQx)
 		.int       L(P5Q6)-L(setPxQx)
 		.int       L(P6Q6)-L(setPxQx)
-		.int       L(P7Q6)-L(setPxQx) 
+		.int       L(P7Q6)-L(setPxQx)
 
 		.int       L(P0Q7)-L(setPxQx)
 		.int       L(P1Q7)-L(setPxQx)
@@ -181,7 +185,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4Q7)-L(setPxQx)
 		.int       L(P5Q7)-L(setPxQx)
 		.int       L(P6Q7)-L(setPxQx)
-		.int       L(P7Q7)-L(setPxQx) 
+		.int       L(P7Q7)-L(setPxQx)
 
 		.int       L(P0Q8)-L(setPxQx)
 		.int       L(P1Q8)-L(setPxQx)
@@ -190,7 +194,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4Q8)-L(setPxQx)
 		.int       L(P5Q8)-L(setPxQx)
 		.int       L(P6Q8)-L(setPxQx)
-		.int       L(P7Q8)-L(setPxQx) 
+		.int       L(P7Q8)-L(setPxQx)
 
 		.int       L(P0Q9)-L(setPxQx)
 		.int       L(P1Q9)-L(setPxQx)
@@ -199,7 +203,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4Q9)-L(setPxQx)
 		.int       L(P5Q9)-L(setPxQx)
 		.int       L(P6Q9)-L(setPxQx)
-		.int       L(P7Q9)-L(setPxQx) 
+		.int       L(P7Q9)-L(setPxQx)
 
 		.int       L(P0QA)-L(setPxQx)
 		.int       L(P1QA)-L(setPxQx)
@@ -244,7 +248,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4QE)-L(setPxQx)
 		.int       L(P5QE)-L(setPxQx)
 		.int       L(P6QE)-L(setPxQx)
-		.int       L(P7QE)-L(setPxQx) 
+		.int       L(P7QE)-L(setPxQx)
 
 		.int       L(P0QF)-L(setPxQx)	#120
 		.int       L(P1QF)-L(setPxQx)
@@ -253,7 +257,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4QF)-L(setPxQx)
 		.int       L(P5QF)-L(setPxQx)
 		.int       L(P6QF)-L(setPxQx)
-		.int       L(P7QF)-L(setPxQx) 
+		.int       L(P7QF)-L(setPxQx)
 
 		.int       L(P0QG)-L(setPxQx)	#128
 		.int       L(P1QG)-L(setPxQx)
@@ -262,7 +266,7 @@ L(setPxQx):	.int       L(P0Q0)-L(setPxQx)
 		.int       L(P4QG)-L(setPxQx)
 		.int       L(P5QG)-L(setPxQx)
 		.int       L(P6QG)-L(setPxQx)
-		.int       L(P7QG)-L(setPxQx) 
+		.int       L(P7QG)-L(setPxQx)
 
 		.int       L(P0QH)-L(setPxQx)	#136
 		.int       L(P1QH)-L(setPxQx)
@@ -293,6 +297,7 @@ L(P1Q3):	mov    %rdx,-0x19(%rdi)
 L(P1Q2):	mov    %rdx,-0x11(%rdi)
 L(P1Q1):	mov    %rdx,-0x9(%rdi)
 L(P1Q0):	mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -314,7 +319,8 @@ L(P0Q4):	mov    %rdx,-0x20(%rdi)
 L(P0Q3):	mov    %rdx,-0x18(%rdi)
 L(P0Q2):	mov    %rdx,-0x10(%rdi)
 L(P0Q1):	mov    %rdx,-0x8(%rdi)
-L(P0Q0):	ret
+L(P0Q0):	leave
+		ret
 
 		.balign 16
 L(P2QH):	mov    %rdx,-0x8a(%rdi)
@@ -336,6 +342,7 @@ L(P2Q3):	mov    %rdx,-0x1a(%rdi)
 L(P2Q2):	mov    %rdx,-0x12(%rdi)
 L(P2Q1):	mov    %rdx,-0xa(%rdi)
 L(P2Q0):	mov    %dx,-0x2(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -359,6 +366,7 @@ L(P3Q2):	mov    %rdx,-0x13(%rdi)
 L(P3Q1):	mov    %rdx,-0xb(%rdi)
 L(P3Q0):	mov    %dx,-0x3(%rdi)
 		mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -381,6 +389,7 @@ L(P4Q3):	mov    %rdx,-0x1c(%rdi)
 L(P4Q2):	mov    %rdx,-0x14(%rdi)
 L(P4Q1):	mov    %rdx,-0xc(%rdi)
 L(P4Q0):	mov    %edx,-0x4(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -404,6 +413,7 @@ L(P5Q2):	mov    %rdx,-0x15(%rdi)
 L(P5Q1):	mov    %rdx,-0xd(%rdi)
 L(P5Q0):	mov    %edx,-0x5(%rdi)
 		mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -427,6 +437,7 @@ L(P6Q2):	mov    %rdx,-0x16(%rdi)
 L(P6Q1):	mov    %rdx,-0xe(%rdi)
 L(P6Q0):	mov    %edx,-0x6(%rdi)
 		mov    %dx,-0x2(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -451,21 +462,22 @@ L(P7Q1):	mov    %rdx,-0xf(%rdi)
 L(P7Q0):	mov    %edx,-0x7(%rdi)
 		mov    %dx,-0x3(%rdi)
 		mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
-L(ck_align):                      
-		/* 
+L(ck_align):
+		/*
 		 * Align to 16 byte boundary first
 		 */
-	 	lea    L(AliPxQx)(%rip),%r11
-	 	mov    $0x10,%r10
-	 	mov    %rdi,%r9
-	 	and    $0xf,%r9
-	 	sub    %r9,%r10
-	 	and    $0xf,%r10
-	 	add    %r10,%rdi
-	 	sub    %r10,%r8
+		lea    L(AliPxQx)(%rip),%r11
+		mov    $0x10,%r10
+		mov    %rdi,%r9
+		and    $0xf,%r9
+		sub    %r9,%r10
+		and    $0xf,%r10
+		add    %r10,%rdi
+		sub    %r10,%r8
 
 		movslq (%r11,%r10,4),%rcx
 		lea    (%rcx,%r11,1),%r11
@@ -545,9 +557,9 @@ L(aligned_now):
 		/*
 		 * Use SSE2 instructions
 		 */
-	 	movd   %rdx,%xmm0
+		movd   %rdx,%xmm0
 		lea    L(SSExDx)(%rip),%r9	# after dest alignment
-	 	punpcklqdq %xmm0,%xmm0		# fill RegXMM0 with the pattern
+		punpcklqdq %xmm0,%xmm0		# fill RegXMM0 with the pattern
 		cmp    $0xc0,%r8		# 192
 		jge    L(byte32sse2_pre)
 
@@ -569,7 +581,8 @@ L(SSE0Q4):	movdqa %xmm0,-0x40(%rdi)
 L(SSE0Q3):	movdqa %xmm0,-0x30(%rdi)
 L(SSE0Q2):	movdqa %xmm0,-0x20(%rdi)
 L(SSE0Q1):	movdqa %xmm0,-0x10(%rdi)
-L(SSE0Q0):	ret
+L(SSE0Q0):	leave
+		ret
 
 		.balign 16
 L(SSE1QB):	movdqa %xmm0,-0xb1(%rdi)
@@ -584,6 +597,7 @@ L(SSE1Q3):	movdqa %xmm0,-0x31(%rdi)
 L(SSE1Q2):	movdqa %xmm0,-0x21(%rdi)
 L(SSE1Q1):	movdqa %xmm0,-0x11(%rdi)
 L(SSE1Q0):	mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -599,6 +613,7 @@ L(SSE2Q3):	movdqa %xmm0,-0x32(%rdi)
 L(SSE2Q2):	movdqa %xmm0,-0x22(%rdi)
 L(SSE2Q1):	movdqa %xmm0,-0x12(%rdi)
 L(SSE2Q0):	mov    %dx,-0x2(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -615,6 +630,7 @@ L(SSE3Q2):	movdqa %xmm0,-0x23(%rdi)
 L(SSE3Q1):	movdqa %xmm0,-0x13(%rdi)
 L(SSE3Q0):	mov    %dx,-0x3(%rdi)
 		mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -630,6 +646,7 @@ L(SSE4Q3):	movdqa %xmm0,-0x34(%rdi)
 L(SSE4Q2):	movdqa %xmm0,-0x24(%rdi)
 L(SSE4Q1):	movdqa %xmm0,-0x14(%rdi)
 L(SSE4Q0):	mov    %edx,-0x4(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -646,6 +663,7 @@ L(SSE5Q2):	movdqa %xmm0,-0x25(%rdi)
 L(SSE5Q1):	movdqa %xmm0,-0x15(%rdi)
 L(SSE5Q0):	mov    %edx,-0x5(%rdi)
 		mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -662,6 +680,7 @@ L(SSE6Q2):	movdqa %xmm0,-0x26(%rdi)
 L(SSE6Q1):	movdqa %xmm0,-0x16(%rdi)
 L(SSE6Q0):	mov    %edx,-0x6(%rdi)
 		mov    %dx,-0x2(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -679,6 +698,7 @@ L(SSE7Q1):	movdqa %xmm0,-0x17(%rdi)
 L(SSE7Q0):	mov    %edx,-0x7(%rdi)
 		mov    %dx,-0x3(%rdi)
 		mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -694,6 +714,7 @@ L(SSE8Q3):	movdqa %xmm0,-0x38(%rdi)
 L(SSE8Q2):	movdqa %xmm0,-0x28(%rdi)
 L(SSE8Q1):	movdqa %xmm0,-0x18(%rdi)
 L(SSE8Q0):	mov    %rdx,-0x8(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -710,6 +731,7 @@ L(SSE9Q2):	movdqa %xmm0,-0x29(%rdi)
 L(SSE9Q1):	movdqa %xmm0,-0x19(%rdi)
 L(SSE9Q0):	mov    %rdx,-0x9(%rdi)
 		mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -726,6 +748,7 @@ L(SSE10Q2):	movdqa %xmm0,-0x2a(%rdi)
 L(SSE10Q1):	movdqa %xmm0,-0x1a(%rdi)
 L(SSE10Q0):	mov    %rdx,-0xa(%rdi)
 		mov    %dx,-0x2(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -743,6 +766,7 @@ L(SSE11Q1):	movdqa %xmm0,-0x1b(%rdi)
 L(SSE11Q0):	mov    %rdx,-0xb(%rdi)
 		mov    %dx,-0x3(%rdi)
 		mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -759,6 +783,7 @@ L(SSE12Q2):	movdqa %xmm0,-0x2c(%rdi)
 L(SSE12Q1):	movdqa %xmm0,-0x1c(%rdi)
 L(SSE12Q0):	mov    %rdx,-0xc(%rdi)
 		mov    %edx,-0x4(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -776,6 +801,7 @@ L(SSE13Q1):	movdqa %xmm0,-0x1d(%rdi)
 L(SSE13Q0):	mov    %rdx,-0xd(%rdi)
 		mov    %edx,-0x5(%rdi)
 		mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -793,6 +819,7 @@ L(SSE14Q1):	movdqa %xmm0,-0x1e(%rdi)
 L(SSE14Q0):	mov    %rdx,-0xe(%rdi)
 		mov    %edx,-0x6(%rdi)
 		mov    %dx,-0x2(%rdi)
+		leave
 		ret
 
 		.balign 16
@@ -811,17 +838,18 @@ L(SSE15Q0):	mov    %rdx,-0xf(%rdi)
 		mov    %edx,-0x7(%rdi)
 		mov    %dx,-0x3(%rdi)
 		mov    %dl,-0x1(%rdi)
+		leave
 		ret
 
 		.balign 16
-L(byte32sse2_pre):                         
+L(byte32sse2_pre):
 		mov    .largest_level_cache_size(%rip),%r9d
 		cmp    %r9,%r8
 		jg     L(sse2_nt_move)
 		#jmp    L(byte32sse2)		# Fall thru...
 
-		.balign 16               
-L(byte32sse2):                             
+		.balign 16
+L(byte32sse2):
 		lea    -0x80(%r8),%r8		# 128
 		cmp    $0x80,%r8
 		movdqa %xmm0,(%rdi)
@@ -842,8 +870,8 @@ L(byte32sse2):
 		lea    (%rcx,%r11,1),%r11
 		jmpq   *%r11
 
-		.balign	16               
-L(sse2_nt_move):                           
+		.balign	16
+L(sse2_nt_move):
 		sub    $0x80,%r8		# 128
 		movntdq %xmm0,(%rdi)
 		movntdq %xmm0,0x10(%rdi)
@@ -857,7 +885,7 @@ L(sse2_nt_move):
 		cmp    $0x80,%r8
 		jge    L(sse2_nt_move)
 
-		sfence 
+		sfence
 		lea    L(SSExDx)(%rip),%r11
 		add    %r8,%rdi
 		movslq (%r11,%r8,4),%rcx
@@ -875,8 +903,8 @@ L(Loop8byte_pre):
 		cmp    $0x800,%r8		# Use rep sstoq
 		jge    L(use_rep)
 
-		.balign 16               
-L(Loop8byte):                             
+		.balign 16
+L(Loop8byte):
 		lea    -0x80(%r8),%r8		# 128
 		mov    %rdx,(%rdi)
 		mov    %rdx,0x8(%rdi)
@@ -915,10 +943,11 @@ L(use_rep):
 		xchg   %rax,%rdx
 		shrq   $3,%rcx
 		rep
-		  sstoq
+		sstoq
 		xchg   %rax,%rdx
 		andq   $7,%r8			# remaining bytes
 		jnz    1b
+		leave
 		ret
 
 		.balign 16
@@ -941,7 +970,7 @@ L(Loop8byte_nt_move):
 		movnti %rdx,0x68(%rdi)
 		movnti %rdx,0x70(%rdi)
 		movnti %rdx,0x78(%rdi)
-		lea    0x80(%rdi),%rdi  
+		lea    0x80(%rdi),%rdi
 		jge    L(Loop8byte_nt_move)
 
 		sfence
@@ -952,7 +981,7 @@ L(Loop8byte_nt_move):
 		lea    (%rcx,%r11,1),%r11
 		jmpq   *%r11
 
-		.balign 16               
+		.balign 16
 L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE1Q0) -L(SSExDx)
 		.int       L(SSE2Q0) -L(SSExDx)
@@ -969,7 +998,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12Q0)-L(SSExDx)
 		.int       L(SSE13Q0)-L(SSExDx)
 		.int       L(SSE14Q0)-L(SSExDx)
-		.int       L(SSE15Q0)-L(SSExDx) 
+		.int       L(SSE15Q0)-L(SSExDx)
 
 		.int       L(SSE0Q1) -L(SSExDx)
 		.int       L(SSE1Q1) -L(SSExDx)
@@ -987,7 +1016,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12Q1)-L(SSExDx)
 		.int       L(SSE13Q1)-L(SSExDx)
 		.int       L(SSE14Q1)-L(SSExDx)
-		.int       L(SSE15Q1)-L(SSExDx) 
+		.int       L(SSE15Q1)-L(SSExDx)
 
 		.int       L(SSE0Q2) -L(SSExDx)
 		.int       L(SSE1Q2) -L(SSExDx)
@@ -1005,7 +1034,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12Q2)-L(SSExDx)
 		.int       L(SSE13Q2)-L(SSExDx)
 		.int       L(SSE14Q2)-L(SSExDx)
-		.int       L(SSE15Q2)-L(SSExDx) 
+		.int       L(SSE15Q2)-L(SSExDx)
 
 		.int       L(SSE0Q3) -L(SSExDx)
 		.int       L(SSE1Q3) -L(SSExDx)
@@ -1023,7 +1052,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12Q3)-L(SSExDx)
 		.int       L(SSE13Q3)-L(SSExDx)
 		.int       L(SSE14Q3)-L(SSExDx)
-		.int       L(SSE15Q3)-L(SSExDx) 
+		.int       L(SSE15Q3)-L(SSExDx)
 
 		.int       L(SSE0Q4) -L(SSExDx)
 		.int       L(SSE1Q4) -L(SSExDx)
@@ -1041,7 +1070,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12Q4)-L(SSExDx)
 		.int       L(SSE13Q4)-L(SSExDx)
 		.int       L(SSE14Q4)-L(SSExDx)
-		.int       L(SSE15Q4)-L(SSExDx) 
+		.int       L(SSE15Q4)-L(SSExDx)
 
 		.int       L(SSE0Q5) -L(SSExDx)
 		.int       L(SSE1Q5) -L(SSExDx)
@@ -1059,7 +1088,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12Q5)-L(SSExDx)
 		.int       L(SSE13Q5)-L(SSExDx)
 		.int       L(SSE14Q5)-L(SSExDx)
-		.int       L(SSE15Q5)-L(SSExDx) 
+		.int       L(SSE15Q5)-L(SSExDx)
 
 		.int       L(SSE0Q6) -L(SSExDx)
 		.int       L(SSE1Q6) -L(SSExDx)
@@ -1077,7 +1106,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12Q6)-L(SSExDx)
 		.int       L(SSE13Q6)-L(SSExDx)
 		.int       L(SSE14Q6)-L(SSExDx)
-		.int       L(SSE15Q6)-L(SSExDx) 
+		.int       L(SSE15Q6)-L(SSExDx)
 
 		.int       L(SSE0Q7) -L(SSExDx)
 		.int       L(SSE1Q7) -L(SSExDx)
@@ -1095,7 +1124,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12Q7)-L(SSExDx)
 		.int       L(SSE13Q7)-L(SSExDx)
 		.int       L(SSE14Q7)-L(SSExDx)
-		.int       L(SSE15Q7)-L(SSExDx) 
+		.int       L(SSE15Q7)-L(SSExDx)
 
 		.int       L(SSE0Q8) -L(SSExDx)
 		.int       L(SSE1Q8) -L(SSExDx)
@@ -1113,7 +1142,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12Q8)-L(SSExDx)
 		.int       L(SSE13Q8)-L(SSExDx)
 		.int       L(SSE14Q8)-L(SSExDx)
-		.int       L(SSE15Q8)-L(SSExDx) 
+		.int       L(SSE15Q8)-L(SSExDx)
 
 		.int       L(SSE0Q9) -L(SSExDx)
 		.int       L(SSE1Q9) -L(SSExDx)
@@ -1131,7 +1160,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12Q9)-L(SSExDx)
 		.int       L(SSE13Q9)-L(SSExDx)
 		.int       L(SSE14Q9)-L(SSExDx)
-		.int       L(SSE15Q9)-L(SSExDx) 
+		.int       L(SSE15Q9)-L(SSExDx)
 
 		.int       L(SSE0QA) -L(SSExDx)
 		.int       L(SSE1QA) -L(SSExDx)
@@ -1149,7 +1178,7 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12QA)-L(SSExDx)
 		.int       L(SSE13QA)-L(SSExDx)
 		.int       L(SSE14QA)-L(SSExDx)
-		.int       L(SSE15QA)-L(SSExDx) 
+		.int       L(SSE15QA)-L(SSExDx)
 
 		.int       L(SSE0QB) -L(SSExDx)
 		.int       L(SSE1QB) -L(SSExDx)
@@ -1167,6 +1196,6 @@ L(SSExDx):	.int       L(SSE0Q0) -L(SSExDx)
 		.int       L(SSE12QB)-L(SSExDx)
 		.int       L(SSE13QB)-L(SSExDx)
 		.int       L(SSE14QB)-L(SSExDx)
-		.int       L(SSE15QB)-L(SSExDx) 
+		.int       L(SSE15QB)-L(SSExDx)
 
 		SET_SIZE(memset)

@@ -21,6 +21,7 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strchr.s"
@@ -28,6 +29,8 @@
 #include "SYS.h"
 
 	ENTRY(strchr)		/* (char *, char) */
+	pushq	%rbp
+	movq	%rsp, %rbp
 .loop:
 	movb	(%rdi),%dl	/ %dl = byte of string
 	cmpb	%sil,%dl	/ find it?
@@ -56,6 +59,7 @@
 
 .notfound:
 	xorl	%eax,%eax	/ %rax = NULL
+	leave
 	ret
 
 .found3:
@@ -66,5 +70,6 @@
 	incq	%rdi
 .found:
 	movq	%rdi,%rax
+	leave
 	ret
 	SET_SIZE(strchr)

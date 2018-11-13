@@ -22,6 +22,8 @@
 /*
  * Copyright (c) 2009, Intel Corporation
  * All rights reserved.
+ *
+ * Copyright 2018, Joyent, Inc.
  */
 
 /*
@@ -38,22 +40,24 @@
 	 * at a time looking for the end of string (null char).
 	 */
 	ENTRY(strlen)			/* (const char *s) */
+	push	%rbp
+	mov	%rsp, %rbp
 	mov	%rdi, %rsi		/* keep original %rdi value */
 	mov	%rsi, %rcx
 	pxor	%xmm0, %xmm0		/* 16 null chars */
-	and	$15, %rcx	
-	jz	LABEL(align16_loop)	/* string is 16 byte aligned */ 		
+	and	$15, %rcx
+	jz	LABEL(align16_loop)	/* string is 16 byte aligned */
 
 	/*
 	 * Unaligned case. Round down to 16-byte boundary before comparing
 	 * 16 bytes for a null char. The code then compensates for any extra chars
-	 * preceding the start of the string. 
+	 * preceding the start of the string.
 	 */
 LABEL(unalign16):
 	and	$0xfffffffffffffff0, %rsi
 
 	pcmpeqb	(%rsi), %xmm0
-	lea	16(%rdi), %rsi		
+	lea	16(%rdi), %rsi
 	pmovmskb %xmm0, %edx
 
 	shr	%cl, %edx		/* Compensate for bytes preceding the string */
@@ -61,7 +65,7 @@ LABEL(unalign16):
 	jnz	LABEL(exit)
 	sub	%rcx, %rsi		/* no null, adjust to next 16-byte boundary */
 	pxor	%xmm0, %xmm0		/* clear xmm0, may have been changed... */
-	
+
 	.p2align 4
 LABEL(align16_loop):			/* 16 byte aligned */
 	pcmpeqb	(%rsi), %xmm0		/* look for null bytes */
@@ -91,7 +95,7 @@ LABEL(align16_loop):			/* 16 byte aligned */
 
 	.p2align 4
 LABEL(exit):
-	neg	%rdi		
+	neg	%rdi
 	/*
 	 * Check to see if BSF is fast on this processor. If not, use a different
 	 * exit tail to find first bit set indicating null byte match.
@@ -99,9 +103,10 @@ LABEL(exit):
 	testl	$USE_BSF, .memops_method(%rip)
 	jz	LABEL(AMD_exit)
 
-	lea	-16(%rdi, %rsi), %rax	/* calculate exact offset */	
-	bsf	%edx, %ecx		/* Least significant 1 bit is index of null */	
+	lea	-16(%rdi, %rsi), %rax	/* calculate exact offset */
+	bsf	%edx, %ecx		/* Least significant 1 bit is index of null */
 	lea	(%rax, %rcx),%rax
+	leave
 	ret
 
 	/*
@@ -110,7 +115,7 @@ LABEL(exit):
 	.p2align 4
 LABEL(AMD_exit):
 	lea	-16(%rdi, %rsi), %rax
-	test	%dl, %dl	
+	test	%dl, %dl
 	jz	LABEL(exit_high)
 	test	$0x01, %dl
 	jnz	LABEL(exit_tail0)
@@ -118,7 +123,7 @@ LABEL(AMD_exit):
 	test	$0x02, %dl
 	jnz	LABEL(exit_tail1)
 
-	.p2align 4		
+	.p2align 4
 	test	$0x04, %dl
 	jnz	LABEL(exit_tail2)
 
@@ -134,6 +139,7 @@ LABEL(AMD_exit):
 	test	$0x40, %dl
 	jnz	LABEL(exit_tail6)
 	add	$7, %rax
+	leave
 	ret
 
 	.p2align 4
@@ -160,40 +166,48 @@ LABEL(exit_high):
 	test	$0x40, %dh
 	jnz	LABEL(exit_tail6)
 	add	$7, %rax
+	leave
 	ret
 
 	.p2align 4
 LABEL(exit_tail0):
 	xor	%ecx, %ecx
+	leave
 	ret
 
 	.p2align 4
 LABEL(exit_tail1):
 	add	$1, %rax
+	leave
 	ret
 
 	.p2align 4
 LABEL(exit_tail2):
 	add	$2, %rax
+	leave
 	ret
 
 	.p2align 4
 LABEL(exit_tail3):
 	add	$3, %rax
+	leave
 	ret
 
 	.p2align 4
 LABEL(exit_tail4):
 	add	$4, %rax
+	leave
 	ret
 
 	.p2align 4
 LABEL(exit_tail5):
 	add	$5, %rax
+	leave
 	ret
 
 	.p2align 4
 LABEL(exit_tail6):
 	add	$6, %rax
+	leave
 	ret
 	SET_SIZE(strlen)

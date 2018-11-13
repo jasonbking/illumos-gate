@@ -22,6 +22,7 @@
 /*
  * Copyright (c) 2009, Intel Corporation
  * All rights reserved.
+ * Copyright 2018, Joyent, Inc.
  */
 
 /*
@@ -36,7 +37,7 @@
 #ifdef USE_AS_STRNCMP
 	/*
 	 * Since the counter, %r11, is unsigned, we branch to strcmp_exitz
-	 * if the new counter > the old one or is 0. 
+	 * if the new counter > the old one or is 0.
 	 */
 #define UPDATE_STRNCMP_COUNTER				\
 	/* calculate left number to compare */		\
@@ -55,11 +56,15 @@
 	 */
 #ifdef USE_AS_STRNCMP
 	ENTRY(strncmp)
+	pushq	%rbp
+	movq	%rsp, %rbp
 	test	%rdx, %rdx
 	je	LABEL(strcmp_exitz)
 	mov	%rdx, %r11
 #else
 	ENTRY(strcmp)			/* (const char *, const char *) */
+	pushq	%rbp
+	movq	%rsp, %rbp
 #endif
 	mov	%esi, %ecx
 	mov	%edi, %eax
@@ -116,7 +121,7 @@ LABEL(bigger):
 
 /*
  * ashr_0 handles the following cases:
- * 	str1 offset = str2 offset
+ *	str1 offset = str2 offset
  */
 	.p2align 4
 LABEL(ashr_0):
@@ -177,8 +182,8 @@ LABEL(loop_ashr_0):
 	jmp	LABEL(loop_ashr_0)
 
 /*
- * ashr_1 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 15
+ * ashr_1 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 15
  */
 	.p2align 4
 LABEL(ashr_1):
@@ -186,7 +191,7 @@ LABEL(ashr_1):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0		/* Any null chars? */
-	pslldq	$15, %xmm2		/* shift first string to align with second */	
+	pslldq	$15, %xmm2		/* shift first string to align with second */
 	pcmpeqb	%xmm1, %xmm2		/* compare 16 bytes for equality */
 	psubb	%xmm0, %xmm2		/* packed sub of comparison results*/
 	pmovmskb %xmm2, %r9d
@@ -198,14 +203,14 @@ LABEL(ashr_1):
 	UPDATE_STRNCMP_COUNTER
 
 	pxor	%xmm0, %xmm0
-	mov	$16, %rcx		/* index for loads */	
+	mov	$16, %rcx		/* index for loads */
 	mov	$1, %r9d		/* rdi bytes already examined. Used in exit code */
 	/*
 	 * Setup %r10 value allows us to detect crossing a page boundary.
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	1(%rdi), %r10	 
+	lea	1(%rdi), %r10
 	and	$0xfff, %r10		/* offset into 4K page */
 	sub	$0x1000, %r10		/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -213,40 +218,15 @@ LABEL(ashr_1):
 	.p2align 4
 LABEL(loop_ashr_1):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_1)	/* cross page boundary */	
+	jg	LABEL(nibble_ashr_1)	/* cross page boundary */
 
 LABEL(gobble_ashr_1):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4		 /* store for next cycle */
 
-	psrldq	$1, %xmm3		
-	pslldq	$15, %xmm2		
-	por	%xmm3, %xmm2		/* merge into one 16byte value */
-
-	pcmpeqb	%xmm1, %xmm0	
-	pcmpeqb	%xmm2, %xmm1
-	psubb	%xmm0, %xmm1
-	pmovmskb %xmm1, %edx
-	sub	$0xffff, %edx
-	jnz	LABEL(exit)
-
-#ifdef USE_AS_STRNCMP
-	sub	$16, %r11
-	jbe	LABEL(strcmp_exitz)
-#endif
-	add	$16, %rcx
-	movdqa	%xmm4, %xmm3	
-
-	add	$16, %r10
-	jg	LABEL(nibble_ashr_1)	/* cross page boundary */	
-
-	movdqa	(%rsi, %rcx), %xmm1
-	movdqa	(%rdi, %rcx), %xmm2
-	movdqa	%xmm2, %xmm4		/* store for next cycle */
-
-	psrldq	$1, %xmm3			
-	pslldq 	$15, %xmm2		
+	psrldq	$1, %xmm3
+	pslldq	$15, %xmm2
 	por	%xmm3, %xmm2		/* merge into one 16byte value */
 
 	pcmpeqb	%xmm1, %xmm0
@@ -261,8 +241,33 @@ LABEL(gobble_ashr_1):
 	jbe	LABEL(strcmp_exitz)
 #endif
 	add	$16, %rcx
-	movdqa	%xmm4, %xmm3		
-	jmp	LABEL(loop_ashr_1)		
+	movdqa	%xmm4, %xmm3
+
+	add	$16, %r10
+	jg	LABEL(nibble_ashr_1)	/* cross page boundary */
+
+	movdqa	(%rsi, %rcx), %xmm1
+	movdqa	(%rdi, %rcx), %xmm2
+	movdqa	%xmm2, %xmm4		/* store for next cycle */
+
+	psrldq	$1, %xmm3
+	pslldq	$15, %xmm2
+	por	%xmm3, %xmm2		/* merge into one 16byte value */
+
+	pcmpeqb	%xmm1, %xmm0
+	pcmpeqb	%xmm2, %xmm1
+	psubb	%xmm0, %xmm1
+	pmovmskb %xmm1, %edx
+	sub	$0xffff, %edx
+	jnz	LABEL(exit)
+
+#ifdef USE_AS_STRNCMP
+	sub	$16, %r11
+	jbe	LABEL(strcmp_exitz)
+#endif
+	add	$16, %rcx
+	movdqa	%xmm4, %xmm3
+	jmp	LABEL(loop_ashr_1)
 
 	/*
 	 * Nibble avoids loads across page boundary. This is to avoid a potential
@@ -270,7 +275,7 @@ LABEL(gobble_ashr_1):
 	 */
 	.p2align 4
 LABEL(nibble_ashr_1):
-	psrldq	$1, %xmm4		
+	psrldq	$1, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -284,11 +289,11 @@ LABEL(nibble_ashr_1):
 #endif
 	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_1)	
+	jmp	LABEL(gobble_ashr_1)
 
 /*
- * ashr_2 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 14
+ * ashr_2 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 14
  */
 	.p2align 4
 LABEL(ashr_2):
@@ -296,7 +301,7 @@ LABEL(ashr_2):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$14, %xmm2		
+	pslldq	$14, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -315,7 +320,7 @@ LABEL(ashr_2):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	2(%rdi), %r10	 
+	lea	2(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -323,18 +328,18 @@ LABEL(ashr_2):
 	.p2align 4
 LABEL(loop_ashr_2):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_2)	
+	jg	LABEL(nibble_ashr_2)
 
 LABEL(gobble_ashr_2):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$2, %xmm3		
-	pslldq	$14, %xmm2		
+	psrldq	$2, %xmm3
+	pslldq	$14, %xmm2
 	por	%xmm3, %xmm2
 
-	pcmpeqb	%xmm1, %xmm0	
+	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm2, %xmm1
 	psubb	%xmm0, %xmm1
 	pmovmskb %xmm1, %edx
@@ -356,8 +361,8 @@ LABEL(gobble_ashr_2):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$2, %xmm3			
-	pslldq 	$14, %xmm2		
+	psrldq	$2, %xmm3
+	pslldq	$14, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -373,12 +378,12 @@ LABEL(gobble_ashr_2):
 #endif
 
 	add	$16, %rcx
-	movdqa	%xmm4, %xmm3	
-	jmp	LABEL(loop_ashr_2)		
+	movdqa	%xmm4, %xmm3
+	jmp	LABEL(loop_ashr_2)
 
 	.p2align 4
 LABEL(nibble_ashr_2):
-	psrldq	$2, %xmm4		
+	psrldq	$2, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -392,11 +397,11 @@ LABEL(nibble_ashr_2):
 #endif
 	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_2)	
+	jmp	LABEL(gobble_ashr_2)
 
 /*
- * ashr_3 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 13
+ * ashr_3 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 13
  */
 	.p2align 4
 LABEL(ashr_3):
@@ -404,7 +409,7 @@ LABEL(ashr_3):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$13, %xmm2		
+	pslldq	$13, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -424,7 +429,7 @@ LABEL(ashr_3):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	3(%rdi), %r10	 
+	lea	3(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -432,41 +437,15 @@ LABEL(ashr_3):
 	.p2align 4
 LABEL(loop_ashr_3):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_3)	
+	jg	LABEL(nibble_ashr_3)
 
 LABEL(gobble_ashr_3):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$3, %xmm3		
-	pslldq	$13, %xmm2		
-	por	%xmm3, %xmm2
-
-	pcmpeqb	%xmm1, %xmm0
-	pcmpeqb	%xmm2, %xmm1
-	psubb	%xmm0, %xmm1
-	pmovmskb %xmm1, %edx
-	sub	$0xffff, %edx
-	jnz	LABEL(exit)
-
-#ifdef USE_AS_STRNCMP
-	sub	$16, %r11
-	jbe	LABEL(strcmp_exitz)
-#endif
-
-	add	$16, %rcx
-	movdqa	%xmm4, %xmm3	
-
-	add	$16, %r10
-	jg	LABEL(nibble_ashr_3)	/* cross page boundary */
-
-	movdqa	(%rsi, %rcx), %xmm1
-	movdqa	(%rdi, %rcx), %xmm2
-	movdqa	%xmm2, %xmm4
-
-	psrldq	$3, %xmm3			
-	pslldq 	$13, %xmm2		
+	psrldq	$3, %xmm3
+	pslldq	$13, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -483,11 +462,37 @@ LABEL(gobble_ashr_3):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3
-	jmp	LABEL(loop_ashr_3)		
+
+	add	$16, %r10
+	jg	LABEL(nibble_ashr_3)	/* cross page boundary */
+
+	movdqa	(%rsi, %rcx), %xmm1
+	movdqa	(%rdi, %rcx), %xmm2
+	movdqa	%xmm2, %xmm4
+
+	psrldq	$3, %xmm3
+	pslldq	$13, %xmm2
+	por	%xmm3, %xmm2
+
+	pcmpeqb	%xmm1, %xmm0
+	pcmpeqb	%xmm2, %xmm1
+	psubb	%xmm0, %xmm1
+	pmovmskb %xmm1, %edx
+	sub	$0xffff, %edx
+	jnz	LABEL(exit)
+
+#ifdef USE_AS_STRNCMP
+	sub	$16, %r11
+	jbe	LABEL(strcmp_exitz)
+#endif
+
+	add	$16, %rcx
+	movdqa	%xmm4, %xmm3
+	jmp	LABEL(loop_ashr_3)
 
 	.p2align 4
 LABEL(nibble_ashr_3):
-	psrldq	$3, %xmm4		
+	psrldq	$3, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -501,11 +506,11 @@ LABEL(nibble_ashr_3):
 #endif
 	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_3)	
+	jmp	LABEL(gobble_ashr_3)
 
 /*
- * ashr_4 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 12
+ * ashr_4 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 12
  */
 	.p2align 4
 LABEL(ashr_4):
@@ -513,7 +518,7 @@ LABEL(ashr_4):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$12, %xmm2		
+	pslldq	$12, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -533,7 +538,7 @@ LABEL(ashr_4):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	4(%rdi), %r10	 
+	lea	4(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -541,15 +546,15 @@ LABEL(ashr_4):
 	.p2align 4
 LABEL(loop_ashr_4):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_4)	
+	jg	LABEL(nibble_ashr_4)
 
 LABEL(gobble_ashr_4):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$4, %xmm3		
-	pslldq	$12, %xmm2		
+	psrldq	$4, %xmm3
+	pslldq	$12, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -574,8 +579,8 @@ LABEL(gobble_ashr_4):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$4, %xmm3			
-	pslldq 	$12, %xmm2		
+	psrldq	$4, %xmm3
+	pslldq	$12, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -592,11 +597,11 @@ LABEL(gobble_ashr_4):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3
-	jmp	LABEL(loop_ashr_4)		
+	jmp	LABEL(loop_ashr_4)
 
 	.p2align 4
 LABEL(nibble_ashr_4):
-	psrldq	$4, %xmm4		
+	psrldq	$4, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -610,11 +615,11 @@ LABEL(nibble_ashr_4):
 #endif
 	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_4)	
+	jmp	LABEL(gobble_ashr_4)
 
 /*
- * ashr_5 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 11
+ * ashr_5 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 11
  */
 	.p2align 4
 LABEL(ashr_5):
@@ -622,7 +627,7 @@ LABEL(ashr_5):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$11, %xmm2		
+	pslldq	$11, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -642,7 +647,7 @@ LABEL(ashr_5):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	5(%rdi), %r10	 
+	lea	5(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -650,15 +655,15 @@ LABEL(ashr_5):
 	.p2align 4
 LABEL(loop_ashr_5):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_5)	
+	jg	LABEL(nibble_ashr_5)
 
 LABEL(gobble_ashr_5):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$5, %xmm3		
-	pslldq	$11, %xmm2		
+	psrldq	$5, %xmm3
+	pslldq	$11, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -683,8 +688,8 @@ LABEL(gobble_ashr_5):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$5, %xmm3			
-	pslldq 	$11, %xmm2		
+	psrldq	$5, %xmm3
+	pslldq	$11, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -701,11 +706,11 @@ LABEL(gobble_ashr_5):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3
-	jmp	LABEL(loop_ashr_5)		
+	jmp	LABEL(loop_ashr_5)
 
 	.p2align 4
 LABEL(nibble_ashr_5):
-	psrldq	$5, %xmm4		
+	psrldq	$5, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -717,13 +722,13 @@ LABEL(nibble_ashr_5):
 	cmp	$11, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_5)	
+	jmp	LABEL(gobble_ashr_5)
 
 /*
- * ashr_6 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 10
+ * ashr_6 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 10
  */
 	.p2align 4
 LABEL(ashr_6):
@@ -731,7 +736,7 @@ LABEL(ashr_6):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$10, %xmm2		
+	pslldq	$10, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -751,7 +756,7 @@ LABEL(ashr_6):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	6(%rdi), %r10	 
+	lea	6(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -759,15 +764,15 @@ LABEL(ashr_6):
 	.p2align 4
 LABEL(loop_ashr_6):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_6)	
+	jg	LABEL(nibble_ashr_6)
 
 LABEL(gobble_ashr_6):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$6, %xmm3		
-	pslldq	$10, %xmm2		
+	psrldq	$6, %xmm3
+	pslldq	$10, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -783,7 +788,7 @@ LABEL(gobble_ashr_6):
 #endif
 
 	add	$16, %rcx
-	movdqa	%xmm4, %xmm3	
+	movdqa	%xmm4, %xmm3
 
 	add	$16, %r10
 	jg	LABEL(nibble_ashr_6)	/* cross page boundary */
@@ -792,8 +797,8 @@ LABEL(gobble_ashr_6):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$6, %xmm3			
-	pslldq 	$10, %xmm2		
+	psrldq	$6, %xmm3
+	pslldq	$10, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -809,12 +814,12 @@ LABEL(gobble_ashr_6):
 #endif
 
 	add	$16, %rcx
-	movdqa	%xmm4, %xmm3	
-	jmp	LABEL(loop_ashr_6)		
+	movdqa	%xmm4, %xmm3
+	jmp	LABEL(loop_ashr_6)
 
 	.p2align 4
 LABEL(nibble_ashr_6):
-	psrldq	$6, %xmm4		
+	psrldq	$6, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -826,13 +831,13 @@ LABEL(nibble_ashr_6):
 	cmp	$10, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_6)	
+	jmp	LABEL(gobble_ashr_6)
 
 /*
- * ashr_7 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 9
+ * ashr_7 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 9
  */
 	.p2align 4
 LABEL(ashr_7):
@@ -840,7 +845,7 @@ LABEL(ashr_7):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$9, %xmm2		
+	pslldq	$9, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -860,7 +865,7 @@ LABEL(ashr_7):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	7(%rdi), %r10	 
+	lea	7(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -868,15 +873,15 @@ LABEL(ashr_7):
 	.p2align 4
 LABEL(loop_ashr_7):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_7)	
+	jg	LABEL(nibble_ashr_7)
 
 LABEL(gobble_ashr_7):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$7, %xmm3		
-	pslldq	$9, %xmm2		
+	psrldq	$7, %xmm3
+	pslldq	$9, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -901,8 +906,8 @@ LABEL(gobble_ashr_7):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$7, %xmm3			
-	pslldq 	$9, %xmm2		
+	psrldq	$7, %xmm3
+	pslldq	$9, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -919,11 +924,11 @@ LABEL(gobble_ashr_7):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3
-	jmp	LABEL(loop_ashr_7)		
+	jmp	LABEL(loop_ashr_7)
 
 	.p2align 4
 LABEL(nibble_ashr_7):
-	psrldq	$7, %xmm4		
+	psrldq	$7, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -935,13 +940,13 @@ LABEL(nibble_ashr_7):
 	cmp	$9, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_7)	
+	jmp	LABEL(gobble_ashr_7)
 
 /*
- * ashr_8 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 8
+ * ashr_8 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 8
  */
 	.p2align 4
 LABEL(ashr_8):
@@ -949,7 +954,7 @@ LABEL(ashr_8):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$8, %xmm2		
+	pslldq	$8, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -969,7 +974,7 @@ LABEL(ashr_8):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	8(%rdi), %r10	 
+	lea	8(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -977,41 +982,15 @@ LABEL(ashr_8):
 	.p2align 4
 LABEL(loop_ashr_8):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_8)	
+	jg	LABEL(nibble_ashr_8)
 
 LABEL(gobble_ashr_8):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$8, %xmm3		
-	pslldq	$8, %xmm2		
-	por	%xmm3, %xmm2
-
-	pcmpeqb	%xmm1, %xmm0
-	pcmpeqb	%xmm2, %xmm1
-	psubb	%xmm0, %xmm1
-	pmovmskb %xmm1, %edx
-	sub	$0xffff, %edx
-	jnz	LABEL(exit)
-
-#ifdef USE_AS_STRNCMP
-	sub	$16, %r11
-	jbe	LABEL(strcmp_exitz)
-#endif
-
-	add	$16, %rcx
-	movdqa	%xmm4, %xmm3	
-
-	add	$16, %r10
-	jg	LABEL(nibble_ashr_8)	/* cross page boundary */
-
-	movdqa	(%rsi, %rcx), %xmm1
-	movdqa	(%rdi, %rcx), %xmm2
-	movdqa	%xmm2, %xmm4
-
-	psrldq	$8, %xmm3			
-	pslldq 	$8, %xmm2		
+	psrldq	$8, %xmm3
+	pslldq	$8, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1028,11 +1007,37 @@ LABEL(gobble_ashr_8):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3
-	jmp	LABEL(loop_ashr_8)		
+
+	add	$16, %r10
+	jg	LABEL(nibble_ashr_8)	/* cross page boundary */
+
+	movdqa	(%rsi, %rcx), %xmm1
+	movdqa	(%rdi, %rcx), %xmm2
+	movdqa	%xmm2, %xmm4
+
+	psrldq	$8, %xmm3
+	pslldq	$8, %xmm2
+	por	%xmm3, %xmm2
+
+	pcmpeqb	%xmm1, %xmm0
+	pcmpeqb	%xmm2, %xmm1
+	psubb	%xmm0, %xmm1
+	pmovmskb %xmm1, %edx
+	sub	$0xffff, %edx
+	jnz	LABEL(exit)
+
+#ifdef USE_AS_STRNCMP
+	sub	$16, %r11
+	jbe	LABEL(strcmp_exitz)
+#endif
+
+	add	$16, %rcx
+	movdqa	%xmm4, %xmm3
+	jmp	LABEL(loop_ashr_8)
 
 	.p2align 4
 LABEL(nibble_ashr_8):
-	psrldq	$8, %xmm4		
+	psrldq	$8, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -1044,13 +1049,13 @@ LABEL(nibble_ashr_8):
 	cmp	$8, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_8)	
+	jmp	LABEL(gobble_ashr_8)
 
 /*
- * ashr_9 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 7
+ * ashr_9 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 7
  */
 	.p2align 4
 LABEL(ashr_9):
@@ -1058,7 +1063,7 @@ LABEL(ashr_9):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$7, %xmm2		
+	pslldq	$7, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -1078,7 +1083,7 @@ LABEL(ashr_9):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	9(%rdi), %r10	 
+	lea	9(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -1086,15 +1091,15 @@ LABEL(ashr_9):
 	.p2align 4
 LABEL(loop_ashr_9):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_9)	
+	jg	LABEL(nibble_ashr_9)
 
 LABEL(gobble_ashr_9):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$9, %xmm3		
-	pslldq	$7, %xmm2		
+	psrldq	$9, %xmm3
+	pslldq	$7, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1119,8 +1124,8 @@ LABEL(gobble_ashr_9):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$9, %xmm3			
-	pslldq 	$7, %xmm2		
+	psrldq	$9, %xmm3
+	pslldq	$7, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1137,11 +1142,11 @@ LABEL(gobble_ashr_9):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3		/* store for next cycle */
-	jmp	LABEL(loop_ashr_9)		
+	jmp	LABEL(loop_ashr_9)
 
 	.p2align 4
 LABEL(nibble_ashr_9):
-	psrldq	$9, %xmm4		
+	psrldq	$9, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -1153,13 +1158,13 @@ LABEL(nibble_ashr_9):
 	cmp	$7, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_9)	
+	jmp	LABEL(gobble_ashr_9)
 
 /*
- * ashr_10 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 6
+ * ashr_10 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 6
  */
 	.p2align 4
 LABEL(ashr_10):
@@ -1167,7 +1172,7 @@ LABEL(ashr_10):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$6, %xmm2		
+	pslldq	$6, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -1187,7 +1192,7 @@ LABEL(ashr_10):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	10(%rdi), %r10	 
+	lea	10(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -1195,15 +1200,15 @@ LABEL(ashr_10):
 	.p2align 4
 LABEL(loop_ashr_10):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_10)	
+	jg	LABEL(nibble_ashr_10)
 
 LABEL(gobble_ashr_10):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$10, %xmm3		
-	pslldq	$6, %xmm2		
+	psrldq	$10, %xmm3
+	pslldq	$6, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1228,8 +1233,8 @@ LABEL(gobble_ashr_10):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$10, %xmm3			
-	pslldq 	$6, %xmm2		
+	psrldq	$10, %xmm3
+	pslldq	$6, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1246,11 +1251,11 @@ LABEL(gobble_ashr_10):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3
-	jmp	LABEL(loop_ashr_10)		
+	jmp	LABEL(loop_ashr_10)
 
 	.p2align 4
 LABEL(nibble_ashr_10):
-	psrldq	$10, %xmm4		
+	psrldq	$10, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -1262,13 +1267,13 @@ LABEL(nibble_ashr_10):
 	cmp	$6, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_10)	
+	jmp	LABEL(gobble_ashr_10)
 
 /*
- * ashr_11 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 5
+ * ashr_11 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 5
  */
 	.p2align 4
 LABEL(ashr_11):
@@ -1276,7 +1281,7 @@ LABEL(ashr_11):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$5, %xmm2		
+	pslldq	$5, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -1296,7 +1301,7 @@ LABEL(ashr_11):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	11(%rdi), %r10	 
+	lea	11(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -1304,15 +1309,15 @@ LABEL(ashr_11):
 	.p2align 4
 LABEL(loop_ashr_11):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_11)	
+	jg	LABEL(nibble_ashr_11)
 
 LABEL(gobble_ashr_11):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$11, %xmm3		
-	pslldq	$5, %xmm2		
+	psrldq	$11, %xmm3
+	pslldq	$5, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1337,8 +1342,8 @@ LABEL(gobble_ashr_11):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$11, %xmm3			
-	pslldq 	$5, %xmm2		
+	psrldq	$11, %xmm3
+	pslldq	$5, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1355,11 +1360,11 @@ LABEL(gobble_ashr_11):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3
-	jmp	LABEL(loop_ashr_11)		
+	jmp	LABEL(loop_ashr_11)
 
 	.p2align 4
 LABEL(nibble_ashr_11):
-	psrldq	$11, %xmm4		
+	psrldq	$11, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -1371,13 +1376,13 @@ LABEL(nibble_ashr_11):
 	cmp	$5, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_11)	
+	jmp	LABEL(gobble_ashr_11)
 
 /*
- * ashr_12 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 4
+ * ashr_12 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 4
  */
 	.p2align 4
 LABEL(ashr_12):
@@ -1385,7 +1390,7 @@ LABEL(ashr_12):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$4, %xmm2		
+	pslldq	$4, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -1405,7 +1410,7 @@ LABEL(ashr_12):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	12(%rdi), %r10	 
+	lea	12(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -1413,18 +1418,18 @@ LABEL(ashr_12):
 	.p2align 4
 LABEL(loop_ashr_12):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_12)	
+	jg	LABEL(nibble_ashr_12)
 
 LABEL(gobble_ashr_12):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$12, %xmm3		
-	pslldq	$4, %xmm2		
+	psrldq	$12, %xmm3
+	pslldq	$4, %xmm2
 	por	%xmm3, %xmm2
 
-	pcmpeqb	%xmm1, %xmm0	
+	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm2, %xmm1
 	psubb	%xmm0, %xmm1
 	pmovmskb %xmm1, %edx
@@ -1446,8 +1451,8 @@ LABEL(gobble_ashr_12):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$12, %xmm3			
-	pslldq 	$4, %xmm2		
+	psrldq	$12, %xmm3
+	pslldq	$4, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1464,11 +1469,11 @@ LABEL(gobble_ashr_12):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3
-	jmp	LABEL(loop_ashr_12)		
+	jmp	LABEL(loop_ashr_12)
 
 	.p2align 4
 LABEL(nibble_ashr_12):
-	psrldq	$12, %xmm4		
+	psrldq	$12, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -1480,13 +1485,13 @@ LABEL(nibble_ashr_12):
 	cmp	$4, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_12)	
+	jmp	LABEL(gobble_ashr_12)
 
 /*
- * ashr_13 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 3
+ * ashr_13 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 3
  */
 	.p2align 4
 LABEL(ashr_13):
@@ -1494,7 +1499,7 @@ LABEL(ashr_13):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$3, %xmm2		
+	pslldq	$3, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -1514,7 +1519,7 @@ LABEL(ashr_13):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	13(%rdi), %r10	 
+	lea	13(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -1522,15 +1527,15 @@ LABEL(ashr_13):
 	.p2align 4
 LABEL(loop_ashr_13):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_13)	
+	jg	LABEL(nibble_ashr_13)
 
 LABEL(gobble_ashr_13):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$13, %xmm3		
-	pslldq	$3, %xmm2		
+	psrldq	$13, %xmm3
+	pslldq	$3, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1555,8 +1560,8 @@ LABEL(gobble_ashr_13):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$13, %xmm3			
-	pslldq 	$3, %xmm2		
+	psrldq	$13, %xmm3
+	pslldq	$3, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1573,11 +1578,11 @@ LABEL(gobble_ashr_13):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3
-	jmp	LABEL(loop_ashr_13)		
-	
+	jmp	LABEL(loop_ashr_13)
+
 	.p2align 4
 LABEL(nibble_ashr_13):
-	psrldq	$13, %xmm4		
+	psrldq	$13, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -1589,13 +1594,13 @@ LABEL(nibble_ashr_13):
 	cmp	$3, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_13)	
+	jmp	LABEL(gobble_ashr_13)
 
 /*
- * ashr_14 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 2
+ * ashr_14 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 2
  */
 	.p2align 4
 LABEL(ashr_14):
@@ -1603,7 +1608,7 @@ LABEL(ashr_14):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq  $2, %xmm2		
+	pslldq  $2, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -1623,7 +1628,7 @@ LABEL(ashr_14):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	14(%rdi), %r10  
+	lea	14(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -1631,15 +1636,15 @@ LABEL(ashr_14):
 	.p2align 4
 LABEL(loop_ashr_14):
 	add	$16, %r10
-	jg	LABEL(nibble_ashr_14)	
+	jg	LABEL(nibble_ashr_14)
 
 LABEL(gobble_ashr_14):
 	movdqa	(%rsi, %rcx), %xmm1
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$14, %xmm3		
-	pslldq	$2, %xmm2		
+	psrldq	$14, %xmm3
+	pslldq	$2, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1664,8 +1669,8 @@ LABEL(gobble_ashr_14):
 	movdqa	(%rdi, %rcx), %xmm2
 	movdqa	%xmm2, %xmm4
 
-	psrldq	$14, %xmm3			
-	pslldq 	$2, %xmm2		
+	psrldq	$14, %xmm3
+	pslldq	$2, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1682,11 +1687,11 @@ LABEL(gobble_ashr_14):
 
 	add	$16, %rcx
 	movdqa	%xmm4, %xmm3
-	jmp	LABEL(loop_ashr_14)		
+	jmp	LABEL(loop_ashr_14)
 
 	.p2align 4
 LABEL(nibble_ashr_14):
-	psrldq	$14, %xmm4		
+	psrldq	$14, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -1698,13 +1703,13 @@ LABEL(nibble_ashr_14):
 	cmp	$2, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_14)	
+	jmp	LABEL(gobble_ashr_14)
 
 /*
- * ashr_15 handles the following cases: 
- * 	abs(str1 offset - str2 offset) = 1
+ * ashr_15 handles the following cases:
+ *	abs(str1 offset - str2 offset) = 1
  */
 	.p2align 4
 LABEL(ashr_15):
@@ -1712,7 +1717,7 @@ LABEL(ashr_15):
 	movdqa	(%rdi), %xmm2
 	movdqa	(%rsi), %xmm1
 	pcmpeqb	%xmm1, %xmm0
-	pslldq	$1, %xmm2		
+	pslldq	$1, %xmm2
 	pcmpeqb	%xmm1, %xmm2
 	psubb	%xmm0, %xmm2
 	pmovmskb %xmm2, %r9d
@@ -1733,7 +1738,7 @@ LABEL(ashr_15):
 	 * When %r10 goes positive we are crossing a page boundary and
 	 * need to do a nibble.
 	 */
-	lea	15(%rdi), %r10	
+	lea	15(%rdi), %r10
 	and	$0xfff, %r10	/* offset into 4K page */
 	sub	$0x1000, %r10	/* subtract 4K pagesize */
 	movdqa	%xmm3, %xmm4
@@ -1775,7 +1780,7 @@ LABEL(gobble_ashr_15):
 	movdqa	%xmm2, %xmm4
 
 	psrldq	$15, %xmm3
-	pslldq 	$1, %xmm2
+	pslldq	$1, %xmm2
 	por	%xmm3, %xmm2
 
 	pcmpeqb	%xmm1, %xmm0
@@ -1796,7 +1801,7 @@ LABEL(gobble_ashr_15):
 
 	.p2align 4
 LABEL(nibble_ashr_15):
-	psrldq	$15, %xmm4		
+	psrldq	$15, %xmm4
 	movdqa	(%rsi, %rcx), %xmm1
 	pcmpeqb	%xmm1, %xmm0
 	pcmpeqb	%xmm4, %xmm1
@@ -1808,9 +1813,9 @@ LABEL(nibble_ashr_15):
 	cmp	$1, %r11
 	jbe	LABEL(strcmp_exitz)
 #endif
- 	pxor	%xmm0, %xmm0
+	pxor	%xmm0, %xmm0
 	sub	$0x1000, %r10		/* subtract 4K from %r10 */
-	jmp	LABEL(gobble_ashr_15)	
+	jmp	LABEL(gobble_ashr_15)
 
 	.p2align 4
 LABEL(exit):
@@ -1831,12 +1836,12 @@ LABEL(less16bytes):
 	 */
 	testl	$USE_BSF,.memops_method(%rip)
 	jz	LABEL(AMD_exit)
-	bsf	%rdx, %rdx		/* find and store bit index in %rdx */	
+	bsf	%rdx, %rdx		/* find and store bit index in %rdx */
 
 #ifdef USE_AS_STRNCMP
 	sub	%rdx, %r11
 	jbe	LABEL(strcmp_exitz)
-#endif	
+#endif
 	xor	%ecx, %ecx		/* clear %ecx */
 	xor	%eax, %eax		/* clear %eax */
 
@@ -1844,11 +1849,13 @@ LABEL(less16bytes):
 	movb	(%rdi, %rdx), %al
 
 	sub	%ecx, %eax
+	leave
 	ret
 
 #ifdef USE_AS_STRNCMP
 LABEL(strcmp_exitz):
 	xor	%eax, %eax
+	leave
 	ret
 #endif
 
@@ -1889,6 +1896,7 @@ LABEL(AMD_exit):
 	movzx	7(%rdi), %eax
 
 	sub	%ecx, %eax
+	leave
 	ret
 
 	.p2align 4
@@ -1904,6 +1912,7 @@ LABEL(Byte0):
 	movzx	(%rdi), %eax
 
 	sub	%ecx, %eax
+	leave
 	ret
 
 	.p2align 4
@@ -1917,6 +1926,7 @@ LABEL(Byte1):
 	movzx	1(%rdi), %eax
 
 	sub	%ecx, %eax
+	leave
 	ret
 
 	.p2align 4
@@ -1930,6 +1940,7 @@ LABEL(Byte2):
 	movzx	2(%rdi), %eax
 
 	sub	%ecx, %eax
+	leave
 	ret
 
 	.p2align 4
@@ -1943,6 +1954,7 @@ LABEL(Byte3):
 	movzx	3(%rdi), %eax
 
 	sub	%ecx, %eax
+	leave
 	ret
 
 	.p2align 4
@@ -1956,6 +1968,7 @@ LABEL(Byte4):
 	movzx	4(%rdi), %eax
 
 	sub	%ecx, %eax
+	leave
 	ret
 
 	.p2align 4
@@ -1969,6 +1982,7 @@ LABEL(Byte5):
 	movzx	5(%rdi), %eax
 
 	sub	%ecx, %eax
+	leave
 	ret
 
 	.p2align 4
@@ -1982,6 +1996,7 @@ LABEL(Byte6):
 	movzx	6(%rdi), %eax
 
 	sub	%ecx, %eax
+	leave
 	ret
 
 	.p2align 4
@@ -2021,6 +2036,7 @@ LABEL(next_8_bytes):
 	movzx	7(%rdi), %eax
 
 	sub	%ecx, %eax
+	leave
 	ret
 
 	.pushsection .rodata

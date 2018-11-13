@@ -21,6 +21,7 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2020 Joyent, Inc.
  */
 
 	.file	"memcmp.s"
@@ -28,7 +29,7 @@
 /
 / memcmp(s1, s2, n)
 /
-/ Compares n bytes:  s1>s2: >0  s1==s2:  0  s1<s2:  <0	
+/ Compares n bytes:  s1>s2: >0  s1==s2:  0  s1<s2:  <0
 /
 / Fast assembly language version of the following C-program strcat
 / which represents the `standard' for the C-library.
@@ -37,15 +38,15 @@
 /	memcmp(const void *s1, const void *s2, size_t n)
 /	{
 /		if (s1 != s2 && n != 0) {
-/			const unsigned char	*ps1 = s1; 
-/			const unsigned char	*ps2 = s2; 
+/			const unsigned char	*ps1 = s1;
+/			const unsigned char	*ps2 = s2;
 /
 /			do {
 /				if (*ps1++ != *ps2++)
-/					return (ps1[-1] - ps2[-1]); 
-/			} while (--n != 0); 
+/					return (ps1[-1] - ps2[-1]);
+/			} while (--n != 0);
 /		}
-/		return (NULL); 
+/		return (NULL);
 /	}
 /
 / This implementation conforms to SVID but does not implement
@@ -59,12 +60,14 @@
 #include "SYS.h"
 
 	ENTRY(memcmp)
+	pushl	%ebp
+	movl	%esp, %ebp
 	pushl	%edi		/ save register variable
-	movl	8(%esp), %eax	/ %eax = address of string 1
-	movl	12(%esp), %ecx	/ %ecx = address of string 2
+	movl	12(%esp), %eax	/ %eax = address of string 1
+	movl	16(%esp), %ecx	/ %ecx = address of string 2
 	cmpl	%eax, %ecx	/ if the same string
 	je	.equal		/ goto .equal
-	movl	16(%esp), %edi	/ %edi = length in bytes
+	movl	20(%esp), %edi	/ %edi = length in bytes
 	cmpl	$4, %edi	/ if %edi < 4
 	jb	.byte_check	/ goto .byte_check
 	.align	4
@@ -84,7 +87,7 @@
 .word_not_equal:
 	leal	4(%edi), %edi	/ %edi += 4 (post-decremented)
 	.align	4
-.byte_loop:	
+.byte_loop:
 	movb	(%ecx),	%dl	/ move 1 byte from (%ecx) to %dl
 	cmpb	%dl, (%eax)	/ compare %dl with 1 byte from (%eax)
 	jne	.not_equal	/ if not equal, goto .not_equal
@@ -95,11 +98,13 @@
 .equal:
 	xorl	%eax, %eax	/ %eax = 0
 	popl	%edi		/ restore register variable
+	popl	%ebp
 	ret			/ return (NULL)
 	.align	4
 .not_equal:
 	sbbl	%eax, %eax	/ %eax = 0 if no carry, %eax = -1 if carry
 	orl	$1, %eax	/ %eax = 1 if no carry, %eax = -1 if carry
 	popl	%edi		/ restore register variable
+	popl	%ebp
 	ret			/ return (NULL)
 	SET_SIZE(memcmp)

@@ -21,6 +21,7 @@
 
 /*
  * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
+ * Copyright 2018, Joyent, Inc.
  * Use is subject to license terms.
  */
 
@@ -38,6 +39,8 @@
 	ANSI_PRAGMA_WEAK(wsncmp,function)
 
 	ENTRY(wcsncmp)		/* (wchar *ws1, wchar_t *ws2, size_t n) */
+	pushq	%rbp
+	movq	%rsp, %rbp
 	cmpq	%rdi,%rsi	/ same string?
 	je	.equal
 	incq	%rdx		/ will later predecrement this uint
@@ -78,6 +81,7 @@
 
 .equal:
 	xorl	%eax,%eax	/ return 0
+	leave
 	ret
 
 	.align	4
@@ -89,6 +93,7 @@
 	addq	$4,%rsi
 .notequal_0:
 	subl	(%rsi),%eax	/ return value is (*s1 - *--s2)
+	leave
 	ret
 	SET_SIZE(wcsncmp)
 

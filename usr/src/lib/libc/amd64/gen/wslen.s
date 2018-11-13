@@ -22,6 +22,7 @@
 /*
  * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"wslen.s"
@@ -37,7 +38,7 @@
  *		;
  *	return (s - s0);
  *}
- */	
+ */
 
 #include <sys/asm_linkage.h>
 
@@ -45,6 +46,8 @@
 	ANSI_PRAGMA_WEAK(wslen,function)
 
 	ENTRY(wcslen)		/* (wchar_t *) */
+	pushq	%rbp
+	movq	%rsp, %rbp
 	xorl	%eax,%eax
 
 	.align	8
@@ -64,18 +67,21 @@
 	.align	4
 .out1:
 	incq	%rax
-.out0:		
+.out0:
+	leave
 	ret
-	
+
 	.align	4
 .out2:
 	addq	$2,%rax
+	leave
 	ret
 
-	.align	4	
+	.align	4
 .out3:
 	addq	$3, %rax
-	ret			
+	leave
+	ret
 	SET_SIZE(wcslen)
 
 	ENTRY(wslen)

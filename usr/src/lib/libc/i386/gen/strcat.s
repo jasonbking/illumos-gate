@@ -21,6 +21,7 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strcat.s"
@@ -57,9 +58,11 @@
 #include "SYS.h"
 
 	ENTRY(strcat)
+	pushl	%ebp			/ setup stack frame
+	movl	%esp, %ebp		/
 	pushl	%edi			/ save register variable
-	/ find a null byte in destination string 
-	movl	8(%esp), %edi		/ %edi = destination string address
+	/ find a null byte in destination string
+	movl	12(%esp), %edi		/ %edi = destination string address
 	testl	$3, %edi		/ if %edi not word aligned
 	jnz	.L1			/ goto .L1
 	.align	4
@@ -84,7 +87,7 @@
 	.align	4
 .L3:
 	/ %edi points to a null byte in destination string
-	movl	12(%esp), %eax		/ %eax = source string address
+	movl	16(%esp), %eax		/ %eax = source string address
 	testl	$3, %eax		/ if %eax not word aligned
 	jnz	.L4			/ goto .L4
 	.align	4
@@ -93,7 +96,7 @@
 	movl	$0x7f7f7f7f, %ecx
 	andl	%edx, %ecx		/ %ecx = %edx & 0x7f7f7f7f
 	addl	$4, %eax		/ next word
-	addl	$0x7f7f7f7f, %ecx	/ %ecx += 0x7f7f7f7f	
+	addl	$0x7f7f7f7f, %ecx	/ %ecx += 0x7f7f7f7f
 	orl	%edx, %ecx		/ %ecx |= %edx
 	andl	$0x80808080, %ecx	/ %ecx &= 0x80808080
 	cmpl	$0x80808080, %ecx	/ if null byte in this word
@@ -116,7 +119,8 @@
 	jmp	.L5			/ goto .L5 (%eax word aligned)
 	.align	4
 .L6:
-	movl	8(%esp), %eax		/ return the destination address
+	movl	12(%esp), %eax		/ return the destination address
 	popl	%edi			/ restore register variable
+	popl	%ebp			/ restore stack frame
 	ret
 	SET_SIZE(strcat)

@@ -21,6 +21,7 @@
 /*
  * Copyright 2005 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strcpy.s"
@@ -55,9 +56,11 @@
 #include "SYS.h"
 
 	ENTRY(strcpy)
+	push	%ebp
+	mov	%esp, %ebp			/ setup stack frame
 	push	%edi				/ save reg as per calling cvntn
-	mov	12(%esp), %ecx			/ src ptr
-	mov	8(%esp), %edi			/ dst ptr
+	mov	16(%esp), %ecx			/ src ptr
+	mov	12(%esp), %edi			/ dst ptr
 	mov	%ecx, %eax			/ src
 	sub	%edi, %ecx			/ src - dst
 	and	$3, %eax			/ check src alignment
@@ -69,10 +72,10 @@ byte_loop:
 	movb	%dl, (%edi)			/ load dest byte
 	inc	%edi				/ increment src and dest
 	testb	%dl, %dl			/ is src zero?
-	jz 	done
+	jz	done
 	inc	%eax				/ check src alignment
 	jnz	byte_loop
-	jmp 	load
+	jmp	load
 
 store:
 	mov	%eax, (%edi)			/ store word
@@ -99,7 +102,8 @@ has_zero_byte:
 	jz	done
 	movb	%ah, 3(%edi)
 done:
-	mov	8(%esp), %eax			/ return ptr to dest
+	mov	12(%esp), %eax			/ return ptr to dest
 	pop	%edi				/ restore as per calling cvntn
+	pop	%ebp				/ restore stack frame
 	ret
 	SET_SIZE(strcpy)

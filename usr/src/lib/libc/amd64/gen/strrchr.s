@@ -21,6 +21,7 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strrchr.s"
@@ -37,20 +38,22 @@
 /	char *
 /	strrchr(const char *sp, int c)
 /	{
-/		char	*r = NULL; 
+/		char	*r = NULL;
 /
 /		do {
 /			if (*sp == (char)c)
-/				r = (char *)sp; 
-/		} while (*sp++); 
+/				r = (char *)sp;
+/		} while (*sp++);
 /
-/		return (r); 
+/		return (r);
 /	}
-/	
+/
 
 #include "SYS.h"
 
 	ENTRY(strrchr)		/* (char *s, int c) */
+	pushq	%rbp
+	movq	%rsp, %rbp
 	movl	$0, %eax	/ %rax = NULL (current occurrence)
 	movl	%esi, %ecx	/ %cl == char to search for
 	testq	$3, %rdi	/ if %rdi not word aligned
@@ -105,5 +108,6 @@
 	jmp	.L3		/ goto .L3 (word aligned)
 	.align	4
 .L8:
+	leave
 	ret			/ %rax points to the last occurrence or NULL
 	SET_SIZE(strrchr)

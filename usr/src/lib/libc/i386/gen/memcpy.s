@@ -22,6 +22,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"memcpy.s"
@@ -34,39 +35,44 @@
 #include "SYS.h"
 
 	ENTRY(memcpy)
+	pushl	%ebp
+	movl	%esp, %ebp
 	movl	%edi,%edx	/ save register variables
 	pushl	%esi
-	movl	8(%esp),%edi	/ %edi = dest address
-	movl	12(%esp),%esi	/ %esi = source address
-	movl	16(%esp),%ecx	/ %ecx = length of string
+	movl	12(%esp),%edi	/ %edi = dest address
+	movl	16(%esp),%esi	/ %esi = source address
+	movl	20(%esp),%ecx	/ %ecx = length of string
 	movl	%edi,%eax	/ return value from the call
 
 	shrl	$2,%ecx		/ %ecx = number of words to move
 	rep ; smovl		/ move the words
 
-	movl	16(%esp),%ecx	/ %ecx = number of bytes to move
+	movl	20(%esp),%ecx	/ %ecx = number of bytes to move
 	andl	$0x3,%ecx	/ %ecx = number of bytes left to move
 	rep ; smovb		/ move the bytes
 
 	popl	%esi		/ restore register variables
 	movl	%edx,%edi
+	popl	%ebp
 	ret
 	SET_SIZE(memcpy)
 
 
 	ENTRY(memmove)
+	pushl	%ebp
+	movl	%esp, %ebp
 	pushl	%edi		/ save off %edi, %esi and move destination
-	movl	4+12(%esp),%ecx	/ get number of bytes to move
+	movl	8+12(%esp),%ecx	/ get number of bytes to move
 	pushl	%esi
 	testl	%ecx,%ecx	/ if (n == 0)
 	je	.CleanupReturn	/    return(s);
-	movl	8+ 4(%esp),%edi	/ destination buffer address
-	movl	8+ 8(%esp),%esi	/ source buffer address
+	movl	12+ 4(%esp),%edi	/ destination buffer address
+	movl	12+ 8(%esp),%esi	/ source buffer address
 .Common:
 	movl	$3,%eax		/ heavily used constant
 	cmpl	%esi,%edi	/ if (source addr > dest addr)
 	leal	-1(%esi,%ecx),%edx
-	jbe	.CopyRight	/ 
+	jbe	.CopyRight	/
 	cmpl	%edx,%edi
 	jbe	.CopyLeft
 .CopyRight:
@@ -82,7 +88,7 @@
 .SkipAlignRight:
 	movl	%edx,%ecx
 	shrl	$2,%ecx
-	rep;	smovl		/    do the long word part 
+	rep;	smovl		/    do the long word part
 	movl	%edx,%ecx	/    compute bytes left to move
 	andl	%eax,%ecx	/    complete copy of remaining bytes
 	jz	.CleanupReturn
@@ -91,6 +97,7 @@
 .CleanupReturn:
 	popl	%esi		/  }
 	popl	%edi		/  restore registers
+	popl	%ebp
 	movl	4(%esp),%eax	/  set up return value
 .Return:
 	ret			/  return(dba);
@@ -105,6 +112,7 @@
 	cld				/    reset direction flag to LtoR
 	popl	%esi			/  }
 	popl	%edi			/  restore registers
+	popl	%ebp
 	movl	4(%esp),%eax		/  set up return value
 	ret				/  return(dba);
 .BigCopyLeft:				/ } else {
@@ -117,14 +125,14 @@
 	subl	%ecx,%edx		/ copy is done on aligned boundary
 	rep;	smovb
 .SkipAlignLeft:
-	movl	%edx,%ecx	
+	movl	%edx,%ecx
 	subl	%eax,%esi
 	shrl	$2,%ecx			/ do 4 byte copy RtoL
 	subl	%eax,%edi
 	rep;	smovl
 	andl	%eax,%edx		/ do 1 byte copy whats left
 	jz	.CleanupReturnLeft
-	movl	%edx,%ecx	
+	movl	%edx,%ecx
 	addl	%eax,%esi		/ rep; smovl instruction will decrement
 	addl	%eax,%edi		/ %edi, %esi by four after each copy
 					/ adding 3 will restore pointers to byte
@@ -136,6 +144,7 @@
 	cld				/ reset direction flag to LtoR
 	popl	%esi
 	popl	%edi			/ restore registers
+	popl	%ebp
 	movl	4(%esp),%eax		/ set up return value
 	ret				/ return(dba);
 	SET_SIZE(memmove)

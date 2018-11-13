@@ -22,6 +22,7 @@
 /*
  * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2020 Joyent, Inc.
  */
 
 	.file	"wschr.s"
@@ -40,8 +41,10 @@
 	.align	8		/ accounts for .loop alignment and prolog
 
 	ENTRY(wcschr)
-	movl	4(%esp),%eax	/ %eax = string address
-	movl	8(%esp),%ecx	/ %ecx = wchar sought
+	pushl	%ebp
+	movl	%esp, %ebp	/ setup stack frame
+	movl	8(%esp),%eax	/ %eax = string address
+	movl	12(%esp),%ecx	/ %ecx = wchar sought
 .loop:
 	movl	(%eax),%edx	/ %edx = wchar of string
 	cmpl	%ecx,%edx	/ find it?
@@ -70,28 +73,35 @@
 
 .notfound:
 	xorl	%eax,%eax	/ %eax = NULL
+	popl	%ebp		/ restore stack frame
 	ret
 
 .found3:
 	addl	$12,%eax
+	popl	%ebp
 	ret
 .found2:
 	addl	$8,%eax
+	popl	%ebp
 	ret
 .found1:
 	addl	$4,%eax
 .found:
+	popl	%ebp
 	ret
 	SET_SIZE(wcschr)
 
 	ENTRY(wschr)
+	pushl	%ebp
+	movl	%esp, %ebp
 	_prologue_
-	movl	_esp_(8),%eax
-	movl	_esp_(4),%edx
+	movl	_esp_(12),%eax
+	movl	_esp_(8),%edx
 	pushl	%eax
 	pushl	%edx
 	call	_fref_(wcschr)
 	addl	$8,%esp
 	_epilogue_
+	popl	%ebp
 	ret
 	SET_SIZE(wschr)

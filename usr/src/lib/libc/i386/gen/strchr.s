@@ -21,6 +21,7 @@
 /*
  * Copyright 2005 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strchr.s"
@@ -28,8 +29,10 @@
 #include "SYS.h"
 
 	ENTRY(strchr)
-	mov 4(%esp), %ecx		/ src string here
-	mov 8(%esp), %edx		/ character to find
+	push %ebp
+	mov %esp, %ebp			/ setup stack frame
+	mov 8(%esp), %ecx		/ src string here
+	mov 12(%esp), %edx		/ character to find
 	mov %ecx, %eax			/ save src
 	and $3, %ecx			/ check if src is aligned
 	jz prepword			/ search wordwise if it is
@@ -48,7 +51,7 @@
 	add $1, %eax			/ increment src ptr
 	cmp $2, %ecx			/ check alignment
 	jz prepword
-	cmpb %dl, (%eax) 		/ check this byte
+	cmpb %dl, (%eax)		/ check this byte
 	jz done
 	cmpb $0, (%eax)			/ is byte zero?
 	jz not_found
@@ -72,7 +75,7 @@ searchchar:
 	add $4, %eax			/ increment src by four
 	mov %esi, %ebx			/ copy word
 	lea -0x01010101(%esi), %ecx	/ (word - 0x01010101)
-	xor %edx, %ebx			/ tmpword = word ^ char	
+	xor %edx, %ebx			/ tmpword = word ^ char
 	not %esi			/ ~word
 	and $0x80808080, %esi		/ ~word & 0x80808080
 	and %ecx, %esi			/ (wd - 0x01010101) & ~wd & 0x80808080
@@ -95,15 +98,19 @@ found_char:
 	jz done2
 done3:
 	sub $1, %eax
+	pop %ebp
 	ret
 done2:
 	sub $2, %eax
+	pop %ebp
 	ret
 done1:
 	sub $3, %eax
+	pop %ebp
 	ret
 done0:
 	sub $4, %eax
+	pop %ebp
 	ret
 has_zero_byte:
 	add $0x01010101, %ecx		/ restore registers here
@@ -128,8 +135,10 @@ has_zero_byte:
 	jz not_found
 	sub $1, %eax			/ correct for last loop iteration
 done:
+	pop %ebp
 	ret
 not_found:
 	xor %eax, %eax
+	pop %ebp
 	ret
 	SET_SIZE(strchr)

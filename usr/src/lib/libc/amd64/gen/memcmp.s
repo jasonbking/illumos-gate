@@ -1,31 +1,32 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 /*
  * Copyright (c) 2002 Advanced Micro Devices, Inc.
- * 
+ *
  * All rights reserved.
- * 
+ *
  * Redistribution and  use in source and binary  forms, with or
  * without  modification,  are   permitted  provided  that  the
  * following conditions are met:
- * 
+ *
  * + Redistributions  of source  code  must  retain  the  above
  *   copyright  notice,   this  list  of   conditions  and  the
  *   following disclaimer.
- * 
+ *
  * + Redistributions  in binary  form must reproduce  the above
  *   copyright  notice,   this  list  of   conditions  and  the
  *   following  disclaimer in  the  documentation and/or  other
  *   materials provided with the distribution.
- * 
+ *
  * + Neither the  name of Advanced Micro Devices,  Inc. nor the
  *   names  of  its contributors  may  be  used  to endorse  or
  *   promote  products  derived   from  this  software  without
  *   specific prior written permission.
- * 
+ *
  * THIS  SOFTWARE  IS PROVIDED  BY  THE  COPYRIGHT HOLDERS  AND
  * CONTRIBUTORS AS IS AND  ANY EXPRESS OR IMPLIED WARRANTIES,
  * INCLUDING,  BUT NOT  LIMITED TO,  THE IMPLIED  WARRANTIES OF
@@ -40,7 +41,7 @@
  * (INCLUDING NEGLIGENCE  OR OTHERWISE) ARISING IN  ANY WAY OUT
  * OF THE  USE  OF  THIS  SOFTWARE, EVEN  IF  ADVISED  OF  THE
  * POSSIBILITY OF SUCH DAMAGE.
- * 
+ *
  * It is  licensee's responsibility  to comply with  any export
  * regulations applicable in licensee's jurisdiction.
  */
@@ -57,6 +58,8 @@
 #define LABEL(s) .memcmp/**/s
 
 	ENTRY(memcmp)                 /* (const void *, const void*, size_t) */
+	push	%rbp
+	mov	%rsp, %rbp
 
 LABEL(try1):
         cmp     $8, %rdx
@@ -82,6 +85,7 @@ LABEL(1loop):
 
 LABEL(exit):
         rep
+	leave
         ret
 
         .p2align 4
@@ -117,6 +121,7 @@ LABEL(8skip):
         jnz     LABEL(1)
 
         xor     %eax, %eax
+	leave
         ret
 
         .p2align 4
@@ -162,6 +167,7 @@ LABEL(32skip):
         jnz     LABEL(8)
 
         xor     %eax, %eax
+	leave
         ret
 
         .p2align 4
@@ -238,7 +244,7 @@ LABEL(64loop):
         or      %r10, %r9
 
         or      %r9,  %rax
-        jnz    	LABEL(32)
+        jnz	LABEL(32)
 
         lea     64 (%rsi), %rsi
         lea     64 (%rdi), %rdi
@@ -255,6 +261,7 @@ LABEL(64skip):
         jnz     LABEL(32)
 
         xor     %eax, %eax
+	leave
         ret
 
         .p2align 4
@@ -358,6 +365,7 @@ LABEL(preskip):
         jnz     LABEL(32)
 
         xor     %eax, %eax
+	leave
         ret
 
         .p2align 4
@@ -451,6 +459,7 @@ LABEL(128skip):
         jnz     LABEL(32)
 
         xor     %eax, %eax
+	leave
         ret
 
 	SET_SIZE(memcmp)

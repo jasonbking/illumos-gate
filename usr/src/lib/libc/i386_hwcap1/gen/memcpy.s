@@ -22,6 +22,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2020 Joyent, Inc.
  */
 
 	.file	"memcpy.s"
@@ -32,11 +33,13 @@
 	ANSI_PRAGMA_WEAK(memcpy,function)
 
 	ENTRY(memmove)
-	movl	0+12(%esp),%ecx	/ get number of bytes to move
+	pushl	%ebp
+	movl	%esp, %ebp	/ create stack frame
 	pushl	%esi		/ save off %edi, %esi and move destination
 	pushl	%edi
-	movl	8+ 4(%esp),%edi	/ destination buffer address
-	movl	8+ 8(%esp),%esi	/ source buffer address
+	movl	12+ 4(%esp),%edi	/ destination buffer address
+	movl	12+ 8(%esp),%esi	/ source buffer address
+	movl	12+12(%esp),%ecx	/ get number of bytes to move
 	movl	%edi, %eax
 	testl	%ecx,%ecx
 	jz	.Return
@@ -49,22 +52,24 @@
 	jmp	.memcpy_post
 
 	ENTRY(memcpy)
+	pushl	%ebp
+	movl	%esp, %ebp
 	pushl	%esi
 	pushl	%edi
 
-	movl	8+4(%esp),%edi	/ %edi = dest address
-	movl	%edi, %eax	/ save this
-	movl	8+8(%esp),%esi	/ %esi = source address
-	movl	8+12(%esp),%ecx/ %ecx = length of string
-				/ %edx scratch register
-				/ %eax scratch register
-.memcpy_post:	
+	movl	12+4(%esp),%edi		/ %edi = dest address
+	movl	%edi, %eax		/ save this
+	movl	12+8(%esp),%esi		/ %esi = source address
+	movl	12+12(%esp),%ecx	/ %ecx = length of string
+					/ %edx scratch register
+					/ %eax scratch register
+.memcpy_post:
 	nop			/ this really helps, don't know why
 				/ note:	cld is perf death on P4
 	cmpl	$63,%ecx
 	ja	.move_sse	/ not worth doing sse for less
 
-.movew:	
+.movew:
 	movl	%ecx,%edx	/ save byte cnt
 	shrl	$2,%ecx		/ %ecx = number of words to move
 	rep ; smovl		/ move the words
@@ -86,7 +91,8 @@
 
 .Return:
 	popl	%edi		/ restore register variables
-	popl	%esi		
+	popl	%esi
+	popl	%ebp		/ pop stack frame
 	ret
 
 .move_sse:
@@ -102,7 +108,7 @@
 	jnz	.sse_da		/ go to slow loop if source is unaligned
 	cmpl	$65535, %ecx
 	ja	.sse_sa_nt_loop
-	
+
 	/
 	/ use aligned load since we're lucky
 	/
@@ -110,24 +116,24 @@
 	prefetcht0 568(%esi)	/ prefetch source & copy 64 byte at a time
 	prefetcht0 568(%edi)	/ prefetch source & copy 64 byte at a time
 	movaps	0(%esi), %xmm0
-	movaps	%xmm0, 0(%edi)	 
+	movaps	%xmm0, 0(%edi)
 	movaps	16(%esi), %xmm1
 	movaps	%xmm1, 16(%edi)
 	movaps	32(%esi), %xmm2
-	movaps	%xmm2, 32(%edi)	 
+	movaps	%xmm2, 32(%edi)
 	movaps	48(%esi), %xmm3
 	movaps	%xmm3, 48(%edi)
 	addl	$64, %esi
 	addl	$64, %edi
 	decl	%edx
 	jnz	.sse_sa_loop
-	
+
 .sse_cleanup:
-	andl	$63, %ecx	/ compute remaining bytes
-	movl	8+4(%esp), %eax	/ setup return value
+	andl	$63, %ecx		/ compute remaining bytes
+	movl	12+4(%esp), %eax	/ setup return value
 	jz	.Return
 	jmp	.movew
-	
+
 	/
 	/ use aligned load since we're lucky
 	/
@@ -135,11 +141,11 @@
 .sse_sa_nt_loop:
 	prefetchnta 16384(%esi)	/ prefetch source & copy 64 byte at a time
 	movaps	(%esi), %xmm0
-	movntps	%xmm0, 0(%edi)	 
+	movntps	%xmm0, 0(%edi)
 	movaps	16(%esi), %xmm1
 	movntps	%xmm1, 16(%edi)
 	movaps	32(%esi), %xmm2
-	movntps	%xmm2, 32(%edi)	 
+	movntps	%xmm2, 32(%edi)
 	movaps	48(%esi), %xmm3
 	movntps	%xmm3, 48(%edi)
 	addl	$64, %esi
@@ -165,13 +171,13 @@
 	subl	%eax, %ecx	/ subtract from byte count
 	cmpl	$64, %ecx	/ after aligning, will we still have 64 bytes?
 	cmovb	%edx, %ecx	/ if not, restore original byte count,
-	cmovb	8+4(%esp), %eax	/ and restore return value,
+	cmovb	12+4(%esp), %eax	/ and restore return value,
 	jb	.movew		/ and do a non-SSE move.
 	xchg	%ecx, %eax	/ flip for copy
 	rep ; smovb		/ move the bytes
 	xchg	%ecx, %eax	/ flip back
 	jmp	.sse
-	
+
 	.align 16
 .sse_da:
 	cmpl	$65535, %ecx
@@ -183,11 +189,11 @@
 .sse_da_nt_loop:
 	prefetchnta 16384(%esi)	/ prefetch source & copy 64 byte at a time
 	movups	0(%esi), %xmm0
-	movntps	%xmm0, 0(%edi)	 
+	movntps	%xmm0, 0(%edi)
 	movups	16(%esi), %xmm1
 	movntps	%xmm1, 16(%edi)
 	movups	32(%esi), %xmm2
-	movntps	%xmm2, 32(%edi)	 
+	movntps	%xmm2, 32(%edi)
 	movups	48(%esi), %xmm3
 	movntps	%xmm3, 48(%edi)
 	addl	$64, %esi
@@ -210,11 +216,11 @@
 	prefetcht0 568(%esi)	/ prefetch source & copy 64 byte at a time
 	prefetcht0 568(%edi)
 	movups	0(%esi), %xmm0
-	movaps	%xmm0, 0(%edi)	 
+	movaps	%xmm0, 0(%edi)
 	movups	16(%esi), %xmm1
 	movaps	%xmm1, 16(%edi)
 	movups	32(%esi), %xmm2
-	movaps	%xmm2, 32(%edi)	 
+	movaps	%xmm2, 32(%edi)
 	movups	48(%esi), %xmm3
 	movaps	%xmm3, 48(%edi)
 	addl	$64, %esi
@@ -222,7 +228,7 @@
 	decl	%edx
 	jnz	.sse_da_loop
 	jmp	.sse_cleanup
-	
+
 	SET_SIZE(memcpy)
 
 
@@ -240,6 +246,7 @@
 	cld				/    reset direction flag to LtoR
 	popl	%edi			/  }
 	popl	%esi			/  restore registers
+	popl	%ebp			/  pop stack frame
 	movl	4(%esp),%eax		/  set up return value
 	ret				/  return(dba);
 .BigCopyLeft:				/ } else {
@@ -252,14 +259,14 @@
 	subl	%ecx,%edx		/ copy is done on aligned boundary
 	rep;	smovb
 .SkipAlignLeft:
-	movl	%edx,%ecx	
+	movl	%edx,%ecx
 	subl	%eax,%esi
 	shrl	$2,%ecx			/ do 4 byte copy RtoL
 	subl	%eax,%edi
 	rep;	smovl
 	andl	%eax,%edx		/ do 1 byte copy whats left
 	jz	.CleanupReturnLeft
-	movl	%edx,%ecx	
+	movl	%edx,%ecx
 	addl	%eax,%esi		/ rep; smovl instruction will decrement
 	addl	%eax,%edi		/ %edi, %esi by four after each copy
 					/ adding 3 will restore pointers to byte
@@ -271,6 +278,7 @@
 	cld				/ reset direction flag to LtoR
 	popl	%edi
 	popl	%esi			/ restore registers
+	popl	%ebp			/ pop stack frame
 	movl	4(%esp),%eax		/ set up return value
 	ret				/ return(dba);
 	SET_SIZE(memmove)

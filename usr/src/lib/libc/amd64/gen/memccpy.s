@@ -22,6 +22,7 @@
 /*
  * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2020 Joyent, Inc.
  */
 
 	.file	"memccpy.s"
@@ -31,6 +32,15 @@
 	ANSI_PRAGMA_WEAK(memccpy,function)
 
 	ENTRY(memccpy)	/* (void *dst, void *src, uchar_t c, size_t) */
+	pushq	%rbp
+	movq	%rsp, %rbp	/ create stack frame
+
+	.align 4		/ many if not most recent (and even less
+				/ recent) chips benefit from having branch
+				/ targets aligned. Since 'loop' is the main
+				/ body of instructions that gets executed
+				/ for each byte of input, we keep it's starting
+				/ address aligned.
 .loop:
 	decq	%rcx		/ decrement bytes to go
 	jl	.notfound
@@ -66,6 +76,7 @@
 .found:
 	incq	%rdi		/ return pointer to next byte in dest
 	movq	%rdi,%rax
+	leave
 	ret
 
 	.align	4
@@ -74,10 +85,12 @@
 .found1:
 	addq	$2,%rdi		/ return pointer to next byte in dest
 	movq	%rdi,%rax
+	leave
 	ret
 
 	.align	4
 .notfound:
 	xorl	%eax,%eax	/ search fails
+	leave
 	ret
 	SET_SIZE(memccpy)

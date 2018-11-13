@@ -21,6 +21,7 @@
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2018, Joyent, Inc.
  */
 
 	.file	"strncpy.s"
@@ -39,13 +40,13 @@
 /	{
 /		char	*os1 = s1;
 /
-/		n++; 
+/		n++;
 /		while ((--n != 0) && ((*s1++ = *s2++) != '\0'))
 /			;
 /		if (n != 0)
 /			while (--n != 0)
-/				*s1++ = '\0'; 
-/		return (os1); 
+/				*s1++ = '\0';
+/		return (os1);
 /	}
 /
 / In this assembly language version, the following expression is used
@@ -60,12 +61,14 @@
 #include "SYS.h"
 
 	ENTRY(strncpy)
+	pushl	%ebp
+	movl	%esp, %ebp		/ create stack frame
 	pushl	%edi			/ save register variables
 	pushl	%esi
 
-	movl	16(%esp), %eax		/ %eax = source string address
-	movl	12(%esp), %edi		/ %edi = destination string address
-	movl	20(%esp), %esi		/ %esi = number of bytes
+	movl	20(%esp), %eax		/ %eax = source string address
+	movl	16(%esp), %edi		/ %edi = destination string address
+	movl	24(%esp), %esi		/ %esi = number of bytes
 
 	testl	$3, %eax		/ if %eax not word aligned
 	jnz	.L1			/ goto .L1
@@ -126,7 +129,7 @@
 	shrl	$2, %ecx		/ %ecx = words to copy null bytes
 	rep ; sstol			/ rep;sstol is optimal
 	andl	$3, %esi		/ %esi = leftover bytes
-.L6:	
+.L6:
 	cmpl	$0, %esi		/ if number of bytes == 0
 	jz	.L7			/ goto .L7 (finished)
 	movb	$0, (%edi)		/ move a null byte to (%edi)
@@ -135,8 +138,9 @@
 	jmp	.L6			/ goto .L6
 	.align	4
 .L7:
-	movl	12(%esp), %eax		/ return the destination address
+	movl	16(%esp), %eax		/ return the destination address
 	popl	%esi			/ restore register variables
 	popl	%edi
+	popl	%ebp			/ restore stack frame
 	ret
 	SET_SIZE(strncpy)

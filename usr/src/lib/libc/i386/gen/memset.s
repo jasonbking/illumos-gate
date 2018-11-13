@@ -22,6 +22,7 @@
 /*
  * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2020 Joyent, Inc.
  */
 
 	.file	"memset.s"
@@ -33,10 +34,12 @@
 #include "SYS.h"
 
 	ENTRY(memset)
+	pushl	%ebp		/ save stack frame
+	movl	%esp, %ebp	/
 	pushl	%edi		/ save register variable
-	movl	8(%esp),%edi	/ %edi = string address
-	movl	12(%esp),%eax	/ %al = byte to duplicate
-	movl	16(%esp),%ecx	/ %ecx = number of copies
+	movl	12(%esp),%edi	/ %edi = string address
+	movl	16(%esp),%eax	/ %al = byte to duplicate
+	movl	20(%esp),%ecx	/ %ecx = number of copies
 	cmpl	$20,%ecx	/ strings with 20 or more chars should
 	jbe	.byteset	/ byteset one word at a time
 .wordset:
@@ -50,11 +53,12 @@
 	shll	$8,%eax
 	orl	%edx,%eax
 	rep; sstol
-	movl	16(%esp),%ecx
+	movl	20(%esp),%ecx
 	andl	$3,%ecx		/ %ecx = number of bytes left
 .byteset:
 	rep; sstob
-	movl	8(%esp),%eax	/ return string address
+	movl	12(%esp),%eax	/ return string address
 	popl	%edi		/ restore register variable
+	popl	%ebp		/ restore stack frame
 	ret
 	SET_SIZE(memset)
