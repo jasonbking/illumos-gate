@@ -32,7 +32,7 @@ kstat_open_nofail(void)
 	kstat_ctl_t *kcp;
 
 	if ((kcp = kstat_open()) == NULL)
-		kstat_fatal("kstat_open");
+		err(EXIT_FAILURE, "kstat_open");
 
 	return (kcp);
 }
@@ -40,17 +40,17 @@ kstat_open_nofail(void)
 int
 kstat_field_hint(kstat_t *ksp, kstat_field_t *field)
 {
+	VERIFY3U(ksp->ks_type, ==, KSTAT_TYPE_NAMED);
+
 	kstat_named_t *nm = KSTAT_NAMED_PTR(ksp);
 	int i;
-
-	assert(ksp->ks_type == KSTAT_TYPE_NAMED);
 
 	for (i = 0; i < ksp->ks_ndata; i++) {
 		if (strcmp(field->ksf_name, nm[i].name) == 0)
 			return (field->ksf_hint = i);
 	}
 
-	kstat_fatal("could not find field '%s' in %s:%d",
+	errx(EXIT_FAILURE"could not find field '%s' in %s:%d",
 	    field->ksf_name, ksp->ks_name, ksp->ks_instance);
 
 	return (0);
@@ -88,7 +88,7 @@ kstat_instances_update(kstat_ctl_t *kcp, kstat_instance_t **instances,
 		return;
 
 	if (kid == -1)
-		kstat_fatal("failed to update kstat chain");
+		err(EXIT_FAILURE, "failed to update kstat chain");
 
 	for (ksi = *head; ksi != NULL; ksi = ksi->ksi_next)
 		ksi->ksi_ksp = NULL;
@@ -122,7 +122,7 @@ kstat_instances_update(kstat_ctl_t *kcp, kstat_instance_t **instances,
 			continue;
 
 		if ((ksi = malloc(sizeof (kstat_instance_t))) == NULL)
-			kstat_fatal(
+			err(EXIT_FAILURE,
 			    "could not allocate memory for stat instance");
 
 		bzero(ksi, sizeof (kstat_instance_t));
@@ -177,18 +177,81 @@ kstat_instances_update(kstat_ctl_t *kcp, kstat_instance_t **instances,
 
 void
 kstat_instances_read(kstat_ctl_t *kcp, kstat_instance_t *instance,
-    kstat_field_t *kfp)
+    size_t nfields, kstat_field_t *kfp)
 {
-}
+	kstat_instance_t *ksi;
+	int i;
 
-void
-kstat_fatal(const char *msg, ...)
-{
-	va_list ap;
+	for (ksi = instances; ksi != NULL; ksi = ksi->ksi_next) {
+		kstat_t *ksp = ksi->ksi_ksp;
 
-	va_start(ap, msg);
-	verr(EXIT_FAILURE, msg, ap);
-	va_end(ap);
+		if (ksp == NULL)
+			continue;
+
+		if (kstat_read(kcp, ksp, NULL) == -1) {
+			if (errno != ENXIO) {
+				err(EXIT_FAILURE, "failed to read kstat %s:%d",
+				    ksi->ksi_name, ksi->ksi_instance);
+			}
+
+			/*
+			 * Our kstat has been removed since the update;
+			 * NULL it out to prevent us from trying to read
+			 * it again (and to indicate that it should not be
+			 * displayed) and drive on.
+			 */
+			ksi->ksi_ksp = NULL;
+			continue;
+		}
+	}
+
+	if (ksp->ks_type != KSTAT_TYPE_NAMED) {
+		err(EXIT_FAILURE, "%s:%d is not a named kstat",
+		    ksi->ksi_name, ksi->ksi_instnance);
+	}
+
+	if (ksi->ksi_data[0] == NULL) {
+		uint64_t *data;
+
+		if ((data = calloc(nfields * 2, sizeof (uint64_t))) == NULL)
+		       err(EXIT_FAILURE, "could not allocate memory");
+
+		ksi->ksi_data[0] = data;
+		ksi->ksi_data[1] = &data[nfields];
+	}
+
+	for (i = 0; i < nfields; i++) {
+		kstat_named_t *nm = KSTAT_NAMED_PTR(ksp);
+		kstat_field_t *field = &fields[i];
+		int hint = field->ksf_hint;
+
+		if (hint < 0 || hint >= ksp->ks_ndata ||
+		    strcmp(field->ksf_name, nm[hint].name) != 0) {
+			hint = kstat_field_hint(ksp, field);
+		}
+
+		switch (nm[hint].data_type) {
+		case KSTAT_DATA_CHAR:
+			ksi->ksi_data[ksi->ksi_gen][i] =
+			    (uint64_t)(uintptr_t)
+			    nm[hint].value.charc;
+			break;
+		case KSTAT_DATA_STRING:
+			ksi->ksi_data[ksi->ksi_gen][i] =
+			    (uint64_t)(uintptr_t)KSTAT_NAME_STR_PTR(&nm[hint]);
+			break;
+		case KSTAT_DATA_UINT64:
+			ksi->ksi_data[ksi->ksi_gen][i] =
+			    nm[hint].value.ui64;
+			break;
+		default:
+			/* Type not supported */
+			VERIFY(0);
+		}
+
+		ksi->ksi_snaptime[ksi->ksi_gen] = ksp->ks_snaptime;
+		ksi->ksi_gen ^= 1;
+	}
 }
 
 hrtime_t
@@ -200,21 +263,62 @@ kstat_inst_tdelta(kstat_instance_t *ksi)
 }
 
 uint64_t
-kstat_inst_value(kstat_instance_t *instances, int idx)
+kstat_inst_value(kstat_instance_t *inst, int idx)
 {
+	return (inst->ksi_data[inst->ksi_gen][idx]);
 }
 
 uint64_t
-kstat_inst_diff(kstat_instance_t *instances, int idx)
+kstat_inst_diff(kstat_instance_t *inst, int idx)
 {
+	uint64_t v1 = inst->ksi_data[inst->ksi_gen][idx];
+	uint64_t v2 = inst->ksi_data[inst->ksi_gen ^ 1][idx];
+
+	return (v1 - v2);
+}
+
+static uint64_t
+kstat_inst_vsum(kstat_instance_t *inst, size_t n, va_list ap)
+{
+	uint64_t sum = 0;
+
+	for (size_t i = 0; i < n; i++) {
+		int idx = va_arg(ap, int);
+		sum += kstat_inst_diff(inst, idx);
+	}
+
+	return (sum);
 }
 
 uint64_t
-kstat_inst_sum(kstat_instance_t *instances, int n, ...)
+kstat_inst_sum(kstat_instance_t *inst, size_t n, ...)
 {
+	uint64_t sum;
+	va_list ap;
+
+	va_start(ap, n);
+	sum = kstat_inst_vsum(inst, n, ap);
+	va_end(ap);
+
+	return (sum);
 }
 
 uint64_t
-kstat_inst_delta(kstat_instance_t *instances, int n, ...)
+kstat_inst_delta(kstat_instance_t *inst, size_t n, ...)
 {
+	uint64_t sum;
+	hrtime_t tdelta;
+	va_list ap;
+
+	va_start(ap, n);
+	sum = kstat_inst_vsum(inst, n, ap);
+	va_end(ap);
+
+	tdelta = kstat_inst_tdelta(inst);
+
+	sum *= (uint64_t)NANOSEC;
+	sum += tdelta / 2;
+	sum /= tdelta;
+
+	return (sum);
 }
