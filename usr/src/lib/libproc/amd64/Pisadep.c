@@ -591,6 +591,13 @@ Pstack_iter(struct ps_prochandle *P, const prgregset_t regs,
 	return (rv);
 }
 
+int
+Pehstack_iter(struct ps_prochandle *P, const prgregset_t regs,
+    proc_stack_f *func, void *arg)
+{
+	return (-1);
+}
+
 uintptr_t
 Psyscall_setup(struct ps_prochandle *P, int nargs, int sysindex, uintptr_t sp)
 {

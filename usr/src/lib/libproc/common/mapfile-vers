@@ -21,7 +21,7 @@
 #
 # Copyright (c) 2006, 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright 2012 DEY Storage Systems, Inc.  All rights reserved.
-# Copyright 2018 Joyent, Inc.
+# Copyright 2019 Joyent, Inc.
 # Copyright (c) 2013 by Delphix. All rights reserved.
 # Copyright (c) 2019 Carlos Neira <cneirabustos@gmail.com>
 # Copyright 2020 OmniOS Community Edition (OmniOSce) Association.
@@ -338,6 +338,7 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	Pfdinfo_iter;
 
 $if _x86 && _ELF32
+	Pehstack_iter;
 	Pldt;
 	proc_get_ldt;
 	ps_lgetLDT;

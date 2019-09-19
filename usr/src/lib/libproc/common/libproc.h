@@ -679,6 +679,11 @@ typedef int proc_stack_f(void *, prgregset_t, uint_t, const long *);
 extern int Pstack_iter(struct ps_prochandle *,
     const prgregset_t, proc_stack_f *, void *);
 
+#if defined(__i386) || defined(__amd64)
+extern int Pehstack_iter(struct ps_prochandle *,
+    const prgregset_t, proc_stack_f *, void *);
+#endif /* __i386 || __amd64 */
+
 /*
  * The following functions define a set of passive interfaces: libproc provides
  * default, empty definitions that are called internally.  If a client wishes

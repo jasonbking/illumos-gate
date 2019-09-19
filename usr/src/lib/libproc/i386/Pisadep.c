@@ -21,7 +21,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <sys/stack.h>
@@ -302,6 +302,13 @@ Pstack_iter(struct ps_prochandle *P, const prgregset_t regs,
 
 	free_uclist(&ucl);
 	return (rv);
+}
+
+int
+Pehstack_iter(struct ps_prochandle *P, const prgregset_t regs,
+    proc_stack_f *func, void *arg)
+{
+	return (-1);
 }
 
 uintptr_t

@@ -22,7 +22,7 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <sys/isa_defs.h>
@@ -150,6 +150,13 @@ static	void	call_stack(pstack_handle_t *, const lwpstatus_t *);
  */
 static	int	nthreads;
 
+#if defined(__i386) || defined(__amd64)
+#define	OPTSTRING "Fe"
+static boolean_t eh_frame;
+#else
+#define	OPTSTRING "F"
+#endif
+
 int
 main(int argc, char **argv)
 {
@@ -166,7 +173,7 @@ main(int argc, char **argv)
 		command = argv[0];
 
 	/* options */
-	while ((opt = getopt(argc, argv, "F")) != EOF) {
+	while ((opt = getopt(argc, argv, OPTSTRING)) != EOF) {
 		switch (opt) {
 		case 'F':
 			/*
@@ -177,6 +184,11 @@ main(int argc, char **argv)
 			content &= ~CC_CONTENT_STACK;
 			Fflag = PGRAB_FORCE;
 			break;
+#if defined(__i386) || defined(__amd64)
+		case 'e':
+			eh_frame = B_TRUE;
+			break;
+#endif
 		default:
 			errflg = TRUE;
 			break;
@@ -699,7 +711,14 @@ call_stack(pstack_handle_t *h, const lwpstatus_t *psp)
 		h->ignore_frame = 0;
 	}
 
+#if defined(__i386) || defined(__amd64)
+	if (eh_frame)
+		(void) Pehstack_iter(h->proc, reg, print_frame, h);
+	else
+		(void) Pstack_iter(h->proc, reg, print_frame, h);
+#else
 	(void) Pstack_iter(h->proc, reg, print_frame, h);
+#endif
 }
 
 /*ARGSUSED*/
