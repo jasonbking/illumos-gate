@@ -21,7 +21,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
- * Copyright 2018, Joyent, Inc.
+ * Copyright 2019 Joyent, Inc.
  */
 
 #include <sys/stack.h>
@@ -595,6 +595,25 @@ int
 Pehstack_iter(struct ps_prochandle *P, const prgregset_t regs,
     proc_stack_f *func, void *arg)
 {
+	char objectfile[PATH_MAX];
+	prgregset_t gregs;
+	uclist_t ucl;
+	const prmap_t *pmap;
+
+	init_uclist(&ucl, P);
+	(void) memcpy(gregs, regs, sizeof (gregs));
+
+	if (elf_version(EV_CURRENT) == EV_NONE) {
+		dprintf("libproc ELF version is more recent than libelf\n");
+		return (-1);
+	}
+
+	if ((pmap = Paddr_to_text_map(P, regs[REG_IP])) == NULL) {
+		dprintf("failed to get text map for 0x%lx: %s\n",
+		    regs[REG_IP], strerror(errno));
+		return (-1);
+	}
+
 	return (-1);
 }
 
