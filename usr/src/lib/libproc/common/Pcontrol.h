@@ -25,7 +25,7 @@
 /*
  * Copyright 2012 DEY Storage Systems, Inc.  All rights reserved.
  * Copyright (c) 2013 by Delphix. All rights reserved.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  * Copyright 2020 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2023 Oxide Computer Company
  */
@@ -128,6 +128,10 @@ typedef struct file_info {	/* symbol information for a mapped file */
 	size_t	file_shstrsz;	/* section header string table size */
 	uintptr_t *file_saddrs; /* section header addresses */
 	uint_t  file_nsaddrs;   /* number of section header addresses */
+	uintptr_t eh_frame_hdr_addr;
+	void	*eh_frame_hdr_buf;	/* .eh_frame_hdr data */
+	uintptr_t en_frame_addr;
+	void	*eh_frame_buf;	/* .eh_frame data */
 	boolean_t file_cvt;	/* Have we tried to convert this? */
 } file_info_t;
 

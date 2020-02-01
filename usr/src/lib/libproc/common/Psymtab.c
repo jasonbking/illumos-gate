@@ -21,7 +21,7 @@
 
 /*
  * Copyright (c) 1997, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2016 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  * Copyright (c) 2013 by Delphix. All rights reserved.
  * Copyright 2023 Oxide Computer Company
  */
@@ -1901,7 +1901,8 @@ Pbuild_file_symtab(struct ps_prochandle *P, file_info_t *fptr)
 		Elf_Data *c_data;
 		const char *c_name;
 	} *cp, *cache = NULL, *dyn = NULL, *plt = NULL, *ctf = NULL,
-	*dbglink = NULL, *buildid = NULL;
+	*dbglink = NULL, *buildid = NULL, *eh_frame = NULL,
+	*eh_frame_hdr = NULL;
 
 	if (fptr->file_init)
 		return;	/* We've already processed this file */
@@ -2165,6 +2166,14 @@ Pbuild_file_symtab(struct ps_prochandle *P, file_info_t *fptr)
 			    cp->c_data->d_size) {
 				dbglink = cp;
 			}
+		} else if (strcmp(cp->c_name, ".eh_frame") == 0) {
+			dprintf("found .eh_frame section for %s\n",
+			    fptr->file_rname);
+			*eh_frame = cp;
+		} else if (strcmp(cp->c_name, ".eh_frame_hdr") == 0) {
+			dprintf("found .eh_frame_hdr section for %s\n",
+			    fptr->file_rname);
+			*eh_frame_hdr = cp;
 		}
 	}
 
@@ -2383,6 +2392,16 @@ Pbuild_file_symtab(struct ps_prochandle *P, file_info_t *fptr)
 
 		dprintf("_DYNAMIC found at %p, %lu entries, DT_JMPREL = %p\n",
 		    (void *)dynaddr, (ulong_t)ndyn, (void *)fptr->file_jmp_rel);
+	}
+
+	if (eh_frame_hdr != NULL) {
+		fptr->eh_frame_hdr_addr = eh_frame_hdr->c_shdr.sh_addr;
+		fptr->eh_frame_hdr_buf = eh_frame_hdr->c_data->d_buf;
+	}
+
+	if (eh_frame != NULL) {
+		fptr->eh_frame_addr = eh_frame->c_shdr.sh_addr;
+		fptr->eh_frame_buf = eh_frame->c_data->d_buf;
 	}
 
 done:
