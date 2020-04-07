@@ -608,6 +608,7 @@ Pehstack_iter(struct ps_prochandle *P, const prgregset_t regs,
 		return (-1);
 	}
 
+	pehstack_step(P, regs);
 	if ((pmap = Paddr_to_text_map(P, regs[REG_IP])) == NULL) {
 		dprintf("failed to get text map for 0x%lx: %s\n",
 		    regs[REG_IP], strerror(errno));

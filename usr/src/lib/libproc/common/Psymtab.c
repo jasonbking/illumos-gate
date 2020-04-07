@@ -2397,11 +2397,13 @@ Pbuild_file_symtab(struct ps_prochandle *P, file_info_t *fptr)
 	if (eh_frame_hdr != NULL) {
 		fptr->eh_frame_hdr_addr = eh_frame_hdr->c_shdr.sh_addr;
 		fptr->eh_frame_hdr_buf = eh_frame_hdr->c_data->d_buf;
+		fptr->eh_frame_hdr_buflen = eh_frame_hdr->c_shdr.sh_size;
 	}
 
 	if (eh_frame != NULL) {
 		fptr->eh_frame_addr = eh_frame->c_shdr.sh_addr;
 		fptr->eh_frame_buf = eh_frame->c_data->d_buf;
+		fptr->eh_frame_buflen = eh_frame->c_shdr.sh_size;
 	}
 
 done:

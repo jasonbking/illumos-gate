@@ -128,10 +128,14 @@ typedef struct file_info {	/* symbol information for a mapped file */
 	size_t	file_shstrsz;	/* section header string table size */
 	uintptr_t *file_saddrs; /* section header addresses */
 	uint_t  file_nsaddrs;   /* number of section header addresses */
-	uintptr_t eh_frame_hdr_addr;
-	void	*eh_frame_hdr_buf;	/* .eh_frame_hdr data */
-	uintptr_t en_frame_addr;
-	void	*eh_frame_buf;	/* .eh_frame data */
+#if defined(__i386) || defined (__amd64)
+	uintptr_t eh_frame_hdr_addr;	/* .eh_frame_hdr address */
+	void	*eh_frame_hdr_buf;	/* .eh_frame_hdr contents */
+	size_t	eh_frame_hdr_buflen;	/* .eh_frame_hdr size */
+	uintptr_t eh_frame_addr;	/* .eh_frame address */
+	void	*eh_frame_buf;		/* .eh_frame contents */
+	size_t	eh_frame_buflen;	/* .eh_frame size */
+#endif
 	boolean_t file_cvt;	/* Have we tried to convert this? */
 } file_info_t;
 
