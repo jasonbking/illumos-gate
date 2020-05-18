@@ -25,6 +25,7 @@
 #
 # Copyright 2020 Joyent, Inc.
 # Copyright 2020 OmniOS Community Edition (OmniOSce) Association.
+# Copyright 2022 Jason King
 
 SHELL=/usr/bin/ksh93
 
@@ -51,7 +52,6 @@ SHFILES= \
 
 PERLFILES= \
 	check_rtime \
-	find_elf \
 	interface_check \
 	interface_cmp \
 	jstyle \
