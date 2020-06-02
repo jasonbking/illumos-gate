@@ -21,7 +21,7 @@
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2017 Nexenta Systems, Inc.  All rights reserved.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*
@@ -520,7 +520,7 @@ aes_encrypt(crypto_ctx_t *ctx, crypto_data_t *plaintext,
 		/* cmac_update doesn't store data */
 		ciphertext->cd_length = saved_length;
 		ret = cmac_mode_final((cbc_ctx_t *)aes_ctx, ciphertext,
-		    aes_encrypt_block, aes_xor_block);
+		    AES_BLOCK_LEN, aes_encrypt_block, aes_xor_block);
 		aes_ctx->ac_remainder_len = 0;
 	}
 
@@ -838,7 +838,7 @@ aes_encrypt_final(crypto_ctx_t *ctx, crypto_data_t *data,
 		data->cd_offset = saved_offset;
 	} else if (aes_ctx->ac_flags & CMAC_MODE) {
 		ret = cmac_mode_final((cbc_ctx_t *)aes_ctx, data,
-		    aes_encrypt_block, aes_xor_block);
+		    AES_BLOCK_LEN, aes_encrypt_block, aes_xor_block);
 		if (ret != CRYPTO_SUCCESS)
 			return (ret);
 		data->cd_length = AES_BLOCK_LEN;
@@ -1083,7 +1083,7 @@ aes_encrypt_atomic(crypto_provider_handle_t provider,
 			break;
 		case AES_CMAC_MECH_INFO_TYPE:
 			ret = cmac_mode_final((cbc_ctx_t *)&aes_ctx,
-			    ciphertext, aes_encrypt_block,
+			    ciphertext, AES_BLOCK_LEN, aes_encrypt_block,
 			    aes_xor_block);
 			if (ret != CRYPTO_SUCCESS)
 				goto out;

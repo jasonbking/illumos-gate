@@ -19,6 +19,7 @@
 # CDDL HEADER END
 #
 # Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
+# Copyright 2020 Joyent, Inc.
 #
 # lib/pkcs11/Makefile
 
@@ -52,6 +53,8 @@ install_h: $(ROOTHDRS)
 
 check:	$(CHECKHDRS)
 
+pkcs11_softtoken: libsoftcrypto
+pkcs11_tpm: libsoftcrypto
 
 $(SUBDIRS): FRC
 	@cd $@; pwd; $(MAKE) $(TARGET)

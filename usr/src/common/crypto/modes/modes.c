@@ -23,6 +23,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2014 Nexenta Systems, Inc.  All rights reserved.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef _KERNEL
@@ -186,6 +187,7 @@ crypto_free_mode_ctx(void *ctx)
 
 	case CBC_MODE:
 	case CMAC_MODE:
+	case CBC_PAD_MODE:
 #ifdef _KERNEL
 		kmem_free(common_ctx, sizeof (cbc_ctx_t));
 #else

@@ -21,7 +21,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -110,7 +110,7 @@ aes_encrypt_contiguous_blocks(void *ctx, char *data, size_t length,
 		rv = gcm_mode_encrypt_contiguous_blocks(ctx, data, length,
 		    out, AES_BLOCK_LEN, aes_encrypt_block, aes_copy_block,
 		    aes_xor_block);
-	} else if (aes_ctx->ac_flags & (CBC_MODE|CMAC_MODE)) {
+	} else if (aes_ctx->ac_flags & (CBC_MODE|CBC_PAD_MODE|CMAC_MODE)) {
 		rv = cbc_encrypt_contiguous_blocks(ctx,
 		    data, length, out, AES_BLOCK_LEN, aes_encrypt_block,
 		    aes_copy_block, aes_xor_block);
@@ -145,7 +145,7 @@ aes_decrypt_contiguous_blocks(void *ctx, char *data, size_t length,
 		rv = gcm_mode_decrypt_contiguous_blocks(ctx, data, length,
 		    out, AES_BLOCK_LEN, aes_encrypt_block, aes_copy_block,
 		    aes_xor_block);
-	} else if (aes_ctx->ac_flags & CBC_MODE) {
+	} else if (aes_ctx->ac_flags & (CBC_MODE|CBC_PAD_MODE)) {
 		rv = cbc_decrypt_contiguous_blocks(ctx, data, length, out,
 		    AES_BLOCK_LEN, aes_decrypt_block, aes_copy_block,
 		    aes_xor_block);

@@ -22,7 +22,7 @@
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2014 Nexenta Systems, Inc.  All rights reserved.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  * Copyright 2017 Jason King.
  */
 
@@ -65,9 +65,12 @@ soft_aes_check_mech_param(CK_MECHANISM_PTR mech, aes_ctx_t **ctxp)
 		allocf = cmac_alloc_ctx;
 		break;
 	case CKM_AES_CBC:
-	case CKM_AES_CBC_PAD:
 		param_len = AES_BLOCK_LEN;
 		allocf = cbc_alloc_ctx;
+		break;
+	case CKM_AES_CBC_PAD:
+		param_len = AES_BLOCK_LEN;
+		allocf = cbc_pad_alloc_ctx;
 		break;
 	case CKM_AES_CTR:
 		param_len = sizeof (CK_AES_CTR_PARAMS);
@@ -213,9 +216,13 @@ soft_aes_init_ctx(aes_ctx_t *aes_ctx, CK_MECHANISM_PTR mech_p,
 		rc = cmac_init_ctx((cbc_ctx_t *)aes_ctx, AES_BLOCK_LEN);
 		break;
 	case CKM_AES_CBC:
-	case CKM_AES_CBC_PAD:
 		rc = cbc_init_ctx((cbc_ctx_t *)aes_ctx, mech_p->pParameter,
 		    mech_p->ulParameterLen, AES_BLOCK_LEN, aes_copy_block64);
+		break;
+	case CKM_AES_CBC_PAD:
+		rc = cbc_pad_init_ctx((cbc_ctx_t *)aes_ctx, mech_p->pParameter,
+		    mech_p->ulParameterLen, AES_BLOCK_LEN, aes_copy_block64,
+		    encrypt);
 		break;
 	case CKM_AES_CTR:
 	{
@@ -426,33 +433,11 @@ soft_aes_encrypt(soft_session_t *session_p, CK_BYTE_PTR pData,
 	}
 
 	switch (mech) {
-	case CKM_AES_CBC_PAD: {
-		/*
-		 * aes_encrypt_contiguous_blocks() accumulates plaintext
-		 * in aes_ctx until it has at least one full block of
-		 * plaintext.  Any partial blocks of data remaining after
-		 * encrypting are left for subsequent calls to
-		 * aes_encrypt_contiguous_blocks().  If the input happened
-		 * to be an exact multiple of AES_BLOCK_LEN, we must still
-		 * append a block of padding (a full block in that case) so
-		 * that the correct amount of padding to remove is known
-		 * during decryption.
-		 *
-		 * soft_add_pkcs7_padding() is a bit overkill -- we just
-		 * create a block filled with the pad amount using memset(),
-		 * and encrypt 'amt' bytes of the block to pad out the input.
-		 */
-		char block[AES_BLOCK_LEN];
-		size_t amt = AES_BLOCK_LEN - remainder;
-
-		VERIFY3U(remainder, ==, aes_ctx->ac_remainder_len);
-
-		(void) memset(block, amt & 0xff, sizeof (block));
-		rc = aes_encrypt_contiguous_blocks(aes_ctx, block, amt, &out);
+	case CKM_AES_CBC_PAD:
+		rc = cbc_pad_encrypt_final((cbc_ctx_t *)aes_ctx, &out,
+		    AES_BLOCK_LEN, aes_encrypt_block, aes_xor_block);
 		rv = crypto2pkcs11_error_number(rc);
-		explicit_bzero(block, sizeof (block));
 		break;
-	}
 	case CKM_AES_CCM:
 		rc = ccm_encrypt_final((ccm_ctx_t *)aes_ctx, &out,
 		    AES_BLOCK_LEN, aes_encrypt_block, aes_xor_block);
@@ -466,7 +451,7 @@ soft_aes_encrypt(soft_session_t *session_p, CK_BYTE_PTR pData,
 		break;
 	case CKM_AES_CMAC:
 	case CKM_AES_CMAC_GENERAL:
-		rc = cmac_mode_final((cbc_ctx_t *)aes_ctx, &out,
+		rc = cmac_mode_final((cbc_ctx_t *)aes_ctx, &out, AES_BLOCK_LEN,
 		    aes_encrypt_block, aes_xor_block);
 		rv = crypto2pkcs11_error_number(rc);
 		aes_ctx->ac_remainder_len = 0;
@@ -507,126 +492,6 @@ cleanup:
 	soft_aes_free_ctx(aes_ctx);
 	session_p->encrypt.context = NULL;
 	(void) pthread_mutex_unlock(&session_p->session_mutex);
-
-	return (rv);
-}
-
-static CK_RV
-soft_aes_cbc_pad_decrypt(aes_ctx_t *aes_ctx, CK_BYTE_PTR pEncryptedData,
-    CK_ULONG ulEncryptedDataLen, crypto_data_t *out_orig)
-{
-	aes_ctx_t *ctx = aes_ctx;
-	uint8_t *buf = NULL;
-	uint8_t *outbuf = (uint8_t *)out_orig->cd_raw.iov_base;
-	crypto_data_t out = *out_orig;
-	size_t i;
-	int rc;
-	CK_RV rv = CKR_OK;
-	uint8_t pad_len;
-	boolean_t speculate = B_FALSE;
-
-	/*
-	 * Just a query for the output size.  When the output buffer is
-	 * NULL, we are allowed to return a size slightly larger than
-	 * necessary.  We know the output will never be larger than the
-	 * input ciphertext, so we use that as an estimate.
-	 */
-	if (out_orig->cd_raw.iov_base == NULL) {
-		out_orig->cd_length = ulEncryptedDataLen;
-		return (CKR_OK);
-	}
-
-	/*
-	 * The output plaintext size will be 1..AES_BLOCK_LEN bytes
-	 * smaller than the input ciphertext.  However we cannot know
-	 * exactly how much smaller until we decrypt the entire
-	 * input ciphertext.  If we are unsure we have enough output buffer
-	 * space, we have to allocate our own memory to hold the output,
-	 * then see if we have enough room to hold the result.
-	 *
-	 * Unfortunately, having an output buffer that's too small does
-	 * not terminate the operation, nor are we allowed to return
-	 * partial results.  Therefore we must also duplicate the initial
-	 * aes_ctx so that this can potentially be run again.
-	 */
-	if (out_orig->cd_length < ulEncryptedDataLen) {
-		void *ks = malloc(aes_ctx->ac_keysched_len);
-
-		ctx = malloc(sizeof (*aes_ctx));
-		buf = malloc(ulEncryptedDataLen);
-		if (ks == NULL || ctx == NULL || buf == NULL) {
-			free(ks);
-			free(ctx);
-			free(buf);
-			return (CKR_HOST_MEMORY);
-		}
-
-		bcopy(aes_ctx, ctx, sizeof (*ctx));
-		bcopy(aes_ctx->ac_keysched, ks, aes_ctx->ac_keysched_len);
-		ctx->ac_keysched = ks;
-
-		out.cd_length = ulEncryptedDataLen;
-		out.cd_raw.iov_base = (char *)buf;
-		out.cd_raw.iov_len = ulEncryptedDataLen;
-		outbuf = buf;
-
-		speculate = B_TRUE;
-	}
-
-	rc = aes_decrypt_contiguous_blocks(ctx, (char *)pEncryptedData,
-	    ulEncryptedDataLen, &out);
-	if (rc != CRYPTO_SUCCESS) {
-		out_orig->cd_offset = 0;
-		rv = CKR_FUNCTION_FAILED;
-		goto done;
-	}
-
-	/*
-	 * RFC5652 6.3 The amount of padding must be
-	 * block_sz - (len mod block_size).  This means
-	 * the amount of padding must always be in the
-	 * range [1..block_size].
-	 */
-	pad_len = outbuf[ulEncryptedDataLen - 1];
-	if (pad_len == 0 || pad_len > AES_BLOCK_LEN) {
-		rv = CKR_ENCRYPTED_DATA_INVALID;
-		goto done;
-	}
-	out.cd_offset -= pad_len;
-
-	/*
-	 * Verify pad values, trying to do so in as close to constant
-	 * time as possible.
-	 */
-	for (i = ulEncryptedDataLen - pad_len; i < ulEncryptedDataLen; i++) {
-		if (outbuf[i] != pad_len) {
-			rv = CKR_ENCRYPTED_DATA_INVALID;
-		}
-	}
-	if (rv != CKR_OK) {
-		goto done;
-	}
-
-	if (speculate) {
-		if (out.cd_offset <= out_orig->cd_length) {
-			bcopy(out.cd_raw.iov_base, out_orig->cd_raw.iov_base,
-			    out.cd_offset);
-		} else {
-			rv = CKR_BUFFER_TOO_SMALL;
-		}
-	}
-
-	/*
-	 * No matter what, we report the exact size required.
-	 */
-	out_orig->cd_offset = out.cd_offset;
-
-done:
-	freezero(buf, ulEncryptedDataLen);
-	if (ctx != aes_ctx) {
-		VERIFY(speculate);
-		soft_aes_free_ctx(ctx);
-	}
 
 	return (rv);
 }
@@ -681,50 +546,58 @@ soft_aes_decrypt(soft_session_t *session_p, CK_BYTE_PTR pEncryptedData,
 		}
 	}
 
-	if (mech == CKM_AES_CBC_PAD) {
-		rv = soft_aes_cbc_pad_decrypt(aes_ctx, pEncryptedData,
-		    ulEncryptedDataLen, &out);
-		if (pData == NULL || rv == CKR_BUFFER_TOO_SMALL) {
-			*pulDataLen = out.cd_offset;
-			return (rv);
-		}
-		goto cleanup;
-	}
-
-	switch (aes_ctx->ac_flags & (CCM_MODE|GCM_MODE)) {
+	switch (aes_ctx->ac_flags & (CBC_PAD_MODE|CCM_MODE|GCM_MODE)) {
 	case CCM_MODE:
 		length_needed = aes_ctx->ac_processed_data_len;
 		break;
 	case GCM_MODE:
 		length_needed = ulEncryptedDataLen - aes_ctx->ac_tag_len;
 		break;
-	default:
+	case CBC_PAD_MODE:
 		/*
-		 * Note: for CKM_AES_CBC_PAD, we cannot know exactly how much
-		 * space is needed for the plaintext until after we decrypt it.
-		 * However, it is permissible to return a value 'somewhat'
-		 * larger than necessary (PKCS#11 Base Specification, sec 5.2).
+		 * PKCS#11 allows a caller to query the amount of space
+		 * required to hold the output plaintext by passing in
+		 * pData == NULL. In this instance, PKCS#11 allows a
+		 * provider to return a 'somewhat' larger than necessary
+		 * value (PKCS#11 Base Specification, Sec. 5.2).
 		 *
-		 * Since CKM_AES_CBC_PAD adds at most AES_BLOCK_LEN bytes to
-		 * the plaintext, we report the ciphertext length as the
-		 * required plaintext length.  This means we specify at most
-		 * AES_BLOCK_LEN additional bytes of memory for the plaintext.
+		 * Since we always add padding, when queried in this manner,
+		 * we can merely use the size of the input ciphertext since
+		 * the output will always be smaller (technically between 1..
+		 * AES_BLOCK_LEN bytes smaller) -- that is, we fall through
+		 * to the default case.
 		 *
-		 * This behavior is slightly different from the earlier
-		 * version of this code which returned the value of
-		 * (ulEncryptedDataLen - AES_BLOCK_LEN), which was only ever
-		 * correct when the original plaintext was already a multiple
-		 * of AES_BLOCK_LEN (i.e. when AES_BLOCK_LEN of padding was
-		 * added).  This should not be a concern for existing
-		 * consumers -- if they were previously using the value of
-		 * *pulDataLen to size the outbut buffer, the resulting
-		 * plaintext would be truncated anytime the original plaintext
-		 * wasn't a multiple of AES_BLOCK_LEN.  No consumer should
-		 * be relying on such wrong behavior.  More likely they are
-		 * using the size of the ciphertext or larger for the
-		 * buffer to hold the decrypted plaintext (which is always
-		 * acceptable).
+		 * When we aren't being queried for the output size
+		 * (pData != NULL), we must decrypt the final block of
+		 * input ciphertext to determine the amount of padding. This
+		 * is because when not being queried for the output size,
+		 * if the output buffer is too small, we must return
+		 * CKR_BUFFER_TOO_SMALL and set *pulDataLen to the exact
+		 * amount of space required.
+		 *
+		 * The cbc_pad_decrypted_len() does this and returns the
+		 * size of the decrypted plaintext (after stripping padding).
 		 */
+		if (pData != NULL) {
+			cbc_ctx_t *ctx = (cbc_ctx_t *)aes_ctx;
+			crypto_data_t data = {
+				.cd_format = CRYPTO_DATA_RAW,
+				.cd_offset = 0,
+				.cd_length = ulEncryptedDataLen,
+				.cd_raw.iov_base = (char *)pEncryptedData,
+				.cd_raw.iov_len = ulEncryptedDataLen
+			};
+
+			rc = cbc_pad_decrypted_len(ctx, &data, AES_BLOCK_LEN,
+			    &length_needed, aes_decrypt_block, aes_xor_block);
+
+			if (rc != CRYPTO_SUCCESS)
+				return (crypto2pkcs11_error_number(rc));
+
+			break;
+		}
+		/*FALLTHRU*/
+	default:
 		length_needed = ulEncryptedDataLen;
 	}
 
@@ -778,6 +651,10 @@ soft_aes_decrypt(soft_session_t *session_p, CK_BYTE_PTR pEncryptedData,
 	} else if (aes_ctx->ac_flags & GCM_MODE) {
 		rc = gcm_decrypt_final((gcm_ctx_t *)aes_ctx, &out,
 		    AES_BLOCK_LEN, aes_encrypt_block, aes_xor_block);
+		rv = crypto2pkcs11_error_number(rc);
+	} else if (aes_ctx->ac_flags & CBC_PAD_MODE) {
+		rc = cbc_pad_decrypt_final((cbc_ctx_t *)aes_ctx, &out,
+		    AES_BLOCK_LEN, aes_decrypt_block, aes_xor_block);
 		rv = crypto2pkcs11_error_number(rc);
 	}
 
@@ -904,165 +781,37 @@ soft_aes_decrypt_update(soft_session_t *session_p, CK_BYTE_PTR pEncryptedData,
 		out_len = 0;
 		break;
 	case CKM_AES_CBC_PAD:
-		/*
-		 * For CKM_AES_CBC_PAD, we use the existing code for CBC
-		 * mode in libsoftcrypto (which itself uses the code in
-		 * usr/src/common/crypto/modes for CBC mode).  For
-		 * non-padding AES CBC mode, aes_decrypt_contiguous_blocks()
-		 * will accumulate ciphertext in aes_ctx->ac_remainder until
-		 * there is at least AES_BLOCK_LEN bytes of ciphertext available
-		 * to decrypt.  At that point, as many blocks of AES_BLOCK_LEN
-		 * sized ciphertext blocks are decrypted.  Any remainder is
-		 * copied into aes_ctx->ac_remainder for decryption in
-		 * subsequent calls to aes_decrypt_contiguous_blocks().
-		 *
-		 * When PKCS#7 padding is used, the buffering
-		 * aes_decrypt_contigous_blocks() performs is insufficient.
-		 * PKCS#7 padding always adds [1..AES_BLOCK_LEN] bytes of
-		 * padding to plaintext, so the resulting ciphertext is always
-		 * larger than the input plaintext.  However we cannot know
-		 * which block is the final block (and needs its padding
-		 * stripped) until C_DecryptFinal() is called.  Additionally,
-		 * it is permissible for a caller to use buffers sized to the
-		 * output plaintext -- i.e. smaller than the input ciphertext.
-		 * This leads to a more complicated buffering/accumulation
-		 * strategy than what aes_decrypt_contiguous_blocks() provides
-		 * us.
-		 *
-		 * Our buffering strategy works as follows:
-		 *  For each call to C_DecryptUpdate, we calculate the
-		 *  total amount of ciphertext available (buffered plus what's
-		 *  passed in) as the initial output size (out_len). Based
-		 *  on the value of out_len, there are three possibilties:
-		 *
-		 *  1. We have less than AES_BLOCK_LEN + 1 bytes of
-		 *  ciphertext available. Accumulate the ciphertext in
-		 *  aes_ctx->ac_remainder. Note that while we could let
-		 *  aes_decrypt_contiguous_blocks() buffer the input for us
-		 *  when we have less than AES_BLOCK_LEN bytes, we would still
-		 *  need to buffer when we have exactly AES_BLOCK_LEN
-		 *  bytes available, so we just handle both situations with
-		 *  one if clause.
-		 *
-		 *  2. We have at least AES_BLOCK_LEN + 1 bytes of
-		 *  ciphertext, and the total amount available is also an
-		 *  exact multiple of AES_BLOCK_LEN. We cannot know if the
-		 *  last block of input is the final block (yet), but we
-		 *  are an exact multiple of AES_BLOCK_LEN, and we have
-		 *  at least AES_BLOCK_LEN + 1 bytes available, therefore
-		 *  there must be at least 2 * AES_BLOCK_LEN bytes of input
-		 *  ciphertext available. It also means there's at least one
-		 *  full block of input ciphertext that can be decrypted. We
-		 *  reduce the size of the input (in_len) given to
-		 *  aes_decrypt_contiguous_bytes() by AES_BLOCK_LEN to prevent
-		 *  it from decrypting the last full block of data.
-		 *  aes_decrypt_contiguous_blocks() will when decrypt any
-		 *  buffered data in aex_ctx->ac_remainder, and then any
-		 *  input data passed. Since we have an exact multiple of
-		 *  AES_BLOCK_LEN, aes_ctx->ac_remainder will be empty
-		 *  (aes_ctx->ac_remainder_len == 0), once
-		 *  aes_decrypt_contiguout_block() completes, and we can
-		 *  copy the last block of data into aes_ctx->ac_remainder.
-		 *
-		 *  3. We have at least AES_BLOCK_LEN + 1 bytes of
-		 *  ciphertext, but the total amount available is not an
-		 *  exact multiple of AES_BLOCK_LEN. We decrypt all of
-		 *  full blocks of data we have. The remainder will be
-		 *  less than AES_BLOCK_LEN bytes. We let
-		 *  aes_decrypt_contiguous_blocks() buffer the remainder
-		 *  for us since it would normally do this anyway. Since there
-		 *  is a remainder, the full blocks that are present cannot
-		 *  be the last block, so we can safey decrypt all of them.
-		 *
-		 * Some things to note:
-		 *  - The above semantics will cause aes_ctx->ac_remainder to
-		 *  never accumulate more than AES_BLOCK_LEN bytes of
-		 *  ciphertext. Once we reach at least AES_BLOCK_LEN + 1 bytes,
-		 *  we will decrypt the contents of aes_ctx->ac_remainder by one
-		 *  of the last two scenarios described above.
-		 *
-		 *  - We must always end up with AES_BLOCK_LEN bytes of data
-		 *  in aes_ctx->ac_remainder when C_DecryptFinal() is called.
-		 *  The first and third scenarios above may leave
-		 *  aes_ctx->ac_remainder with less than AES_BLOCK_LEN bytes,
-		 *  however the total size of the input ciphertext that's
-		 *  been decrypted must end up a multiple of AES_BLOCK_LEN.
-		 *  Therefore, we can always assume when there is a
-		 *  remainder that more data is coming.  If we do end up
-		 *  with a remainder that's not AES_BLOCK_LEN bytes long
-		 *  when C_DecryptFinal() is called, the input is assumed
-		 *  invalid and we return CKR_DATA_LEN_RANGE (see
-		 *  soft_aes_decrypt_final()).
-		 */
-
 		VERIFY3U(aes_ctx->ac_remainder_len, <=, AES_BLOCK_LEN);
 		if (in_len >= SIZE_MAX - AES_BLOCK_LEN)
 			return (CKR_ENCRYPTED_DATA_LEN_RANGE);
 
 		out_len = aes_ctx->ac_remainder_len + in_len;
 
-		if (out_len <= AES_BLOCK_LEN) {
-			/*
-			 * The first scenario detailed above, accumulate
-			 * ciphertext in ac_remainder_len and return.
-			 */
-			uint8_t *dest = (uint8_t *)aes_ctx->ac_remainder +
-			    aes_ctx->ac_remainder_len;
+		/* check for overflow */
+		if (out_len < in_len)
+			return (CKR_ENCRYPTED_DATA_LEN_RANGE);
 
-			bcopy(pEncryptedData, dest, in_len);
-			aes_ctx->ac_remainder_len += in_len;
-			*pulDataLen = 0;
-
-			/*
-			 * Since we aren't writing an output, and are returning
-			 * here, we don't need to adjust out_len -- we never
-			 * reach the output buffer size checks after the
-			 * switch statement.
-			 */
-			return (CKR_OK);
-		} else if (out_len % AES_BLOCK_LEN == 0) {
-			/*
-			 * The second scenario decribed above. The total amount
-			 * available is a multiple of AES_BLOCK_LEN, and
-			 * we have more than one block.  We reduce the
-			 * input size (in_len) by AES_BLOCK_LEN. We also
-			 * reduce the output size (out_len) by AES_BLOCK_LEN
-			 * for the output buffer size checks that follow
-			 * the switch statement. In certain situations,
-			 * PKCS#11 requires this to be an exact value, so
-			 * the size check cannot occur for CKM_AES_CBC_PAD
-			 * until after we've determine which scenario we
-			 * have.
-			 *
-			 * Because we never accumulate more than AES_BLOCK_LEN
-			 * bytes in aes_ctx->ac_remainder, when we are in
-			 * this scenario, the following VERIFYs should always
-			 * be true (and serve as a final safeguard against
-			 * underflow).
-			 */
-			VERIFY3U(in_len, >=, AES_BLOCK_LEN);
-
-			buffer_block = pEncryptedData + in_len - AES_BLOCK_LEN;
-
-			in_len -= AES_BLOCK_LEN;
-
-			/*
-			 * This else clause explicity checks
-			 * out_len > AES_BLOCK_LEN, so this is also safe.
-			 */
-			out_len -= AES_BLOCK_LEN;
+		/*
+		 * Since CBC_PAD modes have to process the final block of
+		 * (to remove the padding), and since we do not know which
+		 * block is the final block until C_DecryptFinal() is called,
+		 * decryption of a given block is delayed until it is known
+		 * that at least one block follows it. This ensures that
+		 * when C_DecryptFinal() is called, we have the final block
+		 * of input ciphertext buffered in aes_ctx (which is then
+		 * processed in the C_DecryptFinal() call).
+		 *
+		 * From all of this, it means when we have _exactly_
+		 * n * AES_BLOCK_LEN bytes of output available to process,
+		 * we output (n - 1) * AES_BLOCK_LEN bytes of output plaintext.
+		 *
+		 * When we don't have an exact multiple of AES_BLOCK_LEN, we
+		 * output as may full blocks of output plaintext as we have.
+		 */
+		if (out_len % AES_BLOCK_LEN == 0) {
+			out_len &= ~(AES_BLOCK_LEN - 1);
+			out_len--;
 		} else {
-			/*
-			 * The third scenario above.  We have at least
-			 * AES_BLOCK_LEN + 1 bytes, but the total amount of
-			 * input ciphertext available is not an exact
-			 * multiple of AES_BLOCK_LEN.  Let
-			 * aes_decrypt_contiguous_blocks() handle the
-			 * buffering of the remainder.  Update the
-			 * output size to reflect the actual amount of output
-			 * we want to emit for the checks after the switch
-			 * statement.
-			 */
 			out_len &= ~(AES_BLOCK_LEN - 1);
 		}
 		break;
@@ -1119,26 +868,6 @@ soft_aes_decrypt_update(soft_session_t *session_p, CK_BYTE_PTR pEncryptedData,
 	}
 
 	*pulDataLen = out.cd_offset;
-
-	switch (mech) {
-	case CKM_AES_CBC_PAD:
-		if (buffer_block == NULL) {
-			break;
-		}
-
-		VERIFY0(aes_ctx->ac_remainder_len);
-
-		/*
-		 * We had multiple blocks of data to decrypt with nothing
-		 * left over and deferred decrypting the last block of data.
-		 * Copy it into aes_ctx->ac_remainder to decrypt on the
-		 * next update call (or final).
-		 */
-		bcopy(buffer_block, aes_ctx->ac_remainder, AES_BLOCK_LEN);
-		aes_ctx->ac_remainder_len = AES_BLOCK_LEN;
-		break;
-	}
-
 done:
 	return (rv);
 }
@@ -1213,20 +942,10 @@ soft_aes_encrypt_final(soft_session_t *session_p,
 	}
 
 	switch (mech) {
-	case CKM_AES_CBC_PAD: {
-		char block[AES_BLOCK_LEN] = { 0 };
-		size_t padlen = AES_BLOCK_LEN - aes_ctx->ac_remainder_len;
-
-		if (padlen == 0) {
-			padlen = AES_BLOCK_LEN;
-		}
-
-		(void) memset(block, padlen & 0xff, sizeof (block));
-		rc = aes_encrypt_contiguous_blocks(aes_ctx, block,
-		    padlen, &data);
-		explicit_bzero(block, sizeof (block));
+	case CKM_AES_CBC_PAD:
+		rc = cbc_pad_encrypt_final((cbc_ctx_t *)aes_ctx, &data,
+		    AES_BLOCK_LEN, aes_encrypt_block, aes_xor_block);
 		break;
-	}
 	case CKM_AES_CTR:
 		/*
 		 * Since CKM_AES_CTR is a stream cipher, we never
@@ -1245,7 +964,7 @@ soft_aes_encrypt_final(soft_session_t *session_p,
 		break;
 	case CKM_AES_CMAC:
 	case CKM_AES_CMAC_GENERAL:
-		rc = cmac_mode_final((cbc_ctx_t *)aes_ctx, &data,
+		rc = cmac_mode_final((cbc_ctx_t *)aes_ctx, &data, AES_BLOCK_LEN,
 		    aes_encrypt_block, aes_xor_block);
 		break;
 	default:
@@ -1283,91 +1002,51 @@ soft_aes_decrypt_final(soft_session_t *session_p, CK_BYTE_PTR pLastPart,
 	switch (mech) {
 	case CKM_AES_CBC_PAD:
 		/*
-		 * PKCS#11 requires that a caller can discover the size of
-		 * the output buffer required by calling
-		 * C_DecryptFinal(hSession, NULL, &len) which sets
-		 * *pulLastPartLen to the size required.  However, it also
-		 * allows if one calls C_DecryptFinal with a buffer (i.e.
-		 * pLastPart != NULL) that is too small, to return
-		 * CKR_BUFFER_TOO_SMALL with *pulLastPartLen set to the
-		 * _exact_ size required (when pLastPart is NULL, the
-		 * implementation is allowed to set a 'sightly' larger
-		 * value than is strictly necessary.  In either case, the
-		 * caller is allowed to retry the operation (the operation
-		 * is not terminated).
+		 * PKCS#11 allows a caller to discover the size of the
+		 * required output buffer by calling
+		 * C_DecryptFinal(hSession, NULL, &len) which will return
+		 * CKR_OK and set len to the size required (or a value
+		 * 'slightly' larger). In this instance we can use
+		 * AES_BLOCK_LEN since the exact amount required will be
+		 * [0..AES_BLOCK_LEN - 1] bytes.
 		 *
-		 * With PKCS#7 padding, we cannot determine the exact size of
-		 * the output until we decrypt the final block.  As such, the
-		 * first time for a given decrypt operation we are called,
-		 * we decrypt the final block and stash it in the aes_ctx
-		 * remainder block.  On any subsequent calls in the
-		 * current decrypt operation, we then can use the decrypted
-		 * block as necessary to provide the correct semantics.
+		 * However, when C_DecryptFinal() is called with a non-NULL
+		 * output buffer, and the output buffer size is too small,
+		 * we _must_ return the exact size of the output buffer
+		 * required (and cannot use the same estimate when the
+		 * output buffer is NULL).
 		 *
-		 * The cleanup of aes_ctx when the operation terminates
-		 * will take care of clearing out aes_ctx->ac_remainder_len.
+		 * In this instance, we optimistically just do the
+		 * final call. If the buffer is too small,
+		 * cbc_pad_decrypt_final() will set out.cd_length to
+		 * the required size and return CRYPTO_DATA_LEN_RANGE and
+		 * the caller can retry. It does mean there's a chance we
+		 * must decrypt the final block multiple times, but it's
+		 * a single block, and most callers will likely just pass
+		 * a buffer at least AES_BLOCK_LEN bytes, so this seems
+		 * unlikely to be a problem in practice.
 		 */
-		if ((aes_ctx->ac_flags & P11_DECRYPTED) == 0) {
-			uint8_t block[AES_BLOCK_LEN] = { 0 };
-			crypto_data_t block_out = {
-				.cd_format = CRYPTO_DATA_RAW,
-				.cd_offset = 0,
-				.cd_length = sizeof (block),
-				.cd_raw.iov_base = (char *)block,
-				.cd_raw.iov_len = sizeof (block)
-			};
-			size_t amt, i;
-			uint8_t pad_len;
-
-			if (aes_ctx->ac_remainder_len != AES_BLOCK_LEN) {
-				return (CKR_DATA_LEN_RANGE);
-			}
-
-			rc = aes_decrypt_contiguous_blocks(aes_ctx,
-			    (char *)block, 0, &block_out);
-			if (rc != CRYPTO_SUCCESS) {
-				explicit_bzero(block, sizeof (block));
-				return (CKR_FUNCTION_FAILED);
-			}
-
-			pad_len = block[AES_BLOCK_LEN - 1];
-
-			/*
-			 * RFC5652 6.3 The amount of padding must be
-			 * block_sz - (len mod block_size).  This means
-			 * the amount of padding must always be in the
-			 * range [1..block_size].
-			 */
-			if (pad_len == 0 || pad_len > AES_BLOCK_LEN) {
-				rv = CKR_ENCRYPTED_DATA_INVALID;
-				explicit_bzero(block, sizeof (block));
-				goto done;
-			}
-			amt = AES_BLOCK_LEN - pad_len;
-
-			/*
-			 * Verify the padding is correct.  Try to do so
-			 * in as constant a time as possible.
-			 */
-			for (i = amt; i < AES_BLOCK_LEN; i++) {
-				if (block[i] != pad_len) {
-					rv = CKR_ENCRYPTED_DATA_INVALID;
-				}
-			}
-			if (rv != CKR_OK) {
-				explicit_bzero(block, sizeof (block));
-				goto done;
-			}
-
-			bcopy(block, aes_ctx->ac_remainder, amt);
-			explicit_bzero(block, sizeof (block));
-
-			aes_ctx->ac_flags |= P11_DECRYPTED;
-			aes_ctx->ac_remainder_len = amt;
+		if (pLastPart == NULL) {
+			*pulLastPartLen = AES_BLOCK_LEN;
+			return (CKR_OK);
 		}
 
-		out_len = aes_ctx->ac_remainder_len;
-		break;
+		rc = cbc_pad_decrypt_final((cbc_ctx_t *)aes_ctx, &out,
+		    AES_BLOCK_LEN, aes_decrypt_block, aes_xor_block);
+
+		if (rc == CRYPTO_DATA_LEN_RANGE) {
+			*pulLastPartLen = out.cd_length;
+			/*
+			 * Return and don't terminate the active decrypt op.
+			 * This allows the caller to retry with a sufficiently
+			 * large buffer.
+			 */
+			return (CKR_BUFFER_TOO_SMALL);
+		}
+
+		/* For all other results, we finish up and terminate the op */
+		rv = crypto2pkcs11_error_number(rc);
+		goto done;
 	case CKM_AES_CTR:
 		/*
 		 * Since CKM_AES_CTR is a stream cipher, we never have
@@ -1401,14 +1080,6 @@ soft_aes_decrypt_final(soft_session_t *session_p, CK_BYTE_PTR pLastPart,
 	}
 
 	switch (mech) {
-	case CKM_AES_CBC_PAD:
-		*pulLastPartLen = out_len;
-		if (out_len == 0) {
-			break;
-		}
-		bcopy(aes_ctx->ac_remainder, pLastPart, out_len);
-		out.cd_offset += out_len;
-		break;
 	case CKM_AES_CCM:
 		ASSERT3U(aes_ctx->ac_processed_data_len, ==, out_len);
 		ASSERT3U(aes_ctx->ac_processed_mac_len, ==,

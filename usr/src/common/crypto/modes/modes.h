@@ -23,7 +23,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2014 Nexenta Systems, Inc.  All rights reserved.
- * Copyright 2019 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #ifndef	_COMMON_CRYPTO_MODES_H
@@ -50,9 +50,7 @@ extern "C" {
 #define	GCM_MODE			0x00000020
 #define	GMAC_MODE			0x00000040
 #define	CMAC_MODE			0x00000080
-
-/* Private flag for pkcs11_softtoken */
-#define	P11_DECRYPTED			0x80000000
+#define	CBC_PAD_MODE			0x00000100
 
 /*
  * cc_keysched:		Pointer to key schedule.
@@ -355,12 +353,23 @@ extern int gcm_decrypt_final(gcm_ctx_t *, crypto_data_t *, size_t,
     int (*encrypt_block)(const void *, const uint8_t *, uint8_t *),
     void (*xor_block)(uint8_t *, uint8_t *));
 
-extern int cmac_mode_final(cbc_ctx_t *, crypto_data_t *,
+extern int cbc_pad_decrypt_final(cbc_ctx_t *, crypto_data_t *, size_t,
+    int (*encrypt_block)(const void *, const uint8_t *, uint8_t *),
+    void (*xor_block)(uint8_t *, uint8_t *));
+
+extern int cbc_pad_encrypt_final(cbc_ctx_t *, crypto_data_t *, size_t,
+    int (*encrypt_block)(const void *, const uint8_t *, uint8_t *),
+    void (*xor_block)(uint8_t *, uint8_t *));
+
+extern int cmac_mode_final(cbc_ctx_t *, crypto_data_t *, size_t,
     int (*encrypt_block)(const void *, const uint8_t *, uint8_t *),
     void (*xor_block)(uint8_t *, uint8_t *));
 
 extern int cbc_init_ctx(cbc_ctx_t *, char *, size_t, size_t,
     void (*copy_block)(uint8_t *, uint64_t *));
+
+extern int cbc_pad_init_ctx(cbc_ctx_t *, char *, size_t, size_t,
+    void (*copy_block)(uint8_t *, uint64_t *), boolean_t);
 
 extern int cmac_init_ctx(cbc_ctx_t *, size_t);
 
@@ -393,6 +402,7 @@ extern void crypto_get_ptrs(crypto_data_t *, void **, offset_t *,
 
 extern void *ecb_alloc_ctx(int);
 extern void *cbc_alloc_ctx(int);
+extern void *cbc_pad_alloc_ctx(int);
 extern void *cmac_alloc_ctx(int);
 extern void *ctr_alloc_ctx(int);
 extern void *ccm_alloc_ctx(int);
@@ -401,6 +411,12 @@ extern void *gmac_alloc_ctx(int);
 extern void crypto_free_mode_ctx(void *);
 extern void gcm_set_kmflag(gcm_ctx_t *, int);
 extern int crypto_put_output_data(uchar_t *, crypto_data_t *, int);
+
+#ifndef _KERNEL
+int cbc_pad_decrypted_len(cbc_ctx_t *, crypto_data_t *, size_t, size_t *,
+    int (*decrypt)(const void *, const uint8_t *, uint8_t *),
+    void (*xor_block)(uint8_t *, uint8_t *));
+#endif /* _KERNEL */
 
 #ifdef	__cplusplus
 }
