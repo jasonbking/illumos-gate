@@ -4685,7 +4685,7 @@ nfs4_inactive(vnode_t *vp, cred_t *cr, caller_context_t *ct)
 {
 	rnode4_t *rp;
 
-	ASSERT(vp != DNLC_NO_VNODE);
+	ASSERT(!DNLC_IS_NO_VNODE(vp));
 
 	rp = VTOR4(vp);
 
@@ -5155,7 +5155,7 @@ nfs4lookup(vnode_t *dvp, char *nm, vnode_t **vpp, cred_t *cr, int skipdnlc)
 	/*
 	 * We hit on the dnlc
 	 */
-	if (*vpp != DNLC_NO_VNODE ||
+	if (!DNLC_IS_NO_VNODE(*vpp) ||
 	    (dvp->v_vfsp->vfs_flag & VFS_RDONLY)) {
 		/*
 		 * But our attrs may not be valid.
@@ -5193,7 +5193,7 @@ nfs4lookup(vnode_t *dvp, char *nm, vnode_t **vpp, cred_t *cr, int skipdnlc)
 					*vpp = NULL;
 					return (error);
 				}
-				if (*vpp == DNLC_NO_VNODE) {
+				if (DNLC_IS_NO_VNODE(*vpp)) {
 					VN_RELE(*vpp);
 					*vpp = NULL;
 					return (ENOENT);
@@ -5645,7 +5645,7 @@ recov_retry:
 			*vpp = NULL;
 		}
 
-		if (*vpp == DNLC_NO_VNODE) {
+		if (DNLC_IS_NO_VNODE(*vpp)) {
 			VN_RELE(*vpp);
 			*vpp = NULL;
 			e.error = ENOENT;
@@ -9208,7 +9208,7 @@ nfs4readdir(vnode_t *vp, rddir4_cache *rdc, cred_t *cr)
 			pnodeid = nodeid;	/* root of mount point */
 		} else {
 			dvp = dnlc_lookup(vp, "..");
-			if (dvp != NULL && dvp != DNLC_NO_VNODE) {
+			if (dvp != NULL && !DNLC_IS_NO_VNODE(dvp)) {
 				/* parent in dnlc cache - no need for otw */
 				pnodeid = VTOR4(dvp)->r_attr.va_nodeid;
 			} else {

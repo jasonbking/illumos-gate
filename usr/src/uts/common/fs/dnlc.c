@@ -227,7 +227,7 @@ struct nc_stats ncs = {
 
 static int doingcache = 1;
 
-vnode_t negative_cache_vnode;
+vnode_t *negative_cache_vnodes;
 
 /*
  * Insert entry at the front of the queue
@@ -410,7 +410,9 @@ dnlc_init()
 	 * Put a hold on the negative cache vnode so that it never goes away
 	 * (VOP_INACTIVE isn't called on it).
 	 */
-	vn_reinit(&negative_cache_vnode);
+	negative_cache_vnodes = kmem_zalloc(NCPU * sizeof (vnode_t), KM_SLEEP);
+	for (i = 0; i < NCPU; i++)
+		vn_reinit(&negative_cache_vnodes[i]);
 
 	/*
 	 * Initialise kstats - both the old compatability raw kind and
@@ -639,7 +641,7 @@ dnlc_lookup(vnode_t *dp, const char *name)
 			mutex_exit(&hp->hash_lock);
 			ncstats.hits++;
 			ncs.ncs_hits.value.ui64++;
-			if (vp == DNLC_NO_VNODE) {
+			if (DNLC_IS_NO_VNODE(vp)) {
 				ncs.ncs_neg_hits.value.ui64++;
 			}
 			TRACE_4(TR_FAC_NFS, TR_DNLC_LOOKUP_END,
@@ -1050,7 +1052,7 @@ do_dnlc_reduce_cache(void *reduce_percent)
 			 * Also negative cache entries are purged first.
 			 */
 			if (!vn_has_cached_data(vp) &&
-			    ((vp->v_count == 1) || (vp == DNLC_NO_VNODE))) {
+			    ((vp->v_count == 1) || DNLC_IS_NO_VNODE(vp))) {
 				ncs.ncs_pick_heur.value.ui64++;
 				goto found;
 			}

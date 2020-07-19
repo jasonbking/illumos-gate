@@ -2664,7 +2664,7 @@ ufs_lookup(struct vnode *dvp, char *nm, struct vnode **vpp,
 		/*
 		 * Check accessibility of directory.
 		 */
-		if (vp == DNLC_NO_VNODE) {
+		if (DNLC_IS_NO_VNODE(vp)) {
 			VN_RELE(vp);
 			error = ENOENT;
 			goto out;
@@ -2720,7 +2720,7 @@ ufs_lookup(struct vnode *dvp, char *nm, struct vnode **vpp,
 			VN_RELE(vp);
 			goto out;
 		}
-		if (vp == DNLC_NO_VNODE) {
+		if (DNLC_IS_NO_VNODE(vp)) {
 			VN_RELE(vp);
 			error = ENOENT;
 			goto out;
@@ -2863,7 +2863,7 @@ again:
 			goto again;
 
 		xvp = dnlc_lookup(dvp, name);
-		if (xvp == DNLC_NO_VNODE) {
+		if (DNLC_IS_NO_VNODE(xvp)) {
 			noentry = 1;
 			VN_RELE(xvp);
 			xvp = NULL;
@@ -6486,7 +6486,7 @@ ufs_eventlookup(struct vnode *dvp, char *nm, struct cred *cr,
 		return (error);
 
 	if (vp = dnlc_lookup(dvp, nm)) {
-		if (vp == DNLC_NO_VNODE) {
+		if (DNLC_IS_NO_VNODE(vp)) {
 			VN_RELE(vp);
 			return (ENOENT);
 		}

@@ -175,8 +175,10 @@ struct nc_stats {
 #include <sys/vnode.h>
 
 extern int ncsize;		/* set in param_init() # of dnlc entries */
-extern vnode_t negative_cache_vnode;
-#define	DNLC_NO_VNODE &negative_cache_vnode
+extern vnode_t *negative_cache_vnodes;
+#define	DNLC_NO_VNODE &negative_cache_vnodes[CPU->cpu_id]
+#define	DNLC_IS_NO_VNODE(vp) \
+    ((vp) >= &negative_cache_vnodes[0] && (vp) < &negative_cache_vnodes[NCPU])
 
 void	dnlc_init(void);
 void	dnlc_enter(vnode_t *, const char *, vnode_t *);

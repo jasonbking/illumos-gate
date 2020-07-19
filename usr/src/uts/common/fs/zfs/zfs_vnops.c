@@ -1393,7 +1393,7 @@ zfs_lookup(vnode_t *dvp, char *nm, vnode_t **vpp, struct pathname *pnp,
 					VN_RELE(tvp);
 					return (error);
 				}
-				if (tvp == DNLC_NO_VNODE) {
+				if (DNLC_IS_NO_VNODE(tvp)) {
 					VN_RELE(tvp);
 					return (SET_ERROR(ENOENT));
 				} else {
