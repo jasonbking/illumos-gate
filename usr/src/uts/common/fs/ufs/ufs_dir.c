@@ -216,8 +216,7 @@ ufs_dirlook(
 	dvp = ITOV(dp);
 	if (!skipdnlc && (vp = dnlc_lookup(dvp, namep))) {
 		/* vp is already held from dnlc_lookup */
-		if (DNLC_IS_NO_VNODE(vp)) {
-			VN_RELE(vp);
+		if (vp == DNLC_NO_VNODE) {
 			return (ENOENT);
 		}
 		*ipp = VTOI(vp);

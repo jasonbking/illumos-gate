@@ -20,6 +20,7 @@
  */
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright 2020 Joyent, Inc.
  */
 
 /*	Copyright (c) 1983, 1984, 1985, 1986, 1987, 1988, 1989 AT&T	*/
@@ -175,10 +176,7 @@ struct nc_stats {
 #include <sys/vnode.h>
 
 extern int ncsize;		/* set in param_init() # of dnlc entries */
-extern vnode_t *negative_cache_vnodes;
-#define	DNLC_NO_VNODE &negative_cache_vnodes[CPU->cpu_id]
-#define	DNLC_IS_NO_VNODE(vp) \
-    ((vp) >= &negative_cache_vnodes[0] && (vp) < &negative_cache_vnodes[NCPU])
+#define	DNLC_NO_VNODE ((vnode_t *)(uintptr_t)1)
 
 void	dnlc_init(void);
 void	dnlc_enter(vnode_t *, const char *, vnode_t *);

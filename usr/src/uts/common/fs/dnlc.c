@@ -74,19 +74,39 @@
  * VN_HOLD and retain VN_HOLD_CALLER. Ideally a Makefile rule would grep
  * uncommented C tokens to check that VN_HOLD is referenced only once in this
  * file, to define VN_HOLD_CALLER.)
+ *
+ * These are done as inline macros since some invocations (especially
+ * VN_RELE_DNLC) are called with side effects (e.g. VN_RELE_DNLC(foo[idx++])).
  */
-#define	VN_HOLD_CALLER	VN_HOLD
-#define	VN_HOLD_DNLC(vp)	{	\
-	mutex_enter(&(vp)->v_lock);	\
-	if ((vp)->v_count_dnlc == 0) {	\
-		VN_HOLD_LOCKED(vp);	\
-	}				\
-	(vp)->v_count_dnlc++;		\
-	mutex_exit(&(vp)->v_lock);	\
+static inline void
+vn_hold_caller(vnode_t *vp)
+{
+	if (vp != DNLC_NO_VNODE)
+		VN_HOLD(vp);
 }
-#define	VN_RELE_DNLC(vp)	{	\
-	vn_rele_dnlc(vp);		\
+#define	VN_HOLD_CALLER(vp) vn_hold_caller(vp)
+
+static inline void
+vn_hold_dnlc(vnode_t *vp)
+{
+	if (vp == DNLC_NO_VNODE)
+		return;
+	mutex_enter(&vp->v_lock);
+	if (vp->v_count_dnlc == 0) {
+		VN_HOLD_LOCKED(vp);
+	}
+	vp->v_count_dnlc++;
+	mutex_exit(&vp->v_lock);
 }
+#define	VN_HOLD_DNLC(vp) vn_hold_dnlc(vp)
+
+static inline void
+_vn_rele_dnlc(vnode_t *vp)
+{
+	if (vp != DNLC_NO_VNODE)
+		vn_rele_dnlc(vp);
+}
+#define	VN_RELE_DNLC(vp) _vn_rele_dnlc(vp)
 
 /*
  * Tunable nc_hashavelen is the average length desired for this chain, from
@@ -227,7 +247,7 @@ struct nc_stats ncs = {
 
 static int doingcache = 1;
 
-vnode_t *negative_cache_vnodes;
+vnode_t negative_cache_vnode;
 
 /*
  * Insert entry at the front of the queue
@@ -410,9 +430,7 @@ dnlc_init()
 	 * Put a hold on the negative cache vnode so that it never goes away
 	 * (VOP_INACTIVE isn't called on it).
 	 */
-	negative_cache_vnodes = kmem_zalloc(NCPU * sizeof (vnode_t), KM_SLEEP);
-	for (i = 0; i < NCPU; i++)
-		vn_reinit(&negative_cache_vnodes[i]);
+	vn_reinit(&negative_cache_vnode);
 
 	/*
 	 * Initialise kstats - both the old compatability raw kind and
@@ -641,7 +659,8 @@ dnlc_lookup(vnode_t *dp, const char *name)
 			mutex_exit(&hp->hash_lock);
 			ncstats.hits++;
 			ncs.ncs_hits.value.ui64++;
-			if (DNLC_IS_NO_VNODE(vp)) {
+			if (vp == DNLC_NO_VNODE ||
+			    vp == &negative_cache_vnode) {
 				ncs.ncs_neg_hits.value.ui64++;
 			}
 			TRACE_4(TR_FAC_NFS, TR_DNLC_LOOKUP_END,
@@ -696,7 +715,7 @@ dnlc_remove(vnode_t *dp, const char *name)
  * Purge the entire cache.
  */
 void
-dnlc_purge()
+dnlc_purge(void)
 {
 	nc_hash_t *nch;
 	ncache_t *ncp;
@@ -752,6 +771,7 @@ dnlc_purge_vp(vnode_t *vp)
 	int index;
 	vnode_t *nc_rele[DNLC_MAX_RELE];
 
+	ASSERT(vp != DNLC_NO_VNODE);
 	ASSERT(vp->v_count > 0);
 	if (vp->v_count_dnlc == 0) {
 		return;
@@ -831,9 +851,12 @@ dnlc_purge_vfsp(vfs_t *vfsp, int count)
 			ncache_t *np;
 
 			np = ncp->hash_next;
+
 			ASSERT(ncp->dp != NULL);
 			ASSERT(ncp->vp != NULL);
 			if ((ncp->dp->v_vfsp == vfsp) ||
+			    (ncp->vp == DNLC_NO_VNODE) ||
+			    (ncp->vp == &negative_cache_vnode) ||
 			    (ncp->vp->v_vfsp == vfsp)) {
 				n++;
 				nc_rele[index++] = ncp->vp;
@@ -906,7 +929,9 @@ dnlc_fs_purge1(vnodeops_t *vop)
 		    ncp != (ncache_t *)hp;
 		    ncp = ncp->hash_prev) {
 			vp = ncp->vp;
-			if (!vn_has_cached_data(vp) && (vp->v_count == 1) &&
+			if (vp != DNLC_NO_VNODE &&
+			    vp != &negative_cache_vnode &&
+			    !vn_has_cached_data(vp) && vp->v_count == 1 &&
 			    vn_matchops(vp, vop))
 				break;
 		}
@@ -914,7 +939,7 @@ dnlc_fs_purge1(vnodeops_t *vop)
 			nc_rmhash(ncp);
 			mutex_exit(&hp->hash_lock);
 			VN_RELE_DNLC(ncp->dp);
-			VN_RELE_DNLC(vp)
+			VN_RELE_DNLC(vp);
 			dnlc_free(ncp);
 			ncs.ncs_purge_total.value.ui64++;
 			return (1);
@@ -1045,14 +1070,21 @@ do_dnlc_reduce_cache(void *reduce_percent)
 		mutex_enter(&hp->hash_lock);
 		for (cnt = 0, ncp = hp->hash_prev; ncp != (ncache_t *)hp;
 		    ncp = ncp->hash_prev, cnt++) {
+			boolean_t neg;
 			vp = ncp->vp;
+
+			if (vp == DNLC_NO_VNODE || vp == &negative_cache_vnode)
+				neg = B_TRUE;
+			else
+				neg = B_FALSE;
+
 			/*
 			 * A name cache entry with a reference count
 			 * of one is only referenced by the dnlc.
 			 * Also negative cache entries are purged first.
 			 */
-			if (!vn_has_cached_data(vp) &&
-			    ((vp->v_count == 1) || DNLC_IS_NO_VNODE(vp))) {
+			if (neg || (!vn_has_cached_data(vp) &&
+			    vp->v_count == 1)) {
 				ncs.ncs_pick_heur.value.ui64++;
 				goto found;
 			}

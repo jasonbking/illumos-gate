@@ -313,8 +313,7 @@ zfs_dirent_lock(zfs_dirlock_t **dlpp, znode_t *dzp, char *name, znode_t **zpp,
 	} else {
 		if (update)
 			vp = dnlc_lookup(ZTOV(dzp), name);
-		if (DNLC_IS_NO_VNODE(vp)) {
-			VN_RELE(vp);
+		if (vp == DNLC_NO_VNODE) {
 			error = SET_ERROR(ENOENT);
 		} else if (vp) {
 			if (flag & ZNEW) {

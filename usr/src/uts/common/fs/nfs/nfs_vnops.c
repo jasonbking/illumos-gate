@@ -1593,7 +1593,7 @@ nfs_inactive(vnode_t *vp, cred_t *cr, caller_context_t *ct)
 {
 	rnode_t *rp;
 
-	ASSERT(!DNLC_IS_NO_VNODE(vp));
+	ASSERT(vp != DNLC_NO_VNODE);
 
 	/*
 	 * If this is coming from the wrong zone, we let someone in the right
@@ -1865,8 +1865,9 @@ nfslookup_dnlc(vnode_t *dvp, char *nm, vnode_t **vpp, cred_t *cr)
 #endif
 	vp = dnlc_lookup(dvp, nm);
 	if (vp != NULL) {
-		VN_RELE(vp);
-		if (DNLC_IS_NO_VNODE(vp) && !vn_is_readonly(dvp)) {
+		if (vp != DNLC_NO_VNODE) {
+			VN_RELE(vp);
+		} else if (!vn_is_readonly(dvp)) {
 			PURGE_ATTRCACHE(dvp);
 		}
 		error = nfs_validate_caches(dvp, cr);
@@ -1876,11 +1877,11 @@ nfslookup_dnlc(vnode_t *dvp, char *nm, vnode_t **vpp, cred_t *cr)
 		if (vp != NULL) {
 			error = nfs_access(dvp, VEXEC, 0, cr, NULL);
 			if (error) {
-				VN_RELE(vp);
+				if (vp != DNLC_NO_VNODE)
+					VN_RELE(vp);
 				return (error);
 			}
-			if (DNLC_IS_NO_VNODE(vp)) {
-				VN_RELE(vp);
+			if (vp == DNLC_NO_VNODE) {
 #ifdef DEBUG
 				nfs_lookup_dnlc_neg_hits++;
 #endif

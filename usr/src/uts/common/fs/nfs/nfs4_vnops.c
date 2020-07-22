@@ -4685,7 +4685,7 @@ nfs4_inactive(vnode_t *vp, cred_t *cr, caller_context_t *ct)
 {
 	rnode4_t *rp;
 
-	ASSERT(!DNLC_IS_NO_VNODE(vp));
+	ASSERT(vp != DNLC_NO_VNODE);
 
 	rp = VTOR4(vp);
 
@@ -5155,7 +5155,7 @@ nfs4lookup(vnode_t *dvp, char *nm, vnode_t **vpp, cred_t *cr, int skipdnlc)
 	/*
 	 * We hit on the dnlc
 	 */
-	if (!DNLC_IS_NO_VNODE(*vpp) ||
+	if (*vpp != DNLC_NO_VNODE ||
 	    (dvp->v_vfsp->vfs_flag & VFS_RDONLY)) {
 		/*
 		 * But our attrs may not be valid.
@@ -5163,7 +5163,8 @@ nfs4lookup(vnode_t *dvp, char *nm, vnode_t **vpp, cred_t *cr, int skipdnlc)
 		if (ATTRCACHE4_VALID(dvp)) {
 			error = nfs4_waitfor_purge_complete(dvp);
 			if (error) {
-				VN_RELE(*vpp);
+				if (*vpp != DNLC_NO_VNODE)
+					VN_RELE(*vpp);
 				*vpp = NULL;
 				return (error);
 			}
@@ -5189,12 +5190,12 @@ nfs4lookup(vnode_t *dvp, char *nm, vnode_t **vpp, cred_t *cr, int skipdnlc)
 				error = nfs4_access(dvp, VEXEC, 0, cr, NULL);
 
 				if (error) {
-					VN_RELE(*vpp);
+					if (*vpp != DNLC_NO_VNODE)
+						VN_RELE(*vpp);
 					*vpp = NULL;
 					return (error);
 				}
-				if (DNLC_IS_NO_VNODE(*vpp)) {
-					VN_RELE(*vpp);
+				if (*vpp == DNLC_NO_VNODE) {
 					*vpp = NULL;
 					return (ENOENT);
 				}
@@ -5645,8 +5646,7 @@ recov_retry:
 			*vpp = NULL;
 		}
 
-		if (DNLC_IS_NO_VNODE(*vpp)) {
-			VN_RELE(*vpp);
+		if (*vpp == DNLC_NO_VNODE) {
 			*vpp = NULL;
 			e.error = ENOENT;
 		}
@@ -9208,7 +9208,7 @@ nfs4readdir(vnode_t *vp, rddir4_cache *rdc, cred_t *cr)
 			pnodeid = nodeid;	/* root of mount point */
 		} else {
 			dvp = dnlc_lookup(vp, "..");
-			if (dvp != NULL && !DNLC_IS_NO_VNODE(dvp)) {
+			if (dvp != NULL && dvp != DNLC_NO_VNODE) {
 				/* parent in dnlc cache - no need for otw */
 				pnodeid = VTOR4(dvp)->r_attr.va_nodeid;
 			} else {
@@ -9219,8 +9219,9 @@ nfs4readdir(vnode_t *vp, rddir4_cache *rdc, cred_t *cr)
 				num_ops = 5;
 				pnodeid = 0; /* set later by getattr parent */
 			}
-			if (dvp)
+			if (dvp != NULL && dvp != DNLC_NO_VNODE) {
 				VN_RELE(dvp);
+			}
 		}
 	}
 	recov_state.rs_flags = 0;
