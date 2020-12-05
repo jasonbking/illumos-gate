@@ -1638,10 +1638,17 @@ struct cpuid_info {
 	uint_t cpi_cores_per_compunit;	/* AMD: # of cores in the ComputeUnit */
 
 	struct xsave_info cpi_xsave;	/* fn D: xsave/xrestor info */
+
+	uint64_t cpi_tsc_freq;		/* TSC frequency in Hz */
 };
 
-
 static struct cpuid_info cpuid_info0;
+
+/*
+ * The 'core crystal clock' frequency of Denverton SoCs in Hz (see
+ * cpuid_pass1_freq()).
+ */
+#define	CPI_DENVERTON_CRYSTAL_HZ	25000000
 
 /*
  * These bit fields are defined by the Intel Application Note AP-485
@@ -3283,6 +3290,44 @@ cpuid_pass1_ppin(cpu_t *cpu, uchar_t *featureset)
 		break;
 	}
 }
+
+static void
+cpuid_pass1_freq(cpu_t *cpu)
+{
+	struct cpuid_info *cpi = cpu->cpu_m.mcpu_cpi;
+	struct cpuid_regs regs;
+	uint64_t crystal, tsc_num, tsc_den;
+
+	cpi->cpi_tsc_freq = 0;
+
+	if (cpi->cpi_vendor != X86_VENDOR_Intel ||
+	    cpi->cpi_maxeax < 0x15)
+		return;
+
+	bzero(&regs, sizeof (regs));
+	regs.cp_eax = 0x15;
+	__cpuid_insn(&regs);
+
+	if (regs.cp_eax == 0 || regs.cp_ebx == 0)
+		return;
+
+	crystal = regs.cp_ecx;
+	tsc_num = regs.cp_ebx;
+	tsc_den = regs.cp_eax;
+
+	/*
+	 * Linux has discovered that Denverton SoCs do not report their
+	 * core crystal clock value (ECX) in leaf 0x15. They do however
+	 * provide the TSC ratio values (EBX/EAX). The core clock crystal
+	 * frequency is a known fixed value (25Mhz), so we use that for
+	 * those systems.
+	 */
+	if (crystal == 0 && cpi->cpi_model == INTC_MODEL_DENVERTON)
+		crystal = CPI_DENVERTON_CRYSTAL_HZ;
+
+	if (crystal != 0)
+		cpi->cpi_tsc_freq = tsc_num * crystal / tsc_den;
+}
 #endif	/* ! __xpv */
 
 void
@@ -4140,6 +4185,7 @@ cpuid_pass1(cpu_t *cpu, uchar_t *featureset)
 	cpuid_pass1_thermal(cpu, featureset);
 #if !defined(__xpv)
 	cpuid_pass1_ppin(cpu, featureset);
+	cpuid_pass1_freq(cpu);
 #endif
 
 	/*
@@ -7634,4 +7680,14 @@ cpuid_post_ucodeadm(void)
 		}
 	}
 	kmem_free(argdata, sizeof (x86_featureset) * NCPU);
+}
+
+/*
+ * Returns the TSC frequency in Hz. If the CPU does not provide the TSC
+ * frequency, the value returned is 0.
+ */
+uint64_t
+cpuid_tsc_freq(cpu_t *cpu)
+{
+	return (cpu->cpu_m.mcpu_cpi->cpi_tsc_freq);
 }
