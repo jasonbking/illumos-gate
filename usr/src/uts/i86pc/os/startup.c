@@ -23,7 +23,7 @@
  * Copyright (c) 1993, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2012 DEY Storage Systems, Inc.  All rights reserved.
  * Copyright 2017 Nexenta Systems, Inc.
- * Copyright (c) 2018 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  * Copyright (c) 2015 by Delphix. All rights reserved.
  * Copyright 2020 Oxide Computer Company
  */
@@ -127,6 +127,8 @@
 #include <sys/systeminfo.h>
 #include <sys/multiboot.h>
 #include <sys/ramdisk.h>
+#include <sys/tsc.h>
+#include <sys/clock.h>
 
 #ifdef	__xpv
 
@@ -158,8 +160,6 @@ extern int size_pse_array(pgcnt_t, int);
 
 #if defined(_SOFT_HOSTID)
 
-#include <sys/rtc.h>
-
 static int32_t set_soft_hostid(void);
 static char hostid_file[] = "/etc/hostid";
 
@@ -188,6 +188,9 @@ static void startup_memlist(void);
 static void startup_kmem(void);
 static void startup_modules(void);
 static void startup_vm(void);
+#ifndef __xpv
+static void startup_tsc(void);
+#endif
 static void startup_end(void);
 static void layout_kernel_va(void);
 
@@ -625,7 +628,7 @@ size_t		toxic_bit_map_len = 0;	/* in bits */
 
 #endif	/* __i386 */
 
-int prom_debug;
+int prom_debug = 1;
 
 /*
  * This structure is used to keep track of the intial allocations
@@ -786,6 +789,8 @@ startup(void)
 	startup_kmem();
 	startup_vm();
 #if !defined(__xpv)
+	startup_tsc();
+
 	/*
 	 * Note we need to do this even on fast reboot in order to access
 	 * the irq routing table (used for pci labels).
@@ -1615,14 +1620,6 @@ startup_modules(void)
 	PRM_POINT("startup_modules() starting...");
 
 #ifndef __xpv
-	/*
-	 * Initialize ten-micro second timer so that drivers will
-	 * not get short changed in their init phase. This was
-	 * not getting called until clkinit which, on fast cpu's
-	 * caused the drv_usecwait to be way too short.
-	 */
-	microfind();
-
 	if ((get_hwenv() & HW_XEN_HVM) != 0)
 		update_default_path();
 #endif
@@ -2203,6 +2200,23 @@ load_tod_module(char *todmod)
 	if (modload("tod", todmod) == -1)
 		halt("Can't load TOD module");
 }
+
+#ifndef __xpv
+static void
+startup_tsc(void)
+{
+	uint64_t tsc_freq;
+
+	PRM_POINT("startup_tsc() starting...");
+
+	PRM_POINT("Calibrating TSC");
+	tsc_freq = tsc_calibrate();
+	PRM_DEBUG(tsc_freq);
+
+	PRM_POINT("Initializing TSC...");
+	tsc_hrtimeinit(tsc_freq);
+}
+#endif
 
 static void
 startup_end(void)
@@ -2857,7 +2871,6 @@ pat_sync(void)
  * (for license circumvention, etc), we store it in /etc/hostid
  * in rot47 format.
  */
-extern volatile unsigned long tenmicrodata;
 static int atoi(char *);
 
 /*
@@ -2941,10 +2954,7 @@ set_soft_hostid(void)
 	 * random number to use at the hostid.  A nice way to do this
 	 * is to read the real time clock.  To remain xen-compatible,
 	 * we can't poke the real hardware, so we use tsc_read() to
-	 * read the real time clock.  However, there is an ominous
-	 * warning in tsc_read that says it can return zero, so we
-	 * deal with that possibility by falling back to using the
-	 * (hopefully random enough) value in tenmicrodata.
+	 * read the real time clock.
 	 */
 
 	if ((file = kobj_open_file(hostid_file)) == (struct _buf *)-1) {
@@ -2977,11 +2987,7 @@ set_soft_hostid(void)
 		 * saved to a persistent /etc/hostid file.
 		 */
 		if (hostid == HW_INVALID_HOSTID) {
-			tsc = tsc_read();
-			if (tsc == 0)	/* tsc_read can return zero sometimes */
-				hostid = (int32_t)tenmicrodata & 0x0CFFFFF;
-			else
-				hostid = (int32_t)tsc & 0x0CFFFFF;
+			hostid = tsc_read() & 0x0CFFFFF;
 		}
 	} else {
 		/* hostid file found */

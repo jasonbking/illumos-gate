@@ -25,7 +25,7 @@
  *
  * Copyright 2012 Nexenta Systems, Inc. All rights reserved.
  * Copyright (c) 2014, 2016 by Delphix. All rights reserved.
- * Copyright 2018 Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  */
 
 #include <sys/types.h>
@@ -49,6 +49,10 @@
 #include <sys/cpu.h>
 #include <sys/sdt.h>
 #include <sys/comm_page.h>
+#include <sys/bootconf.h>
+#include <sys/tsc.h>
+#include <sys/prom_debug.h>
+#include <util/qsort.h>
 
 /*
  * Using the Pentium's TSC register for gethrtime()
@@ -127,15 +131,15 @@ static volatile int tsc_sync_go;
 #define	TSC_SYNC_DONE		3
 #define	SYNC_ITERATIONS		10
 
-#define	TSC_CONVERT_AND_ADD(tsc, hrt, scale) {	 	\
-	unsigned int *_l = (unsigned int *)&(tsc); 	\
-	(hrt) += mul32(_l[1], scale) << NSEC_SHIFT; 	\
+#define	TSC_CONVERT_AND_ADD(tsc, hrt, scale) {		\
+	unsigned int *_l = (unsigned int *)&(tsc);	\
+	(hrt) += mul32(_l[1], scale) << NSEC_SHIFT;	\
 	(hrt) += mul32(_l[0], scale) >> (32 - NSEC_SHIFT); \
 }
 
-#define	TSC_CONVERT(tsc, hrt, scale) { 			\
-	unsigned int *_l = (unsigned int *)&(tsc); 	\
-	(hrt) = mul32(_l[1], scale) << NSEC_SHIFT; 	\
+#define	TSC_CONVERT(tsc, hrt, scale) {			\
+	unsigned int *_l = (unsigned int *)&(tsc);	\
+	(hrt) = mul32(_l[1], scale) << NSEC_SHIFT;	\
 	(hrt) += mul32(_l[0], scale) >> (32 - NSEC_SHIFT); \
 }
 
@@ -162,8 +166,21 @@ static uint_t	shadow_nsec_scale;
 static uint32_t	shadow_hres_lock;
 int get_tsc_ready();
 
-static inline
-hrtime_t tsc_protect(hrtime_t a) {
+/*
+ * Let an operator specify an explicit TSC calibration source
+ * via /etc/system e.g. `set tsc_calibration="i8254"`
+ */
+static const char *tsc_calibration;
+
+/* The source that was used to calibrate the TSC */
+tsc_calibrate_t *tsc_calibration_source;
+
+/* The TSC frequency after calibration */
+static uint64_t tsc_freq;
+
+static inline hrtime_t
+tsc_protect(hrtime_t a)
+{
 	if (a > tsc_resume_cap) {
 		atomic_inc_32(&tsc_wayback);
 		DTRACE_PROBE3(tsc__wayback, htrime_t, a, hrtime_t, tsc_last,
@@ -899,4 +916,127 @@ tsc_resume(void)
 		tsc_needs_resume = 0;
 	}
 
+}
+
+static int
+tsc_calibrate_cmp(const void *a, const void *b)
+{
+	const tsc_calibrate_t * const *a1 = a;
+	const tsc_calibrate_t * const *b1 = b;
+	const tsc_calibrate_t *l = *a1;
+	const tsc_calibrate_t *r = *b1;
+
+	/* Sort from highest quality to lowest quality */
+	if (l->tscc_quality > r->tscc_quality)
+		return (-1);
+	if (l->tscc_quality < r->tscc_quality)
+		return (1);
+
+	/* For equal quality sources, sort alphabetically */
+	int c = strcmp(l->tscc_source, r->tscc_source);
+
+	if (c < 0)
+		return (-1);
+	if (c > 0)
+		return (1);
+	return (0);
+}
+
+SET_DECLARE(tsc_calibration_set, tsc_calibrate_t);
+
+static tsc_calibrate_t *
+tsc_calibrate_get_force(void)
+{
+	tsc_calibrate_t **tsccpp;
+
+	if (tsc_calibration == NULL)
+		return (NULL);
+
+	SET_FOREACH(tsccpp, tsc_calibration_set) {
+		tsc_calibrate_t *tsccp = *tsccpp;
+
+		if (strcasecmp(tsc_calibration, tsccp->tscc_source) != 0)
+			return (tsccp);
+	}
+
+	/*
+	 * If an operator explicitly gave a TSC value and we didn't find it,
+	 * we should let them know.
+	 */
+	cmn_err(CE_NOTE,
+	    "Explicit TSC calibration source '%s' not found; using default",
+	    tsc_calibration);
+
+	return (NULL);
+}
+
+uint64_t
+tsc_calibrate(void)
+{
+	/*
+	 * Cache the value for any subsequent callers. This is set during
+	 * setup prior to any additional cpus/cores are started, and is
+	 * effectively write only, so we don't need any locking to access it.
+	 */
+	tsc_calibrate_t **tsccpp, *force;
+
+	/*
+	 * Every x86 system since the Pentium has TSC support. Since we
+	 * only support 64-bit x86 systems, there should always be a TSC
+	 * present, and something's horribly wrong if it's missing.
+	 */
+	if (!is_x86_feature(x86_featureset, X86FSET_TSC))
+		panic("System does not have TSC support");
+
+	if (tsc_freq > 0)
+		return (tsc_freq);
+
+	PRM_POINT("Calibrating the TSC...");
+
+	/*
+	 * Allow an operator to explicitly specify a calibration source via
+	 * 'set fsc-calibrate=foo' in the bootloader. If not given, or the
+	 * specified source is not found, we fallback to trying all of the
+	 * known sources.
+	 */
+	if ((force = tsc_calibrate_get_force()) != NULL) {
+		PRM_POINT("Forcing operator specified TSC calibration source");
+		PRM_DEBUGS(force->tscc_source);
+
+		if (!force->tscc_calibrate(&tsc_freq))
+			panic("Failed to calibrate the TSC");
+
+		tsc_calibration_source = force;
+		return (tsc_freq);
+	}
+
+	/*
+	 * Sort by quality, highest to lowest
+	 */
+	qsort(SET_BEGIN(tsc_calibration_set), SET_COUNT(tsc_calibration_set),
+	    sizeof (tsc_calibrate_t **), tsc_calibrate_cmp);
+
+	SET_FOREACH(tsccpp, tsc_calibration_set) {
+		tsc_calibrate_t *tsccp = *tsccpp;
+
+		if (tsccp->tscc_calibrate(&tsc_freq)) {
+			tsc_calibration_source = tsccp;
+
+			VERIFY3U(tsc_freq, >, 0);
+
+			cmn_err(CE_CONT,
+			    "?TSC calibrated using %s; freq is %lu MHz",
+			    tsccp->tscc_source, tsc_freq / 1000000);
+
+			return (tsc_freq);
+		}
+	}
+
+	panic("Failed to calibrate TSC");
+}
+
+uint64_t
+tsc_get_freq(void)
+{
+	return (tsc_freq);
 }

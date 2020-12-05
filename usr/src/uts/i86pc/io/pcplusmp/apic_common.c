@@ -23,7 +23,7 @@
  * Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
  */
 /*
- * Copyright 2019, Joyent, Inc.
+ * Copyright 2020 Joyent, Inc.
  * Copyright (c) 2016, 2017 by Delphix. All rights reserved.
  * Copyright 2019 Joshua M. Clulow <josh@sysmgr.org>
  */
@@ -76,6 +76,7 @@
 #include <sys/hpet.h>
 #include <sys/apic_common.h>
 #include <sys/apic_timer.h>
+#include <sys/tsc.h>
 
 static void	apic_record_ioapic_rdt(void *intrmap_private,
 		    ioapic_rdt_t *irdt);
@@ -141,6 +142,9 @@ int	apic_panic_on_nmi = 0;
 int	apic_panic_on_apic_error = 0;
 
 int	apic_verbose = 0;	/* 0x1ff */
+
+/* Force APIC calibration to use PIT timer */
+int	apic_calibrate_pit = 0;
 
 #ifdef DEBUG
 int	apic_debug = 0;
@@ -1100,7 +1104,7 @@ apic_cpu_remove(psm_cpu_request_t *reqp)
  * The fixed-frequency PIT (aka 8254) is used for the measurement.
  */
 static uint64_t
-apic_calibrate_impl()
+apic_calibrate_i8254(void)
 {
 	uint8_t		pit_tick_lo;
 	uint16_t	pit_tick, target_pit_tick, pit_ticks_adj;
@@ -1178,6 +1182,69 @@ apic_calibrate_impl()
 }
 
 /*
+ * Return the number of ticks the APIC decrements in SF nanoseconds.
+ * The TSC is used for the measurement.
+ */
+static uint64_t
+apic_calibrate_tsc(void)
+{
+	uint64_t	tsc_now, tsc_end, tsc_amt, tsc_hz;
+	uint64_t	apic_ticks;
+	uint32_t	start_apic_tick, end_apic_tick;
+	ulong_t		iflag;
+
+	tsc_hz = tsc_get_freq();
+
+	/*
+	 * APIC_TIME_COUNT is in i8254 PIT ticks, which have a period
+	 * slightly under 1us. We can just treat the value as the number of
+	 * microseconds for our sampling period -- that is we wait
+	 * APIC_TIME_COUNT microseconds (corresponding to 'tsc_amt' of TSC
+	 * ticks).
+	 */
+	tsc_amt = tsc_hz * APIC_TIME_COUNT / MICROSEC;
+
+	apic_reg_ops->apic_write(APIC_DIVIDE_REG, apic_divide_reg_init);
+	apic_reg_ops->apic_write(APIC_INIT_COUNT, APIC_MAXVAL);
+
+	iflag = intr_clear();
+
+	tsc_now = tsc_read();
+	tsc_end = tsc_now + tsc_amt;
+	start_apic_tick = apic_reg_ops->apic_read(APIC_CURR_COUNT);
+
+	while (tsc_now < tsc_end)
+		tsc_now = tsc_read();
+
+	end_apic_tick = apic_reg_ops->apic_read(APIC_CURR_COUNT);
+
+	intr_restore(iflag);
+
+	apic_ticks = start_apic_tick - end_apic_tick;
+
+	/*
+	 * We likely did not wait exactly APIC_TIME_COUNT us, but slightly
+	 * longer. Add the difference to tsc_amt.
+	 */
+	tsc_amt += tsc_now - tsc_end;
+
+	/*
+	 * This calculation is analogous to the one used with the PIT timer.
+	 * However, due to the typically _much_ higher precision of the
+	 * TSC compared to the PIT timer, we have to be care we do not
+	 * overflow.
+	 *
+	 * Since contemporary APIC timers have frequencies on the order of
+	 * tens of MHz (i.e. 66MHz), we calculate that first. Then we
+	 * scale the result, then convert to scaled ticks per ns.
+	 *
+	 */
+	uint64_t apic_freq = apic_ticks * tsc_hz / tsc_amt;
+
+	return (apic_freq * SF / NANOSEC);
+}
+
+/*
  * It was found empirically that 5 measurements seem sufficient to give a good
  * accuracy. Most spurious measurements are higher than the target value thus
  * we eliminate up to 2/5 spurious measurements.
@@ -1206,8 +1273,10 @@ apic_calibrate()
 	 * The median is preferred to the average here as we only want to
 	 * discard outliers.
 	 */
-	for (int i = 0; i < APIC_CALIBRATE_MEASUREMENTS; i++)
-		measurements[i] = apic_calibrate_impl();
+	for (int i = 0; i < APIC_CALIBRATE_MEASUREMENTS; i++) {
+		measurements[i] = apic_calibrate_pit ?
+		    apic_calibrate_i8254() : apic_calibrate_tsc();
+	}
 
 	/*
 	 * sort results and retrieve median.
