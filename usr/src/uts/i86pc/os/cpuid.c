@@ -1591,6 +1591,12 @@ struct cpuid_info {
 					/* Intel fn: 4, AMD fn: 8000001d */
 	struct cpuid_regs **cpi_cache_leaves;	/* Acual leaves from above */
 	struct cpuid_regs cpi_std[NMAX_CPI_STD];	/* 0 .. 7 */
+
+	/*
+	 * HVM function information
+	 */
+	uint_t cpi_hvmmaxeax;
+
 	/*
 	 * extended function information
 	 */
@@ -3292,7 +3298,30 @@ cpuid_pass1_ppin(cpu_t *cpu, uchar_t *featureset)
 }
 
 static void
-cpuid_pass1_freq(cpu_t *cpu)
+cpuid_pass1_hvm(cpu_t *cpu)
+{
+	struct cpuid_info *cpi = cpu->cpu_m.mcpu_cpi;
+	struct cpuid_regs regs = { 0 };
+
+	switch (platform_type) {
+	case HW_XEN_HVM:
+	case HW_VMWARE:
+	case HW_KVM:
+	case HW_BHYVE:
+	case HW_MICROSOFT:
+		break;
+	default:
+		return;
+	}
+
+	regs.cp_eax = 0x40000000;
+	(void) __cpuid_insn(&regs);
+
+	cpi->cpi_hvmmaxeax = regs.cp_eax;
+}
+
+static void
+cpuid_pass1_freq_intel(cpu_t *cpu)
 {
 	struct cpuid_info *cpi = cpu->cpu_m.mcpu_cpi;
 	struct cpuid_regs regs;
@@ -3327,6 +3356,48 @@ cpuid_pass1_freq(cpu_t *cpu)
 
 	if (crystal != 0)
 		cpi->cpi_tsc_freq = tsc_num * crystal / tsc_den;
+}
+
+static void
+cpuid_pass1_freq_vmware(cpu_t *cpu)
+{
+	struct cpuid_info *cpi = cpu->cpu_m.mcpu_cpi;
+	struct cpuid_regs regs = { 0 };
+
+	/*
+	 * For older VMWare versions, we must issue a request via the VMWare
+	 * hypervisor port.
+	 */
+	if (cpi->cpi_hvmmaxeax < 0x40000010) {
+		uint32_t regs[4];
+
+		vmware_port(VMWARE_HVCMD_GETTSCFREQ, regs);
+		if (regs[1] == UINT_MAX)
+			return;
+
+		cpi->cpi_tsc_freq = regs[0] | ((uint64_t)regs[1] << 32);
+		return;
+	}
+
+	regs.cp_eax = 0x40000010;
+	__cpuid_insn(&regs);
+	cpi->cpi_tsc_freq = regs.cp_eax * 1000;
+}
+
+static void
+cpuid_pass1_freq(cpu_t *cpu)
+{
+	struct cpuid_info *cpi = cpu->cpu_m.mcpu_cpi;
+
+	if (cpi->cpi_vendor == X86_VENDOR_Intel) {
+		cpuid_pass1_freq_intel(cpu);
+		return;
+	}
+
+	if (platform_type == HW_VMWARE) {
+		cpuid_pass1_freq_vmware(cpu);
+		return;
+	}
 }
 #endif	/* ! __xpv */
 
@@ -4185,6 +4256,7 @@ cpuid_pass1(cpu_t *cpu, uchar_t *featureset)
 	cpuid_pass1_thermal(cpu, featureset);
 #if !defined(__xpv)
 	cpuid_pass1_ppin(cpu, featureset);
+	cpuid_pass1_hvm(cpu);
 	cpuid_pass1_freq(cpu);
 #endif
 
