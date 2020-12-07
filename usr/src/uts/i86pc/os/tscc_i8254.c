@@ -29,6 +29,11 @@ tsc_calibrate_i8254(uint64_t *freqp)
 
 	PRM_POINT("Attempting to use i8254 PIT timer for TSC calibration...");
 
+	/*
+	 * freq_tsc() is a hand-rolled assembly function that returns
+	 * the number of TSC clicks and sets pit_counter to the number
+	 * of corresponding PIT ticks in the same time period.
+	 */
 	flags = clear_int_flag();
 	processor_clks = freq_tsc(&pit_counter);
 	restore_int_flag(flags);
@@ -42,9 +47,14 @@ tsc_calibrate_i8254(uint64_t *freqp)
 	return (B_TRUE);
 }
 
+/*
+ * Typically any source besides the PIT is going to provide better
+ * results, so a low preference is assigned to the PIT timer so it
+ * is tried last.
+ */
 static tsc_calibrate_t tsc_calibration_i8254 = {
-	.tscc_source = "pit",
-	.tscc_quality = 10,
+	.tscc_source = "PIT",
+	.tscc_preference = 10,
 	.tscc_calibrate = tsc_calibrate_i8254,
 };
 TSC_CALIBRATION_SOURCE(tsc_calibration_i8254);

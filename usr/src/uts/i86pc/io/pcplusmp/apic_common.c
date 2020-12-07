@@ -143,7 +143,7 @@ int	apic_panic_on_apic_error = 0;
 
 int	apic_verbose = 0;	/* 0x1ff */
 
-/* Force APIC calibration to use PIT timer */
+/* If set, force APIC calibration to use PIT timer instead of the TSC */
 int	apic_calibrate_pit = 0;
 
 #ifdef DEBUG
@@ -1223,20 +1223,21 @@ apic_calibrate_tsc(void)
 	apic_ticks = start_apic_tick - end_apic_tick;
 
 	/*
-	 * We likely did not wait exactly APIC_TIME_COUNT us, but slightly
-	 * longer. Add the difference to tsc_amt.
+	 * We likely did not wait exactly APIC_TIME_COUNT microseconds, but
+	 * slightly longer. Add the additional amount to tsc_amt.
 	 */
 	tsc_amt += tsc_now - tsc_end;
 
 	/*
 	 * This calculation is analogous to the one used with the PIT timer.
 	 * However, due to the typically _much_ higher precision of the
-	 * TSC compared to the PIT timer, we have to be care we do not
+	 * TSC compared to the PIT timer, we have to be careful we do not
 	 * overflow.
 	 *
 	 * Since contemporary APIC timers have frequencies on the order of
 	 * tens of MHz (i.e. 66MHz), we calculate that first. Then we
-	 * scale the result, then convert to scaled ticks per ns.
+	 * scale the result by SF (because the caller wants it scaled by
+	 * that amount), then convert the result to scaled (SF) ticks per ns.
 	 *
 	 */
 	uint64_t apic_freq = apic_ticks * tsc_hz / tsc_amt;

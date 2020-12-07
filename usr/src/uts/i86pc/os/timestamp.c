@@ -167,13 +167,16 @@ static uint32_t	shadow_hres_lock;
 int get_tsc_ready();
 
 /*
- * Let an operator specify an explicit TSC calibration source
+ * Allow an operator specify an explicit TSC calibration source
  * via /etc/system e.g. `set tsc_calibration="i8254"`
  */
 static const char *tsc_calibration;
 
-/* The source that was used to calibrate the TSC */
-tsc_calibrate_t *tsc_calibration_source;
+/*
+ * The source that was used to calibrate the TSC. This is currently just
+ * for diagnostic purposes.
+ */
+static tsc_calibrate_t *tsc_calibration_source;
 
 /* The TSC frequency after calibration */
 static uint64_t tsc_freq;
@@ -926,13 +929,13 @@ tsc_calibrate_cmp(const void *a, const void *b)
 	const tsc_calibrate_t *l = *a1;
 	const tsc_calibrate_t *r = *b1;
 
-	/* Sort from highest quality to lowest quality */
-	if (l->tscc_quality > r->tscc_quality)
+	/* Sort from highest preference to lowest preference */
+	if (l->tscc_preference > r->tscc_preference)
 		return (-1);
-	if (l->tscc_quality < r->tscc_quality)
+	if (l->tscc_preference < r->tscc_preference)
 		return (1);
 
-	/* For equal quality sources, sort alphabetically */
+	/* For equal preference sources, sort alphabetically */
 	int c = strcmp(l->tscc_source, r->tscc_source);
 
 	if (c < 0)
@@ -973,11 +976,6 @@ tsc_calibrate_get_force(void)
 uint64_t
 tsc_calibrate(void)
 {
-	/*
-	 * Cache the value for any subsequent callers. This is set during
-	 * setup prior to any additional cpus/cores are started, and is
-	 * effectively write only, so we don't need any locking to access it.
-	 */
 	tsc_calibrate_t **tsccpp, *force;
 
 	/*
@@ -988,6 +986,10 @@ tsc_calibrate(void)
 	if (!is_x86_feature(x86_featureset, X86FSET_TSC))
 		panic("System does not have TSC support");
 
+	/*
+	 * If we already successfully calibrated the TSC, no need to do
+	 * it again.
+	 */
 	if (tsc_freq > 0)
 		return (tsc_freq);
 
@@ -1011,7 +1013,7 @@ tsc_calibrate(void)
 	}
 
 	/*
-	 * Sort by quality, highest to lowest
+	 * Sort by preference, highest to lowest
 	 */
 	qsort(SET_BEGIN(tsc_calibration_set), SET_COUNT(tsc_calibration_set),
 	    sizeof (tsc_calibrate_t **), tsc_calibrate_cmp);
