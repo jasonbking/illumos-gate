@@ -63,7 +63,7 @@ tsc_calibrate_hyperv(uint64_t *freqp)
 
 static tsc_calibrate_t tsc_calibration_hyperv = {
 	.tscc_source = "hyperv",
-	.tscc_quality = 1000,
+	.tscc_preference = 1000,
 	.tscc_calibrate = tsc_calibrate_hyperv,
 };
 TSC_CALIBRATION_SOURCE(tsc_calibration_hyperv);
