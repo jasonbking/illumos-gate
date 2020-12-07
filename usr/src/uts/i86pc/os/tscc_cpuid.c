@@ -37,8 +37,8 @@ tsc_calibrate_cpuid(uint64_t *freqp)
 }
 
 static tsc_calibrate_t tsc_calibration_cpuid = {
-	.tscc_source = "cpuid",
-	.tscc_quality = 100,
+	.tscc_source = "CPUID",
+	.tscc_preference = 100,
 	.tscc_calibrate = tsc_calibrate_cpuid,
 };
 TSC_CALIBRATION_SOURCE(tsc_calibration_cpuid);
