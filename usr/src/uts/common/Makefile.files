@@ -1966,6 +1966,8 @@ SKD_OBJS = skd.o
 
 NVME_OBJS = nvme.o
 
+VSOCK_OBJS = vsock.o
+
 #
 #	Build up defines and paths.
 #

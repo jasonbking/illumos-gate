@@ -358,6 +358,7 @@ DRV_KMODS	+= vmxnet
 DRV_KMODS	+= vnd
 DRV_KMODS	+= vnic
 DRV_KMODS	+= vscan
+DRV_KMODS	+= vsock
 DRV_KMODS	+= wc
 DRV_KMODS	+= winlock
 DRV_KMODS	+= wpi
