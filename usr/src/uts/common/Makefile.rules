@@ -1552,7 +1552,7 @@ $(OBJS_DIR)/%.o:		$(UTSBASE)/common/io/vioif/%.c
 	$(COMPILE.c) -o $@ $<
 	$(CTFCONVERT_O)
 
-$(OBJS_DIR)/%.o:		$(COMMONBASE)/idspace/%.c
+$(OBJS_DIR)/%.o:		$(UTSBASE)/common/io/vsock/%.c
 	$(COMPILE.c) -o $@ $<
 	$(CTFCONVERT_O)
 
