@@ -16,7 +16,7 @@
 UTSBASE = ../..
 
 MODULE		= vsock
-OBJECTS		= $(VSOCK_OBKS:%=$(OBJS_DIR)/%)
+OBJECTS		= $(VSOCK_OBJS:%=$(OBJS_DIR)/%)
 ROOTMODULE	= $(ROOT_SOCK_DIR)/$(MODULE)
 
 ALL_TARGET	= $(BINARY)
@@ -24,6 +24,8 @@ INSTALL_TARGET	= $(BINARY) $(ROOTMODULE)
 
 CFLAGS		+= $(CCVERVOSE)
 LDFLAGS		+= -dy -Nfs/sockfs
+
+include $(UTSBASE)/intel/Makefile.intel
 
 .KEEP_STATE:
 

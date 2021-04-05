@@ -18,12 +18,25 @@
 #include <sys/socketvar.h>
 #include <sys/modctl.h>
 #include <sys/cmn_err.h>
+#include <sys/crc32.h>
+#include <sys/kmem.h>
 #include <sys/strsun.h>
 #include <sys/sunddi.h>
+#include <sys/refhash.h>
 
 typedef struct vsock_sock {
+	refhash_link_t	vs_link;
+
+	uint64_t	vs_lcid;
+	uint64_t	vs_rcid;
+	uint32_t	vs_lport;
+	uint32_t	vs_rport;
+
+	/* XXX: backend */
 	int foo;
 } vsock_sock_t;
+
+static kmem_cache_t *vsock_conn_cache;
 
 static sock_lower_handle_t vsock_create(int, int, int, sock_downcalls_t **,
     uint_t *, int *, int, cred_t *);
@@ -36,50 +49,37 @@ static int vsock_accept(sock_lower_handle_t proto_handle,
     cred_t *cr);
 static int vsock_bind(sock_lower_handle_t proto_handle, struct sockaddr *sa,
    socklen_t len, cred_t *cr);
-static int
-vsock_listen(sock_lower_handle_t proto_handle, int backlog, cred_t *cr);
-static int
-vsock_connect(sock_lower_handle_t proto_handle, const struct sockaddr *sa,
-   socklet_t len, sock_connid_t *id, cred_t *cr);
-static int
-vsock_getpeername(sock_lower_handle_t proto_handle, struct sockaddr *addr,
+static int vsock_listen(sock_lower_handle_t proto_handle, int backlog, cred_t *cr);
+static int vsock_connect(sock_lower_handle_t proto_handle, const struct sockaddr *sa,
+   socklen_t len, sock_connid_t *id, cred_t *cr);
+static int vsock_getpeername(sock_lower_handle_t proto_handle, struct sockaddr *addr,
    socklen_t *addrlenp, cred_t *cr);
-static int
-vsock_getsockname(sock_lower_handle_t proto_handle, struct sockaddr *addr,
+static int vsock_getsockname(sock_lower_handle_t proto_handle, struct sockaddr *addr,
     socklen_t *addrlenp, cred_t *cr);
-static int
-vsock_getsockopt(sock_lower_handle_t proto_handle, int level, int option_name,
+static int vsock_getsockopt(sock_lower_handle_t proto_handle, int level, int option_name,
     void *optvalp, socklen_t *optlen, cred_t *cr);
-static int
-vsock_setsockopt(sock_lower_handle_t proto_handle, int level, int option_name,
+static int vsock_setsockopt(sock_lower_handle_t proto_handle, int level, int option_name,
      const void *optvalp, socklen_t optlen, cred_t *cr);
-static int
-vsock_send(sock_lower_handle_t proto_handle, mblk_t *mp, struct nmsghdr *msg,
-    cred_t *cr);
-static int
-vsock_send_uio(sock_lower_handle_t proto_handle, uio_t *uiop,
+static int vsock_send(sock_lower_handle_t proto_handle, mblk_t *mp,
     struct nmsghdr *msg, cred_t *cr);
-static int
-vsock_recv_uio(sock_lower_handle_t proto_handle, uio_t *uiop,
+static int vsock_send_uio(sock_lower_handle_t proto_handle, uio_t *uiop,
     struct nmsghdr *msg, cred_t *cr);
-static int 
-vosck_poll(sock_lower_handle_t proto_handle, short events, int anyyet,
-    cred_t *cr);
-static int
-vsock_shutdown(sock_lower_handle_t proto_handle, int how, cred_t *cr);
-static int
-vsock_setflowctrl(sock_lower_handle_t proto_handle);
-static int
-vsock_ioctl(sock_lower_handle_t proto_handle, int cmd, intptr_t arg,
+static int vsock_recv_uio(sock_lower_handle_t proto_handle, uio_t *uiop,
+    struct nmsghdr *msg, cred_t *cr);
+static short vsock_poll(sock_lower_handle_t proto_handle, short events,
+    int anyyet, cred_t *cr);
+static int vsock_shutdown(sock_lower_handle_t proto_handle, int how, cred_t *cr);
+static void vsock_setflowctrl(sock_lower_handle_t proto_handle);
+static int vsock_ioctl(sock_lower_handle_t proto_handle, int cmd, intptr_t arg,
    int mode, int32_t *rvalp, cred_t *cr);
-
+static int vsock_close(sock_lower_handle_t, int flag, cred_t *);
 
 static smod_reg_t sinfo = {
 	SOCKMOD_VERSION,
 	"vsock",
 	SOCK_UC_VERSION,
 	SOCK_DC_VERSION,
-	sock_create,
+	vsock_create,
 	NULL,
 };
 
@@ -106,7 +106,7 @@ static sock_downcalls_t sock_vsock_downcalls = {
 	vsock_send,
 	vsock_send_uio,
 	vsock_recv_uio,
-	vosck_poll,
+	vsock_poll,
 	vsock_shutdown,
 	vsock_setflowctrl,
 	vsock_ioctl,
@@ -117,6 +117,9 @@ int
 _init(void)
 {
 	int rc;
+
+	vsock_conn_cache = kmem_cache_create("vsock connections",
+	    sizeof (vsock_sock_t), 0, NULL, NULL, NULL, NULL, NULL, 0);
 
 	rc = mod_install(&ml);
 	return (rc);
@@ -132,6 +135,8 @@ int
 _fini(void)
 {
 	int rc;
+
+	kmem_cache_destroy(vsock_conn_cache);
 
 	rc = mod_remove(&ml);
 	return (rc);
@@ -172,6 +177,7 @@ static int
 vsock_accept(sock_lower_handle_t proto_handle,
     sock_lower_handle_t lproto_handle, sock_upper_handle_t sock_handle,
     cred_t *cr)
+{
 	return (ECONNABORTED);
 }
 
@@ -190,7 +196,7 @@ vsock_listen(sock_lower_handle_t proto_handle, int backlog, cred_t *cr)
 
 static int
 vsock_connect(sock_lower_handle_t proto_handle, const struct sockaddr *sa,
-   socklet_t len, sock_connid_t *id, cred_t *cr)
+   socklen_t len, sock_connid_t *id, cred_t *cr)
 {
 	return (EOPNOTSUPP);
 }
@@ -246,8 +252,8 @@ vsock_recv_uio(sock_lower_handle_t proto_handle, uio_t *uiop,
 	return (EOPNOTSUPP);
 }
 
-static int 
-vosck_poll(sock_lower_handle_t proto_handle, short events, int anyyet,
+static short
+vsock_poll(sock_lower_handle_t proto_handle, short events, int anyyet,
     cred_t *cr)
 {
 	return (EOPNOTSUPP);
@@ -260,10 +266,9 @@ vsock_shutdown(sock_lower_handle_t proto_handle, int how, cred_t *cr)
 	return (EOPNOTSUPP);
 }
 
-static int
+static void
 vsock_setflowctrl(sock_lower_handle_t proto_handle)
 {
-	return (EOPNOTSUPP);
 }
 
 static int
@@ -271,4 +276,49 @@ vsock_ioctl(sock_lower_handle_t proto_handle, int cmd, intptr_t arg,
    int mode, int32_t *rvalp, cred_t *cr)
 {
 	return (EOPNOTSUPP);
+}
+
+static int
+vsock_close(sock_lower_handle_t proto_handle, int flag, cred_t *cr)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+vsock_sock_cmp(const void *a, const void *b)
+{
+	const vsock_sock_t *l = a;
+	const vsock_sock_t *r = b;
+
+	if (l->vs_lcid < r->vs_lcid)
+		return (-1);
+	if (l->vs_lcid > r->vs_lcid)
+		return (1);
+	if (l->vs_rcid < r->vs_rcid)
+		return (-1);
+	if (l->vs_rcid > r->vs_rcid)
+		return (1);
+	if (l->vs_lport < r->vs_lport)
+		return (-1);
+	if (l->vs_lport > r->vs_rport)
+		return (1);
+	if (l->vs_rport < r->vs_rport)
+		return (-1);
+	if (l->vs_rport > r->vs_rport)
+		return (1);
+	return (0);
+}
+
+static uint64_t
+vsock_sock_hash(const void *v)
+{
+	const vsock_sock_t *s = v;
+	uint32_t crc;
+
+	CRC32(crc, s->vs_lcid, sizeof (s->vs_lcid), -1U, crc32_table);
+	CRC32(crc, s->vs_rcid, sizeof (s->vs_rcid), crc, crc32_table);
+	CRC32(crc, s->vs_lport, sizeof (s->vs_lport), crc, crc32_table);
+	CRC32(crc, s->vs_rport, sizeof (s->vs_rport), crc, crc32_table);
+
+	return (crc);
 }

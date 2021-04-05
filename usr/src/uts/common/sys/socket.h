@@ -23,6 +23,7 @@
  *
  * Copyright (c) 1989, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2015, Joyent, Inc. All rights reserved.
+ * Copyright 2021 Jason King
  */
 
 /*	Copyright (c) 1983, 1984, 1985, 1986, 1987, 1988, 1989 AT&T	*/
@@ -309,8 +310,9 @@ struct	linger {
 #define	AF_TRILL	31		/* TRILL interface */
 #define	AF_PACKET	32		/* PF_PACKET Linux socket interface */
 #define	AF_LX_NETLINK	33		/* Linux-compatible netlink */
+#define	AF_VSOCK	34
 
-#define	AF_MAX		33
+#define	AF_MAX		34
 
 /*
  * Protocol families, same as address families for now.
@@ -351,6 +353,7 @@ struct	linger {
 #define	PF_TRILL	AF_TRILL
 #define	PF_PACKET	AF_PACKET
 #define	PF_LX_NETLINK	AF_LX_NETLINK
+#define	PF_VSOCK	AF_VSOCK
 
 #define	PF_MAX		AF_MAX
 

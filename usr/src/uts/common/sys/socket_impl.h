@@ -21,6 +21,8 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2021 Jason King
  */
 
 /*	Copyright (c) 1983, 1984, 1985, 1986, 1987, 1988, 1989 AT&T	*/
@@ -123,6 +125,14 @@ struct sockaddr_ll {
 #define	LINUX_SLL_MULTICAST	2
 #define	LINUX_SLL_OTHERHOST	3
 #define	LINUX_SLL_OUTGOING	4
+
+struct sockaddr_vm {
+	sa_family_t	svm_family;
+	char		_svm_pad1[2];
+	uint32_t	svm_port;
+	uint32_t	svm_cid;
+	char		_svm_pad2[4];
+};
 
 #ifdef	__cplusplus
 }
