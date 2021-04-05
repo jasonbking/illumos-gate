@@ -52,6 +52,8 @@ struct virtio_vsock_hdr {
 	uint32_t	vvh_fwd_cnt;
 } __packed;
 
+#define	VIRTIO_VSOCK_TYPE_STREAM	1
+
 #define	VIRTIO_VSOCK_OP_INVALID		0
 
 #define	VIRTIO_VSOCK_OP_REQUEST		1
