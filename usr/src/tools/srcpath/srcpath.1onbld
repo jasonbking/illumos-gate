@@ -1,0 +1,43 @@
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" http://www.illumos.org/license/CDDL.
+.\"
+.\"
+.\" Copyright 2023 Jason King
+.\"
+.Dd April 25, 2023
+.Dt SRCPATH 1ONBLD
+.Os
+.Sh NAME
+.Nm srcpath
+.Nd Resolve paths and stuff
+.Sh SYNOPSIS
+.Nm
+.Ar path
+.Sh DESCRIPTION
+The
+.Nm
+command takes a path in the source tree (often relative) and resolves it to
+a full path relative to
+.Ev CODEMGR_WS .
+.Pp
+The intention is that this can be used to provide both better values of
+.Dv __FILE__
+during build of illumos-gate for things such as asserts.
+.Pp
+If
+.Ev CODEMGR_WS
+is not set, an error is returned.
+.Sh EXAMPLES
+.Bd -literal -offset indent
+% echo $CODEMGR_WS
+/ws/illumos-gate/usr/src/lib/librename/amd64
+% srcpath ../common/librename.c
+usr/src/lib/librename/common/librename.c
+.Ed

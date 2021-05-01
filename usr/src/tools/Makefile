@@ -26,7 +26,7 @@
 # Copyright (c) 2016, Chris Fraire <cfraire@me.com>.
 # Copyright 2019 Joyent, Inc.
 # Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
-# Copyright 2021 Jason King
+# Copyright 2023 Jason King
 #
 
 include ../Makefile.master
@@ -64,7 +64,8 @@ COMMON_SUBDIRS=		\
 	protocmp	\
 	protolist	\
 	scripts		\
-	sgs
+	sgs		\
+	srcpath
 
 #
 #  special versions of commands for use only in build

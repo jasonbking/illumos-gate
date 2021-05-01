@@ -10,7 +10,7 @@
 #
 
 #
-# Copyright 2018 Jason King
+# Copyright 2023 Jason King
 # Copyright 2019 Joyent, Inc.
 #
 
@@ -34,9 +34,14 @@ LIBS =		$(DYNLIB)
 LDLIBS +=	-lc -lcustr
 
 SRCDIR =	../common
+SRCPATH_cmd =	$(SRCPATH) $(SRCDIR)
+RELSRCDIR =	$(SRCPATH_cmd:sh)
 
 CSTD =		$(CSTD_GNU99)
 CFLAGS +=	$(CCVERBOSE)
+CFLAGS +=	-_gcc10=-ffile-prefix-map=$(SRCDIR)=$(RELSRCDIR)
+CFLAGS64 +=	-_gcc10=-ffile-prefix-map=$(SRCDIR)=$(RELSRCDIR)
+
 CPPFLAGS +=	-I$(SRCDIR) -D_REENTRANT -D__EXTENSIONS__
 
 .KEEP_STATE:

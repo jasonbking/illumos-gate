@@ -126,6 +126,8 @@ ELFEXTRACT=	$(ONBLD_TOOLS)/bin/$(MACH)/elfextract
 MBH_PATCH=	$(ONBLD_TOOLS)/bin/$(MACH)/mbh_patch
 BTXLD=		$(ONBLD_TOOLS)/bin/$(MACH)/btxld
 VTFONTCVT=	$(ONBLD_TOOLS)/bin/$(MACH)/vtfontcvt
+SRCPATH=	$(ONBLD_TOOLS)/bin/$(MACH)/srcpath
+
 # echo(1) and true(1) are specified without absolute paths, so that the shell
 # spawned by make(1) may use the built-in versions.  This is minimally
 # problematic, as the shell spawned by make(1) is known and under control, the
