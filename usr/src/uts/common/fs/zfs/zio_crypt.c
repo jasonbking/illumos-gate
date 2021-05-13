@@ -1109,9 +1109,9 @@ error:
 
 /*
  * objset_phys_t blocks introduce a number of exceptions to the normal
- * authentication process. objset_phys_t's contain 2 seperate HMACS for
+ * authentication process. objset_phys_t's contain 2 separate HMACS for
  * protecting the integrity of their data. The portable_mac protects the
- * the metadnode. This MAC can be sent with a raw send and protects against
+ * metadnode. This MAC can be sent with a raw send and protects against
  * reordering of data within the metadnode. The local_mac protects the user
  * accounting objects which are not sent from one system to another.
  *
@@ -1254,15 +1254,27 @@ zio_crypt_do_objset_hmacs(zio_crypt_key_t *key, void *data, uint_t datalen,
 	}
 
 	/* add in fields from the user accounting dnodes */
-	ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
-	    should_bswap, &osp->os_userused_dnode);
-	if (ret)
-		goto error;
+	if (osp->os_userused_dnode.dn_type != DMU_OT_NONE) {
+		ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
+		    should_bswap, &osp->os_userused_dnode);
+		if (ret)
+			goto error;
+	}
 
-	ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
-	    should_bswap, &osp->os_groupused_dnode);
-	if (ret)
-		goto error;
+	if (osp->os_groupused_dnode.dn_type != DMU_OT_NONE) {
+		ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
+		    should_bswap, &osp->os_groupused_dnode);
+		if (ret)
+			goto error;
+	}
+
+	if (osp->os_projectused_dnode.dn_type != DMU_OT_NONE &&
+	    datalen >= OBJSET_PHYS_SIZE_V3) {
+		ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
+		    should_bswap, &osp->os_projectused_dnode);
+		if (ret)
+			goto error;
+	}
 
 	/* store the final digest in a temporary buffer and copy what we need */
 	cd.cd_length = SHA512_DIGEST_LENGTH;
