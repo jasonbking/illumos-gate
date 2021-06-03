@@ -79,6 +79,14 @@
  */
 int zfs_disable_ivset_guid_check = 0;
 
+/*
+ * The original support for ZFS projects accidentially missed including
+ * an objset's projectused dnode in the HMAC calculation (see illumos#13795).
+ * When this setting is enabled, a failed local HMAC verification will re-try
+ * HMAC verification without including the projectused dnode.
+ */
+int zfs_allow_objset_hmac_compat = 1;
+
 static void
 dsl_wrapping_key_hold(dsl_wrapping_key_t *wkey, void *tag)
 {
@@ -2725,8 +2733,30 @@ spa_do_crypt_objset_mac_abd(boolean_t generate, spa_t *spa, uint64_t dsobj,
 		return (0);
 	}
 
-	if (bcmp(portable_mac, osp->os_portable_mac, ZIO_OBJSET_MAC_LEN) != 0 ||
-	    bcmp(local_mac, osp->os_local_mac, ZIO_OBJSET_MAC_LEN) != 0) {
+	boolean_t portable_mac_ok, local_mac_ok;
+
+	portable_mac_ok = bcmp(portable_mac, osp->os_portable_mac,
+	    ZIO_OBJSET_MAC_LEN) == 0 ? B_TRUE : B_FALSE;
+	local_mac_ok = bcmp(local_mac, osp->os_local_mac,
+	    ZIO_OBJSET_MAC_LEN) == 0 ? B_TRUE : B_FALSE;
+
+	if (!local_mac_ok && zfs_allow_objset_hmac_compat) {
+		ret = spa_keystore_lookup_key(spa, dsobj, FTAG, &dck);
+		if (ret != 0)
+			goto error;
+
+		ret = zio_crypt_do_objset_compat_hmacs(&dck->dck_key, buf,
+		    datalen, byteswap, local_mac);
+		if (ret != 0)
+			goto error;
+
+		spa_keystore_dsl_key_rele(spa, dck, FTAG);
+
+		local_mac_ok = bcmp(local_mac, osp->os_local_mac,
+		    ZIO_OBJSET_MAC_LEN) == 0 ? B_TRUE : B_FALSE;
+	}
+
+	if (!portable_mac_ok || !local_mac_ok) {
 		abd_return_buf(abd, buf, datalen);
 		return (SET_ERROR(ECKSUM));
 	}

@@ -1297,6 +1297,97 @@ error:
 	return (ret);
 }
 
+int
+zio_crypt_do_objset_compat_hmacs(zio_crypt_key_t *key, void *data,
+    uint_t datalen, boolean_t should_bswap, uint8_t *local_mac)
+{
+	int ret;
+	crypto_mechanism_t mech;
+	crypto_context_t ctx;
+	crypto_data_t cd;
+	objset_phys_t *osp = data;
+	uint64_t intval;
+	boolean_t le_bswap = (should_bswap == ZFS_HOST_BYTEORDER);
+	uint8_t raw_local_mac[SHA512_DIGEST_LENGTH];
+
+	if ((datalen >= OBJSET_PHYS_SIZE_V3 &&
+	    osp->os_userused_dnode.dn_type == DMU_OT_NONE &&
+	    osp->os_groupused_dnode.dn_type == DMU_OT_NONE &&
+	    osp->os_projectused_dnode.dn_type == DMU_OT_NONE) ||
+	    (datalen >= OBJSET_PHYS_SIZE_V2 &&
+	    osp->os_userused_dnode.dn_type == DMU_OT_NONE &&
+	    osp->os_groupused_dnode.dn_type == DMU_OT_NONE) ||
+	    (datalen <= OBJSET_PHYS_SIZE_V1)) {
+		bzero(local_mac, ZIO_OBJSET_MAC_LEN);
+		return (0);
+	}
+
+	/* initialize HMAC mechanism */
+	mech.cm_type = crypto_mech2id(SUN_CKM_SHA512_HMAC);
+	mech.cm_param = NULL;
+	mech.cm_param_len = 0;
+
+	/* calculate the local MAC from the userused and groupused dnodes */
+	ret = crypto_mac_init(&mech, &key->zk_hmac_key, NULL, &ctx, NULL);
+	if (ret != CRYPTO_SUCCESS) {
+		ret = SET_ERROR(EIO);
+		goto error;
+	}
+
+	/* add in the non-portable os_flags */
+	intval = osp->os_flags;
+	if (should_bswap)
+		intval = BSWAP_64(intval);
+	intval &= ~OBJSET_CRYPT_PORTABLE_FLAGS_MASK;
+	/* CONSTCOND */
+	if (!ZFS_HOST_BYTEORDER)
+		intval = BSWAP_64(intval);
+
+	cd.cd_format = CRYPTO_DATA_RAW;
+	cd.cd_offset = 0;
+	cd.cd_length = sizeof (uint64_t);
+	cd.cd_raw.iov_base = (char *)&intval;
+	cd.cd_raw.iov_len = cd.cd_length;
+
+	ret = crypto_mac_update(ctx, &cd, NULL);
+	if (ret != CRYPTO_SUCCESS) {
+		ret = SET_ERROR(EIO);
+		goto error;
+	}
+
+	if (osp->os_userused_dnode.dn_type != DMU_OT_NONE) {
+		ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
+		    should_bswap, &osp->os_userused_dnode);
+		if (ret)
+			goto error;
+	}
+
+	if (osp->os_groupused_dnode.dn_type != DMU_OT_NONE) {
+		ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
+		    should_bswap, &osp->os_groupused_dnode);
+		if (ret)
+			goto error;
+	}
+
+	cd.cd_length = SHA512_DIGEST_LENGTH;
+	cd.cd_raw.iov_base = (char *)raw_local_mac;
+	cd.cd_raw.iov_len = cd.cd_length;
+
+	ret = crypto_mac_final(ctx, &cd, NULL);
+	if (ret != CRYPTO_SUCCESS) {
+		ret = SET_ERROR(EIO);
+		goto error;
+	}
+
+	bcopy(raw_local_mac, local_mac, ZIO_OBJSET_MAC_LEN);
+
+	return (0);
+
+error:
+	bzero(local_mac, ZIO_OBJSET_MAC_LEN);
+	return (ret);
+}
+
 static void
 zio_crypt_destroy_uio(uio_t *uio)
 {
