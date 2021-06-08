@@ -26,6 +26,7 @@
  * Copyright 2017 Nexenta Systems, Inc.
  * Copyright (c) 2017, 2018 Lawrence Livermore National Security, LLC.
  * Copyright 2017 RackTop Systems.
+ * Copyright (c) 2020 Datto Inc.
  */
 
 #include <stdio.h>
@@ -135,9 +136,9 @@ usage(void)
 	    "Usage:\t%s [-AbcdDFGhikLMPsvX] [-e [-V] [-p <path> ...]] "
 	    "[-I <inflight I/Os>]\n"
 	    "\t\t[-o <var>=<value>]... [-t <txg>] [-U <cache>] [-x <dumpdir>]\n"
-	    "\t\t[<poolname> [<object> ...]]\n"
-	    "\t%s [-AdiPv] [-e [-V] [-p <path> ...]] [-U <cache>] <dataset> "
-	    "[<object> ...]\n"
+	    "\t\t[<poolname>[/<dataset | objset id>] [<object> ...]]\n"
+	    "\t%s [-AdiPv] [-e [-V] [-p <path> ...]] [-U <cache>]\n"
+	    "\t\t[<poolname>[/<dataset | objset id>] [<object> ...]\n"
 	    "\t%s -C [-A] [-U <cache>]\n"
 	    "\t%s -l [-Aqu] <device>\n"
 	    "\t%s -m [-AFLPX] [-e [-V] [-p <path> ...]] [-t <txg>] "
@@ -4441,6 +4442,26 @@ zdb_check_for_obsolete_leaks(vdev_t *vd, zdb_cb_t *zcb)
 	return (leaks);
 }
 
+static int
+name_from_objset_id(spa_t *spa, uint64_t objset_id, char *outstr)
+{
+	dsl_dataset_t *ds;
+
+	dsl_pool_config_enter(spa->spa_dsl_pool, FTAG);
+	int error = dsl_dataset_hold_obj(spa->spa_dsl_pool, objset_id,
+	    NULL, &ds);
+	if (error != 0) {
+		(void) fprintf(stderr, "failed to hold objset %llu: %s\n",
+		    (u_longlong_t)objset_id, strerror(error));
+		dsl_pool_config_exit(spa->spa_dsl_pool, FTAG);
+		return (error);
+	}
+	dsl_dataset_name(ds, outstr);
+	dsl_dataset_rele(ds, NULL);
+	dsl_pool_config_exit(spa->spa_dsl_pool, FTAG);
+	return (0);
+}
+
 static boolean_t
 zdb_leak_fini(spa_t *spa, zdb_cb_t *zcb)
 {
@@ -6251,13 +6272,14 @@ main(int argc, char **argv)
 	int error = 0;
 	char **searchdirs = NULL;
 	int nsearch = 0;
-	char *target, *target_pool;
+	char *target, *target_pool, dsname[ZFS_MAX_DATASET_NAME_LEN];
 	nvlist_t *policy = NULL;
 	uint64_t max_txg = UINT64_MAX;
+	int64_t objset_id = -1;
 	int flags = ZFS_IMPORT_MISSING_LOG;
 	int rewind = ZPOOL_NEVER_REWIND;
-	char *spa_config_path_env;
-	boolean_t target_is_spa = B_TRUE;
+	char *spa_config_path_env, *objset_str;
+	boolean_t target_is_spa = B_TRUE, dataset_lookup = B_FALSE;
 	nvlist_t *cfg = NULL;
 
 	(void) setrlimit(RLIMIT_NOFILE, &rl);
@@ -6380,6 +6402,31 @@ main(int argc, char **argv)
 		(void) fprintf(stderr, "-p option requires use of -e\n");
 		usage();
 	}
+	if (dump_opt['d']) {
+		/* <pool>[/<dataset | objset id> is accepted */
+		if (argv[2] && (objset_str = strchr(argv[2], '/')) != NULL &&
+		    objset_str++ != NULL) {
+			char *endptr;
+			errno = 0;
+			objset_id = strtoull(objset_str, &endptr, 0);
+			/* dataset 0 is the same as opening the pool */
+			if (errno == 0 && endptr != objset_str &&
+			    objset_id != 0) {
+				target_is_spa = B_FALSE;
+				dataset_lookup = B_TRUE;
+			} else if (objset_id != 0) {
+				printf("failed to open objset %s "
+				    "%llu %s", objset_str,
+				    (u_longlong_t)objset_id,
+				    strerror(errno));
+				exit(1);
+			}
+			/* normal dataset name not an objset ID */
+			if (endptr == objset_str) {
+				objset_id = -1;
+			}
+		}
+	}
 
 	/*
 	 * ZDB does not typically re-read blocks; therefore limit the ARC
@@ -6422,7 +6469,6 @@ main(int argc, char **argv)
 
 	argc -= optind;
 	argv += optind;
-
 	if (argc < 2 && dump_opt['R'])
 		usage();
 
@@ -6532,7 +6578,7 @@ main(int argc, char **argv)
 				    checkpoint_pool, error);
 			}
 
-		} else if (target_is_spa || dump_opt['R']) {
+		} else if (target_is_spa || dump_opt['R'] || objset_id == 0) {
 			zdb_set_skip_mmp(target);
 			error = spa_open_rewind(target, &spa, FTAG, policy,
 			    NULL);
@@ -6557,9 +6603,24 @@ main(int argc, char **argv)
 			}
 		} else {
 			zdb_set_skip_mmp(target);
-			error = open_objset(target, DMU_OST_ANY, FTAG, &os);
+			if (dataset_lookup == B_TRUE) {
+				/*
+				 * Use the supplied id to get the name
+				 * for open_objset.
+				 */
+				error = spa_open(target, &spa, FTAG);
+				if (error == 0) {
+					error = name_from_objset_id(spa,
+					    objset_id, dsname);
+					spa_close(spa, FTAG);
+					if (error == 0)
+						target = dsname;
+				}
+			}
 			if (error == 0)
 				spa = dmu_objset_spa(os);
+			if (error == 0)
+				error = open_objset(target, FTAG, &os);
 		}
 	}
 	nvlist_free(policy);
