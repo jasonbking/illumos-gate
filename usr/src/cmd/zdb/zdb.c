@@ -3002,7 +3002,7 @@ dump_path_impl(objset_t *os, uint64_t obj, char *name, uint64_t *retobj)
 			*retobj = child_obj;
 		} else {
 			dump_object(os, child_obj, dump_opt['v'], &header,
-			    NULL, 0);
+			    NULL);
 		}
 		return (0);
 	default:
@@ -3102,7 +3102,7 @@ zdb_copy_object(objset_t *os, uint64_t srcobj, char *destfile)
 		if (writesize < 0) {
 			err = errno;
 			break;
-		} else if (writesize != readsize) {
+		} else if ((uint64_t)writesize != readsize) {
 			/* Incomplete write */
 			(void) fprintf(stderr, "Short write, only wrote %llu of"
 			    " %" PRIu64 " bytes, exiting...\n",
@@ -6710,10 +6710,12 @@ main(int argc, char **argv)
 						target = dsname;
 				}
 			}
+			if (error == 0) {
+				error = open_objset(target, DMU_OST_ZFS,
+				    FTAG, &os);
+			}
 			if (error == 0)
 				spa = dmu_objset_spa(os);
-			if (error == 0)
-				error = open_objset(target, FTAG, &os);
 		}
 	}
 	nvlist_free(policy);
