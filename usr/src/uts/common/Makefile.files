@@ -2148,6 +2148,11 @@ MEGA_SAS_OBJS = megaraid_sas.o
 MR_SAS_OBJS = ld_pd_map.o mr_sas.o mr_sas_tbolt.o mr_sas_list.o
 
 #
+#	MRS_SAS module
+#
+MRS_SAS_OBJS += mrs_sas_ddi.o
+
+#
 #	CPQARY3 module
 #
 CPQARY3_OBJS =	cpqary3.o cpqary3_noe.o cpqary3_talk2ctlr.o	\

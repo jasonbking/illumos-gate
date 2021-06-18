@@ -970,6 +970,10 @@ $(OBJS_DIR)/%.o:		$(UTSBASE)/common/io/scsi/adapters/mpt_sas/%.c
 	$(COMPILE.c) -o $@ $<
 	$(CTFCONVERT_O)
 
+$(OBJS_DIR)/%.o:		$(UTSBASE)/common/io/scsi/adapters/mrs_sas/%.c
+	$(COMPILE.c) -o $@ $<
+	$(CTFCONVERT_O)
+
 $(OBJS_DIR)/%.o:		$(UTSBASE)/common/io/mxfe/%.c
 	$(COMPILE.c) -o $@ $<
 	$(CTFCONVERT_O)
