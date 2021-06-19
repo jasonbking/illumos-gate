@@ -2150,7 +2150,7 @@ MR_SAS_OBJS = ld_pd_map.o mr_sas.o mr_sas_tbolt.o mr_sas_list.o
 #
 #	MRS_SAS module
 #
-MRS_SAS_OBJS += mrs_sas_ddi.o
+MRS_SAS_OBJS += mrs_sas_ddi.o mrs_sas_scsa.o mrs_sas.o
 
 #
 #	CPQARY3 module
