@@ -286,8 +286,7 @@ mrs_sas_add_intrs(mrs_sas_t *mrs, int intr_type)
 		return (DDI_FAILURE);
 	}
 
-	/* XXX: this should be revisited */
-	if (count > 1)
+	if ((intr_type == DDI_INTR_TYPE_MSI) && (count > 1))
 		count = 1;
 
 	mrs->mrs_intr_htable_size = count * sizeof (ddi_intr_handle_t);

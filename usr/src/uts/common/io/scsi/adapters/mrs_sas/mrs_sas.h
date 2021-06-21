@@ -51,6 +51,7 @@ typedef struct mrs_sas {
 	ddi_device_acc_attr_t	mrs_hba_acc_attr;
 	caddr_t			mrs_regmap;
 	ddi_acc_handle_t	mrs_reghandle;
+	uint_t			mrs_max_num_seg;
 
 	ddi_intr_handle_t	*mrs_intr_htable;
 	size_t			mrs_intr_htable_size;
