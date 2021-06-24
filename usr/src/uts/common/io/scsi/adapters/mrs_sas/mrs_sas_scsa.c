@@ -188,3 +188,9 @@ mrs_sas_hba_attach(mrs_sas_t *mrs)
 
 	return (DDI_SUCCESS);
 }
+
+int
+mrs_sas_hba_detach(mrs_sas_t *mrs)
+{
+	return (DDI_SUCCESS);
+}

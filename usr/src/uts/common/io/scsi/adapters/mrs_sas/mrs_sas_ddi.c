@@ -56,6 +56,8 @@
 #include "mrs_sas.h"
 #include "mrs_sas_reg.h"
 
+#define	INST2LSIRDCTL(x)	((x) << INST_MINOR_SHIFT)
+
 void *mrs_sas_state;
 
 /*
@@ -166,6 +168,51 @@ mrs_sas_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		goto fail;
 	INITLEVEL_SET(mrs, MRS_INITLEVEL_INTR);
 
+	mutex_init(&mrs->mrs_mpt_cmd_lock, NULL, MUTEX_DRIVER,
+	    DDI_INTR_PRI(mrs->mrs_intr_pri));
+	mutex_init(&mrs->mrs_mfi_cmd_lock, NULL, MUTEX_DRIVER,
+	    DDI_INTR_PRI(mrs->mrs_intr_pri));
+
+	mutex_init(&mrs->mrs_ioctl_count_lock, NULL, MUTEX_DRIVER,
+	    DDI_INTR_PRI(mrs->mrs_intr_pri));
+	cv_init(&mrs->mrs_ioctl_count_cv, NULL, CV_DRIVER, NULL);
+
+	INITLEVEL_SET(mrs, MRS_INITLEVEL_SYNC);
+
+	if (mrs_sas_hba_attach(mrs) != DDI_SUCCESS)
+		goto fail;
+
+	(void) snprintf(mrs->mrs_iocname, "%d:lsirdctl", instance);
+	if (ddi_create_minor_node(dip, mrs->mrs_iocname, S_IFCHR,
+	    INST2LSIRDCTL(instance), DDI_PSEUDO, 0) != DDI_SUCCESS) {
+		dev_err(cip, CE_WARN, "failed to create ioctl node.");
+		goto fail;
+	}
+	INITLEVEL_SET(mrs, MRS_INITLEVEL_NODE);
+
+	mrs->mrs_taskq = ddi_taskq_create(dip, "mrs_sas_taskq", 1,
+	    TASKQ_DEFAULTPRI, 0);
+	if (mrs->mrs_taskq == NULL) {
+		dev_err(dip, CE_WARN, "failed to create taskq.");
+		goto fail;
+	}
+	INITLEVEL_SET(mrs, MRS_INITLEVEL_TASKQ);
+
+	mrs_sas_enable_intr(mrs);
+
+	if (mrs_sas_start_mfi_aen(mrs) != DDI_SUCCESS) {
+		dev_err(dip, CE_WARN, "failed to initiate AEN.");
+		goto fail;
+	}
+	INITLEVEL_SET(mrs, MRS_INITLEVEL_AEN);
+
+	ddi_report_dev(dip);
+
+	if (mrs_sas_check_acc_handle(mrs->mrs_reghandle) != DDI_SUCCESS)
+		goto fail;
+	if (mrs_sas_check_acc_handle(mrs->mrs_pci_handle) != DDI_SUCCESS)
+		goto fail;
+
 	return (DDI_SUCCESS);
 
 fail:
@@ -178,15 +225,53 @@ fail:
 static int
 mrs_sas_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 {
+	mrs_sas_t *mrs;
+	int instance;
+
 	if (scsi_hba_iport_unit_address(dip) != NULL)
 		return (mrs_sas_iport_detach(dip, cmd));
 
-	return (DDI_FAILURE);
+	if (cmd != DDI_DETACH)
+		return (DDI_FAILURE);
+
+	instance = ddi_get_instance(dip);
+	mrs = ddi_get_soft_state(mrs_sas_state, instance);
+	if (mrs == NULL) {
+		dev_err(dip, CE_WARN,
+		    "could not get instance %d data in detach", instance);
+		return (DDI_FAILURE);
+	}
+
+	mrs_sas_cleanup(mrs, B_FALSE);
+	return (DDI_SUCCESS);
 }
 
 static void
 mrs_sas_cleanup(mrs_sas_t *mrs, boolean_t failed)
 {
+	if (INITLEVEL_ACTIVE(mrs, MRS_INITLEVEL_TASKQ)) {
+		ddi_taskq_destroy(mrs->mrs_taskq);
+		INITLEVEL_CLEAR(mrs, MRS_INITLEVEL_TASKQ);
+	}
+
+	if (INITLEVEL_ACTIVE(mrs, MRS_INITLEVEL_NODE)) {
+		ddi_remove_minor_node(mrs->mrs_dip, mrs->mrs_iocname);
+		INITLEVEL_CLEAR(mrs, MRS_INITLEVEL_NODE);
+	}
+
+	if (INITLEVEL_ACTIVE(mrs, MRS_INITLEVEL_HBA)) {
+		mrs_sas_hba_detach(mrs);
+		INITLEVEL_CLEAR(mrs, MRS_INITLEVEL_HBA);
+	}
+
+	if (INITLEVEL_ACTIVE(mrs, MRS_INITLEVEL_SYNC)) {
+		cv_destroy(&mrs->mrs_ioctl_count_cv);
+		mutex_destroy(&mrs->mrs_ioctl_count_lock);
+		mutex_destroy(&mrs->mrs_mfi_cmd_lock);
+		mutex_destroy(&mrs->mrs_mpt_cmd_lock);
+		INITLEVEL_CLEAR(mrs, MRS_INITLEVEL_SYNC);
+	}
+
 	if (INITLEVEL_ACTIVE(mrs, MRS_INITLEVEL_INTR)) {
 		mrs_sas_intr_fini(mrs);
 		INITLEVEL_CLEAR(mrs, MRS_INITLEVEL_REGS);
@@ -457,6 +542,26 @@ mrs_sas_intr_init(mrs_sas_t *mrs)
 static void
 mrs_sas_intr_fini(mrs_sas_t *mrs)
 {
+	uint_t i;
+
+	if ((mrs->mrs_mrs_intr_cap & DDIR_INTR_FLAG_BLOCK) != 0) {
+		(void) ddi_intr_block_disable(mrs->mrs_intr_htable,
+		    mrs->mrs_intr_count);
+	} else {
+		for (i = 0; i < mrs->mrs_intr_count; i++)
+			(void) ddi_intr_disable(mrs->mrs_intr_htable[i]);
+	}
+
+	for (i = 0; i < mrs->mrs_intr_count; i++) {
+		(void) ddi_intr_remove_handler(mrs->mrs_intr_htable[i]);
+		(void) ddi_intr_free(mrs->mrs_intr_htable[i]);
+	}
+
+	if (mrs->mrs_intr_htable != NULL)
+		kmem_free(mrs->mrs_intr_htable, mrs->mrs_intr_htable_size);
+
+	mrs->mrs_intr_htable = NULL;
+	mrs->mrs_intr_htable_size = 0;
 }
 
 static int
@@ -543,7 +648,54 @@ static int
 mrs_sas_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
     int *rval)
 {
-	return (ENXIO);
+	mrs_sas_t *mrs;
+	mrs_sas_ioctl_t *ioc;
+	mrs_sas_aen_t	aen;
+	int inst = MINOR2INST(getminor(dev));
+	int ret;
+
+	if (secpolicy_sys_config(credp, B_FALSE) != 0)
+		return (EPERM);
+
+	mrs = ddi_get_soft_state(mrs_sas_state, inst);
+	if (mrs == NULL)
+		return (ENXIO);
+
+	switch ((uint_t) cmd) {
+	case MRS_SAS_IOCTL_FIRMWARE:
+		ioc = kmem_zalloc(sizeof (*ioc), KM_SLEEP);
+		if (ddi_copyin((void *)arg, ioc, sizeof (*ioc), mode) != 0) {
+			kmem_free(ioc, sizeof (*ioc);
+			return (EFAULT);
+		}
+
+		if (ioc->mrsioc_control_code == MRS_SAS_DRIVER_IOCTL_COMMON)
+			ret = mrs_sas_drv_ioctl(mrs, ioc, mode);
+		else
+			ret = mrs_sas_mfi_ioct(mrs, ioc, mode);
+
+		if (ddi_copyout(ioc, (void *)arg, sizeof (*ioc) - 1,
+		    mode) != 0) {
+			ret = 1;
+		}
+
+		kmem_free(ioc, sizeof (*ioc));
+		break;
+	case MRS_SAS_IOCTL_AEN:
+		if (ddi_copyin((void *)arg, &aen, sizeof (aen), mode) != 0)
+			return (EFAULT);
+
+		ret = mrs_sas_mfi_aen_ioctl(mrs, &aen);
+
+		if (ddi_copyout(&aen, (void *)arg, sizeof (aen), mode) != 0)
+			ret = 1;
+		break;
+	default:
+		ret = scsi_hba_ioctl(dev, cmd, arg, mode, credp, rval);
+		break;
+	}
+
+	return (ret);
 }
 
 static void
