@@ -87,6 +87,9 @@ typedef struct mrs_sas {
 	uint32_t		mrs_reset_count;
 	uint32_t		mrs_reset_in_progress;
 
+	uint32_t		mrs_max_fw_cmds;
+	uint32_t		mrs_max_scsi_cmds;
+
 	scsi_hba_tran_t		*mrs_hba_tran;
 	dev_info_t		*mrs_iport;
 	scsi_hba_tgtmap_t	*mrs_tgtmap;

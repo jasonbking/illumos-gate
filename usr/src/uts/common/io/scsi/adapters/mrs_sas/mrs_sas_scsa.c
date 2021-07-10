@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2015, AVAGO Tech. All rights reserved. Author: Marian Choy
  * Copyright (c) 2014, LSI Corp. All rights reserved. Author: Marian Choy
- * Support: freebsdraid@avagotech.com
+ * Copyright 2021 Racktop Systems, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -32,10 +32,6 @@
  * those of the authors and should not be interpreted as representing
  * official policies,either expressed or implied, of the FreeBSD Project.
  *
- * Send feedback to: <megaraidfbsd@avagotech.com> Mail to: AVAGO TECHNOLOGIES 1621
- * Barber Lane, Milpitas, CA 95035 ATTN: MegaRaid FreeBSD
- *
- * Copyright 2021 Racktop Systems, Inc.
  */
 
 #include <sys/types.h>

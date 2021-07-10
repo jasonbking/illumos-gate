@@ -1,5 +1,23 @@
+/*
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
+ *
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * http://www.illumos.org/license/CDDL.
+ */
+
+/*
+ * Copyright 2021 Racktop Systems, Inc.
+ */
 #ifndef _MRS_SAS_REG_H
 #define	_MRS_SAS_REG_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* PCI device IDs */
 #define	MRS_SAS_CUTLASS_52	0x0052
@@ -80,5 +98,9 @@
 #define	MRS_SAS_OB_SCRATCH_PAD_2	0x00B4
 #define	MRS_SAS_OB_SCRATCH_PAD_3	0x00B8
 #define	MRS_SAS_OB_SCRATCH_PAD_4	0x00BC
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _MRS_SAS_REG_H */
