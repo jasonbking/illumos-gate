@@ -1,6 +1,13 @@
 #ifndef _MRS_SAS_H
 #define	_MRS_SAS_H
 
+#ifndef __cplusplus
+extern "C" {
+#endif
+
+#include <sys/list.h>
+#include <sys/types.h>
+
 typedef enum mrs_sas_adapter_class {
 	MRS_ACLASS_GEN3,
 	MRS_ACLASS_VENTURA,
@@ -12,12 +19,14 @@ typedef enum mrs_sas_adapter_class {
 #define	MRS_SAS_IOCTL_DRIVER	0x12341234
 #define	MRS_SAS_IOCTL_FIRMWARE	0x12345678
 #define	MRS_SAS_IOCTL_AEN	0x87654321
+#define	MRS_SAS_IOCTL_MAX_CMD	3
 
 #define	MRS_SAS_IO_TIMEOUT	(180000)	/* ms - 180s timeout */
 
 /* By default, the firmware programs for 8k of memory */
 #define	MRS_SAS_MFI_MIN_MEM	4096
 #define	MRS_SAS_MFI_DEF_MEM	8192
+#define	MRS_SAS_MFI_MAX_CMD	16
 
 #define	MRS_SAS_MAX_SGE_CNT	0x50
 
@@ -50,60 +59,6 @@ typedef enum mrs_sas_init_level {
 	(((_mrs)->mrs_init_level & (name)) != 0)
 
 #define	MRS_SAS_IOCLEN		16
-
-typedef struct mrs_sas {
-	dev_info_t		*mrs_dip;
-	uint32_t		mrs_instance;
-	char			mrs_iocname;
-
-	mrs_sas_init_level_t	mrs_init_level;
-	mrs_sas_adapter_class_t	mrs_class;
-	ddi_acc_handle_t	mrs_pci_handle;
-
-	ddi_dma_attr_t		mrs_hba_dma_attr;
-	ddi_device_acc_attr_t	mrs_hba_acc_attr;
-	caddr_t			mrs_regmap;
-	ddi_acc_handle_t	mrs_reghandle;
-	uint_t			mrs_max_num_seg;
-
-	ddi_intr_handle_t	*mrs_intr_htable;
-	size_t			mrs_intr_htable_size;
-	int			mrs_intr_type;
-	int			mrs_intr_count;
-	uint_t			mrs_intr_pri;
-	int			mrs_intr_cap;
-	boolean_t		mrs_mask_interrupts;
-	int			mrs_fm_capabilities;
-
-	ddi_taskq_t		mrs_taskq;
-
-	/* Tunables */
-	uint32_t		mrs_io_timeout;
-	uint32_t		mrs_fw_fault_check_delay;
-	uint32_t		mrs_block_sync_cache;
-	uint32_t		mrs_drv_stream_detection;
-	int			mrs_lb_pending_cmds;
-
-	uint32_t		mrs_reset_count;
-	uint32_t		mrs_reset_in_progress;
-
-	uint32_t		mrs_max_fw_cmds;
-	uint32_t		mrs_max_scsi_cmds;
-
-	scsi_hba_tran_t		*mrs_hba_tran;
-	dev_info_t		*mrs_iport;
-	scsi_hba_tgtmap_t	*mrs_tgtmap;
-
-	kmutex_t		mrs_mpt_cmd_lock;
-	list_t			mrs_mpt_cmd_list;
-
-	kmutex_t		mrs_mfi_cmd_lock;
-	list_t			mrs_mfi_cmd_list;
-
-	kmutex_t		mrs_ioctl_count_lock;
-	kcondvar_t		mrs_ioctl_count_cv;
-	uint_t			mrs_ioctl_count;
-} mrs_sas_t;
 
 typedef struct mrs_sas_sge32 {
 	uint32_t	mrss_phys_addr;
@@ -286,6 +241,7 @@ typedef union mrs_sas_frame {
 	mrs_sas_abort_frame_t	mrsf_abort;
 	uint8_t			mrsf_raw[64];
 } mrs_sas_frame_t;
+CTASSERT(sizeof (mrs_sas_frame_t) == 64);
 
 typedef struct mrs_sas_ioctl {
 	uint16_t		mrsioc_version;
@@ -306,6 +262,72 @@ typedef struct mrs_sas_aen {
 	uint32_t	mrsa_seq_num;
 	uint32_t	mrsa_class_locale_word;
 } mrs_sas_aen_t;
+
+typedef struct mrs_sas_mpt_cmd {
+	list_node_t	mptc_node;
+} mrs_sas_mpt_cmd_t;
+
+typedef struct mrs_sas_mfi_cmd {
+	list_node_t		mfic_node;
+	mrs_sas_frame_t		*mfic_frame;
+	uint32_t		mfic_idx;
+} mrs_sas_mfi_cmd_t;
+
+typedef struct mrs_sas {
+	dev_info_t		*mrs_dip;
+	uint32_t		mrs_instance;
+	char			mrs_iocname;
+
+	mrs_sas_init_level_t	mrs_init_level;
+	mrs_sas_adapter_class_t	mrs_class;
+	ddi_acc_handle_t	mrs_pci_handle;
+
+	ddi_dma_attr_t		mrs_hba_dma_attr;
+	ddi_device_acc_attr_t	mrs_hba_acc_attr;
+	caddr_t			mrs_regmap;
+	ddi_acc_handle_t	mrs_reghandle;
+	uint_t			mrs_max_num_seg;
+
+	ddi_intr_handle_t	*mrs_intr_htable;
+	size_t			mrs_intr_htable_size;
+	int			mrs_intr_type;
+	int			mrs_intr_count;
+	uint_t			mrs_intr_pri;
+	int			mrs_intr_cap;
+	boolean_t		mrs_mask_interrupts;
+	int			mrs_fm_capabilities;
+
+	ddi_taskq_t		mrs_taskq;
+
+	/* Tunables */
+	uint32_t		mrs_io_timeout;
+	uint32_t		mrs_fw_fault_check_delay;
+	uint32_t		mrs_block_sync_cache;
+	uint32_t		mrs_drv_stream_detection;
+	int			mrs_lb_pending_cmds;
+
+	uint32_t		mrs_reset_count;
+	uint32_t		mrs_reset_in_progress;
+
+	volatile uint32_t	mrs_max_fw_cmds;
+	volatile uint32_t	mrs_max_scsi_cmds;
+
+	scsi_hba_tran_t		*mrs_hba_tran;
+	dev_info_t		*mrs_iport;
+	scsi_hba_tgtmap_t	*mrs_tgtmap;
+
+	kmutex_t		mrs_mpt_cmd_lock;
+	list_t			mrs_mpt_cmd_list;
+	mrs_mpt_cmd_t		**mrs_mpt_cmds;
+
+	kmutex_t		mrs_mfi_cmd_lock;
+	list_t			mrs_mfi_cmd_list;
+	mrs_mfi_cmd_t		**mrs_mfi_cmds;
+
+	kmutex_t		mrs_ioctl_count_lock;
+	kcondvar_t		mrs_ioctl_count_cv;
+	uint_t			mrs_ioctl_count;
+} mrs_sas_t;
 
 int mrs_sas_check_acc_handle(ddi_acc_handle_t);
 
@@ -329,5 +351,9 @@ int mrs_sas_start_mfi_aen(mrs_sas_t *);
 int mrs_sas_drv_ioctl(mrs_sas_t *, mrs_sas_ioctl_t *, int);
 int mrs_sas_mfi_ioctl(mrs_sas_t *, mrs_sas_ioctl_t *, int);
 int mrs_sas_mfi_aen_ioctl(mrs_sas_t *, mrs_sas_aen_t *);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _MRS_SAS_H */

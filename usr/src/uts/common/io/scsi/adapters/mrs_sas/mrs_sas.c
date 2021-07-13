@@ -199,3 +199,91 @@ mrs_transition_to_ready(mrs_sas_t *mrs, int ocr)
 
 	return (DDI_SUCCESS);
 }
+
+mrs_sas_mpt_cmd_t *
+mrs_sas_get_mpt(mrs_sas_t *mrs)
+{
+	mrs_sas_mpt_cmd_t *cmd;
+
+	mutex_enter(&mrs->mrs_mpt_cmd_lock);
+	cmd = list_remove_head(&mrs->mrs_mpt_cmd_list);
+	mutex_exit(&mrs->mrs_mpt_cmd_lock);
+
+	if (cmd != NULL) {
+		/* cmd->pkt = NULL */
+		/* cmd->retry_count_for_ocr = 0 */
+		/* cmd->drv_pkt_time = 0 */
+	}
+
+	return (cmd);
+}
+
+mrs_sas_mfi_cmd_t *
+mrs_sas_get_mfi(mrs_sas_t *mrs)
+{
+	mrs_sas_mfi_cmd_t *cmd;
+
+	mutex_enter(&mrs->mrs_mfi_cmd_lock);
+	cmd = list_remove_head(&mrs->mrs_mfi_cmd_list);
+	mutex_exit(&mrs->mrs_mfi_cmd_lock);
+
+	if (cmd != NULL) {
+		/* cmd->pkt = NULL */
+		/* cmd->retry_count_for_ocr = 0 */
+		/* cmd->drv_pkt_time = 0 */
+	}
+
+	return (cmd);
+}
+
+void
+mrs_sas_put_mpt(mrs_sas_t *mrs, mrs_sas_mpt_cmd_t *cmd)
+{
+	mutex_enter(&mrs->mrs_mpt_cmd_lock);
+	list_insert_tail(&mrs->mrs_mpt_cmd_list, cmd);
+	mutex_exit(&mrs->mrs_mpt_cmd_lock);
+}
+
+void
+mrs_sas_put_mfi(mrs_sas_t *mrs, mrs_sas_mfi_cmd_t *cmd)
+{
+	mutex_enter(&mrs->mrs_mfi_cmd_lock);
+	list_insert_tail(&mrs->mrs_mfi_cmd-List, cmd);
+	mutex_exit(&mrs->mrs_mfi_cmd_lock);
+}
+
+void
+mrs_sas_alloc_mfi(mrs_sas_t *mrs)
+{
+	size_t len = MRS_SAS_MFI_MAX_CMD * sizeof (mrs_sas_mfi_cmd_t *);
+
+	mrs->mrs_mfi_cmds = kmem_zalloc(len, KM_SLEEP);
+	for (uint32_t i = 0; i < MRS_SAS_MFI_MAX_CMD; i++) {
+		mrs_sas_mfi_cmd_t *cmd;
+
+		cmd = kmem_zalloc(sizeof (mrs_sas_mfi_cmd_t), KM_SLEEP);
+		cmd->mfic_idx = i;
+		mrs->mrs_mfi_cmds[i] = cmd;
+		list_insert_tail(&mrs->mrs_sas_mfi_cmd_list, cmd);
+
+		/* TODO DMA */
+	}
+}
+
+uint_t
+mrs_sas_intr_ack(mrs_sas_t *mrs)
+{
+	uint32_t status;
+
+	status = mrs_sas_read_reg_retry(mrs, MRS_SAS_OB_INTR_STATUS);
+
+	if ((status & MFI_FUCTION_ENABLE_INTERRUPT_MASK) == 0)
+		return (DDI_INTR_UNCLAIMED);
+
+	if (mrs_sas_check_acc_handle(mrs->mrs_regmap) != DDI_SUCCESS) {
+		ddi_fm_service_impact(mrs->irs_dip, DDI_SERVICE_LOST);
+		return (DDI_INTR_UNCLAIMED);
+	}
+
+	return (DDI_INTR_CLAIMED);
+}

@@ -167,8 +167,13 @@ mrs_sas_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 
 	mutex_init(&mrs->mrs_mpt_cmd_lock, NULL, MUTEX_DRIVER,
 	    DDI_INTR_PRI(mrs->mrs_intr_pri));
+	list_create(&mrs->mrs_mpt_cmd_list, sizeof (mrs_sas_mpt_cmd_t),
+	    offsetof(mrs_sas_mpt_cmd_t, mptc_node));
+
 	mutex_init(&mrs->mrs_mfi_cmd_lock, NULL, MUTEX_DRIVER,
 	    DDI_INTR_PRI(mrs->mrs_intr_pri));
+	list_create(&mrs->mrs_mfi_cmd_list, sizeof (mrs_sas_mfi_cmd_t),
+	    offsetof(mrs_sas_mfi_cmd_t, mfic_node));
 
 	mutex_init(&mrs->mrs_ioctl_count_lock, NULL, MUTEX_DRIVER,
 	    DDI_INTR_PRI(mrs->mrs_intr_pri));
@@ -264,8 +269,13 @@ mrs_sas_cleanup(mrs_sas_t *mrs, boolean_t failed)
 	if (INITLEVEL_ACTIVE(mrs, MRS_INITLEVEL_SYNC)) {
 		cv_destroy(&mrs->mrs_ioctl_count_cv);
 		mutex_destroy(&mrs->mrs_ioctl_count_lock);
+
+		list_destory(&mrs->mrs_mfi_cmd_list);
 		mutex_destroy(&mrs->mrs_mfi_cmd_lock);
+
 		mutex_destroy(&mrs->mrs_mpt_cmd_lock);
+		list_destroy(&mrs->mrs_mpt_cmd_list);
+
 		INITLEVEL_CLEAR(mrs, MRS_INITLEVEL_SYNC);
 	}
 
@@ -459,6 +469,16 @@ free_htable:
 static uint_t
 mrs_sas_isr(caddr_t arg1, caddr_t arg2 __unused)
 {
+	mrs_sas_t *mrs = (mrs_sas_t *)arg1;
+	uint_t ret = DDI_INTR_UNCLAIMED;
+
+	if (mrs->mrs_intr_type == DDI_INTR_TYPE_FIXED) {
+		ret = mrs_sas_intr_ack(mrs);
+		if (ret != DDI_INTR_CLAIMED)
+			return (ret);
+	}
+
+	ret = mrs_sas_process_cmd(mrs);
 	return (DDI_INTR_UNCLAIMED);
 }
 
