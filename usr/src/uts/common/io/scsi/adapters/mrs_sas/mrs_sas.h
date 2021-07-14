@@ -263,12 +263,33 @@ typedef struct mrs_sas_aen {
 	uint32_t	mrsa_class_locale_word;
 } mrs_sas_aen_t;
 
+typedef struct mrs_sas_dma {
+	ddi_dma_handle_t	mrsd_hdl;
+	ddi_acc_handle_t	mrsd_acc;
+	ddi_dma_cookie_t	mrsd_cookie;
+	void			*mrsd_buf;
+	size_t			mrsd_len;
+} mrs_sas_dma_t;
+
 typedef struct mrs_sas_mpt_cmd {
-	list_node_t	mptc_node;
+	list_node_t		mptc_node;
+
+	uint32_t		mptc_index;
+
+	mpi2_raid_scsi_io_req_t	*mptc_req;
+	mpi2_sql_io_t		*mptc_sgl;
+	uint8_t			*mptc_sense;
+
+	uint64_t		mptc_req_phys;
+	uint64_t		mptc_sgl_phys;
+	uint64_t		mptc_sens_phys;
+	
 } mrs_sas_mpt_cmd_t;
 
 typedef struct mrs_sas_mfi_cmd {
 	list_node_t		mfic_node;
+	mrs_sas_dma_t		mfic_dma;
+
 	mrs_sas_frame_t		*mfic_frame;
 	uint32_t		mfic_idx;
 } mrs_sas_mfi_cmd_t;
@@ -309,8 +330,8 @@ typedef struct mrs_sas {
 	uint32_t		mrs_reset_count;
 	uint32_t		mrs_reset_in_progress;
 
-	volatile uint32_t	mrs_max_fw_cmds;
-	volatile uint32_t	mrs_max_scsi_cmds;
+	uint32_t		mrs_max_fw_cmds;
+	uint32_t		mrs_max_scsi_cmds;
 
 	scsi_hba_tran_t		*mrs_hba_tran;
 	dev_info_t		*mrs_iport;
@@ -319,6 +340,10 @@ typedef struct mrs_sas {
 	kmutex_t		mrs_mpt_cmd_lock;
 	list_t			mrs_mpt_cmd_list;
 	mrs_mpt_cmd_t		**mrs_mpt_cmds;
+	mrs_sas_dma_t		mrs_ioreq_dma;
+	mrs_sas_dma_t		mrs_chain_dma;
+	mrs_sas_dma_t		mrs_reply_dma;
+	mrs_sas_dma_t		mrs_sense_dma;
 
 	kmutex_t		mrs_mfi_cmd_lock;
 	list_t			mrs_mfi_cmd_list;
@@ -330,6 +355,11 @@ typedef struct mrs_sas {
 } mrs_sas_t;
 
 int mrs_sas_check_acc_handle(ddi_acc_handle_t);
+int mrs_sas_check_dma_handle(ddi_dma_handle_t);
+
+int mrs_sas_dma_alloc(mrs_sas_t *, ddi_dma_attr_t *, ddi_acc_handle_t *, size_t,
+    mrs_sas_dma_t *);
+void mrs_sas_dma_free(mrs_sas_dma_t *);
 
 void mrs_sas_disable_intr(mrs_sas_t *);
 void mrs_sas_enable_intr(mrs_sas_t *);

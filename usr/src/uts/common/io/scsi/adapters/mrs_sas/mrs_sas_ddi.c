@@ -661,6 +661,18 @@ mrs_sas_check_acc_handle(ddi_acc_handle_t h)
 	return (de.fme_status);
 }
 
+int
+mrs_sas_check_dma_handle(ddi_dma_handle_t h)
+{
+	ddi_fm_error_t de;
+
+	if (h == NULL)
+		return (DDI_FAILURE);
+
+	ddi_fm_dma_err_get(h, &de, DDI_FME_VERSION);
+	return (de.fme_status);
+}
+
 static int
 mrs_sas_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
     int *rval)
@@ -713,6 +725,232 @@ mrs_sas_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp,
 	}
 
 	return (ret);
+}
+
+static int
+mrs_sas_alloc_dma(mrs_sas_t *mrs)
+{
+
+}
+
+struct mpt_iter {
+	uint8_t	*mi_ptr;
+	uint64_t mi_phys;
+	uint64_t mi_incr;
+}
+
+static void
+mpt_iter_init(struct mpt_iter *i, mpt_dma_t *dmap , uint64_t incr)
+{
+	const dma_cookie_t *c = ddi_dma_cookie_one(dmap->mrsd_hdl);
+
+	i->mi_ptr = dmap->mrsd_buf;
+	i->mi_phys = c->dmac_laddr;
+	i->mi_incr = incr;
+}
+
+static void
+mpt_iter(struct mpt_iter *i, void *addrp, uint64_t *physp)
+{
+	uint8_t **ap = addrp;
+
+	*ap = i->mi_ptr;
+	*physp = i->mi_phys;
+
+	i->mi_ptr += i->mi_incr;
+	i->mi_phys += i->mi_phys;
+}
+
+static int
+mrs_sas_alloc_mpt(mrs_sas_t *mrs, const uint32_t ncmd)
+{
+	mrs_mpt_cmd_t **cmds;
+	mrs_mpt_cmd_t *cmd;
+	size_t ioreq_len, chain_len, reply_len, sense_len;
+	int ret;
+
+	ioreq_len = XXX;
+	chain_len = XXX;
+	reply_len = XXX;
+	sense_len = XXX;
+
+	ret = mrs_sas_alloc_mpt_item(mrs, &mrs->mrs_ioreq_dma, ioreq_len, 256);
+	if (ret != DDI_SUCCESS)
+		return (ret);
+
+	ret = mrs_sas_alloc_mpt_item(mrs, &mrs->mrs_chain_dma, chain_len, 4);
+	if (ret != DDI_SUCCESS) {
+		mrs_sas_dma_free(&mrs->mrs_ioreq_dma);
+		return (ret);
+	}
+
+	ret = mrs_sas_alloc_mpt_item(mrs, &mrs->mrs_reply_dma, reply_len, 16);
+	if (ret != DDI_SUCCESS) {
+		mrs_sas_dma_free(&mrs->mrs_chain_dma);
+		mrs_sas_dma_free(&mrs->mrs_ioreq_dma);
+		return (ret);
+	}
+
+	ret = mrs_sas_alloc_mpt_item(mrs, &mrs->mrs_sense_dma, sense_len, 64);
+	if (ret != DDI_SUCCESS) {
+		mrs_sas_dma_free(&mrs->mrs_reply_dma);
+		mrs_sas_dma_free(&mrs->mrs_chain_dma);
+		mrs_sas_dma_free(&mrs->mrs_ioreq_dma);
+		return (ret);
+	}
+
+	struct mpt_iter req_i;
+	struct mpt_iter sgl_i;
+	struct mpt_iter sense_i;
+	uint32_t i;
+
+	mpt_iter_init(&req_i, &mrs->mrs_ioreq_dma, MRSAS_MPI2_RAID_DEFAULT_IO_FRAME_SIZE);
+	mpt_iter_init(&sgl_i, &mrs->mrs_chain_dma, mrs->mrs_max_chain_frame_sz);
+	mpt_iter_init(&sense_i, &mrs->mrs_sense_dma, MRSAS_SENSE_LEN);
+
+	cmds = kmem_zalloc(ncmd * sizeof (mrs_mpt_cmd_t *), KM_SLEEP);
+	for (i = 0; i < ncmd; i++) {
+		cmd = kmem_zalloc(sizeof (mrs_mpt_cmd_t), KM_SLEEP);
+		cmd->mptc_index = i;
+
+		mpt_iter(&req_i, &cmd->mptc_req, &cmd->mptc_req_phys);
+		mpt_iter(&sgl_i, &cmd->mptc_sgl, &cmd->mptc_sql_phys);
+		mpt_iter(&sense_i, &cmd->mptc_sense, &cmd->mptc_sense_phys);
+
+		cmds[i] = cmd;
+		list_insert_tail(&mrs->mrs_mpt_cmd_list, cmd);
+	}
+
+
+	mrs->mrs_mpt_cmds = cmds;
+	return (DDI_SUCCESS);
+}
+
+static int
+mrs_sas_alloc_mpt_item(rms_sas_t *mrs, mrs_sas_dma_t *dmap, size_t len,
+    uint64_t align)
+{
+	ddi_dma_attr_t attr = {
+		.dma_attr_version = DMA_ATTR_V0,
+		.dma_attr_addr_lo = 0,
+		.dma_attr_addr_hi = UINT32_MAX,
+		.dma_attr_count_max = UINT32_MAX,
+		.dma_attr_align = align,
+		.dma_attr_burstsizes = 0x7,
+		.dma_attr_minxfer = 1,
+		.dma_attr_maxxfer = UINT32_MAX,
+		.dma_attr_seg = UINT32_MAX,
+		.dma_attr_sgllen = 1,
+		.dma_attr_granular = 512,
+		.dma_attr_flags = mrs->mrs_hba_dma_attr.dma_attr_flags,
+	};
+	return (mrs_sas_dma_alloc(mrs, &attr, &mrs->mrs_hba_acc_attr, len,
+	    dmap);
+}
+
+static int
+mrs_sas_alloc_mfi(mrs_sas_t *mrs, const uint32_t ncmd)
+{
+	mrs_mpt_cmd_t **cmds;
+	mrs_sas_mfi_cmd_t *cmd;
+	size_t len = ncmd * sizeof (mrs_sas_mfi_cmd_t *);
+	uint32_t i;
+	int ret = DDI_SUCCESS;
+	ddi_dma_attr_t dma_attr = {
+		.dma_attr_version = DMA_ATTR_V0,
+		.dma_attr_addr_lo = 0,
+		.dma_attr_addr_hi = UINT32_MAX,
+		.dma_attr_count_max = UINT32_MAX,
+		.dma_attr_align = 64,
+		.dma_attr_burstsizes = 0x7,
+		.dma_attr_minxfer = 1,
+		.dma_attr_maxxfer = UINT32_MAX,
+		.dma_attr_seg = UINT32_MAX,
+		.dma_attr_sgllen = 1,
+		.dma_attr_granular = 512,
+		.dma_attr_flags = mrs->mrs_hba_dma_attr.dma_attr_flags,
+	};
+		
+	cmds = kmem_zalloc(len, KM_SLEEP);
+	for (i = 0; i < ncmd; i++) {
+		cmd = kmem_zalloc(sizeof (mrs_sas_mfi_cmd_t), KM_SLEEP);
+		ret = mrs_sas_dma_alloc(mrs, &dma_attr, &mrs->mrs_hba_acc_attr,
+		    sizeof (*cmd->mfic_frame), &cmd->mfic_dma);
+		if (ret != DDI_SUCCESS) {
+			kmem_free(cmd, sizeof (mrs_sas_mfi_cmd_t);
+			goto fail;
+		}
+
+		cmd->mfic_frame = cmd->cmd_mfic_dma.mrsd_buf;
+		cmd->mfic_frame->mrsf_io.mrsiof_context = i;
+		cmd->mfic_idx = i;
+		cmds[i] = cmd;
+	}
+
+	for (i = 0; i < ncmd; i++)
+		list_insert_tail(&mrs->mrs_sas_mfi_cmd_list, cmd[i]);
+
+	mrs->mrs_mpt_cmds = cmds;
+	return (DDI_SUCCESS);
+
+fail:
+	/* i should be the index of the failed entry */
+	while (i-- > 0) {
+		cmd = mrs->mrs_mfi_cmds[i];
+		mrs_sas_dma_free(&cmd->mfic_dma);
+		kmem_free(cmd, sizeof (*cmd));
+	}
+
+	kmem_free(cmds, len);
+	return (DDI_FAILURE);
+}
+
+int
+mrs_sas_dma_alloc(mrs_sas_t *mrs, ddi_dma_attr_t *dma_attr,
+    ddi_device_acc_attr_t *acc_attr, size_t len, mrs_sas_dma_t *dmap)
+{
+	int ret;
+
+	ret = ddi_dma_alloc_handle(mrs->mrs_dip, dma_attr, DDI_DMA_SLEEP,
+	    NULL, &dmap->mrsd_hdl);
+	if (ret != DDI_SUCCESS)
+		return (ret);
+
+	ret = ddi_dma_mem_alloc(dmap->mrsd_hdl, len, acc_attr,
+	    DDI_DMA_RDWR | DDI_DMA_STREAMING, DDI_DMA_SLEEP, NULL,
+	    &dmap->mrsd_buf, &dmap->mrsd_len, &dmap->mrsd_acc);
+	if (ret != DDI_SUCCESS) {
+		ddi_dma_free_handle(&dmap->mrsd_hdl);
+		return (ret);
+	}
+
+	ret = ddi_dma_addr_bind_handle(dmap->mrsd_hdl, NULL, dmap->mrsd_buf,
+	    dmap->mrsd_len, DDI_DMA_RDWR | DDI_DMA_STREAMING, DDI_DMA_SLEEP,
+	    NULL, &dmap->mrsd_cookie, NULL);
+	if (ret != DDI_SUCCESS) {
+		ddi_dma_mem_free(&dmap->mrsd_acc);
+		ddi_dma_free_handle(&dmap->mrsd_hdl);
+		return (ret);
+	}
+
+	if (mrsas_check_dma_handle(dmap->mrsd_hdl) != DDI_SUCCESS ||
+	    mrsas_check_acc_handle(dmap->mrsd_acc) != DDI_SUCCESS) {
+		(void) ddi_dma_unbind_handle(dmap->mrsd_hdl);
+		ddi_dma_mem_free(&dmap->mrsd_acc);
+		ddi_dma_free_handle(&dmap->mrsd_hdl);
+		return (DDI_FAILURE);
+	}
+
+	bzero(dmap->mrsd_buf, dmap->mrsd_len);
+	return (DDI_SUCCESS);
+}
+
+void
+mrs_sas_dma_free(mrs_dma_t *dmap)
+{
+	(void) ddi_dma_unbind_handle(dmap->mrsd_hdl);
+	ddi_dma_mem_free(dmap->mrsd_acc);
+	ddi_dma_free_handle(&dmap->mrsd_hdl);
 }
 
 static void

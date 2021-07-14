@@ -248,26 +248,8 @@ void
 mrs_sas_put_mfi(mrs_sas_t *mrs, mrs_sas_mfi_cmd_t *cmd)
 {
 	mutex_enter(&mrs->mrs_mfi_cmd_lock);
-	list_insert_tail(&mrs->mrs_mfi_cmd-List, cmd);
+	list_insert_tail(&mrs->mrs_mfi_cmd_List, cmd);
 	mutex_exit(&mrs->mrs_mfi_cmd_lock);
-}
-
-void
-mrs_sas_alloc_mfi(mrs_sas_t *mrs)
-{
-	size_t len = MRS_SAS_MFI_MAX_CMD * sizeof (mrs_sas_mfi_cmd_t *);
-
-	mrs->mrs_mfi_cmds = kmem_zalloc(len, KM_SLEEP);
-	for (uint32_t i = 0; i < MRS_SAS_MFI_MAX_CMD; i++) {
-		mrs_sas_mfi_cmd_t *cmd;
-
-		cmd = kmem_zalloc(sizeof (mrs_sas_mfi_cmd_t), KM_SLEEP);
-		cmd->mfic_idx = i;
-		mrs->mrs_mfi_cmds[i] = cmd;
-		list_insert_tail(&mrs->mrs_sas_mfi_cmd_list, cmd);
-
-		/* TODO DMA */
-	}
 }
 
 uint_t
