@@ -21,6 +21,7 @@
 
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, Joyent Inc. All rights reserved.
  */
 
 #ifndef _ZONECFG_H
@@ -141,9 +142,10 @@ extern "C" {
 #define	PT_DEFAULT	42
 #define	PT_LOWER	43
 #define	PT_UPPER	44
+#define	PT_ALIAS	45
 
 #define	PT_MIN		PT_UNKNOWN
-#define	PT_MAX		PT_UPPER
+#define	PT_MAX		PT_ALIAS
 
 #define	MAX_EQ_PROP_PAIRS	3
 

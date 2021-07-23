@@ -982,7 +982,7 @@ nvlist_remove_nvpair(nvlist_t *nvl, nvpair_t *nvp)
  * This function calculates the size of an nvpair value.
  *
  * The data argument controls the behavior in case of the data types
- * 	DATA_TYPE_STRING    	and
+ *	DATA_TYPE_STRING	and
  *	DATA_TYPE_STRING_ARRAY
  * Is data == NULL then the size of the string(s) is excluded.
  */
@@ -2253,6 +2253,18 @@ nvlist_add_nvpair(nvlist_t *nvl, nvpair_t *nvp)
 	    NVP_NELEM(nvp), NVP_VALUE(nvp)));
 }
 
+#if defined(_KERNEL)
+int
+nvlist_add_named_nvpair(nvlist_t *nvl, const char *name, nvpair_t *nvp)
+{
+	if (nvl == NULL || nvp == NULL || name == NULL)
+		return (EINVAL);
+
+	return (nvlist_add_common(nvl, name, NVP_TYPE(nvp),
+	    NVP_NELEM(nvp), NVP_VALUE(nvp)));
+}
+#endif
+
 /*
  * Merge the supplied nvlists and put the result in dst.
  * The merged list will contain all names specified in both lists,
@@ -2831,10 +2843,10 @@ nvs_native_nvlist(nvstream_t *nvs, nvlist_t *nvl, size_t *size)
 	case NVS_OP_GETSIZE:
 		/*
 		 * if calculate for packed embedded list
-		 * 	4 for end of the embedded list
+		 *	4 for end of the embedded list
 		 * else
-		 * 	2 * sizeof (int32_t) for nvl_version and nvl_nvflag
-		 * 	and 4 for end of the entire list
+		 *	2 * sizeof (int32_t) for nvl_version and nvl_nvflag
+		 *	and 4 for end of the entire list
 		 */
 		if (native->n_flag) {
 			*size += 4;
@@ -3167,7 +3179,7 @@ nvs_xdr_nvlist(nvstream_t *nvs, nvlist_t *nvl, size_t *size)
 	switch (nvs->nvs_op) {
 	case NVS_OP_ENCODE:
 	case NVS_OP_DECODE: {
-		XDR 	*xdr = nvs->nvs_private;
+		XDR	*xdr = nvs->nvs_private;
 
 		if (!xdr_int(xdr, &nvl->nvl_version) ||
 		    !xdr_u_int(xdr, &nvl->nvl_nvflag))
@@ -3520,7 +3532,7 @@ nvs_xdr_nvp_size(nvstream_t *nvs, nvpair_t *nvp, size_t *size)
 static int
 nvs_xdr_nvpair(nvstream_t *nvs, nvpair_t *nvp, size_t *size)
 {
-	XDR 	*xdr = nvs->nvs_private;
+	XDR	*xdr = nvs->nvs_private;
 	int32_t	encode_len, decode_len;
 
 	switch (nvs->nvs_op) {

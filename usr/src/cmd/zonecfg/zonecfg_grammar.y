@@ -22,6 +22,7 @@
 
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright 2018, Joyent Inc. All rights reserved.
  */
 
 /*
@@ -136,6 +137,7 @@ complex_piece_func(int cp_type, const char *str, complex_property_ptr_t cp_next)
 %token OPEN_PAREN CLOSE_PAREN COMMA DATASET LIMITPRIV BOOTARGS BRAND PSET PCAP
 %token MCAP NCPUS IMPORTANCE SHARES MAXLWPS MAXSHMMEM MAXSHMIDS MAXMSGIDS
 %token MAXSEMIDS LOCKED SWAP SCHED CLEAR DEFROUTER ADMIN SECFLAGS USER AUTHS MAXPROCS
+%token ALIAS
 %token DEFAULT UPPER LOWER
 
 %type <strval> TOKEN EQUAL OPEN_SQ_BRACKET CLOSE_SQ_BRACKET
@@ -146,7 +148,7 @@ complex_piece_func(int cp_type, const char *str, complex_property_ptr_t cp_next)
 %type <ival> property_name SPECIAL RAW DIR OPTIONS TYPE ADDRESS PHYSICAL NAME
     MATCH ZONENAME ZONEPATH AUTOBOOT POOL LIMITPRIV BOOTARGS VALUE PRIV LIMIT
     ACTION BRAND SCHED IPTYPE DEFROUTER HOSTID USER AUTHS FS_ALLOWED
-    ALLOWED_ADDRESS DEFAULT UPPER LOWER
+    ALLOWED_ADDRESS DEFAULT UPPER LOWER ALIAS
 %type <cmd> command
 %type <cmd> add_command ADD
 %type <cmd> cancel_command CANCEL
@@ -999,11 +1001,12 @@ property_name: SPECIAL	{ $$ = PT_SPECIAL; }
 	| SCHED		{ $$ = PT_SCHED; }
 	| HOSTID	{ $$ = PT_HOSTID; }
 	| USER		{ $$ = PT_USER; }
-	| AUTHS 	{ $$ = PT_AUTHS; }
+	| AUTHS		{ $$ = PT_AUTHS; }
 	| FS_ALLOWED	{ $$ = PT_FS_ALLOWED; }
 	| DEFAULT	{ $$ = PT_DEFAULT; }
 	| UPPER		{ $$ = PT_UPPER; }
 	| LOWER		{ $$ = PT_LOWER; }
+	| ALIAS		{ $$  = PT_ALIAS; }
 
 /*
  * The grammar builds data structures from the bottom up.  Thus various

@@ -130,6 +130,8 @@
 #include <sys/priv.h>
 #include <libinetutil.h>
 
+#include <libcustr.h>
+
 #define	V4_ADDR_LEN	32
 #define	V6_ADDR_LEN	128
 
@@ -3529,18 +3531,17 @@ get_implicit_datasets(zlog_t *zlogp, char **retstr)
 }
 
 static int
-get_datasets(zlog_t *zlogp, char **bufp, size_t *bufsizep)
+get_datasets(zlog_t *zlogp, custr_t **datasetp)
 {
 	zone_dochandle_t handle;
 	struct zone_dstab dstab;
-	size_t total, offset, len;
 	int error = -1;
-	char *str = NULL;
 	char *implicit_datasets = NULL;
 	int implicit_len = 0;
+	custr_t *cu = NULL;
+	int count = 0;
 
-	*bufp = NULL;
-	*bufsizep = 0;
+	*datasetp = NULL;
 
 	if ((handle = zonecfg_init_handle()) == NULL) {
 		zerror(zlogp, B_TRUE, "getting zone configuration handle");
@@ -3562,22 +3563,7 @@ get_datasets(zlog_t *zlogp, char **bufp, size_t *bufsizep)
 		goto out;
 	}
 
-	total = 0;
-	while (zonecfg_getdsent(handle, &dstab) == Z_OK)
-		total += strlen(dstab.zone_dataset_name) + 1;
-	(void) zonecfg_enddsent(handle);
-
-	if (implicit_datasets != NULL)
-		implicit_len = strlen(implicit_datasets);
-	if (implicit_len > 0)
-		total += implicit_len + 1;
-
-	if (total == 0) {
-		error = 0;
-		goto out;
-	}
-
-	if ((str = malloc(total)) == NULL) {
+	if (custr_alloc(&cu) != 0) {
 		zerror(zlogp, B_TRUE, "memory allocation failed");
 		goto out;
 	}
@@ -3586,31 +3572,50 @@ get_datasets(zlog_t *zlogp, char **bufp, size_t *bufsizep)
 		zerror(zlogp, B_FALSE, "%s failed", "zonecfg_setdsent");
 		goto out;
 	}
-	offset = 0;
 	while (zonecfg_getdsent(handle, &dstab) == Z_OK) {
-		len = strlen(dstab.zone_dataset_name);
-		(void) strlcpy(str + offset, dstab.zone_dataset_name,
-		    total - offset);
-		offset += len;
-		if (offset < total - 1)
-			str[offset++] = ',';
+		const char *alias = dstab.zone_dataset_alias[0] != '\0' ?
+		    dstab.zone_dataset_alias : NULL;
+
+		if (count++ > 0 && custr_appendc(cu, ',') != 0) {
+			zerror(zlogp, B_TRUE, "memory allocation failed");
+			goto out;
+		}
+
+		if (custr_append(cu, dstab.zone_dataset_name) != 0) {
+			zerror(zlogp, B_TRUE, "memory allocation failed");
+			goto out;
+		}
+
+		if (alias != NULL && custr_append_printf(cu, "|%s",
+		    alias) != 0) {
+			zerror(zlogp, B_TRUE, "memory allocation failed");
+			goto out;
+		}
 	}
 	(void) zonecfg_enddsent(handle);
 
-	if (implicit_len > 0)
-		(void) strlcpy(str + offset, implicit_datasets, total - offset);
+	if (implicit_len > 0) {
+		if (count++ > 0 && custr_appendc(cu, ',') != 0) {
+			zerror(zlogp, B_TRUE, "memory allocation failed");
+			goto out;
+		}
+		if (custr_append(cu, implicit_datasets) != 0) {
+			zerror(zlogp, B_TRUE, "memory allocation failed");
+			goto out;
+		}
+	}
 
 	error = 0;
-	*bufp = str;
-	*bufsizep = total;
 
 out:
-	if (error != 0 && str != NULL)
-		free(str);
 	if (handle != NULL)
 		zonecfg_fini_handle(handle);
-	if (implicit_datasets != NULL)
-		free(implicit_datasets);
+	if (error != 0) {
+		custr_free(cu);
+	} else {
+		*datasetp = cu;
+	}
+	free(implicit_datasets);
 
 	return (error);
 }
@@ -4816,8 +4821,9 @@ vplat_create(zlog_t *zlogp, zone_mnt_t mount_cmd)
 	char rootpath[MAXPATHLEN];
 	char *rctlbuf = NULL;
 	size_t rctlbufsz = 0;
-	char *zfsbuf = NULL;
+	const char *zfsbuf = NULL;
 	size_t zfsbufsz = 0;
+	custr_t *datasets = NULL;
 	zoneid_t zoneid = -1;
 	int xerr;
 	char *kzone;
@@ -4862,9 +4868,13 @@ vplat_create(zlog_t *zlogp, zone_mnt_t mount_cmd)
 		goto error;
 	}
 
-	if (get_datasets(zlogp, &zfsbuf, &zfsbufsz) != 0) {
+	if (get_datasets(zlogp, &datasets) != 0) {
 		zerror(zlogp, B_FALSE, "Unable to get list of ZFS datasets");
 		goto error;
+	}
+	if (datasets != NULL) {
+		zfsbuf = custr_cstr(datasets);
+		zfsbufsz = custr_len(datasets);
 	}
 
 	if (mount_cmd == Z_MNT_BOOT && is_system_labeled()) {
@@ -5052,8 +5062,8 @@ error:
 		(void) zone_shutdown(zoneid);
 		(void) zone_destroy(zoneid);
 	}
-	if (rctlbuf != NULL)
-		free(rctlbuf);
+	free(rctlbuf);
+	custr_free(datasets);
 	priv_freeset(privs);
 	if (fp != NULL)
 		zonecfg_close_scratch(fp);

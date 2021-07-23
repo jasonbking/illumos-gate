@@ -22,6 +22,7 @@
 
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, Joyent Inc. All rights reserved.
  */
 
 #include <assert.h>
@@ -60,7 +61,8 @@ static char *create_token(char *s);
 %a 7000
 %p 5000
 %e 2000
-%n 1000
+%n 900
+%o 13000
 
 %{
 /*
@@ -309,6 +311,8 @@ static char *create_token(char *s);
 
 <TSTATE>fs-allowed	{ return FS_ALLOWED; }
 <CSTATE>fs-allowed	{ return FS_ALLOWED; }
+
+<TSTATE>alias	{ return ALIAS; }
 
 <TSTATE>default { return DEFAULT; }
 <CSTATE>default { return DEFAULT; }
