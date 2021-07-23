@@ -92,7 +92,8 @@
 
 <!ELEMENT dataset	EMPTY>
 
-<!ATTLIST dataset	name		CDATA #REQUIRED>
+<!ATTLIST dataset	name		CDATA #REQUIRED
+			alias		CDATA "">
 
 <!ELEMENT package	EMPTY>
 
@@ -137,14 +138,14 @@
 
 <!ATTLIST mcap		physcap		CDATA #REQUIRED>
 
-<!ELEMENT admin 	EMPTY>
+<!ELEMENT admin		EMPTY>
 
-<!ATTLIST admin     	user		CDATA #REQUIRED
-                    	auths		CDATA #REQUIRED>
+<!ATTLIST admin		user		CDATA #REQUIRED
+			auths		CDATA #REQUIRED>
 
-<!ELEMENT security-flags 	EMPTY>
+<!ELEMENT security-flags	EMPTY>
 
-<!ATTLIST security-flags     	default		CDATA ""
+<!ATTLIST security-flags	default		CDATA ""
 			lower		CDATA ""
 			upper		CDATA "">
 

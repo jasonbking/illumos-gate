@@ -25,6 +25,7 @@
  * Copyright (c) 2015, 2016 by Delphix. All rights reserved.
  * Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2020 RackTop Systems Inc.
+ * Copyright 2022 Jason King
  * Copyright 2023 Oxide Computer Company
  */
 
@@ -197,6 +198,12 @@ typedef struct zone_addr_list {
 /* some handy macros */
 #define	SIN(s)	((struct sockaddr_in *)s)
 #define	SIN6(s)	((struct sockaddr_in6 *)s)
+
+/* zlog-ified nvlist wrappers */
+static int znvlist_alloc(zlog_t *, nvlist_t **);
+static int znvlist_add_string(zlog_t *, nvlist_t *, const char *, const char *);
+static int znvlist_add_nvlist(zlog_t *, nvlist_t *, const char *, nvlist_t *);
+static int znvlist_pack(zlog_t *, nvlist_t *, char **, size_t *);
 
 /*
  * Private autofs system call
@@ -3422,8 +3429,6 @@ static int
 get_rctls(zlog_t *zlogp, char **bufp, size_t *bufsizep)
 {
 	nvlist_t *nvl = NULL;
-	char *nvl_packed = NULL;
-	size_t nvl_size = 0;
 	nvlist_t **nvlv = NULL;
 	int rctlcount = 0;
 	int error = -1;
@@ -3435,7 +3440,7 @@ get_rctls(zlog_t *zlogp, char **bufp, size_t *bufsizep)
 	int rproc, rlwp;
 
 	*bufp = NULL;
-	*bufsizep = 0;
+	bufsizep = 0;
 
 	if ((handle = zonecfg_init_handle()) == NULL) {
 		zerror(zlogp, B_TRUE, "getting zone configuration handle");
@@ -3576,33 +3581,51 @@ get_rctls(zlog_t *zlogp, char **bufp, size_t *bufsizep)
 		error = 0;
 		goto out;
 	}
-	if (nvlist_pack(nvl, &nvl_packed, &nvl_size, NV_ENCODE_NATIVE, 0)
-	    != 0) {
-		zerror(zlogp, B_FALSE, "%s failed", "nvlist_pack");
+
+	if (!znvlist_pack(zlogp, nvl, bufp, bufsizep)) {
+		*bufp = NULL;
+		*bufsizep = 0;
 		goto out;
 	}
 
 	error = 0;
-	*bufp = nvl_packed;
-	*bufsizep = nvl_size;
 
 out:
 	free(rctlblk);
 	zonecfg_free_rctl_value_list(rctltab.zone_rctl_valptr);
-	if (error && nvl_packed != NULL)
-		free(nvl_packed);
 	nvlist_free(nvl);
-	if (nvlv != NULL)
-		free(nvlv);
+	free(nvlv);
 	if (handle != NULL)
 		zonecfg_fini_handle(handle);
 	return (error);
 }
 
 static int
-get_implicit_datasets(zlog_t *zlogp, char **retstr)
+add_dataset(zlog_t *zlogp, nvlist_t *nvl, const char *name, const char *alias)
+{
+	nvlist_t *dsnvl = NULL;
+	int error = -1;
+
+	if (znvlist_alloc(zlogp, &dsnvl) != 0)
+		return (-1);
+
+	if (alias != NULL &&
+	    znvlist_add_string(zlogp, dsnvl, "alias", alias) != 0)
+		goto done;
+
+	error = znvlist_add_nvlist(zlogp, nvl, name, dsnvl);
+
+done:
+	nvlist_free(dsnvl);
+	return (error);
+}
+
+static int
+get_implicit_datasets(zlog_t *zlogp, nvlist_t *nvl)
 {
 	char cmdbuf[2 * MAXPATHLEN];
+	char *retstr = NULL;
+	char *ds = NULL;
 
 	if (query_hook[0] == '\0')
 		return (0);
@@ -3611,25 +3634,26 @@ get_implicit_datasets(zlog_t *zlogp, char **retstr)
 	    > sizeof (cmdbuf))
 		return (-1);
 
-	if (do_subproc(zlogp, cmdbuf, retstr) != 0)
+	if (do_subproc(zlogp, cmdbuf, &retstr) != 0)
 		return (-1);
 
+	for (ds = strtok(retstr, ","); ds != NULL; ds = strtok(NULL, ",")) {
+		if (add_dataset(zlogp, nvl, ds, NULL) != 0) {
+			free(retstr);
+			return (-1);
+		}
+	}
+
+	free(retstr);
 	return (0);
 }
 
 static int
-get_datasets(zlog_t *zlogp, char **bufp, size_t *bufsizep)
+get_datasets(zlog_t *zlogp, nvlist_t *nvl)
 {
 	zone_dochandle_t handle;
 	struct zone_dstab dstab;
-	size_t total, offset, len;
 	int error = -1;
-	char *str = NULL;
-	char *implicit_datasets = NULL;
-	int implicit_len = 0;
-
-	*bufp = NULL;
-	*bufsizep = 0;
 
 	if ((handle = zonecfg_init_handle()) == NULL) {
 		zerror(zlogp, B_TRUE, "getting zone configuration handle");
@@ -3641,66 +3665,56 @@ get_datasets(zlog_t *zlogp, char **bufp, size_t *bufsizep)
 		return (-1);
 	}
 
-	if (get_implicit_datasets(zlogp, &implicit_datasets) != 0) {
+	if (zonecfg_setdsent(handle) != Z_OK) {
+		zerror(zlogp, B_FALSE, "%s failed", "zonecfg_setdsent");
+		goto out;
+	}
+
+	if (zonecfg_setdsent(handle) != Z_OK) {
+		zerror(zlogp, B_FALSE, "%s failed", "zonecfg_setdsent");
+		goto out;
+	}
+
+	while (zonecfg_getdsent(handle, &dstab) == Z_OK) {
+		const char *alias = dstab.zone_dataset_alias[0] != '\0' ?
+		    dstab.zone_dataset_alias : NULL;
+
+		if (add_dataset(zlogp, nvl, dstab.zone_dataset_name,
+		    alias) != 0) {
+			goto out;
+		}
+	}
+	(void) zonecfg_enddsent(handle);
+
+	if (get_implicit_datasets(zlogp, nvl) != 0) {
 		zerror(zlogp, B_FALSE, "getting implicit datasets failed");
 		goto out;
 	}
 
-	if (zonecfg_setdsent(handle) != Z_OK) {
-		zerror(zlogp, B_FALSE, "%s failed", "zonecfg_setdsent");
-		goto out;
-	}
-
-	total = 0;
-	while (zonecfg_getdsent(handle, &dstab) == Z_OK)
-		total += strlen(dstab.zone_dataset_name) + 1;
-	(void) zonecfg_enddsent(handle);
-
-	if (implicit_datasets != NULL)
-		implicit_len = strlen(implicit_datasets);
-	if (implicit_len > 0)
-		total += implicit_len + 1;
-
-	if (total == 0) {
-		error = 0;
-		goto out;
-	}
-
-	if ((str = malloc(total)) == NULL) {
-		zerror(zlogp, B_TRUE, "memory allocation failed");
-		goto out;
-	}
-
-	if (zonecfg_setdsent(handle) != Z_OK) {
-		zerror(zlogp, B_FALSE, "%s failed", "zonecfg_setdsent");
-		goto out;
-	}
-	offset = 0;
-	while (zonecfg_getdsent(handle, &dstab) == Z_OK) {
-		len = strlen(dstab.zone_dataset_name);
-		(void) strlcpy(str + offset, dstab.zone_dataset_name,
-		    total - offset);
-		offset += len;
-		if (offset < total - 1)
-			str[offset++] = ',';
-	}
-	(void) zonecfg_enddsent(handle);
-
-	if (implicit_len > 0)
-		(void) strlcpy(str + offset, implicit_datasets, total - offset);
-
 	error = 0;
-	*bufp = str;
-	*bufsizep = total;
 
 out:
-	if (error != 0 && str != NULL)
-		free(str);
 	if (handle != NULL)
 		zonecfg_fini_handle(handle);
-	if (implicit_datasets != NULL)
-		free(implicit_datasets);
+	return (error);
+}
 
+static int
+get_zfs(zlog_t *zlogp, char **bufp, size_t *buflenp)
+{
+	nvlist_t *znvl = NULL;
+	int error = -1;
+
+	if (znvlist_alloc(zlogp, &znvl) != 0)
+		goto done;
+
+	if (get_datasets(zlogp, znvl) != 0)
+		goto done;
+
+	error = znvlist_pack(zlogp, znvl, bufp, buflenp);
+
+done:
+	nvlist_free(znvl);
 	return (error);
 }
 
@@ -4948,7 +4962,7 @@ vplat_create(zlog_t *zlogp, zone_mnt_t mount_cmd)
 		goto error;
 	}
 
-	if (get_datasets(zlogp, &zfsbuf, &zfsbufsz) != 0) {
+	if (get_zfs(zlogp, &zfsbuf, &zfsbufsz) != 0) {
 		zerror(zlogp, B_FALSE, "Unable to get list of ZFS datasets");
 		goto error;
 	}
@@ -5043,7 +5057,6 @@ vplat_create(zlog_t *zlogp, zone_mnt_t mount_cmd)
 				    "An unknown file-system is mounted on "
 				    "a subdirectory of %s", rootpath);
 			} else {
-
 				zerror(zlogp, B_FALSE,
 				    "These file-systems are mounted on "
 				    "subdirectories of %s:", rootpath);
@@ -5138,8 +5151,8 @@ error:
 		(void) zone_shutdown(zoneid);
 		(void) zone_destroy(zoneid);
 	}
-	if (rctlbuf != NULL)
-		free(rctlbuf);
+	free(rctlbuf);
+	free(zfsbuf);
 	priv_freeset(privs);
 	if (fp != NULL)
 		zonecfg_close_scratch(fp);
@@ -5635,4 +5648,62 @@ vplat_teardown(zlog_t *zlogp, boolean_t unmount_cmd, boolean_t rebooting)
 error:
 	lofs_discard_mnttab();
 	return (-1);
+}
+
+static int
+znvlist_pack(zlog_t *zlogp, nvlist_t *nvl, char **bufp, size_t *buflen)
+{
+	int ret;
+
+	if ((ret = nvlist_pack(nvl, bufp, buflen, NV_ENCODE_NATIVE, 0)) != 0) {
+		errno = ret;
+		zerror(zlogp, B_TRUE, "%s failed", "nvlist_pack");
+		return (-1);
+	}
+
+	return (0);
+}
+
+static int
+znvlist_alloc(zlog_t *zlogp, nvlist_t **nvlp)
+{
+	int ret;
+
+	if ((ret = nvlist_alloc(nvlp, NV_UNIQUE_NAME, 0)) != 0) {
+		errno = ret;
+		zerror(zlogp, B_TRUE, "%s failed", "nvlist_alloc");
+		return (-1);
+	}
+
+	return (0);
+}
+
+static int
+znvlist_add_string(zlog_t *zlogp, nvlist_t *nvl, const char *name,
+    const char *val)
+{
+	int ret;
+
+	if ((ret = nvlist_add_string(nvl, name, val)) != 0) {
+		errno = ret;
+		zerror(zlogp, B_TRUE, "%s failed", "nvlist_add_string");
+		return (-1);
+	}
+
+	return (0);
+}
+
+static int
+znvlist_add_nvlist(zlog_t *zlogp, nvlist_t *nvl, const char *name,
+    nvlist_t *val)
+{
+	int ret;
+
+	if ((ret = nvlist_add_nvlist(nvl, name, val)) != 0) {
+		errno = ret;
+		zerror(zlogp, B_TRUE, "%s failed", "nvlist_add_nvlist");
+		return (-1);
+	}
+
+	return (0);
 }

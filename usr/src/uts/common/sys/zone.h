@@ -24,6 +24,7 @@
  * Copyright 2014 Igor Kozhukhov <ikozhukhov@gmail.com>.
  * Copyright 2019 Nexenta Systems, Inc. All rights reserved.
  * Copyright 2020 Joyent, Inc.
+ * Copyright 2022 Jason King
  */
 
 #ifndef _SYS_ZONE_H
@@ -194,7 +195,7 @@ typedef struct {
 	size32_t rctlbufsz;
 	caddr32_t extended_error;
 	caddr32_t zfsbuf;
-	size32_t  zfsbufsz;
+	size32_t zfsbufsz;
 	int match;			/* match level */
 	uint32_t doi;			/* DOI for label */
 	caddr32_t label;		/* label associated with zone */
@@ -216,6 +217,9 @@ typedef struct {
 	const bslabel_t *label;		/* label associated with zone */
 	int flags;
 } zone_def;
+
+#define	ZNVL_ZFS_ALIAS		"alias"
+#define	ZNVL_ZFS_NAME		"name"
 
 /* extended error information */
 #define	ZE_UNKNOWN	0	/* No extended error info */
@@ -385,6 +389,7 @@ typedef struct zone_ref {
  */
 typedef struct zone_dataset {
 	char		*zd_dataset;
+	char		*zd_alias;
 	list_node_t	zd_linkage;
 } zone_dataset_t;
 
@@ -867,7 +872,19 @@ extern int zone_ncpus_online_get(zone_t *);
 /*
  * Returns true if the named pool/dataset is visible in the current zone.
  */
-extern int zone_dataset_visible(const char *, int *);
+extern int zone_dataset_visible(const char *, int *, boolean_t);
+extern int zone_dataset_visible(const char *, int *, boolean_t);
+extern int zone_dataset_visible_inzone(zone_t *, const char *, int *,
+    boolean_t);
+
+/*
+ * Used to convert between a zone's local alias name for a dataset and
+ * the system's name.
+ */
+extern int zone_dataset_alias(const char *, char *, size_t);
+extern int zone_dataset_unalias(const char *, char *, size_t);
+extern int zone_dataset_alias_inzone(const char *, char *, size_t, zone_t *);
+extern int zone_dataset_unalias_inzone(const char *, char *, size_t, zone_t *);
 
 /*
  * zone version of kadmin()

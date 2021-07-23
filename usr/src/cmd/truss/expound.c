@@ -24,6 +24,7 @@
  * Copyright (c) 1989, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2012, 2014 by Delphix. All rights reserved.
  * Copyright 2015 Joyent, Inc.
+ * Copyright 2022 Jason King
  */
 
 /*	Copyright (c) 1984, 1986, 1987, 1988, 1989 AT&T	*/
@@ -4273,7 +4274,6 @@ show_zone_create_args(private_t *pri, long offset)
 	zone_def args;
 	char zone_name[ZONENAME_MAX];
 	char zone_root[MAXPATHLEN];
-	char *zone_zfs = NULL;
 
 	if (Pread(Proc, &args, sizeof (args), offset) == sizeof (args)) {
 
@@ -4284,17 +4284,6 @@ show_zone_create_args(private_t *pri, long offset)
 		if (Pread_string(Proc, zone_root, sizeof (zone_root),
 		    (uintptr_t)args.zone_root) == -1)
 			(void) strcpy(zone_root, "<?>");
-
-		if (args.zfsbufsz > 0) {
-			zone_zfs = malloc(MIN(4, args.zfsbufsz));
-			if (zone_zfs != NULL) {
-				if (Pread(Proc, zone_zfs, args.zfsbufsz,
-				    (uintptr_t)args.zfsbuf) == -1)
-					(void) strcpy(zone_zfs, "<?>");
-			}
-		} else {
-			zone_zfs = "";
-		}
 
 		(void) printf("%s\t     zone_name: %s\n", pri->pname,
 		    zone_name);
@@ -4312,7 +4301,13 @@ show_zone_create_args(private_t *pri, long offset)
 		show_packed_nvlist(pri, (uintptr_t)args.rctlbuf,
 		    args.rctlbufsz);
 
-		(void) printf("%s\t           zfs: %s\n", pri->pname, zone_zfs);
+		(void) printf("%s\t        zfsbuf: 0x%p\n", pri->pname,
+		    (void *)args.zfsbuf);
+		(void) printf("%s\t      zfsbufsz: %lu\n", pri->pname,
+		    (ulong_t)args.zfsbufsz);
+
+		show_packed_nvlist(pri, (uintptr_t)args.zfsbuf,
+		    (ulong_t)args.zfsbufsz);
 
 		(void) printf("%s\textended_error: 0x%p\n", pri->pname,
 		    (void *)args.extended_error);
@@ -4343,9 +4338,6 @@ show_zone_create_args(private_t *pri, long offset)
 			if (label_str)
 				free(label_str);
 		}
-
-		if (args.zfsbufsz > 0)
-			free(zone_zfs);
 	}
 }
 
@@ -4357,7 +4349,6 @@ show_zone_create_args32(private_t *pri, long offset)
 	zone_def32 args;
 	char zone_name[ZONENAME_MAX];
 	char zone_root[MAXPATHLEN];
-	char *zone_zfs = NULL;
 
 	if (Pread(Proc, &args, sizeof (args), offset) == sizeof (args)) {
 
@@ -4368,17 +4359,6 @@ show_zone_create_args32(private_t *pri, long offset)
 		if (Pread_string(Proc, zone_root, sizeof (zone_root),
 		    (uintptr_t)args.zone_root) == -1)
 			(void) strcpy(zone_root, "<?>");
-
-		if (args.zfsbufsz > 0) {
-			zone_zfs = malloc(MIN(4, args.zfsbufsz));
-			if (zone_zfs != NULL) {
-				if (Pread(Proc, zone_zfs, args.zfsbufsz,
-				    (uintptr_t)args.zfsbuf) == -1)
-					(void) strcpy(zone_zfs, "<?>");
-			}
-		} else {
-			zone_zfs = "";
-		}
 
 		(void) printf("%s\t     zone_name: %s\n", pri->pname,
 		    zone_name);
@@ -4396,7 +4376,12 @@ show_zone_create_args32(private_t *pri, long offset)
 		show_packed_nvlist(pri, (uintptr_t)args.rctlbuf,
 		    args.rctlbufsz);
 
-		(void) printf("%s\t           zfs: %s\n", pri->pname, zone_zfs);
+		(void) printf("%s\t        zfsbuf: 0x%x\n", pri->pname,
+		    (caddr32_t)args.zfsbuf);
+		(void) printf("%s\t      zfsbufsz: %lu\n", pri->pname,
+		    (ulong_t)args.zfsbufsz);
+
+		show_packed_nvlist(pri, (uintptr_t)args.zfsbuf, args.zfsbufsz);
 
 		(void) printf("%s\textended_error: 0x%x\n", pri->pname,
 		    (caddr32_t)args.extended_error);
@@ -4426,9 +4411,6 @@ show_zone_create_args32(private_t *pri, long offset)
 			if (label_str)
 				free(label_str);
 		}
-
-		if (args.zfsbufsz > 0)
-			free(zone_zfs);
 	}
 }
 

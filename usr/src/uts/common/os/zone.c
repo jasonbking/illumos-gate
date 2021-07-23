@@ -24,6 +24,7 @@
  * Copyright 2015, Joyent Inc. All rights reserved.
  * Copyright (c) 2016 by Delphix. All rights reserved.
  * Copyright 2018 OmniOS Community Edition (OmniOSce) Association.
+ * Copyright 2022 Jason King
  */
 
 /*
@@ -1303,6 +1304,9 @@ zone_free_datasets(zone_t *zone)
 		next = list_next(&zone->zone_datasets, t);
 		list_remove(&zone->zone_datasets, t);
 		kmem_free(t->zd_dataset, strlen(t->zd_dataset) + 1);
+		if (t->zd_alias != NULL) {
+			kmem_free(t->zd_alias, strlen(t->zd_alias) + 1);
+		}
 		kmem_free(t, sizeof (*t));
 	}
 	list_destroy(&zone->zone_datasets);
@@ -4290,6 +4294,7 @@ parse_rctls(caddr_t ubuf, size_t buflen, nvlist_t **nvlp)
 		error = EINVAL;
 		goto out;
 	}
+
 	while ((nvp = nvlist_next_nvpair(nvl, nvp)) != NULL) {
 		rctl_dict_entry_t *rde;
 		rctl_hndl_t hndl;
@@ -4318,6 +4323,7 @@ parse_rctls(caddr_t ubuf, size_t buflen, nvlist_t **nvlp)
 			goto out;
 		}
 	}
+
 	error = 0;
 	*nvlp = nvl;
 out:
@@ -4356,52 +4362,146 @@ zone_set_label(zone_t *zone, const bslabel_t *lab, uint32_t doi)
 }
 
 /*
- * Parses a comma-separated list of ZFS datasets into a per-zone dictionary.
+ * Check for a valid ZFS dataset name.  This function mirrors the rules
+ * for ZFS dataset names checked by "dataset_namecheck()".
  */
-static int
-parse_zfs(zone_t *zone, caddr_t ubuf, size_t buflen)
-{
-	char *kbuf;
-	char *dataset, *next;
-	zone_dataset_t *zd;
-	size_t len;
 
-	if (ubuf == NULL || buflen == 0)
+static boolean_t
+parse_zfs_valid_char(char c)
+{
+	return ((c >= 'a' && c <= 'z') ||
+	    (c >= 'A' && c <= 'Z') ||
+	    (c >= '0' && c <= '9') ||
+	    c == '-' || c == '_' || c == '.' || c == ':' || c == ' ');
+}
+
+static boolean_t
+check_zfsname(const char *name, boolean_t is_alias)
+{
+	const char *p;
+
+	/*
+	 * Both a dataset name and an alias must not be empty
+	 * and cannot start with a /
+	 */
+	if (name[0] == '\0' || name[0] == '/')
+		return (B_FALSE);
+
+	for (p = name; *p != '\0'; p++) {
+		/*
+		 * Since we verified name doesn't start with '/', this is
+		 * can only possibly be true after the first character of name.
+		 */
+		if (*p == '/') {
+			if (is_alias) {
+				/* Aliases cannot have '/' in them */
+				return (B_FALSE);
+			}
+			continue;
+		}
+
+		if (!parse_zfs_valid_char(*p))
+			return (B_FALSE);
+	}
+
+	/*
+	 * Since we know name[0] != '\0', at the end of the loop p[-1] should
+	 * always be a valid access.
+	 */
+	if (p[-1] == '/') {
+		/* Trailing '/' are not allowed */
+		return (B_FALSE);
+	}
+
+	return (B_TRUE);
+}
+
+static int
+parse_dataset(const char *dataset, nvlist_t *nvl, zone_dataset_t **zdp)
+{
+	zone_dataset_t *zd = NULL;
+	char *alias = NULL;
+	size_t dslen = strlen(dataset);
+	size_t alen = 0;
+
+	if (!check_zfsname(dataset, B_FALSE))
+		return (EINVAL);
+
+	if (nvlist_lookup_string(nvl, ZNVL_ZFS_ALIAS, &alias) == 0)
+		alen = strlen(alias);
+
+	if (alias != NULL && !check_zfsname(alias, B_TRUE))
+		return (EINVAL);
+
+	zd = kmem_alloc(sizeof (zone_dataset_t), KM_SLEEP);
+
+	zd->zd_dataset = kmem_alloc(dslen + 1, KM_SLEEP);
+	bcopy(dataset, zd->zd_dataset, dslen);
+	zd->zd_dataset[dslen] = '\0';
+
+	if (alias != NULL) {
+		VERIFY3U(alen, >, 0);
+
+		zd->zd_alias = kmem_alloc(alen + 1, KM_SLEEP);
+		bcopy(alias, zd->zd_alias, alen);
+		zd->zd_alias[alen] = '\0';
+	} else {
+		VERIFY3U(alen, ==, 0);
+		zd->zd_alias = NULL;
+	}
+
+	*zdp = zd;
+	return (0);
+}
+
+static int
+parse_zfs(caddr_t ubuf, size_t buflen, zone_t *zone)
+{
+	nvlist_t *nvl = NULL;
+	nvpair_t *nvp = NULL;
+	char *kbuf;
+	int ret = 0;
+
+	if (buflen == 0)
 		return (0);
 
 	if ((kbuf = kmem_alloc(buflen, KM_NOSLEEP)) == NULL)
 		return (ENOMEM);
 
-	if (copyin(ubuf, kbuf, buflen) != 0) {
+	if (copyin(ubuf, kbuf, buflen)) {
 		kmem_free(kbuf, buflen);
 		return (EFAULT);
 	}
 
-	dataset = next = kbuf;
-	for (;;) {
-		zd = kmem_alloc(sizeof (zone_dataset_t), KM_SLEEP);
-
-		next = strchr(dataset, ',');
-
-		if (next == NULL)
-			len = strlen(dataset);
-		else
-			len = next - dataset;
-
-		zd->zd_dataset = kmem_alloc(len + 1, KM_SLEEP);
-		bcopy(dataset, zd->zd_dataset, len);
-		zd->zd_dataset[len] = '\0';
-
-		list_insert_head(&zone->zone_datasets, zd);
-
-		if (next == NULL)
-			break;
-
-		dataset = next + 1;
+	if (nvlist_unpack(kbuf, buflen, &nvl, KM_SLEEP) != 0) {
+		kmem_free(kbuf, buflen);
+		return (EINVAL);
 	}
 
+	for (nvp = nvlist_next_nvpair(nvl, NULL); nvp != NULL;
+	    nvp = nvlist_next_nvpair(nvl, nvp)) {
+		const char *dataset = nvpair_name(nvp);
+		nvlist_t *dnvl;
+		zone_dataset_t *zd = NULL;
+
+		if (nvpair_type(nvp) != DATA_TYPE_NVLIST) {
+			ret = EINVAL;
+			goto done;
+		}
+		dnvl = fnvpair_value_nvlist(nvp);
+
+		if (parse_dataset(dataset, dnvl, &zd) != 0) {
+			ret = EINVAL;
+			goto done;
+		}
+
+		list_insert_head(&zone->zone_datasets, zd);
+	}
+
+done:
+	nvlist_free(nvl);
 	kmem_free(kbuf, buflen);
-	return (0);
+	return (ret);
 }
 
 /*
@@ -4577,13 +4677,12 @@ zone_create(const char *zone_name, const char *zone_root,
 	zone->zone_rctls = NULL;
 
 	if ((error = parse_rctls(rctlbuf, rctlbufsz, &rctls)) != 0) {
-		zone_free(zone);
 		return (zone_create_error(error, 0, extended_error));
 	}
 
-	if ((error = parse_zfs(zone, zfsbuf, zfsbufsz)) != 0) {
+	if ((error = parse_zfs(zfsbuf, zfsbufsz, zone)) != 0) {
 		zone_free(zone);
-		return (set_errno(error));
+		return (error);
 	}
 
 	/*
@@ -6859,16 +6958,161 @@ zone_shutdown_global(void)
 }
 
 /*
- * Returns true if the named dataset is visible in the current zone.
+ * Gets the un-aliased system name for an aliased dataset within a zone.
+ *
+ * Returns 0 upon success and fills out the provided 'dataset' buffer.
+ */
+int
+zone_dataset_unalias_inzone(const char *alias, char *dataset, size_t sz,
+    zone_t *zone)
+{
+	zone_dataset_t *zd;
+	size_t len, alen;
+	boolean_t found = B_FALSE;
+	char *suffix;
+	const char *asuffix;
+
+	VERIFY(alias != NULL);
+	VERIFY(dataset != NULL);
+
+	if (alias[0] == '\0') {
+		dataset[0] = '\0';
+		return (0);
+	}
+
+	/*
+	 * Walk the list once, looking for datasets which match exactly, or
+	 * specify a dataset underneath an exported dataset.  If found, exit
+	 * the loop after unsetting 'ret', so we can process it further.
+	 */
+	for (zd = list_head(&zone->zone_datasets); zd != NULL;
+	    zd = list_next(&zone->zone_datasets, zd)) {
+		if (zd->zd_alias == NULL)
+			continue;
+
+		alen = strlen(zd->zd_alias);
+		if (strlen(alias) >= alen &&
+		    bcmp(alias, zd->zd_alias, alen) == 0 &&
+		    (alias[alen] == '\0' || alias[alen] == '/' ||
+		    alias[alen] == '@' || alias[alen] == '#')) {
+			found = B_TRUE;
+			break;
+		}
+	}
+
+	/*
+	 * If we didn't find any zone_dataset_t that matched, assume the
+	 * dataset's system name is the same as the name the zone used
+	 * (ie, assume no aliasing is in effect).
+	 */
+	if (!found) {
+		len = strlen(alias);
+		if (len >= sz - 1)
+			return (ENOSPC);
+		bcopy(alias, dataset, len);
+		dataset[len] = '\0';
+		return (0);
+	}
+
+	/* If aliased: place dataset name, then suffix in buffer. */
+	len = strlen(zd->zd_dataset);
+	asuffix = &alias[alen];
+	if (strlen(asuffix) + len >= sz - 1)
+		return (ENOSPC);
+	bcopy(zd->zd_dataset, dataset, len);
+	suffix = &dataset[len];
+	(void) strcpy(suffix, asuffix);
+
+	return (0);
+}
+
+int
+zone_dataset_unalias(const char *alias, char *dataset, size_t sz)
+{
+	return (zone_dataset_unalias_inzone(alias, dataset, sz, curzone));
+}
+
+/*
+ * Gets the aliased name for a dataset within a zone.
+ *
+ * Returns 0 upon success and fills out the provided 'alias' buffer.
+ */
+int
+zone_dataset_alias_inzone(const char *dataset, char *alias, size_t sz,
+    zone_t *zone)
+{
+	zone_dataset_t *zd;
+	size_t len, alen;
+	boolean_t found = B_FALSE;
+	const char *suffix;
+	char *asuffix;
+
+	VERIFY(alias != NULL);
+	VERIFY(dataset != NULL);
+
+	if (dataset[0] == '\0') {
+		alias[0] = '\0';
+		return (0);
+	}
+
+	/*
+	 * Walk the list once, looking for datasets which match exactly, or
+	 * specify a dataset underneath an exported dataset.  If found, exit
+	 * the loop after unsetting 'ret', so we can process it further.
+	 */
+	for (zd = list_head(&zone->zone_datasets); zd != NULL;
+	    zd = list_next(&zone->zone_datasets, zd)) {
+		len = strlen(zd->zd_dataset);
+		if (strlen(dataset) >= len &&
+		    bcmp(dataset, zd->zd_dataset, len) == 0 &&
+		    (dataset[len] == '\0' || dataset[len] == '/' ||
+		    dataset[len] == '@' || dataset[len] == '#')) {
+			found = B_TRUE;
+			break;
+		}
+	}
+
+	if (!found)
+		return (EINVAL);
+
+	if (zd->zd_alias == NULL) {
+		/* Simple case: just copy the whole name. */
+		alen = strlen(dataset);
+		if (alen >= sz - 1)
+			return (ENOSPC);
+		bcopy(dataset, alias, alen);
+		alias[alen] = '\0';
+	} else {
+		/* If aliased: place alias, then suffix in buffer. */
+		alen = strlen(zd->zd_alias);
+		suffix = &dataset[len];
+		if (strlen(suffix) + alen >= sz - 1)
+			return (ENOSPC);
+		bcopy(zd->zd_alias, alias, alen);
+		asuffix = &alias[alen];
+		(void) strcpy(asuffix, suffix);
+	}
+
+	return (0);
+}
+
+int
+zone_dataset_alias(const char *dataset, char *alias, size_t sz)
+{
+	return (zone_dataset_alias_inzone(dataset, alias, sz, curzone));
+}
+
+/*
+ * Returns true if the named dataset is visible in the specified zone.
  * The 'write' parameter is set to 1 if the dataset is also writable.
  */
 int
-zone_dataset_visible(const char *dataset, int *write)
+zone_dataset_visible_inzone(zone_t *zone, const char *dataset, int *write,
+    boolean_t with_aliased_parents)
 {
 	static int zfstype = -1;
 	zone_dataset_t *zd;
 	size_t len;
-	zone_t *zone = curproc->p_zone;
 	const char *name = NULL;
 	vfs_t *vfsp = NULL;
 
@@ -6882,7 +7126,6 @@ zone_dataset_visible(const char *dataset, int *write)
 	 */
 	for (zd = list_head(&zone->zone_datasets); zd != NULL;
 	    zd = list_next(&zone->zone_datasets, zd)) {
-
 		len = strlen(zd->zd_dataset);
 		if (strlen(dataset) >= len &&
 		    bcmp(dataset, zd->zd_dataset, len) == 0 &&
@@ -6903,6 +7146,14 @@ zone_dataset_visible(const char *dataset, int *write)
 	 */
 	for (zd = list_head(&zone->zone_datasets); zd != NULL;
 	    zd = list_next(&zone->zone_datasets, zd)) {
+
+		if (!with_aliased_parents && zd->zd_alias != NULL) {
+			/*
+			 * Ignore parent datasets when the exported dataset
+			 * has an alias.
+			 */
+			continue;
+		}
 
 		len = strlen(dataset);
 		if (dataset[len - 1] == '/')
@@ -6970,6 +7221,20 @@ zone_dataset_visible(const char *dataset, int *write)
 
 	vfs_list_unlock();
 	return (0);
+}
+
+/*
+ * Returns true if the named dataset is visible in the current zone.
+ * The 'write' parameter is set to 1 if the dataset is also writable.
+ */
+int
+zone_dataset_visible(const char *dataset, int *write,
+    boolean_t with_aliased_parents)
+{
+	zone_t *zone = curproc->p_zone;
+
+	return (zone_dataset_visible_inzone(zone, dataset, write,
+	    with_aliased_parents));
 }
 
 /*

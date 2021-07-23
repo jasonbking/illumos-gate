@@ -28,6 +28,7 @@
  * Copyright (c) 2014 Integros [integros.com]
  * Copyright 2016 Nexenta Systems, Inc.
  * Copyright (c) 2017 Datto Inc.
+ * Copyright 2022 Jason King
  */
 
 #ifndef	_LIBZFS_H
@@ -769,6 +770,7 @@ extern int zfs_show_diffs(zfs_handle_t *, int, const char *, const char *,
 extern const char *zfs_type_to_name(zfs_type_t);
 extern void zfs_refresh_properties(zfs_handle_t *);
 extern int zfs_name_valid(const char *, zfs_type_t);
+extern int zfs_alias_valid(const char *);
 extern zfs_handle_t *zfs_path_to_zhandle(libzfs_handle_t *, char *, zfs_type_t);
 extern int zfs_parent_name(zfs_handle_t *, char *, size_t);
 extern boolean_t zfs_dataset_exists(libzfs_handle_t *, const char *,

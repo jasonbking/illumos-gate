@@ -24,6 +24,7 @@
  * Copyright (c) 2012 Pawel Jakub Dawidek. All rights reserved.
  * Copyright 2013 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2013 by Delphix. All rights reserved.
+ * Copyright 2021 Jason King
  */
 
 #include <libintl.h>
@@ -226,13 +227,22 @@ zfs_compare(const void *larg, const void *rarg, void *unused)
 
 	ret = strcmp(lname, rname);
 	if (ret == 0) {
-		/*
-		 * If we're comparing a dataset to one of its snapshots, we
-		 * always make the full dataset first.
-		 */
-		if (lat == NULL) {
+		if (lat == NULL && rat == NULL) {
+			/*
+			 * If a zone has both aliased and non-aliased delegated
+			 * datasets with a common ancestor (e.g. same zpool),
+			 * the traversal of datasets will cause the common
+			 * ancestor to appear multiple times.
+			 */
+			ret = 0;
+		} else if (lat == NULL) {
+			/*
+			 * If we're comparing a dataset to one of its snapshots,
+			 * we always make the full dataset first.
+			 */
 			ret = -1;
 		} else if (rat == NULL) {
+			/* See above about placing the full dataset first */
 			ret = 1;
 		} else {
 			/*

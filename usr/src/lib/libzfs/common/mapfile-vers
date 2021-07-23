@@ -24,6 +24,7 @@
 # Copyright (c) 2011, 2017 by Delphix. All rights reserved.
 # Copyright 2016 Nexenta Systems, Inc.
 # Copyright 2020 Joyent, Inc.
+# Copyright 2022 Jason King
 #
 
 #
@@ -88,6 +89,7 @@ $elif _ELF32
 $else
 $error unknown ELFCLASS
 $endif
+	zfs_alias_valid;
 	zfs_allocatable_devs;
 	zfs_asprintf;
 	zfs_bookmark_exists;

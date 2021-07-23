@@ -35,6 +35,7 @@
  * Copyright 2016 Igor Kozhukhov <ikozhukhov@gmail.com>
  * Copyright 2017-2018 RackTop Systems.
  * Copyright (c) 2021 Matt Fiddaman
+ * Copyright 2022 Jason King
  */
 
 #include <ctype.h>
@@ -215,6 +216,12 @@ zfs_name_valid(const char *name, zfs_type_t type)
 	if (type == ZFS_TYPE_POOL)
 		return (zpool_name_valid(NULL, B_FALSE, name));
 	return (zfs_validate_name(NULL, name, type, B_FALSE));
+}
+
+int
+zfs_alias_valid(const char *alias)
+{
+	return (zfs_component_namecheck(alias, NULL, NULL));
 }
 
 /*
