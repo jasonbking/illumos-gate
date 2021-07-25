@@ -27,6 +27,8 @@
 #ifndef	_TPM_DDI_H
 #define	_TPM_DDI_H
 
+#include "tpm_tis.h"
+
 /* Duration index is SHORT, MEDIUM, LONG, UNDEFINED */
 #define	TPM_DURATION_MAX_IDX	3
 
@@ -57,6 +59,12 @@ enum tpm_ddi_resources_flags {
 	TPM_HSVC_REGISTERED = 0x2000
 #endif
 };
+
+/* TPM interface methods */
+typedef enum tpm_if_t {
+	TPM_IF_FIFO,	/* TPM 1.2 and TPM 2.0 */
+	TPM_IF_CRB	/* TPM 2.0 only */
+} tpm_if_t;
 
 typedef struct tpm_state tpm_state_t;
 
@@ -108,10 +116,27 @@ struct tpm_state {
 	kcondvar_t	suspend_cv;
 	uint32_t	suspended;
 
+	tpm_if_t	iftype;
+
+	enum tis_tpm_family	tpm_family;
+	enum tis_intf_ver	intf_ver;
+	enum tis_xfer_size	xfer_size;
+
+				/* If using FIFO, these are 0 and ignored */
+	uint64_t		crb_cmd_off;
+	uint64_t		crb_resp_off;
+	size_t			crb_cmdbuf_size;
+	size_t			crb_respbuf_size;
+
 #ifdef KCF_TPM_RNG_PROVIDER
 	/* For RNG */
 	crypto_kcf_provider_handle_t	n_prov;
 #endif
 };
+
+uint8_t tpm_get8(tpm_state_t *, unsigned long);
+uint32_t tpm_get32(tpm_state_t *, unsigned long);
+uint64_t tpm_get64(tpm_state_t *, unsigned long);
+void tpm_put8(tpm_state_t *, unsigned long, uint8_t);
 
 #endif	/* _TPM_DDI_H */

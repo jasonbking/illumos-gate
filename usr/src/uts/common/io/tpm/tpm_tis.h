@@ -52,6 +52,10 @@
 #define	TPM_STS			0x0018
 /* I/O FIFO */
 #define	TPM_DATA_FIFO   	0x0024
+/* Interface Id (1.3) */
+#define	TPM_INTERFACE_ID	0x0030
+/* I/O XFIFO (1.3) */
+#define	TPM_XDATA_FIFO		0x0080
 /* Vendor and Device ID */
 #define	TPM_DID_VID		0x0F00
 /* Revision ID */
@@ -93,6 +97,16 @@ enum tis_status {
 	TPM_STS_CMD_READY	= 0x40, /* bit 6 */
 	TPM_STS_VALID		= 0x80  /* bit 7 */
 };
+#define	TIS_STATUS_MASK		0x7f
+
+#define	TIS_STATUS_CANCEL	(1 << 24)
+#define	TIS_STATUS_RESET_EST	(1 << 25)
+
+enum tis_tpm_family {
+	TPM_FAMILY_1_2,
+	TPM_FAMILY_2_0
+};
+#define	TIS_STATUS_FAMILY(x)	(((x) >> 26) & 0x3)
 
 /* Possible TPM_INTF_CAPABILITY register values (TIS 1.2 pg.55) */
 enum tis_intf_cap {
@@ -106,6 +120,38 @@ enum tis_intf_cap {
 	TPM_INTF_INT_STS_VALID_INT = 0x002,
 	TPM_INTF_INT_DATA_AVAIL_INT = 0x001
 };
+
+enum tis_intf_ver {
+	TPM_INTF_VERSION_1_21,
+	TPM_INTF_VERSION_1_3,
+	TPM_INTF_VERSION_1_3_TPM20
+};
+#define	TIS_INTF_VER_VAL(x) 		(((x) >> 28) & 0x7)
+
+/*
+ * Because of the gaps, we can't just cast the masked value of the
+ * interface capability register to the enum, instead we must
+ * translate.
+ */
+#define	TIS_INTF_VER_VAL_1_21		0
+				/*	1 reserved */
+#define	TIS_INTF_VER_VAL_1_3		2
+#define	TIS_INTF_VER_VAL_1_3_TPM	3
+				/*	4-7 reserved */
+/*
+ * However, for the data transfer size, we can just cast the
+ * resulting value.
+ */
+enum tis_xfer_size {
+	TPM_INTF_XFER_LEGACY = 0,
+	TPM_INTF_XFER_8,
+	TPM_INTF_XFER_32,
+	TPM_INTF_XFER_64
+};
+#define	TIS_INTF_XFER_VAL(x) 	(((x) >> 9) & 0x3)
+
+/* Valid bits in TPM_INTF_CAP */
+#define	TPM_INTF_MASK	0x700007ff
 
 /* Possible TPM_INT_ENABLE register values (TIS 1.2 pg.62-63) */
 /* Interrupt enable bit for TPM_INT_ENABLE_x register */
