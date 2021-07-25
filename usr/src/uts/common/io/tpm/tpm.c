@@ -22,6 +22,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
  * Copyright 2021 Jason King
  */
 
@@ -73,7 +74,7 @@ typedef enum {
  * and durations in milliseconds rather than microseconds.  Some other TPMs
  * report the value 0's
  *
- * Short Duration is based on section 11.3.4 of TIS speciciation, that
+ * Short Duration is based on section 11.3.4 of TIS specifiation, that
  * TPM_GetCapability (short duration) commands should not be longer than 750ms
  * and that section 11.3.7 states that TPM_ContinueSelfTest (medium duration)
  * should not be longer than 1 second.
@@ -207,7 +208,7 @@ static struct dev_ops tpm_dev_ops = {
 /* modldrv structure */
 static struct modldrv modldrv = {
 	&mod_driverops,		/* Type: This is a driver */
-	"TPM 1.2 driver",	/* Name of the module. */
+	"TPM driver",		/* Name of the module. */
 	&tpm_dev_ops
 };
 
@@ -317,7 +318,7 @@ hcall_tpm_get(uint64_t, uint64_t, uint64_t, uint64_t *);
 extern uint64_t
 hcall_tpm_put(uint64_t, uint64_t, uint64_t, uint64_t);
 
-static inline uint8_t
+uint8_t
 tpm_get8(tpm_state_t *tpm, unsigned long offset)
 {
 	uint64_t value;
@@ -327,7 +328,7 @@ tpm_get8(tpm_state_t *tpm, unsigned long offset)
 	return ((uint8_t)value);
 }
 
-static inline uint32_t
+uint32_t
 tpm_get32(tpm_state_t *tpm, unsigned long offset)
 {
 	uint64_t value;
@@ -337,7 +338,7 @@ tpm_get32(tpm_state_t *tpm, unsigned long offset)
 	return ((uint32_t)value);
 }
 
-static inline void
+void
 tpm_put8(tpm_state_t *tpm, unsigned long offset, uint8_t value)
 {
 	ASSERT(tpm != NULL);
@@ -346,7 +347,7 @@ tpm_put8(tpm_state_t *tpm, unsigned long offset, uint8_t value)
 
 #else
 
-static inline uint8_t
+uint8_t
 tpm_get8(tpm_state_t *tpm, unsigned long offset)
 {
 	ASSERT(tpm != NULL);
@@ -356,7 +357,7 @@ tpm_get8(tpm_state_t *tpm, unsigned long offset)
 	    (uintptr_t)tpm->addr + offset)));
 }
 
-static inline uint32_t
+uint32_t
 tpm_get32(tpm_state_t *tpm, unsigned long offset)
 {
 	ASSERT(tpm != NULL);
@@ -365,7 +366,18 @@ tpm_get32(tpm_state_t *tpm, unsigned long offset)
 	    (uintptr_t)tpm->addr + offset)));
 }
 
-static inline void
+uint64_t
+tpm_get64(tpm_state_t *tpm, unsigned long offset)
+{
+	uint64_t val;
+
+	val = tpm_get32(tpm, offset);
+	val |= tpm_get32(tpm, offset + sizeof (uint32_t) << 32;
+
+	return (val);
+}
+
+void
 tpm_put8(tpm_state_t *tpm, unsigned long offset, uint8_t value)
 {
 	ASSERT(tpm != NULL);
@@ -560,11 +572,6 @@ tpm_get_duration(tpm_state_t *tpm)
 	return (DDI_SUCCESS);
 }
 
-/*
- * Get the actual timeouts supported by the TPM by issuing TPM_GetCapability
- * with the subcommand TPM_CAP_PROP_TIS_DURATION
- * TPM_GetCapability (TPM Main Part 3 Rev. 94, pg.38)
- */
 static int
 tpm_get_version(tpm_state_t *tpm)
 {
@@ -1207,6 +1214,7 @@ static int
 tis_init(tpm_state_t *tpm)
 {
 	uint32_t intf_caps;
+	uint8_t family;
 	int ret;
 
 	/*
@@ -1229,12 +1237,30 @@ tis_init(tpm_state_t *tpm)
 	tpm->duration[TPM_LONG] = drv_usectohz(TPM_DEFAULT_DURATION);
 	tpm->duration[TPM_UNDEFINED] = drv_usectohz(TPM_DEFAULT_DURATION);
 
+	/* Find out TPM family */
+	family = (tpm_get8(tpm, TPM_STS + 3) >> 2) & 0x3;
+	switch (family) {
+	case TPM_FAMILY_1_2:
+		str = "1.2";
+		break;
+	case TPM_FAMILY_2_0:
+		str = "2.0";
+		break;
+	default:
+		cmn_err(CE_WARN, "!%s: unsupported TPM family %u",
+		    __func__, family);
+		// return (DDI_FAILURE);
+		str = "Unknown";
+	}
+	tpm->tpm_family = family;
+	(void) ddi_prop_update_string(DDI_DEV_T_NONE, tpm->dip,
+	    "tpm-family", str);
+
 	/* Find out supported capabilities */
 	intf_caps = tpm_get32(tpm, TPM_INTF_CAP);
 
-	/* Upper 3 bytes should always return 0 */
-	if (intf_caps & 0x7FFFFF00) {
-		cmn_err(CE_WARN, "!%s: bad intf_caps value 0x%0X",
+	if ((intf_caps & ~(TPM_INTF_MASK)) != 0) {
+		cmn_err(CE_WARN, "!%s: bad intf_caps value 0x%0x",
 		    __func__, intf_caps);
 		return (DDI_FAILURE);
 	}
@@ -1249,6 +1275,41 @@ tis_init(tpm_state_t *tpm)
 	if (!(intf_caps & TPM_INTF_INT_DATA_AVAIL_INT)) {
 		cmn_err(CE_WARN, "!%s: Mandatory capability Data Available Int "
 		    "not supported.", __func__);
+		return (DDI_FAILURE);
+	}
+
+	switch (TIS_INTF_VER_VAL(intf_caps)) {
+	case TIS_INTF_VER_VAL_1_21:
+		tpm->intf_ver = TPM_INTF_VERSION_1_21;
+		str = "1.21";
+		break;
+	case TIS_INTF_VER_VAL_1_3:
+		tpm->intf_ver = TPM_INTF_VERSION_1_3;
+		str = "1.3";
+		break;
+	case TIS_INTF_VER_VAL_1_3_TPM:
+		tpm->intf_ver = TPM_INTF_VERSION_1_3_TPM20;
+		str = "1.3 (TPM2.0)";
+		break;
+	default:
+		cmn_err(CE_WARN,
+		    "!%s: Unsupported TPM TIS interface version %u",
+		    __func__, TIS_INTF_VER_VAL(intf_caps));
+		return (DDI_FAILURE);
+	}
+	(void) ddi_prop_update_string(DDI_DEV_T_NONE, tpm->dip,
+	    "tis-interface-version", str);
+
+	tpm->xfer_size = TIS_INTF_XFER_VAL(intf_caps);
+	if (tpm->xfer_size != TPM_INTF_XFER_LEGACY &&
+	    tpm->intf_ver != TIS_INTF_VER_VAL_1_3_TPM) {
+		const char *szstr[] = {
+			"legacy", "8 bytes", "32 bytes", "64 bytes"
+		};
+
+		cmn_err(CE_WARN,
+		    "!%s: mismatch xtransfer size (%s) w/ TIS version",
+		    __func__, szstr[tpm->xfer_size]);
 		return (DDI_FAILURE);
 	}
 
@@ -1513,6 +1574,25 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	/* Set the suspend/resume property */
 	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
 	    "pm-hardware-state", "needs-suspend-resume");
+
+	char buf[32];
+
+	(void) snprintf(buf, sizeof (buf), "%d.%d",
+	    tpm->vers_info.version.major,
+	    tpm->vers_info.version.minor);
+	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
+	    "tpm-version", buf);
+
+	(void) snprintf(buf, sizeof (buf), "%d.%d",
+	    tpm->vers_info.version.revMajor,
+	    tpm->vers_info.version.revMinor);
+	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
+	    "tpm-revision", buf);
+
+	(void) ddi_prop_update_int(DDI_DEV_T_NONE, dip, "tpm-speclevel",
+	    ntohs(tpm->vers_info.specLevel));
+	(void) ddi_prop_update_int(DDI_DEV_T_NONE, dip, "tpm-errata-revision",
+	    tpm->vers_info.errataRev);
 
 	mutex_enter(&tpm->pm_mutex);
 	tpm->suspended = 0;

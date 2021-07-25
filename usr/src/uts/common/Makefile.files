@@ -30,6 +30,7 @@
 # Copyright 2016 Hans Rosenfeld <rosenfeld@grumpf.hope-2000.org>
 # Copyright 2023 Oxide Computer Company
 # Copyright 2023 RackTop Systems, Inc.
+# Copyright 2021 Jason King
 #
 
 #
@@ -2233,7 +2234,7 @@ MYRI10GE_OBJS =	myri10ge.o myri10ge_lro.o
 #
 NULLDRIVER_OBJS =	nulldriver.o
 
-TPM_OBJS =	tpm.o tpm_hcall.o
+TPM_OBJS =	tpm.o tpm_hcall.o tpm12.o tpm_fifo.o tpm_crb.o
 
 #
 # USB Fast ethernet drivers
