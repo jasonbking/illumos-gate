@@ -96,12 +96,13 @@ cat <<EOM
 EOM
 
 case "$MACH" in
-  "i386" ) 
-	# 
+  "i386" )
+	#
 	# These are the x86 specific entries
 	# It depends on the build machine being an x86
 	#
 	cat <<-EOM
+type=ddi_pseudo;name=tpm	\D
 	EOM
 	;;
   "sparc" )
