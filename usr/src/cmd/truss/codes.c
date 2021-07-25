@@ -27,6 +27,7 @@
  * Copyright (c) 2014, OmniTI Computer Consulting, Inc. All rights reserved.
  * Copyright 2021 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2022 Garrett D'Amore <garrett@damore.org>
+ * Copyright 2023 Jason King
  */
 
 /*	Copyright (c) 1984, 1986, 1987, 1988, 1989 AT&T	*/
@@ -106,6 +107,7 @@
 #include <sys/pm.h>
 #include <sys/soundcard.h>
 #include <sys/cpuid_drv.h>
+#include <sys/tpm.h>
 
 #include "codes.h"
 #include "ramdata.h"
