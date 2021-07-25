@@ -304,3 +304,4 @@ clone:vmxnet3s 0666 root sys
 vr:* 0666 root sys
 xhci:* 0644 root sys
 yge:* 0666 root sys
+tpm:* 0600 root sys
