@@ -15,6 +15,7 @@
 
 /*
  * Copyright (c) 2017, Datto, Inc. All rights reserved.
+ * Copyright 2021 Jason King
  */
 
 #include <sys/zio_crypt.h>
@@ -1131,7 +1132,6 @@ error:
  * and le_bswap indicates whether a byteswap is needed to get this block
  * into little endian format.
  */
-/* ARGSUSED */
 int
 zio_crypt_do_objset_hmacs(zio_crypt_key_t *key, void *data, uint_t datalen,
     boolean_t should_bswap, uint8_t *portable_mac, uint8_t *local_mac)

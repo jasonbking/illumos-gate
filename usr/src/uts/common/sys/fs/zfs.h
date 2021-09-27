@@ -27,6 +27,7 @@
  * Copyright 2020 Joyent, Inc.
  * Copyright (c) 2017 Datto Inc.
  * Copyright (c) 2017, Intel Corporation.
+ * Copyright 2021 Jason King
  */
 
 /* Portions Copyright 2010 Robert Milkowski */
@@ -977,6 +978,7 @@ typedef enum zpool_errata {
 	ZPOOL_ERRATA_ZOL_2094_ASYNC_DESTROY,
 	ZPOOL_ERRATA_ZOL_6845_ENCRYPTION,
 	ZPOOL_ERRATA_ZOL_8308_ENCRYPTION,
+	ZPOOL_ERRATA_ILLUMOS_13795_ENCRYPTION,
 } zpool_errata_t;
 
 typedef struct pool_removal_stat {
