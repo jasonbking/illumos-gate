@@ -23,37 +23,10 @@
 #include <sys/strsubr.h>
 #include <sys/modctl.h>
 #include <sys/strsun.h>
+#include <sys/sunddi.h>
 
-#include "virtio.h"
+#include "vsock_vio.h"
 #include "vsock.h"
-
-typedef struct vio_vsock_header {
-	uint64_t	vvh_src_cid;
-	uint64_t	vvh_dst_cid;
-	uint32_t	vvh_src_port;
-	uint32_t	vvh_dst_port;
-	uint32_t	vvh_len;
-	uint16_t	vvh_type;
-	uint16_t	vvh_op;
-	uint32_t	vvh_flags;
-	uint32_t	vvh_buf_alloc;
-	uint32_t	vvh_fwd_cnt;
-} vio_vsock_header_t __packed;
-
-typedef enum vio_vsock_op {
-	VIO_VSOCK_OP_INVALID =		0,
-	VIO_VSOCK_OP_REQUEST =		1,
-	VIO_VSOCK_OP_RESPONSE =		2,
-	VIO_VSOCK_OP_RST =		3,
-	VIO_VSOCK_OP_SHUTDOWN =		4,
-	VIO_VSOCK_OP_RW =		5,
-	VIO_VSOCK_OP_CREDIT_UPDATE =	6,
-	VIO_VSOCK_OP_CREDIT_REQUEST =	7,
-} vio_vsock_op_t;
-
-typedef enum vio_vsock_type {
-	VIO_VSOCK_TYPE_STREAM =		1,
-} vio_vsock_type_t;
 
 static inline bool
 vio_vsock_cid_valid(uint64_t cid)
@@ -71,6 +44,7 @@ vio_vsock_cid_valid(uint64_t cid)
 static int vsock_vio_attach(dev_info_t *, ddi_attach_cmd_t);
 static int vsock_vio_detach(dev_info_t *, ddi_detach_cmd_t);
 static int vsock_vio_quiesce(dev_info_t *);
+static uint64_t vsock_vio_get_cid(vsock_dev_t *);
 
 static struct cb_ops vsock_vio_cb_ops = {
 	.cb_rev			CB_REV,
@@ -142,6 +116,18 @@ vsock_vio_tx_handler(caddr_t arg0, caddr_t arg1)
 static uint_t
 vsock_vio_event_handler(caddr_t arg0, caddr_t arg1)
 {
+	vsock_dev_t *vsd = arg0;
+	virtio_chain_t *vic;
+
+	mutex_enter(&vsd->vsd_mutex);
+
+	while ((vic = virtio_queue_poll(vsd->vsd_event_vq)) != NULL) {
+		size_t len = virtio_chain_received_length(vic);
+
+	}
+
+	mutex_exit(&vsd->vsd_mutex);
+	
 	return (DDI_INTR_CLAINED);
 }
 
@@ -187,10 +173,22 @@ vsock_vio_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	virtio_queue_no_interrupt(vsd->vsd_event_vq, B_TRUE);
 
 	mutex_init(&vsd->vsd_mutex, NULL, MUTEX_DRIVER, virtio_intr_pri(vio));
-	
+
 	mutex_enter(&vsd->vsd_mutex);
-	vsd->vsd_cid = virtio_dev_get64(vsd->vsd_virtio,
-	    VIRTIO_VSOCK_CONFIG_CID);
+
+	vsd->vsd_cid = vsock_vio_get_cid(vsd);
+	if (!vio_vosck_cid_valid(vsd->vsd_cid)) {
+		dev_err(dip, CE_WARN, "host supplied invalid cid 0x%llx",
+		    vsd->vsd_cid);
+		goto fail;
+	}
+
+	vsd->vsd_taskq = ddi_taskq_create(dip, "virtio vsock taskq", 1,
+	    TASKQ_DEFAULTPRI, 0);
+	if (vsd->vsd_taskq == NULL) {
+		dev_err(dip, CE_WARN, "failed to create taskq");
+		goto fail;
+	}
 
 	/* XXX: allocate bufs ? */
 	mutex_exit(&vsd->vsd_mutex);
@@ -208,6 +206,9 @@ vsock_vio_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	return (DDI_SUCCESS);
 
 fail:
+	if (vsd->vsd_taskq != NULL)
+		ddi_taskq_destroy(vsd->vsd_taskq);
+
 	/* XXX: free bufs? */
 	(void) virtio_fini(vio, B_TRUE);
 	kmem_free(vsd, sizeof (*vsd));
@@ -242,6 +243,7 @@ vsock_vio_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	VERIFY0(vsock_vio_detach());
 
 	/* XXX: free bufs */
+	ddi_taskq_destroy(vsd->vsd_taskq);
 	(void) virtio_fini(vsd->vsd_virtio, B_FALSE);
 
 	mutex_exit(&vsd->vsd_mutex);
@@ -261,6 +263,13 @@ vsock_vio_quiesce(dev_info_t *dip)
 		return (DDI_FAILURE);
 
 	return (virtio_quiesce(vsd->vsd_virtio));
+}
+
+static uint64_t
+vsock_vio_get_cid(vsock_dev_t *vsd)
+{
+	ASSERT(MUTEX_HELD(&vsd->vsd_mutex));
+	return (virtio_dev_get64(vsd->vsd_virtio, VIRTO_VSOCK_CONFIG_CID));
 }
 
 int
