@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2021 Joyent, Inc.
+ * Copyright 2021 Jason King
  */
 
 /*
@@ -25,6 +26,44 @@
 
 #include "virtio.h"
 #include "vsock.h"
+
+typedef struct vio_vsock_header {
+	uint64_t	vvh_src_cid;
+	uint64_t	vvh_dst_cid;
+	uint32_t	vvh_src_port;
+	uint32_t	vvh_dst_port;
+	uint32_t	vvh_len;
+	uint16_t	vvh_type;
+	uint16_t	vvh_op;
+	uint32_t	vvh_flags;
+	uint32_t	vvh_buf_alloc;
+	uint32_t	vvh_fwd_cnt;
+} vio_vsock_header_t __packed;
+
+typedef enum vio_vsock_op {
+	VIO_VSOCK_OP_INVALID =		0,
+	VIO_VSOCK_OP_REQUEST =		1,
+	VIO_VSOCK_OP_RESPONSE =		2,
+	VIO_VSOCK_OP_RST =		3,
+	VIO_VSOCK_OP_SHUTDOWN =		4,
+	VIO_VSOCK_OP_RW =		5,
+	VIO_VSOCK_OP_CREDIT_UPDATE =	6,
+	VIO_VSOCK_OP_CREDIT_REQUEST =	7,
+} vio_vsock_op_t;
+
+typedef enum vio_vsock_type {
+	VIO_VSOCK_TYPE_STREAM =		1,
+} vio_vsock_type_t;
+
+static inline bool
+vio_vsock_cid_valid(uint64_t cid)
+{
+	/*
+	 * VIRTIO 5.10.6 The upper 32 bits of a virtio vsock are reserved
+	 * and zeroed.
+	 */
+	return ((cid & 0xFFFFFFFF00000000) == 0 ? true : false);
+}
 
 /* There are currently no feature flags defined for vsock devices */
 #define	VIRTIO_VSOCK_WANTED_FEATURES	0
@@ -82,6 +121,10 @@ static struct modldrv vsock_vio_modldrv = {
 static struct modlinkage vsock_vio_modlinkage = {
 	.ml_rev =		MODREV_1,
 	.ml_linkage =		{ &vsock_vio_modldrv, NULL }
+};
+
+static struct vsock_guest_ops vio_guest_ops = {
+	0
 };
 
 static uint_t
@@ -152,6 +195,11 @@ vsock_vio_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	/* XXX: allocate bufs ? */
 	mutex_exit(&vsd->vsd_mutex);
 
+	if (vsock_attach_guest(vsd->vsd_cid, &vio_guest_ops) != DDI_SUCCESS) {
+		dev_err(dip, CE_WARN, "failed to attach guest ops");
+		goto fail;
+	}
+
 	if (virtio_interrupts_enable(vio) != DDI_SUCCESS) {
 		dev_err(dip, CE_WARN, "failed to enable interrupts");
 		goto fail;
@@ -190,6 +238,8 @@ vsock_vio_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 		 * ?? _free(vsd, rb);
 		 */
 	}
+
+	VERIFY0(vsock_vio_detach());
 
 	/* XXX: free bufs */
 	(void) virtio_fini(vsd->vsd_virtio, B_FALSE);
