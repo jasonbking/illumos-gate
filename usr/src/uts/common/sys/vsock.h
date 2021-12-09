@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2021 Joyent, Inc.
+ * Copyright 2021 Jason King
  */
 
 #ifndef _VSOCK_H
@@ -27,10 +28,10 @@ typedef	unsigned short sa_family_t;
 
 #define	VMADDR_CID_ANY		(-1U)
 #define	VMADDR_CID_HYPERVISOR	0
-#define	VMADDR_CID_LOCAL	2
+#define	VMADDR_CID_LOCAL	1
+#define	VMADDR_CID_HOST		2
 
-#define	VSIOCTL				('v' << 16 | 's' << 8)
-#define	IOCTL_VM_SOCKETS_GET_LOCAL_CID	(VSIOCTL | 0x1)
+#define	VMADDR_PORT_ANY		(-1U)
 
 struct sockaddr_vm {
 	sa_family_t	svm_family;
