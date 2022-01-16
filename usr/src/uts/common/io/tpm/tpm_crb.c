@@ -21,7 +21,12 @@
  * for TPM 2.0 Version 1.05 Revision 14
  */
 #define	TPM_LOC_STATE		0x00
+#define	TPM_LOC_STATE_REG_VALID		0x80
+#define	TPM_LOC_STATE_LOC_ASSIGNED	0x02
 #define	TPM_LOC_CTRL		0x08
+#define	TPM_LOC_CTRL_SEIZE		0x04
+#define	TPM_LOC_CTRL_RELINQUISH		0x02
+#define	TPM_LOC_CTRL_REQUEST		0x01
 #define	TPM_LOC_STS		0x0c
 #define	TPM_CRB_INTF_ID		0x30
 #define	TPM_CRB_CTRL_EXT	0x38
@@ -36,23 +41,25 @@
 #define	TPM_CRB_CTRL_CMD_HADDR	0x60
 #define	TPM_CRB_CTRL_RSP_SIZE	0x64
 #define	TPM_CRB_CTRL_RSP_ADDR	0x68
-/*
- * The TPM Profile specification doesn't define _{L,H}ADDR, but instead just
- * defines TPM_CRB_CTRL_RSP_ADDR as an 8-byte register. Given how
- * TPM_CRB_CTRL_CMD_{L,H}ADDR are defined, this seems like a reasonable
- * assumption.
- */
-#define	TPM_CRB_CTRL_RSP_LADDR	0x68
-#define	TPM_CRB_CTRL_RSP_HADDR	0x6c
+
 #define	TPM_CRB_DATA_BUFFER	0x80
 
 int
 tpm_crb_init(tpm_state_t *tpm)
 {
-	tpm->crb_cmd_off = tpm_get64(tpm, TPM_CRB_CMD_LADDR);
+	/*
+	 * The cmd address register is not at an 8-byte aligned offset, so
+	 * it must be read as two 32-bit values.
+	 */
+	tpm->crb_cmd_off = tpm_get32(tpm, TPM_CRB_CMD_LADDR) |
+	    tpm_get32(tpm, TPM_CRB_CMD_HADDR) << 32;
 	tpm->crb_cmdbuf_size = tpm_get32(tpm, TPM_CRB_CMD_SIZE);
 
-	tpm->crb_resp_off = tpm_get64(tpm, TPM_CRB_RSP_LADDR);
+	/*
+	 * The command response buffer address is however at an 8-byte
+	 * aligned offset.
+	 */
+	tpm->crb_resp_off = tpm_get64(tpm, TPM_CRB_RSP_ADDR);
 	tpm->crb_respbuf_size = tpm_get32(tpm, TPM_CRB_RSP_SIZE);
 
 	/*
@@ -75,5 +82,51 @@ tpm_crb_init(tpm_state_t *tpm)
 int
 tpm_crb_send_data(tpm_state_t *tpm, uint8_t *buf, size_t bufsize)
 {
+
 	return (0);
 }
+
+int
+tpm_crb_request_locality(tpm_state_t *tpm, uint8_t locality)
+{
+	if (tpm->tpm_locality == locality)
+		return (0);
+
+	const uint32_t req_mask =
+	    TPM_LOC_STATE_REG_VALID | TPM_LOC_STATE_LOC_ASSIGNED;
+	int ret;
+	uint8_t old_locality = tpm->tpm_locality;
+
+	tpm->tpm_locality = locality;
+
+	/*
+	 * The TPM_LOC_CTRL_REQUEST register is write only. Bits written as
+	 * 0 are ignored, so we don't need to read | OR to set a flag -- just
+	 * write the value with the desired flags set.
+	 */
+	tpm_put32(tpm, TPM_LOC_CTRL, TPM_LOC_CTRL_REQUEST);
+	ret = tpm_wait_for_u32(tpm, TPM_LOC_STATE, req_mask, req_mask,
+	    tpm->timeout_c);
+
+	if (ret == 0)
+		return (0);
+
+	/*
+	 * TODO: This should probably generate a fault event and possibly
+	 * disable access to the TPM. Need to research more.
+	 */
+	return (ret);
+}
+
+int
+tpm_crb_release_locality(tpm_state_t *tpm, uint8_t locality)
+{
+	/*
+	 * The TPM_LOC_CTRL_REQUEST register is write only. Bits written as
+	 * 0 are ignored, so we don't need to read | OR to set a flag -- just
+	 * write the value with the desired flags set.
+	 */
+	tpm_put32(tpm, TPM_LOC_CTRL, TPM_LOC_CTRL_RELINQUISH);
+	return (0);
+}
+

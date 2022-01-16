@@ -23,30 +23,32 @@
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2021 Jason King
+ * Copyright 2022 Jason King
  */
 
 #include "tpm_tis.h"
 
 static uint8_t
-tis_fifo_get_status(tpm_state_t *tpm)
+tpm_tis_get_status(tpm_state_t *tpm)
 {
 	return (tpm_get8(tpm, TPM_STS));
 }
 
 static void
-tis_fifo_set_ready(tpm)
+tpm_tis_set_ready(tpm_state_t *tpm)
 {
 	tpm_put8(tpm, TPM_STS, TPM_STS_CMD_READY);
 }
 
 static int
-tpm_fifo_wait_for_stat(tpm_state_t *tpm, uint8_t mask, clock_t timeout)
+tpm_tis_wait_for_stat(tpm_state_t *tpm, uint8_t mask, clock_t timeout)
 {
+	int ret;
+
 	clock_t absolute_timeout = ddi_get_lbolt() + timeout;
 
 	/* Using polling */
-	while ((tis_fifo_get_status(tpm) & mask) != mask) {
+	while ((tpm_tis_get_status(tpm) & mask) != mask) {
 		if (ddi_get_lbolt() >= absolute_timeout) {
 			/* Timeout reached */
 #ifdef DEBUG
@@ -62,14 +64,14 @@ tpm_fifo_wait_for_stat(tpm_state_t *tpm, uint8_t mask, clock_t timeout)
 }
 
 /*
- * Whenever the driver wants to write to the DATA_IO register, it must need
+ * Whenever the driver wants to write to the DATA_IO register, it needs
  * to figure out the burstcount.  This is the amount of bytes it can write
  * before having to wait for long LPC bus cycle
  *
  * Returns: 0 if error, burst count if sucess
  */
 static uint16_t
-tpm_fifo_get_burstcount(tpm_state_t *tpm) {
+tpm_tis_get_burstcount(tpm_state_t *tpm) {
 	clock_t stop;
 	uint16_t burstcnt;
 
@@ -103,7 +105,7 @@ tis_fifo_make_ready(tpm_state_t *tpm)
 	int ret;
 	uint8_t status;
 
-	status = tis_fifo_get_status(tpm);
+	status = tpm_tis_get_status(tpm);
 	/* If already ready, we're done */
 	if ((status & TPM_STS_CMD_READY) != 0)
 		return (true);
@@ -112,8 +114,8 @@ tis_fifo_make_ready(tpm_state_t *tpm)
 	 * Otherwise, request the TPM to transition to the ready state, and
 	 * wait until it is.
 	 */
-	tpm_fifo_set_ready(tpm);
-	ret = tpm_fifo_wait_for_stat(tpm, TPM_STS_CMD_READY, tpm->timeout_b);
+	tpm_tis_set_ready(tpm);
+	ret = tpm_tis_wait_for_stat(tpm, TPM_STS_CMD_READY, tpm->timeout_b);
 	if (ret != DDI_SUCCESS) {
 #ifdef DEBUG
 		cmn_err(CE_WARN, "!%s: could not put the TPM "
@@ -151,7 +153,7 @@ tis_fifo_send_data(tpm_state_t *tpm, uint8_t *buf, size_t bufsize)
 	 * not set.
 	 */
 	while (count < bufsiz - 1) {
-		burstcnt = tpm_fifo_get_burstcount(tpm);
+		burstcnt = tpm_tis_get_burstcount(tpm);
 		if (burstcnt == 0) {
 #ifdef DEBUG
 			cmn_err(CE_WARN, "!%s: tpm_get_burstcnt returned error",
@@ -166,7 +168,7 @@ tis_fifo_send_data(tpm_state_t *tpm, uint8_t *buf, size_t bufsize)
 			count++;
 		}
 		/* Wait for TPM to indicate that it is ready for more data */
-		ret = tpm_fifo_wait_for_stat(tpm,
+		ret = tpm_tis_wait_for_stat(tpm,
 		    (TPM_STS_VALID | TPM_STS_DATA_EXPECT), tpm->timeout_c);
 		if (ret != 0) {
 #ifdef DEBUG
@@ -183,7 +185,7 @@ tis_fifo_send_data(tpm_state_t *tpm, uint8_t *buf, size_t bufsize)
 	count++;
 
 	/* Wait for the TPM to enter Valid State */
-	ret = tpm_fifo_wait_for_stat(tpm, TPM_STS_VALID, tpm->timeout_c);
+	ret = tpm_tis_wait_for_stat(tpm, TPM_STS_VALID, tpm->timeout_c);
 	if (ret != 0) {
 #ifdef DEBUG
 		cmn_err(CE_WARN, "!%s: tpm didn't enter STS_VALID state",
@@ -192,7 +194,7 @@ tis_fifo_send_data(tpm_state_t *tpm, uint8_t *buf, size_t bufsize)
 		goto fail;
 	}
 
-	status = tis_fifo_get_status(tpm);
+	status = tpm_tis_get_status(tpm);
 	/* The TPM should NOT be expecing more data at this point */
 	if ((status & TPM_STS_DATA_EXPECT) != 0) {
 #ifdef DEBUG
@@ -212,11 +214,11 @@ tis_fifo_send_data(tpm_state_t *tpm, uint8_t *buf, size_t bufsize)
 	/* Ordinal/Command_code is located in buf[6..9] */
 	ordinal = load32(buf, TPM_COMMAND_CODE_OFFSET);
 
-	ret = tpm_fifo_wait_for_stat(tpm, TPM_STS_DATA_AVAIL | TPM_STS_VALID,
+	ret = tpm_tis_wait_for_stat(tpm, TPM_STS_DATA_AVAIL | TPM_STS_VALID,
 	    tpm_get_ordinal_duration(tpm, ordinal));
 	if (ret != 0) {
 #ifdef DEBUG
-		status = tis_fifo_get_status(tpm);
+		status = tpm_tis_get_status(tpm);
 		if (!(status & TPM_STS_DATA_AVAIL) ||
 		    !(status & TPM_STS_VALID)) {
 			cmn_err(CE_WARN, "!%s: TPM not ready or valid "
@@ -235,18 +237,80 @@ tis_fifo_send_data(tpm_state_t *tpm, uint8_t *buf, size_t bufsize)
 	return (0);
 
 fail:
-	tpm_fifo_set_ready(tpm);
+	tpm_tis_set_ready(tpm);
 	tis_fifo_release_locality(tpm, tpm->locality, 0);
 	return (ret);
 }
 
-bool
-tis_fifo_request_locality(tpm_state_t *tpm, uint_t locality)
+/*
+ * Checks whether the given locality is active
+ * Use TPM_ACCESS register and the masks TPM_ACCESS_VALID,TPM_ACTIVE_LOCALITY
+ */
+static bool
+tpm_tis_locality_active(tpm_t *tpm, uint8_t locality)
 {
-	return (false);
+	uint8_t access_bits;
+
+	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
+	VERIFY3U(locality, <=, TPM_LOCALITY_MAX);
+
+	/* Just check to see if the requested locality works */
+	access_bits = tpm_get8_loc(tpm, locality, TPM_ACCESS);
+	access_bits &= (TPM_ACCESS_ACTIVE_LOCALITY | TPM_ACCESS_VALID);
+
+	if (access_bits == (TPM_ACCESS_ACTIVE_LOCALITY | TPM_ACCESS_VALID)) {
+		return (true);
+	} else {
+		return (false);
+	}
+}
+
+bool
+tpm_tis_request_locality(tpm_state_t *tpm, uint_t locality)
+{
+	clock_t timeout;
+	int ret;
+
+	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
+
+	if (tpm_tis_locality_active(tpm, locality)) {
+		tpm->tpm_locality = locality;
+		return (true);
+	}
+
+	tpm_put8_loc(tpm, locality, TPM_ACCESS, TPM_ACCESS_REQUEST_USE);
+	timeout = ddi_get_lbolt() + tpm->timeout_a;
+
+	while (tis_check_active_locality(tpm, locality) != DDI_SUCCESS) {
+		if (ddi_get_lbolt() >= timeout) {
+#ifdef DEBUG
+			cmn_err(CE_WARN, "!%s: (interrupt-disabled) "
+			    "tis_request_locality timed out (timeout_a = %ld)",
+			    __func__, tpm->timeout_a);
+#endif
+			return (false);
+		}
+		delay(tpm->timeout_poll);
+	}
+
+	tpm->tpm_locality = locality;
+	return (true);
 }
 
 void
-tis_fifo_relinquish_locality(tpm_state_t *tpm)
+tpm_tis_relinquish_locality(tpm_state_t *tpm, uint8_t locality, bool force)
 {
+	VERIFY3U(locality, <=, TPM_LOCALITY_MAX);
+
+	if (force ||
+	    (tpm_get8_loc(tpm, locality, TPM_ACCESS) &
+	    (TPM_ACCESS_REQUEST_PENDING | TPM_ACCESS_VALID)) ==
+	    (TPM_ACCESS_REQUEST_PENDING | TPM_ACCESS_VALID)) {
+		/*
+		 * Writing 1 to active locality bit in TPM_ACCESS
+		 * register reliquishes the control of the locality
+		 */
+		tpm_put8_loc(tpm, locality, TPM_ACCESS,
+		    TPM_ACCESS_ACTIVE_LOCALITY);
+	}
 }
