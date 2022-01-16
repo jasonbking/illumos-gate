@@ -22,7 +22,77 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2022 Jason King
  */
+
+#include <sys/byteorder.h>
+
+#include "tpm_ddi.h"
+#include "tpm_tis.h"
+
+/*
+ * Historically, only one connection has been allowed to TPM1.2 devices,
+ * with tssd (or equivalent) arbitrating access between multiple clients.
+ */
+#define	TPM12_CLIENT_MAX	1
+
+
+#define	TPM_TAG_RQU_COMMAND		((uint16_t)0x00c1)
+
+/* The TPM1.2 Commands we are using */
+#define	TPM_ORD_GetCapability		0x00000065u
+#define	TPM_ORG_ContinueSelfTest	0x00000053u
+#define	TPM_ORD_GetRandom		0x00000046u
+#define	TPM_ORD_StirRandom		0x00000047u
+
+/* The maximum amount of bytes allowed for TPM_ORD_StirRandom */
+#define	TPM12_SEED_MAX		255
+
+/*
+ * This is to address some TPMs that does not report the correct duration
+ * and timeouts.  In our experience with the production TPMs, we encountered
+ * time errors such as GetCapability command from TPM reporting the timeout
+ * and durations in milliseconds rather than microseconds.  Some other TPMs
+ * report the value 0's
+ *
+ * Short Duration is based on section 11.3.4 of TIS specifiation, that
+ * TPM_GetCapability (short duration) commands should not be longer than 750ms
+ * and that section 11.3.7 states that TPM_ContinueSelfTest (medium duration)
+ * should not be longer than 1 second.
+ */
+#define	DEFAULT_SHORT_DURATION	750000
+#define	DEFAULT_MEDIUM_DURATION	1000000
+#define	DEFAULT_LONG_DURATION	300000000
+#define	DEFAULT_TIMEOUT_A	750000
+#define	DEFAULT_TIMEOUT_B	2000000
+#define	DEFAULT_TIMEOUT_C	750000
+#define	DEFAULT_TIMEOUT_D	750000
+
+/*
+ * TPM input/output buffer offsets
+ */
+
+typedef enum {
+	TPM_CAP_RESPSIZE_OFFSET = 10,
+	TPM_CAP_RESP_OFFSET = 14,
+} TPM_CAP_RET_OFFSET_T;
+
+typedef enum {
+	TPM_CAP_TIMEOUT_A_OFFSET = 14,
+	TPM_CAP_TIMEOUT_B_OFFSET = 18,
+	TPM_CAP_TIMEOUT_C_OFFSET = 22,
+	TPM_CAP_TIMEOUT_D_OFFSET = 26,
+} TPM_CAP_TIMEOUT_OFFSET_T;
+
+typedef enum {
+	TPM_CAP_DUR_SHORT_OFFSET = 14,
+	TPM_CAP_DUR_MEDIUM_OFFSET = 18,
+	TPM_CAP_DUR_LONG_OFFSET = 22,
+} TPM_CAP_DURATION_OFFSET_T;
+
+#define	TPM_CAP_VERSION_INFO_OFFSET	14
+#define	TPM_CAP_VERSION_INFO_SIZE	15
 
 /* TSC Ordinals */
 static const TPM_DURATION_T tpm12_ords_duration[TPM_ORDINAL_MAX] = {
@@ -325,7 +395,7 @@ tpm12_get_timeouts(tpm_state_t *tpm)
 	 * length of the capability response is stored in data[10-13]
 	 * Also the TPM is in network byte order
 	 */
-	len = load32(buf, TPM_CAP_RESPSIZE_OFFSET);
+	len = tpm_getbuf32(buf, TPM_CAP_RESPSIZE_OFFSET);
 	if (len != 4 * sizeof (uint32_t)) {
 #ifdef DEBUG
 		cmn_err(CE_WARN, "!%s: capability response size should be %d"
@@ -336,7 +406,7 @@ tpm12_get_timeouts(tpm_state_t *tpm)
 	}
 
 	/* Get the four timeout's: a,b,c,d (they are 4 bytes long each) */
-	timeout = load32(buf, TPM_CAP_TIMEOUT_A_OFFSET);
+	timeout = tpm_getbuf32(buf, TPM_CAP_TIMEOUT_A_OFFSET);
 	if (timeout == 0) {
 		timeout = DEFAULT_TIMEOUT_A;
 	} else if (timeout < TEN_MILLISECONDS) {
@@ -345,7 +415,7 @@ tpm12_get_timeouts(tpm_state_t *tpm)
 	}
 	tpm->timeout_a = drv_usectohz(timeout);
 
-	timeout = load32(buf, TPM_CAP_TIMEOUT_B_OFFSET);
+	timeout = tpm_getbuf32(buf, TPM_CAP_TIMEOUT_B_OFFSET);
 	if (timeout == 0) {
 		timeout = DEFAULT_TIMEOUT_B;
 	} else if (timeout < TEN_MILLISECONDS) {
@@ -354,7 +424,7 @@ tpm12_get_timeouts(tpm_state_t *tpm)
 	}
 	tpm->timeout_b = drv_usectohz(timeout);
 
-	timeout = load32(buf, TPM_CAP_TIMEOUT_C_OFFSET);
+	timeout = tpm_getbuf32(buf, TPM_CAP_TIMEOUT_C_OFFSET);
 	if (timeout == 0) {
 		timeout = DEFAULT_TIMEOUT_C;
 	} else if (timeout < TEN_MILLISECONDS) {
@@ -363,7 +433,7 @@ tpm12_get_timeouts(tpm_state_t *tpm)
 	}
 	tpm->timeout_c = drv_usectohz(timeout);
 
-	timeout = load32(buf, TPM_CAP_TIMEOUT_D_OFFSET);
+	timeout = tpm_getbuf32(buf, TPM_CAP_TIMEOUT_D_OFFSET);
 	if (timeout == 0) {
 		timeout = DEFAULT_TIMEOUT_D;
 	} else if (timeout < TEN_MILLISECONDS) {
@@ -371,6 +441,154 @@ tpm12_get_timeouts(tpm_state_t *tpm)
 		timeout *= 1000;
 	}
 	tpm->timeout_d = drv_usectohz(timeout);
+
+	return (DDI_SUCCESS);
+}
+
+/*
+ * Get the actual timeouts supported by the TPM by issuing TPM_GetCapability
+ * with the subcommand TPM_CAP_PROP_TIS_DURATION
+ * TPM_GetCapability (TPM Main Part 3 Rev. 94, pg.38)
+ */
+static int
+tpm12_get_duration(tpm_state_t *tpm)
+{
+	int ret;
+	uint32_t duration;
+	uint32_t len;
+	uint8_t buf[30] = {
+		0, 193,		/* TPM_TAG_RQU_COMMAND */
+		0, 0, 0, 22,	/* paramsize in bytes */
+		0, 0, 0, 101,	/* TPM_ORD_GetCapability */
+		0, 0, 0, 5,	/* TPM_CAP_Prop */
+		0, 0, 0, 4,	/* SUB_CAP size in bytes */
+		0, 0, 1, 32	/* TPM_CAP_PROP_TIS_DURATION(0x120) */
+	};
+
+	ASSERT(tpm != NULL);
+
+	ret = itpm_command(tpm, buf, sizeof (buf));
+	if (ret != DDI_SUCCESS) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: itpm_command failed with ret code: 0x%x",
+		    __func__, ret);
+#endif
+		return (DDI_FAILURE);
+	}
+
+	/*
+	 * Get the length of the returned buffer
+	 * Make sure that there are 3 duration values (S,M,L: in that order)
+	 * length of the capability response is stored in data[10-13]
+	 * Also the TPM is in network byte order
+	 */
+	len = tpm_getbuf32(buf, TPM_CAP_RESPSIZE_OFFSET);
+	if (len != 3 * sizeof (uint32_t)) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: capability response should be %d, "
+		    "instead, it's %d",
+		    __func__, (int)(3 * sizeof (uint32_t)), (int)len);
+#endif
+		return (DDI_FAILURE);
+	}
+
+	duration = tpm_getbuf32(buf, TPM_CAP_DUR_SHORT_OFFSET);
+	if (duration == 0) {
+		duration = DEFAULT_SHORT_DURATION;
+	} else if (duration < TEN_MILLISECONDS) {
+		duration *= 1000;
+	}
+	tpm->duration[TPM_SHORT] = drv_usectohz(duration);
+
+	duration = tpm_getbuf32(buf, TPM_CAP_DUR_MEDIUM_OFFSET);
+	if (duration == 0) {
+		duration = DEFAULT_MEDIUM_DURATION;
+	} else if (duration < TEN_MILLISECONDS) {
+		duration *= 1000;
+	}
+	tpm->duration[TPM_MEDIUM] = drv_usectohz(duration);
+
+	duration = tpm_getbuf32(buf, TPM_CAP_DUR_LONG_OFFSET);
+	if (duration == 0) {
+		duration = DEFAULT_LONG_DURATION;
+	} else if (duration < FOUR_HUNDRED_MILLISECONDS) {
+		duration *= 1000;
+	}
+	tpm->duration[TPM_LONG] = drv_usectohz(duration);
+
+	/* Just make the undefined duration be the same as the LONG */
+	tpm->duration[TPM_UNDEFINED] = tpm->duration[TPM_LONG];
+
+	return (DDI_SUCCESS);
+}
+
+static int
+tpm12_get_version(tpm_state_t *tpm)
+{
+	int ret;
+	uint32_t len;
+	char vendorId[5];
+	/* If this buf is too small, the "vendor specific" data won't fit */
+	uint8_t buf[64] = {
+		0, 193,		/* TPM_TAG_RQU_COMMAND */
+		0, 0, 0, 18,	/* paramsize in bytes */
+		0, 0, 0, 101,	/* TPM_ORD_GetCapability */
+		0, 0, 0, 0x1A,	/* TPM_CAP_VERSION_VAL */
+		0, 0, 0, 0,	/* SUB_CAP size in bytes */
+	};
+
+	ASSERT(tpm != NULL);
+
+	ret = itpm_command(tpm, buf, sizeof (buf));
+	if (ret != DDI_SUCCESS) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: itpm_command failed with ret code: 0x%x",
+		    __func__, ret);
+#endif
+		return (DDI_FAILURE);
+	}
+
+	/*
+	 * Get the length of the returned buffer.
+	 */
+	len = tpm_getbuf32(buf, TPM_CAP_RESPSIZE_OFFSET);
+	if (len < TPM_CAP_VERSION_INFO_SIZE) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: capability response should be greater"
+		    " than %d, instead, it's %d",
+		    __func__, TPM_CAP_VERSION_INFO_SIZE, len);
+#endif
+		return (DDI_FAILURE);
+	}
+
+	bcopy(buf + TPM_CAP_VERSION_INFO_OFFSET, &tpm->vers_info,
+	    TPM_CAP_VERSION_INFO_SIZE);
+
+	bcopy(tpm->vers_info.tpmVendorID, vendorId,
+	    sizeof (tpm->vers_info.tpmVendorID));
+	vendorId[4] = '\0';
+
+	cmn_err(CE_NOTE, "!TPM found: Ver %d.%d, Rev %d.%d, "
+	    "SpecLevel %d, errataRev %d, VendorId '%s'",
+	    tpm->vers_info.version.major,	/* Version */
+	    tpm->vers_info.version.minor,
+	    tpm->vers_info.version.revMajor,	/* Revision */
+	    tpm->vers_info.version.revMinor,
+	    (int)ntohs(tpm->vers_info.specLevel),
+	    tpm->vers_info.errataRev,
+	    vendorId);
+
+	/*
+	 * This driver only supports TPM Version 1.2
+	 */
+	if (tpm->vers_info.version.major != 1 &&
+	    tpm->vers_info.version.minor != 2) {
+		cmn_err(CE_WARN, "!%s: Unsupported TPM version (%d.%d)",
+		    __func__,
+		    tpm->vers_info.version.major,		/* Version */
+		    tpm->vers_info.version.minor);
+		return (DDI_FAILURE);
+	}
 
 	return (DDI_SUCCESS);
 }
@@ -414,6 +632,116 @@ tpm12_get_ordinal_duration(tpm_state_t *tpm, uint8_t ordinal)
 		return (0);
 	}
 	return (tpm->duration[index]);
+}
+
+/*
+ * To prevent the TPM from complaining that certain functions are not tested
+ * we run this command when the driver attaches.
+ * For details see Section 4.2 of TPM Main Part 3 Command Specification
+ */
+static int
+tpm12_continue_selftest(tpm_state_t *tpm)
+{
+	int ret;
+	uint8_t buf[10] = {
+		0, 193,		/* TPM_TAG_RQU COMMAND */
+		0, 0, 0, 10,	/* paramsize in bytes */
+		0, 0, 0, 83	/* TPM_ORD_ContinueSelfTest */
+	};
+
+	/* Need a longer timeout */
+	ret = itpm_command(tpm, buf, sizeof (buf));
+	if (ret != DDI_SUCCESS) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: itpm_command failed", __func__);
+#endif
+		return (DDI_FAILURE);
+	}
+
+	return (DDI_SUCCESS);
+}
+
+/*
+ * Header + length of seed data (as BE32 int) + max amount of seed a TPM12
+ * can accept in a single command.
+ */
+#define	SEED_BUF_LEN (TPM_HEADER_SIZE + sizeof (uint32_t) + TPM12_SEED_MAX)
+
+int
+tpm12_seed_random(tpm_state_t *tpm, uchar_t *buf, size_t buflen)
+{
+	if (buflen == 0 || buflen > TPM12_SEED_MAX || buf == NULL)
+		return (CRYPTO_ARGUMENTS_BAD);
+
+	/* Total length = header + seed length + seed data */
+	uint32_t	len = TPM_HEADER_SIZE + sizeof (uint32_t) + buflen;
+	int		ret;
+	uint8_t		cmdbuf[SEED_BUF_LEN] = { 0 };
+
+	BE_OUT16(cmdbuf + TPM_TAG_OFFSET,		TPM_TAG_RQU_COMMAND);
+	BE_OUT16(cmdbuf + TPM_PARAMSIZE_OFFSET,		len);
+	BE_OUT32(cmdbuf + TPM_COMMAND_CODE_OFFFSET,	TPM_ORD_StirRandom);
+	BE_OUT32(cmdbuf + TPM_HEADER_SIZE,		buflen);
+	bcopy(cmdbuf + TPM_HEADER_SIZE + sizeof (uint32_t), buf, buflen);
+
+	/* Acquire lock for exclusive use of TPM */
+	TPM_EXCLUSIVE_LOCK(tpm);
+
+	ret = tpm_io_lock(tpm);
+	/* Timeout reached */
+	if (ret)
+		return (CRYPTO_BUSY);
+
+	/* Command doesn't return any data */
+	ret = itpm_command(tpm, cmdbuf, len, NULL, 0);
+	tpm_unlock(tpm);
+
+	if (ret != DDI_SUCCESS) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s failed", __func__);
+#endif
+		return (CRYPTO_FAILED);
+	}
+
+	return (CRYPTO_SUCCESS);
+}
+
+#define	RNDHDR_SIZE	(TPM_HEADER_SIZE + sizeof (uint32_t))
+
+int
+tpm12_generate_random(tpm_state_t *tpm, uchar_t *buf, size_t buflen)
+{
+	if (buflen == 0 || buf == NULL)
+		return (CRYPTO_ARGUMENTS_BAD);
+
+	int		ret;
+	uint32_t	cmdlen = RNDHDR_SIZE;
+	uint8_t		cmdbuf[RNDHDR_SIZE] = { 0 };
+
+	BE_OUT16(cmdbuf + TPM_TAG_OFFSET,		TPM_TAG_RQU_COMMAND);
+	BE_OUT32(cmdbuf + TPM_PARAMSIZE_OFFSET,		RNDHDR_SIZE);
+	BE_OUT32(cmdbuf + TPM_COMMAND_CODE_OFFSET,	TPM_ORD_GetRandom);
+	BE_OUT32(cmdbuf + TPM_HEADER_SIZE,		buflen);
+
+	/* Acquire lock for exclusive use of TPM */
+	TPM_EXCLUSIVE_LOCK(tpm);
+
+	ret = tpm_io_lock(tpm);
+	/* Timeout reached */
+	if (ret)
+		return (CRYPTO_BUSY);
+
+	ret = itpm_command(tpm, cmdbuf, cmdlen, buf, buflen);
+	tpm_unlock(tpm);
+
+	if (ret != DDI_SUCCESS) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s failed", __func__);
+#endif
+		return (CRYPTO_FAILED);
+	}
+
+	return (CRYPTO_SUCCESS);
 }
 
 /*

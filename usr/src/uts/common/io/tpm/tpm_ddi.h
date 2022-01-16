@@ -22,6 +22,8 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2022 Jason King
  */
 
 #ifndef	_TPM_DDI_H
@@ -39,6 +41,17 @@
 #define	TPM_IO_BUF_SIZE		4096
 
 #define	TPM_IO_TIMEOUT		10000000
+
+/*
+ * The byte offsets of various fields in a TPM command. These are the same
+ * for TPM1.2 and TPM2.0. The header size is also the same.
+ */
+#define	TPM_HEADER_SIZE			10
+
+#define	TPM_TAG_OFFSET			0
+#define	TPM_PARAMSIZE_OFFSET		2
+#define	TPM_RETURN_OFFSET		6
+#define	TPM_COMMAND_CODE_OFFSET		6
 
 /*
  * Flags to keep track of for the allocated resources
@@ -60,27 +73,65 @@ enum tpm_ddi_resources_flags {
 #endif
 };
 
-/* TPM interface methods */
+/*
+ * TPM interface methods. TPM_IF_TIS and TPM_IF_FIFO are effectively
+ * identical except that TPM_IF_FIFO supports the TPM_INTF_CAPABILITY_x
+ * registers.
+ */
 typedef enum tpm_if_t {
-	TPM_IF_FIFO,	/* TPM 1.2 and TPM 2.0 */
-	TPM_IF_CRB	/* TPM 2.0 only */
+	TPM_IF_TIS,	/* TPM 1.2 and TPM 2.0 */
+	TPM_IF_FIFO,	/* TPM 2.0 only */
+	TPM_IF_CRB,	/* TPM 2.0 only */
 } tpm_if_t;
 
-typedef struct tpm_state tpm_state_t;
+typedef enum tpm_family {
+	TPM_FAMILY_1_2,
+	TPM_FAMILY_2_0,
+} tpm_family_t;
 
-/* TPM specific data structure */
-struct tpm_state {
+typedef enum tpm_tis_xfer_size {
+	TPM_TIS_XFER_LEGACY,
+	TPM_TIS_XFER_8,
+	TPM_TIS_XFER_32,
+	TPM_TIS_XFER_64,
+} tpm_tis_xfer_size_t;
+
+/* TIS/FIFO specific data */
+typedef struct tpm_tis {
+	tpm_tis_xfer_size_t	ttis_xfer_size;	
+} tpm_tis_t;
+
+/* CRB Interface specific data */
+typedef struct tpm_crb {
+	uint64_t	tcrb_cmd_off;
+	size_t		tcrb_cmb_size;
+	uint64_t	tcrb_resp_off;
+	size_t		tcrb_resp_size;
+} tpm_crb_t;
+
+typedef struct tpm {
 	/* TPM specific */
 	TPM_CAP_VERSION_INFO vers_info;
 
 	/* OS specific */
-	int 		instance;
-	dev_info_t 	*dip;
-	ddi_acc_handle_t handle;
+	dev_info_t		*tpm_dip;
+	int			tpm_instance;
+	ddi_acc_handle_t	tpm_handle;
 
-	kmutex_t	dev_lock;
-	uint8_t		dev_held;
+	kmutex_t		tpm_lock;
+	tpm_state_t		tpm_state;
+	ddi_intr_handle_t	*tpm_harray;
+	uint_t			tpm_client_count;
+	uint_t			tpm_client_max;
+	bool			tpm_exclusive;	/* Only allow 1 client */
+	bool			tpm_inuse;	/* Are we executing a cmd? */
 
+	uint8_t			*tpm_addr;	/* TPM mapped address */
+
+	tpm_conn_t		*tpm_active;
+	ddi_taskq_t		tpm_taskq;
+
+	
 	/*
 	 * For read/write
 	 */
@@ -98,8 +149,8 @@ struct tpm_state {
 	uint_t			intr_pri;
 	unsigned int		state;
 
-	uint8_t		*addr;		/* where TPM is mapped to */
-	char		locality;	/* keep track of the locality */
+	uint8_t		*tpm_addr;		/* where TPM is mapped to */
+	uint8_t		tpm_locality;	/* keep track of the locality */
 
 	uint32_t flags;		/* flags to keep track of what is allocated */
 	clock_t duration[4];	/* short,medium,long,undefined */
@@ -128,15 +179,63 @@ struct tpm_state {
 	size_t			crb_cmdbuf_size;
 	size_t			crb_respbuf_size;
 
-#ifdef KCF_TPM_RNG_PROVIDER
-	/* For RNG */
 	crypto_kcf_provider_handle_t	n_prov;
-#endif
-};
+} tpm_t;
+
+typedef enum tpm_mode {
+	TPM_MODE_RDONLY =	0,
+	TPM_MODE_WRITE =	(1 << 0),
+	TPM_MODE_NONBLOCK =	(1 << 1),
+} tpm_mode_t;
+
+/*
+ * A client normally cycles through these states in the order they are listed.
+ * However, errors will cancel any pending operations and reset the client
+ * state back to TPM_CLIENT_IDLE.
+ */
+typedef enum tpm_client_state {
+	TPM_CLIENT_IDLE,		/* No command in progress */
+	TPM_CLIENT_CMD_RECEPTION,	/* Reading command from client */
+	TPM_CLIENT_CMD_EXECUTION,	/* Command is running on TPM */
+	TPM_CLIENT_CMD_COMPLETION,	/* Write command to client */
+} tpm_client_state_t;
+
+typedef struct tpm_client {
+	kmutex_t		tpmc_lock;
+	kcondvar_t		tpmc_cv;
+	tpm_t			*tpmc_tpm;		/* Write once (WO) */
+	tpm_mode_t		tpmc_mode;		/* WO */
+	tpm_client_state_t	tpmc_state;		/* RW */
+	pollhead_t		tpmc_pollhead;		/* RW */
+	uint8_t			*tpmc_buf;		/* RW */
+	size_t			tpmc_buflen;		/* WO */
+	size_t			tpmc_bufused;		/* RW */
+	size_t			tpmc_bufread;		/* RW */
+	int			tpmc_instance;		/* WO */
+	uint8_t			tpmc_locality;		/* RW */
+} tpm_client_t;
+
+#define	TPM_LOCALITY_MAX	4
+#define	TPM_OFFSET_MAX		0x0fff
+
+static inline uint32
+tpm_getbuf32(uchar_t *ptr, uint32_t offset)
+{
+	return (BE_IN32(ptr + offset));
+}
 
 uint8_t tpm_get8(tpm_state_t *, unsigned long);
 uint32_t tpm_get32(tpm_state_t *, unsigned long);
 uint64_t tpm_get64(tpm_state_t *, unsigned long);
 void tpm_put8(tpm_state_t *, unsigned long, uint8_t);
+
+
+int tpm12_seed_random(tpm_state_t *, uchar_t *, size_t);
+int tpm12_generate_random(tpm_state_t *, uchar_t *, size_t);
+int tpm12_init(tpm_state_t *);
+
+int tpm20_init(tpm_state_t *);
+int tpm20_seed_random(tpm_state_t *, uchar_t *, size_t);
+int tpm20_generate_random(tpm_state_t *, uchar_t *, size_t);
 
 #endif	/* _TPM_DDI_H */
