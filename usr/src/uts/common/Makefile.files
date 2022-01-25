@@ -30,6 +30,7 @@
 # Copyright 2016 Hans Rosenfeld <rosenfeld@grumpf.hope-2000.org>
 # Copyright 2020 RackTop Systems, Inc.
 # Copyright 2021 Oxide Computer Company
+# Copyright 2022 Jason King
 #
 
 #
@@ -1365,6 +1366,7 @@ ZFS_COMMON_OBJS +=		\
 	btree.o			\
 	bqueue.o		\
 	cityhash.o		\
+	dataset_kstats.o	\
 	dbuf.o			\
 	ddt.o			\
 	ddt_zap.o		\

@@ -27,6 +27,7 @@
  * Copyright (c) 2012, 2020 by Delphix. All rights reserved.
  * Copyright (c) 2014 Integros [integros.com]
  * Copyright 2019 Joyent, Inc.
+ * Copyright 2022 Jason King
  */
 
 /*
@@ -90,6 +91,7 @@
 #include <sys/smt.h>
 #include <sys/dkioc_free_util.h>
 #include <sys/zfs_rlock.h>
+#include <sys/dataset_kstats.h>
 
 #include "zfs_namecheck.h"
 
@@ -130,6 +132,7 @@ typedef struct zvol_state {
 	list_t		zv_extents;	/* List of extents for dump */
 	rangelock_t	zv_rangelock;
 	dnode_t		*zv_dn;		/* dnode hold */
+	dataset_kstats_t zv_kstat;	/* zvol kstats */
 } zvol_state_t;
 
 /*
@@ -568,6 +571,10 @@ zvol_create_minor(const char *name)
 		else
 			zil_replay(os, zv, zvol_replay_vector);
 	}
+
+	ASSERT3P(zv->zv_kstat.dk_kstats, ==, NULL);
+	dataset_kstats_create(&zv->zv_kstat, zv->zv_objset);
+
 	dmu_objset_disown(os, 1, FTAG);
 	zv->zv_objset = NULL;
 
@@ -598,6 +605,7 @@ zvol_remove_zv(zvol_state_t *zv)
 	ddi_remove_minor_node(zfs_dip, nmbuf);
 
 	rangelock_fini(&zv->zv_rangelock);
+	dataset_kstats_destroy(&zv->zv_kstat);
 
 	kmem_free(zv, sizeof (zvol_state_t));
 
@@ -1184,7 +1192,7 @@ zvol_strategy(buf_t *bp)
 	zfs_soft_state_t *zs = NULL;
 	zvol_state_t *zv;
 	uint64_t off, volsize;
-	size_t resid;
+	size_t resid, n;
 	char *addr;
 	objset_t *os;
 	int error = 0;
@@ -1224,7 +1232,7 @@ zvol_strategy(buf_t *bp)
 
 	bp_mapin(bp);
 	addr = bp->b_un.b_addr;
-	resid = bp->b_bcount;
+	resid = n = bp->b_bcount;
 
 	if (resid > 0 && off >= volsize) {
 		bioerror(bp, EIO);
@@ -1289,6 +1297,12 @@ zvol_strategy(buf_t *bp)
 
 	smt_end_unsafe();
 
+	if (doread) {
+		dataset_kstats_update_read_kstats(&zv->zv_kstat, n - resid);
+	} else {
+		dataset_kstats_update_write_kstats(&zv->zv_kstat, n - resid);
+	}
+
 	return (0);
 }
 
@@ -1349,6 +1363,7 @@ zvol_read(dev_t dev, uio_t *uio, cred_t *cr)
 	minor_t minor = getminor(dev);
 	zvol_state_t *zv;
 	uint64_t volsize;
+	int64_t resid = uio->uio_resid;
 	int error = 0;
 
 	zv = zfsdev_get_soft_state(minor, ZSST_ZVOL);
@@ -1389,6 +1404,10 @@ zvol_read(dev_t dev, uio_t *uio, cred_t *cr)
 
 	smt_end_unsafe();
 
+	if (uio->uio_resid > 0)
+		resid -= uio->uio_resid;
+	dataset_kstats_update_read_kstats(&zv->zv_kstat, resid);
+
 	return (error);
 }
 
@@ -1399,6 +1418,7 @@ zvol_write(dev_t dev, uio_t *uio, cred_t *cr)
 	minor_t minor = getminor(dev);
 	zvol_state_t *zv;
 	uint64_t volsize;
+	int64_t resid = uio->uio_resid;
 	int error = 0;
 	boolean_t sync;
 
@@ -1452,6 +1472,10 @@ zvol_write(dev_t dev, uio_t *uio, cred_t *cr)
 		zil_commit(zv->zv_zilog, ZVOL_OBJ);
 
 	smt_end_unsafe();
+
+	if (uio->uio_resid > 0)
+		resid -= uio->uio_resid;
+	dataset_kstats_update_write_kstats(&zv->zv_kstat, resid);
 
 	return (error);
 }

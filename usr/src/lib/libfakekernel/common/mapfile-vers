@@ -13,6 +13,7 @@
 # Copyright 2021 Tintri by DDN, Inc. All rights reserved.
 # Copyright 2017 RackTop Systems.
 # Copyright 2019 Joyent, Inc.
+# Copyright 2022 Jason King
 #
 
 #
@@ -159,6 +160,7 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	kstat_create;
 	kstat_create_zone;
 	kstat_named_init;
+	kstat_named_setstr;
 	kstat_delete;
 	kstat_install;
 	kstat_waitq_enter;
