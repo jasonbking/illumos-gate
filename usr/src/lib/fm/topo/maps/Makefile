@@ -25,6 +25,7 @@
 # Copyright 2020 Joyent, Inc.
 # Copyright 2019 Peter Tribble.
 # Copyright 2022 Garrett D'Amore
+# Copyright 2022 Jason King
 #
 
 i386_SUBDIRS = i86pc \
@@ -41,7 +42,8 @@ i386_SUBDIRS = i86pc \
 		SMCI,SSG-2028R-ACR24L \
 		SMCI,SYS-2028U-E1CNRT+ \
 		SMCI,SSG-6049P-E1CR36L \
-		SMCI,SSG-2029P-ACR24L
+		SMCI,SSG-2029P-ACR24L \
+		SMCI,SYS-5028D-TN4T
 
 SUBDIRS = $($(MACH)_SUBDIRS)
 

@@ -1,0 +1,87 @@
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+#
+
+#
+# Copyright 2022 Jason King
+#
+
+#
+# This file describes the USB topology for the SuperMicro
+# SYS-5028D-TN4T product. For more information on the format see
+# topo_usb_metadata.c.
+#
+
+disable-acpi-match
+enable-metadata-match
+
+# xhci0@17
+# xhci0@2
+# usb-port 2
+port
+	label
+		Rear Upper USB
+	chassis
+	external
+	port-type
+		0x0
+	acpi-path
+		\_SB_.PCI0.XHCI.RHUB.HS02
+	acpi-path
+		\_SB_.PCI0.XHCI.RHUB.SSP2
+end-port
+
+# xhci0@16
+# xhci0@1
+# usb-port 1
+port
+	label
+		Rear Lower USB
+	chassis
+	external
+	port-type
+		0x0
+	acpi-path
+		\_SB_.PCI0.XHCI.RHUB.HS01
+	acpi-path
+		\_SB_.PCI0.XHCI.RHUB.SSP1
+end-port
+
+# xhci0@3.1 ?
+port
+	label
+		Front Upper USB
+	chassis
+	external
+	port-type
+		0x3
+	acpi-path
+		\_SB_.PCI0.XHCI.RHUB.HS12
+	acpi-path
+		\_SB_.PCI0.XHCI.RHUB.SSP1
+	acpi-path
+		\_SB_.PCI0.EHC2.HUBN.PR01.PR16
+end-port
+
+# xhci0@3.2
+port
+	label
+		Front Lower USB
+	chassis
+	external
+	port-type
+		0x3
+	acpi-path
+		\_SB_.PCI0.XHCI.RHUB.HS11
+	acpi-path
+		\_SB_.PCI0.XHCI.RHUB.SSP2
+	acpi-path
+		\_SB_.PCI0.EHC2.HUBN.PR01.PR15
+end-port

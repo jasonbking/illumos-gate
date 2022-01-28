@@ -1,0 +1,177 @@
+<?xml version="1.0"?>
+<!DOCTYPE topology SYSTEM "/usr/share/lib/xml/dtd/topology.dtd.1">
+<!--
+ This file and its contents are supplied under the terms of the
+ Common Development and Distribution License ("CDDL"), version 1.0.
+ You may only use this file in accordance with the terms of version
+ 1.0 of the CDDL.
+
+ A full copy of the text of the CDDL should have accompanied this
+ source.  A copy of the CDDL is also available via the Internet at
+ http://www.illumos.org/license/CDDL.
+
+ Copyright 2022 Jason King
+-->
+
+<topology name='disk' scheme='hc'>
+  <range name='bay' min='0' max='3'>
+     <node instance='0'>
+      <facility name='fail' type='indicator' provider='fac_prov_ahci' >
+        <propgroup name='facility' version='1' name-stability='Private'
+          data-stability='Private' >
+          <propval name='type' type='uint32' value='0' />
+          <propmethod name='ahci_led_mode' version='0' propname='mode'
+            proptype='uint32' mutable='1'>
+          </propmethod>
+        </propgroup>
+      </facility>
+      <facility name='ident' type='indicator' provider='fac_prov_ahci' >
+        <propgroup name='facility' version='1' name-stability='Private'
+          data-stability='Private' >
+          <propval name='type' type='uint32' value='1' />
+          <propmethod name='ahci_led_mode' version='0' propname='mode'
+            proptype='uint32' mutable='1'>
+          </propmethod>
+        </propgroup>
+      </facility>
+
+      <propgroup name='protocol' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='label' type='string' value='Bay 0' />
+      </propgroup>
+      <propgroup name='io' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='ap-path' type='string' value='/devices/pci@0,0/pci15d9,86d@1f,2:0' />
+      </propgroup>
+      <propgroup name='binding' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='occupant-path' type='string'
+          value='/pci@0,0/pci15d9,86d@1f,2/disk@0,0' />
+        <propval name='devctl' type='string'
+          value='/devices/pci@0,0/pci15d9,86d@1f,2:devctl' />
+        <propval name='port' type='uint32' value='0' />
+      </propgroup>
+    </node>
+
+    <node instance='1'>
+      <facility name='fail' type='indicator' provider='fac_prov_ahci' >
+        <propgroup name='facility' version='1' name-stability='Private'
+          data-stability='Private' >
+          <propval name='type' type='uint32' value='0' />
+          <propmethod name='ahci_led_mode' version='0' propname='mode'
+            proptype='uint32' mutable='1'>
+          </propmethod>
+        </propgroup>
+      </facility>
+      <facility name='ident' type='indicator' provider='fac_prov_ahci' >
+        <propgroup name='facility' version='1' name-stability='Private'
+          data-stability='Private' >
+          <propval name='type' type='uint32' value='1' />
+          <propmethod name='ahci_led_mode' version='0' propname='mode'
+            proptype='uint32' mutable='1'>
+          </propmethod>
+        </propgroup>
+      </facility>
+
+      <propgroup name='protocol' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='label' type='string' value='Bay 1' />
+      </propgroup>
+      <propgroup name='io' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='ap-path' type='string' value='/devices/pci@0,0/pci15d9,86d@1f,2:1' />
+      </propgroup>
+      <propgroup name='binding' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='occupant-path' type='string'
+          value='/pci@0,0/pci15d9,86d@1f,2/disk@1,0' />
+        <propval name='devctl' type='string'
+          value='/devices/pci@0,0/pci15d9,86d@1f,2:devctl' />
+        <propval name='port' type='uint32' value='1' />
+      </propgroup>
+    </node>
+
+    <node instance='2'>
+      <facility name='fail' type='indicator' provider='fac_prov_ahci' >
+        <propgroup name='facility' version='1' name-stability='Private'
+          data-stability='Private' >
+          <propval name='type' type='uint32' value='0' />
+          <propmethod name='ahci_led_mode' version='0' propname='mode'
+            proptype='uint32' mutable='1'>
+          </propmethod>
+        </propgroup>
+      </facility>
+      <facility name='ident' type='indicator' provider='fac_prov_ahci' >
+        <propgroup name='facility' version='1' name-stability='Private'
+          data-stability='Private' >
+          <propval name='type' type='uint32' value='1' />
+          <propmethod name='ahci_led_mode' version='0' propname='mode'
+            proptype='uint32' mutable='1'>
+          </propmethod>
+        </propgroup>
+      </facility>
+
+      <propgroup name='protocol' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='label' type='string' value='Bay 2' />
+      </propgroup>
+      <propgroup name='io' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='ap-path' type='string' value='/devices/pci@0,0/pci15d9,86d@1f,2:2' />
+      </propgroup>
+      <propgroup name='binding' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='occupant-path' type='string'
+          value='/pci@0,0/pci15d9,86d@1f,2/disk@2,0' />
+        <propval name='devctl' type='string'
+          value='/devices/pci@0,0/pci15d9,86d@1f,2:devctl' />
+        <propval name='port' type='uint32' value='2' />
+      </propgroup>
+    </node>
+
+    <node instance='3'>
+      <facility name='fail' type='indicator' provider='fac_prov_ahci' >
+        <propgroup name='facility' version='1' name-stability='Private'
+          data-stability='Private' >
+          <propval name='type' type='uint32' value='0' />
+          <propmethod name='ahci_led_mode' version='0' propname='mode'
+            proptype='uint32' mutable='1'>
+          </propmethod>
+        </propgroup>
+      </facility>
+      <facility name='ident' type='indicator' provider='fac_prov_ahci' >
+        <propgroup name='facility' version='1' name-stability='Private'
+          data-stability='Private' >
+          <propval name='type' type='uint32' value='1' />
+          <propmethod name='ahci_led_mode' version='0' propname='mode'
+            proptype='uint32' mutable='1'>
+          </propmethod>
+        </propgroup>
+      </facility>
+
+      <propgroup name='protocol' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='label' type='string' value='Bay 3' />
+      </propgroup>
+      <propgroup name='io' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='ap-path' type='string' value='/devices/pci@0,0/pci15d9,86d@1f,2:3' />
+      </propgroup>
+      <propgroup name='binding' version='1' name-stability='Private'
+        data-stability='Private'>
+        <propval name='occupant-path' type='string'
+          value='/pci@0,0/pci15d9,86d@1f,2/disk@3,0' />
+        <propval name='devctl' type='string'
+          value='/devices/pci@0,0/pci15d9,86d@1f,2:devctl' />
+        <propval name='port' type='uint32' value='3' />
+      </propgroup>
+    </node>
+
+    <dependents grouping='children'>
+      <range name='disk' min='0' max='0'>
+        <enum-method name='disk' version='1' />
+      </range>
+    </dependents>
+
+  </range>
+</topology>
