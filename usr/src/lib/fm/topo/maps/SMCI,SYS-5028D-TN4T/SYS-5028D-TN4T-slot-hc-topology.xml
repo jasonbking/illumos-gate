@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<!DOCTYPE topology SYSTEM "/usr/share/lib/xml/dtd/topology.dtd.1">
+<!--
+
+ This file and its contents are supplied under the terms of the
+ Common Development and Distribution License ("CDDL"), version 1.0.
+ You may only use this file in accordance with the terms of version
+ 1.0 of the CDDL.
+
+ A full copy of the text of the CDDL should have accompanied this
+ source.  A copy of the CDDL is also available via the Internet at
+ http://www.illumos.org/license/CDDL.
+
+ Copyright 2022 Jason King
+
+-->
+
+<topology name='slot' scheme='hc'>
+  <range name='slot' min='0' max='3'>
+
+    <node instance='0' static='true'>
+       <dependents grouping='children'>
+       <range name='dimm' min='0' max='0'>
+           <node instance='0' static='true'>
+           <fac-enum provider='fac_prov_ipmi' />
+             <propgroup name='ipmi' version='1'
+               name-stability='Private' data-stability='Private' >
+               <propval name='entity-list' type='string_array' >
+                 <propitem value='DIMMA1 Temp' />
+               </propval>
+             </propgroup>
+           </node>
+        </range>
+        </dependents>
+     </node>
+
+    <node instance='1' static='true'>
+       <dependents grouping='children'>
+       <range name='dimm' min='0' max='0'>
+           <node instance='0' static='true'>
+           <fac-enum provider='fac_prov_ipmi' />
+             <propgroup name='ipmi' version='1'
+               name-stability='Private' data-stability='Private' >
+               <propval name='entity-list' type='string_array' >
+                 <propitem value='DIMMA2 Temp' />
+               </propval>
+             </propgroup>
+           </node>
+        </range>
+        </dependents>
+     </node>
+
+    <node instance='2' static='true'>
+       <dependents grouping='children'>
+       <range name='dimm' min='0' max='0'>
+           <node instance='0' static='true'>
+           <fac-enum provider='fac_prov_ipmi' />
+             <propgroup name='ipmi' version='1'
+               name-stability='Private' data-stability='Private' >
+               <propval name='entity-list' type='string_array' >
+                 <propitem value='DIMMB1 Temp' />
+               </propval>
+             </propgroup>
+           </node>
+        </range>
+        </dependents>
+     </node>
+
+    <node instance='3' static='true'>
+       <dependents grouping='children'>
+       <range name='dimm' min='0' max='0'>
+           <node instance='0' static='true'>
+           <fac-enum provider='fac_prov_ipmi' />
+             <propgroup name='ipmi' version='1'
+               name-stability='Private' data-stability='Private' >
+               <propval name='entity-list' type='string_array' >
+                 <propitem value='DIMMB2 Temp' />
+               </propval>
+             </propgroup>
+           </node>
+        </range>
+        </dependents>
+     </node>
+
+   </range>
+</topology>

@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<!DOCTYPE topology SYSTEM "/usr/share/lib/xml/dtd/topology.dtd.1">
+<!--
+
+ This file and its contents are supplied under the terms of the
+ Common Development and Distribution License ("CDDL"), version 1.0.
+ You may only use this file in accordance with the terms of version
+ 1.0 of the CDDL.
+
+ A full copy of the text of the CDDL should have accompanied this
+ source.  A copy of the CDDL is also available via the Internet at
+ http://www.illumos.org/license/CDDL.
+
+ Copyright 2022 Jason King
+
+-->
+
+<topology name='i86pc' scheme='hc'>
+
+  <range name='motherboard' min='0' max='0'>
+    <enum-method name='smbios' version='1' />
+    <node instance='0' static='true'>
+        <fac-enum provider='fac_prov_ipmi' />
+        <propgroup name='protocol' version='1'
+            name-stability='Private' data-stability='Private' >
+            <propval name='label' type='string' value='MB' />
+        </propgroup>
+        <propgroup name='ipmi' version='1'
+            name-stability='Private' data-stability='Private' >
+            <propval name='entity-list' type='string_array' >
+                <propitem value='CPU Temp' />
+		<propitem value='Peripheral Temp' />
+		<propitem value='MB_10G Temp' />
+		<propitem value='VCCP' />
+		<propitem value='VDIMM' />
+                <propitem value='5VCC' />
+                <propitem value='3.3VCC' />
+                <propitem value='12V' />
+                <propitem value='VBAT' />
+                <propitem value='5V Dual' />
+                <propitem value='3.3V Aux' />
+           </propval>
+        </propgroup>
+    </node>
+
+    <dependents grouping='children'>
+      <range name='chip' min='0' max='0'>
+        <enum-method name='chip' version='1' />
+      </range>
+      <range name='hostbridge' min='0' max='254'>
+        <enum-method name='hostbridge' version='1' />
+      </range>
+      <range name='sp' min='0' max='0'>
+        <enum-method name='ipmi' version='1' />
+      </range>
+      <range name='slot' min='0' max='3'>
+        <enum-method name='smbios' version='1' />
+        <propmap name='SYS-5028D-TN4T-slot' />
+      </range>
+      <range name='usb-mobo' min='0' max='256'>
+        <enum-method name='usb' version='1' />
+      </range>
+    </dependents>
+
+  </range>
+  <range name='chassis' min='0' max='0'>
+    <propmap name='SYS-5028D-TN4T-chassis' />
+
+    <dependents grouping='children'>
+
+      <range name='psu' min='0' max='0'>
+        <enum-method name='ipmi' version='1' />
+      </range>
+
+      <range name='fan' min='0' max='3'>
+        <enum-method name='ipmi' version='1' />
+      </range>
+
+      <range name='bay' min='0' max='3'>
+        <propmap name='SYS-5028D-TN4T-disk' />
+      </range>
+
+      <range name='usb-chassis' min='0' max='256'>
+        <enum-method name='usb' version='1' />
+      </range>
+
+    </dependents>
+
+  </range>
+
+</topology>
