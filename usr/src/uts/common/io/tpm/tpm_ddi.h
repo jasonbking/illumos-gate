@@ -99,6 +99,7 @@ typedef enum tpm_tis_xfer_size {
 /* TIS/FIFO specific data */
 typedef struct tpm_tis {
 	tpm_tis_xfer_size_t	ttis_xfer_size;	
+	uint32_t		ttis_intr;
 } tpm_tis_t;
 
 /* CRB Interface specific data */
@@ -107,9 +108,13 @@ typedef struct tpm_crb {
 	size_t		tcrb_cmb_size;
 	uint64_t	tcrb_resp_off;
 	size_t		tcrb_resp_size;
+	uint32_t	tcrb_intr;
 } tpm_crb_t;
 
-typedef struct tpm {
+typedef struct tpm tpm_t;
+typedef struct tpm_client tpm_client_t;
+
+struct tpm {
 	/* TPM specific */
 	TPM_CAP_VERSION_INFO vers_info;
 
@@ -119,37 +124,24 @@ typedef struct tpm {
 	ddi_acc_handle_t	tpm_handle;
 
 	kmutex_t		tpm_lock;
-	tpm_state_t		tpm_state;
+	uint8_t			*tpm_addr;	/* TPM mapped address */
 	ddi_intr_handle_t	*tpm_harray;
+	tpm_state_t		tpm_state;
 	uint_t			tpm_client_count;
 	uint_t			tpm_client_max;
+	uint_t			tpm_intr_pri;
+	bool			tpm_intr_enabled;
 	bool			tpm_exclusive;	/* Only allow 1 client */
-	bool			tpm_inuse;	/* Are we executing a cmd? */
 
-	uint8_t			*tpm_addr;	/* TPM mapped address */
-
-	tpm_conn_t		*tpm_active;
+	tpm_client_t		*tpm_active;
 	ddi_taskq_t		tpm_taskq;
 
-	
-	/*
-	 * For read/write
-	 */
-	uint8_t		*iobuf;
-	size_t		bufsize;
-	uint8_t		iobuf_inuse;
-	kmutex_t	iobuf_lock;
-	kcondvar_t	iobuf_cv;
+	tpm_if_t		tpm_iftype;
+	union {
+		tpm_tis_t	tpmu_tis;
+		tpm_crb_t	tpmu_crb;
+	} tpm_u;
 
-	/*
-	 * For supporting the interrupt
-	 */
-	uint8_t			intr_enabled;
-	ddi_intr_handle_t	*h_array;
-	uint_t			intr_pri;
-	unsigned int		state;
-
-	uint8_t		*tpm_addr;		/* where TPM is mapped to */
 	uint8_t		tpm_locality;	/* keep track of the locality */
 
 	uint32_t flags;		/* flags to keep track of what is allocated */
@@ -173,14 +165,8 @@ typedef struct tpm {
 	enum tis_intf_ver	intf_ver;
 	enum tis_xfer_size	xfer_size;
 
-				/* If using FIFO, these are 0 and ignored */
-	uint64_t		crb_cmd_off;
-	uint64_t		crb_resp_off;
-	size_t			crb_cmdbuf_size;
-	size_t			crb_respbuf_size;
-
 	crypto_kcf_provider_handle_t	n_prov;
-} tpm_t;
+};
 
 typedef enum tpm_mode {
 	TPM_MODE_RDONLY =	0,
@@ -200,7 +186,7 @@ typedef enum tpm_client_state {
 	TPM_CLIENT_CMD_COMPLETION,	/* Write command to client */
 } tpm_client_state_t;
 
-typedef struct tpm_client {
+struct tpm_client {
 	kmutex_t		tpmc_lock;
 	kcondvar_t		tpmc_cv;
 	tpm_t			*tpmc_tpm;		/* Write once (WO) */
@@ -213,7 +199,7 @@ typedef struct tpm_client {
 	size_t			tpmc_bufread;		/* RW */
 	int			tpmc_instance;		/* WO */
 	uint8_t			tpmc_locality;		/* RW */
-} tpm_client_t;
+};
 
 #define	TPM_LOCALITY_MAX	4
 #define	TPM_OFFSET_MAX		0x0fff
