@@ -448,6 +448,7 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 			break;
 		}
 
+		/* Only change locality while the client is idle. */
 		mutex_enter(&c->tpmc_lock);
 		if (c->tpmc_state != TPMC_CLIENT_IDLE) {
 			if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
@@ -476,9 +477,15 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 			tpm_client_reset(c);
 			break;
 		case TPM_CLIENT_CMD_EXECUTION:
-			/* XXX: cancel executing command */
+			mutex_enter(&c->tpmc_tpm->tpm_lock);
+			VERIFY3P(c->tpmc_tpm->tpm_active, ==, c);
+			c->tpmc_tpm->tpm_active = NULL;
+			mutex_exit(&c->tpmc_tpm->tpm_lock);
+
+			tpm_client_reset(c);
+			mutex_exit(&c->tpmc_lock);
+			break;
 		}
-		mutex_exit(&conn->tpmc_tpm->tpm_lock);
 		break;
 	case TPMIOC_MAKESTICKY:
 		/* XXX: TODO */
