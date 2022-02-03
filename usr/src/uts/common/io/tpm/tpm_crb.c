@@ -91,7 +91,7 @@ tpm_crb_go_ready(tpm_t *tpm)
 }
 
 int
-tpm_crb_init(tpm_state_t *tpm)
+tpm_crb_init(tpm_t *tpm)
 {
 	/*
 	 * The cmd address register is not at an 8-byte aligned offset, so
@@ -126,7 +126,7 @@ tpm_crb_init(tpm_state_t *tpm)
 }
 
 int
-tpm_crb_send_data(tpm_client_t *c, uint8_t *buf, size_t buflen)
+tpm_crb_send_data(tpm_t *c, uint8_t *buf, size_t buflen)
 {
 	ASSERT(MUTEX_HELD(&c->tpmc_lock));
 	ASSERT(MUTEX_HELD(&c->tpmc_tpm->tpm_lock));
@@ -215,7 +215,7 @@ tpm_crb_request_locality(tpm_t *tpm, uint8_t locality)
 }
 
 int
-tpm_crb_release_locality(tpm_state_t *tpm, uint8_t locality)
+tpm_crb_release_locality(tpm_t *tpm, uint8_t locality)
 {
 	/*
 	 * The TPM_LOC_CTRL_REQUEST register is write only. Bits written as
@@ -226,3 +226,5 @@ tpm_crb_release_locality(tpm_state_t *tpm, uint8_t locality)
 	return (0);
 }
 
+int
+tpm_crb_exec_cmd(tpm_client_t *c
