@@ -99,10 +99,16 @@ static int tpm_write(dev_t, struct uio *, cred_t *);
 static int tpm_ioctl(dev_t, int, intptr_t, int, cred_t *, int *);
 static int tpm_chpoll(dev_t, short, int, short *, struct pollhead **);
 
-static int tpm_cancel(tpm_t *);
+static id_space_t		tpm_minors;
+static void			*tpm_statep = NULL;
 
-static id_space_t	tpm_minors;
-static void		*tpm_statep = NULL;
+#ifdef __x86
+static ddi_device_acc_attr_t	tpm_acc_attr = {
+	.devacc_attr_version =		DDI_DEVICE_ATTR_V0,
+	.devacc_attr_endian_flags =	DDI_STRUCTURE_LE_ACC,
+	.devacc_attr_dataorder =	DDI_STRICTORDER_ACC,
+};
+#endif
 
 static int
 tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
@@ -236,15 +242,91 @@ tpm_client_reset(tpm_client_t *c)
 	bzero(c->tpmc_buf, c->tpmc_buflen);
 	c->tpmc_bufused = c->tpmc_bufread = 0;
 	c->tpmc_state = TPM_CLIENT_IDLE;
-	cv_broadcast(&c->tpmc_lock);
+	c->tpmc_cmdresult = 0;
+	cv_broadcast(&c->tpmc_cv);
 	pollwakeup(&c->tpmc_pollhead, POLLOUT);
+}
+
+static void
+tpm_exec_cmd(void *arg)
+{
+	tpm_client_t	*c = arg;
+	tpm_t		*tpm;
+	int		ret;
+
+	/*
+	 * Since we are executing, that gives us exclusive access to
+	 * tpmc->tpm_buf. We can drop tpmc_lock so to allow cancellations,
+	 * etc. to be able to come in and not be blocked.
+	 */
+	mutex_enter(&c->tpmc_lock);
+	VERIFY3S(c->tpmc_state, ==, TPMC_CLIENT_CMD_EXECUTION);
+	tpm = c->tpmc_tpm;
+	mutex_enter(&tpm->tpm_lock);
+	mutex_exit(&c->tpmc_lock);
+
+	while (tpm->tpm_active != NULL) {
+		cv_wait(&tpm->tpm_cv, &tpm->tpm_lock);
+	}
+	tpm->tpm_active = c;
+	mutex_exit(&tpm->tpm_lock);
+
+	ret = tpm->tpm_exec(c);
+
+	mutex_enter(&c->tpmc_lock);
+	c->tpmc_cmdresult = ret;
+	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
+	cv_broadcast(&c->tpmc_cv);
+	pollwakeup(&c->tpmc_pollhead, POLLIN);
+	mutex_exit(&c->tpmc_lock);
+}
+
+static int
+tpm_dispatch_cmd(tpm_client_t *c)
+{
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
+	ASSERT3S(c->tpmc_state, ==, TPM_CLIENT_CMD_RECEPTION);
+	ASSERT3U(c->tpmc_bufused, >=, TPM_HEADER_SIZE);
+
+	tpm_t *tpm;
+	size_t cmd_len = BE_IN32(c->tpmc_buf + TPM_PARAMSIZE_OFFSET);
+	uint_t flags;
+	int ret;
+
+	/*
+	 * We should only be dispatching once the full command has been
+	 * received.
+	 */
+	VERIFY3U(c->tpmc_buflen, ==, cmd_len);
+
+	if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
+		flags = DDI_NOSLEEP;
+	} else {
+		flags = DDI_SLEEP;
+	}
+
+	tpm = c->tpmc_tpm;
+
+	mutex_enter(&tpm->tpm_lock);
+	ret = ddi_taskq_dispatch(&tpm->tpm_taskq, tpm_exec_cmd, c, flags);
+	mutex_exit(&tpm->tpm_lock);
+
+	if (ret != DDI_SUCCESS) {
+		/*
+		 * AFAIK, ddi_taskq_dispatch() can only fail due to lack of
+		 * memory, so assume it's retryable.
+		 */
+		return (EAGAIN);
+	}
+
+	c->tpmc_state = TPM_CLIENT_CMD_EXECUTION;
+	return (0);
 }
 
 static int
 tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 {
 	tpm_client_t *c;
-	int ret = 0;
 
 	c = ddi_get_soft_state(tpm_statep, getminor(dev));
 	if (c == NULL) {
@@ -252,6 +334,12 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 	}
 
 	mutex_enter(&c->tpmc_lock);
+
+	size_t amt_copied = 0;
+	size_t amt_avail = tpm_uio_size(uiop);
+	size_t amt_needed = c->tpmc_buflen - c->tpmc_bufused;
+	size_t to_copy = 0;
+	int ret = 0;
 
 	if ((c->tpmc_mode & TPM_MODE_WRITE) != 0) {
 		/* XXX better return value? */
@@ -280,9 +368,6 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 		break;
 	}
 
-	size_t amt_avail = tpm_uio_size(uiop);
-	size_t to_copy = 0;
-
 	/*
 	 * Gather the TPM header. This will contain the total amount of
 	 * data to write for the command.
@@ -302,39 +387,67 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 
 		c->tpmc_state = TPM_CLIENT_CMD_RECEPTION;
 		c->tpmc_bufused += to_copy;
+		amt_copied +- to_copy;
 		if (c->tpmc_bufused < TPM_HEADER_SIZE) {
 			pollwakeup(&c->tpmc_pollhead, POLLOUT);
 			goto done;
 		}
 	}
 
-	size_t amt_needed = BE_IN32(c->tpmc_buf + TPM_PARAMSIZE_OFFSET);
+	/*
+	 * If we get this far, we should have at least TPM_HEADER_SIZE bytes
+	 * copied in. The TPM header (1.2 and 2.0) includes the total size
+	 * of the request (at TPM_PARAMSIZE_OFFSET), so we can calculate
+	 * the amount of additional data needed in the request.
+	 */
+	ASSERT3U(c->tpmc_bufused, >=, TPM_HEADER_SIZE);
+	amt_needed = BE_IN32(c->tpmc_buf + TPM_PARAMSIZE_OFFSET);
 
 	if (amt_needed > c->tpmc_buflen) {
 		/*
 		 * Request is too large.
-		 * XXX: Better error value?
+		 * XXX: Better error value? tpmc_buflen should be sized to
+		 * hold any valid command, so if we were passed an oversized
+		 * request, it's obviously invalid.
 		 */
 		ret = EIO;
-		goto abort;
+		goto done;
 	}
+	amt_needed -= c->tpmc_bufused;
 
-	amt_needed -= TPM_HEADER_SIZE - c->tpmc_bufused;
 	to_copy = MIN(amt_needed, amt_avail);
 	ret = uiomove(c->tpmc_buf + c->tpmc_bufused, to_copy, UIO_WRITE, uiop);
 	if (ret != 0) {
-		goto abort;
+		goto done;
 	}
 	c->tpmc_bufused += to_copy;
+	amt_copied +- to_copy;
 
 	if (to_copy < amt_needed) {
 		pollwakeup(&c->tpmc_pollhead, POLLOUT);
 		goto done;
 	}
 
-	/* XXX: transmit command */
+	ret = tpm_dispatch_cmd(c);
 
 done:
+	if (ret != 0) {
+		/*
+		 * If we fail for any reason, undo any data we've copied so
+		 * the same write(2) can be retried.
+		 */
+		VERIFY3U(amt_copied, <=, c->tpmc_buflen);
+		VERIFY3U(amt_copied, <=, c->tpmc_bufused);
+		bzero(c->tpmc_buf + c->tpmc_bufused - amt_copied, amt_copied);
+		c->tpmc_bufused -= amt_copied;
+		if (c->tpmc_bufused == 0) {
+			c->tpmc_state = TPM_CLIENT_IDLE;
+		}
+	}
+
+	if (c->tpmc_state != TPM_CLIENT_CMD_EXECUTION) {
+		pollwakeup(&c->tpmc_pollhead, POLLOUT);
+	}
 	mutex_exit(&c->tpmc_lock);
 	return (ret);
 
@@ -376,6 +489,12 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 		break;
 	}
 
+	if (c->tpmc_cmdresult != 0) {
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
+		return (EIO);
+	}
+
 	size_t amt_avail = tpm_uio_size(uiop);
 	size_t to_copy = MIN(amt_avail, c->tpmc_bufused - c->tpmc_bufread);
 
@@ -386,6 +505,7 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	c->tpmc_bufread += to_copy;
 	if (c->tpmc_bufread == c->tpmc_bufused) {
+		/* Entire response has been read, switch back to idle */
 		tpm_client_reset(c);
 	}
 
