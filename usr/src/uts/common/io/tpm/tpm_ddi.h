@@ -124,6 +124,7 @@ struct tpm {
 	ddi_acc_handle_t	tpm_handle;
 
 	kmutex_t		tpm_lock;
+	kcondvar_t		tpm_cv;
 	uint8_t			*tpm_addr;	/* TPM mapped address */
 	ddi_intr_handle_t	*tpm_harray;
 	tpm_state_t		tpm_state;
@@ -142,17 +143,20 @@ struct tpm {
 		tpm_crb_t	tpmu_crb;
 	} tpm_u;
 
-	uint8_t		tpm_locality;	/* keep track of the locality */
+	uint8_t			tpm_locality;	/* locality during cmd exec */
 
 	uint32_t flags;		/* flags to keep track of what is allocated */
 	clock_t duration[4];	/* short,medium,long,undefined */
-	clock_t timeout_a;
-	clock_t timeout_b;
-	clock_t timeout_c;
-	clock_t timeout_d;
+
+	clock_t			tpm_timeout_a;
+	clock_t			tpm_timeout_b;
+	clock_t			tpm_timeout_c;
+	clock_t			tpm_timeout_d;
 	clock_t timeout_poll;
 
-	ddi_device_acc_attr_t accattr;
+	int			(*tpm_exec)(tpm_client_t *);
+	int			(*tpm_cancel)(tpm_client_t *);
+	void			(*tpm_set_interrupts)(tpm_client_t *, bool);
 
 	/* For power management. */
 	kmutex_t	pm_mutex;
@@ -199,6 +203,7 @@ struct tpm_client {
 	size_t			tpmc_bufread;		/* RW */
 	int			tpmc_instance;		/* WO */
 	uint8_t			tpmc_locality;		/* RW */
+	int			tpmc_cmdresult;		/* RW */
 };
 
 #define	TPM_LOCALITY_MAX	4
