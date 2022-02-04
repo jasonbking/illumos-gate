@@ -33,13 +33,12 @@
 .\" -----------
 The
 .Nm
-driver provides support for both TPM1.2 and TPM2.0 modules.
-<Insert more about TPM modules here>
+driver provides support for both TPM 1.2 and TPM 2.0 modules.
 .Sh APPLICATION PROGRAMMING INTERFACE
 Applications wishing to interact with a
 .Nm
 device do so by writing commands to
-.Pa /dev/tmp
+.Pa /dev/tpm
 and then reading the results.
 Each TPM command contains a 10 byte header that includes the command to
 execute as well as the total size of the command to send to the
@@ -179,7 +178,7 @@ device is ready to accept a command or has results available from a command.
 TPM devices only support what is effectively single-threaded operation.
 That is, they can only execute a single command at a time.
 Additionally, TPM devices contain a limited amount of resources that limit
-the number of context it can support within the device.
+the number of contexts and objects it can support within the device.
 .Pp
 To allow multiple applications to share access to a TPM 2.0 device, the
 .Nm
@@ -187,7 +186,8 @@ driver implements the recommendations in
 .%T TCG TSS 2.0 TAB and Resource Manager Specification .
 As needed, the
 .Nm
-driver will swap contexts associated with an open connection to and from the
+driver will swap contexts and objects associated with a connection to and from
+the
 .Nm
 device.
 .\" ----
