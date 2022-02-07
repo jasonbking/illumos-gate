@@ -57,47 +57,34 @@
 #include "tpm_tis.h"
 #include "tpm_ddi.h"
 
+typedef bool (*tpm_attach_fn_t)(tpm_t *);
+typedef void (tpm_cleanup_fn_t)(tpm_t *);
+
+typedef struct tpm_attach_desc {
+	tpm_attach_seq_t	tad_seq;
+	const char		*tad_name;
+	tpm_attach_fn_t		tad_attach;
+	tpm_cleanup_fn_t	tad_cleanup;
+} tpm_attach_desc_t;
+
 /*
  * In order to test the 'millisecond bug', we test if DURATIONS and TIMEOUTS
  * are unreasonably low...such as 10 milliseconds (TPM isn't that fast).
  * and 400 milliseconds for long duration
  */
-#define	TEN_MILLISECONDS	10000	/* 10 milliseconds */
-#define	FOUR_HUNDRED_MILLISECONDS 400000	/* 4 hundred milliseconds */
+#define	TEN_MILLISECONDS		10000	/* 10 milliseconds */
+#define	FOUR_HUNDRED_MILLISECONDS	400000	/* 4 hundred milliseconds */
 
-#define	DEFAULT_LOCALITY 0
+/* For now, we assume a system will only have a single TPM device. */
+#define	TPM_CTL_MINOR		0
 
-/*
- * At least initially, we assume a system will only have a single hardware
- * TPM device.
- */
-#define	TPM_CTL_MINOR	0
+#define	DEFAULT_LOCALITY	0
 
 /*
- * Internal TPM command functions
+ * Explicitly not static as it is a tunable. Set to true to enable
+ * debug messages.
  */
-static int itpm_command(tpm_t *tpm, uint8_t *buf, size_t bufsiz);
-
-/* Auxilliary */
-static int receive_data(tpm_t *, uint8_t *, size_t);
-static inline int tpm_io_lock(tpm_t *);
-static inline void tpm_unlock(tpm_t *);
-static void tpm_cleanup(dev_info_t *, tpm_t *);
-
-/*
- * Sun DDI/DDK entry points
- */
-static int tpm_attach(dev_info_t *, ddi_attach_cmd_t);
-static int tpm_detach(dev_info_t *, ddi_detach_cmd_t);
-static int tpm_getinfo(dev_info_t *, ddi_info_cmd_t, void *, void **);
-static int tpm_quiesce(dev_info_t *);
-
-static int tpm_open(dev_t *, int, int, cred_t *);
-static int tpm_close(dev_t, int, int, cred_t *);
-static int tpm_read(dev_t, struct uio *, cred_t *);
-static int tpm_write(dev_t, struct uio *, cred_t *);
-static int tpm_ioctl(dev_t, int, intptr_t, int, cred_t *, int *);
-static int tpm_chpoll(dev_t, short, int, short *, struct pollhead **);
+bool				tpm_debug = false;
 
 static id_space_t		tpm_minors;
 static void			*tpm_statep = NULL;
@@ -109,6 +96,110 @@ static ddi_device_acc_attr_t	tpm_acc_attr = {
 	.devacc_attr_dataorder =	DDI_STRICTORDER_ACC,
 };
 #endif
+
+/* Can we accept write(2) requests without blocking? */
+static inline bool
+tpmc_is_writemode(const tpm_client_t *c)
+{
+	ASSERT(MUTEX_HELD(&c->tpmc_client));
+
+	switch (c->tpmc_state) {
+	case TPM_CLIENT_IDLE:
+	case TPM_CLIENT_CMD_RECEPTION:
+		return (true);
+	default:
+		return (false);
+	}
+}
+
+/* Can we accept read(2) requests without blocking? */
+static inline bool
+tpmc_is_readmode(const tpm_client_t *c)
+{
+	ASSERT(MUTEX_HELD(&c->tpmc_client));
+
+	return ((c->tpmc_state == TPM_CLIENT_CMD_COMPLETION) ? true : false);
+}
+
+void
+tpm_dbg(const tpm_t *tpm, const char *fmt, ...)
+{
+	if (!tpm->debug) {
+		return;
+	}
+
+	va_list	ap;
+	char	msg[1024];
+
+	va_start(ap, msg);
+	(void) vsnprintf(msg, sizeof (msg), fmt, ap);
+	va_end(ap);
+
+	if (tpm != NULL && tpm->tpm_dip != NULL) {
+		dev_err(tpm->tpm_dip, CE_NOTE, "!%s", msg);
+	} else {
+		cmn_err(CE_NOTE, "!%s", msg);
+	}
+}
+
+static void
+tpm_client_reset(tpm_client_t *c)
+{
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
+
+	bzero(c->tpmc_buf, c->tpmc_buflen);
+	c->tpmc_bufused = c->tpmc_bufread = 0;
+	c->tpmc_state = TPM_CLIENT_IDLE;
+	c->tpmc_cmdresult = 0;
+	cv_broadcast(&c->tpmc_cv);
+	pollwakeup(&c->tpmc_pollhead, POLLOUT);
+}
+
+static void
+tpm_cancel(tpm_client_t *c)
+{
+	tpm_t *tpm;
+
+	mutex_enter(&c->tpmc_lock);
+	tpm = c->tpmc_tpm;
+
+	switch (c->tpmc_state) {
+	case TPM_CLIENT_IDLE:
+		break;
+	case TPM_CLIENT_CMD_RECEPTION:
+	case TPM_CLIENT_CMD_COMPLETION:
+		tpm_client_reset(c);
+		break;
+	case TPM_CLIENT_CMD_EXECUTION:
+		tpm->tpm_cancel(c);
+		tpm_client_reset(c);
+		break;
+	case TPM_CLIENT_WAIT_FOR_TPM:
+		c->tpmc_cancelled = true;
+		membar_producer();
+
+		/*
+		 * The taskq is waiting on tpm_cv, so we have to wake up
+		 * all of the clients waiting so our client will see
+		 * the request has been cancelled. In practice, the number
+		 * of expected connections is expected to be small enough
+		 * that doing a broadcast shouldn't present a problem.
+		 */
+		cv_broadcast(&c->tpmc_tpm->tpm_cv);
+
+		while (c->tpmc_cancelled)
+			cv_wait(&c->tpmc_cv, &tpmc->tpmc_lock);
+
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
+		break;
+	default:
+		cmn_err(CE_PANIC, "unexpected tpm connection state 0x%x",
+		    c->tpmc_state);
+	}
+
+	mutex_exit(&c->tpmc_lock);
+}
 
 static int
 tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
@@ -200,9 +291,9 @@ tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 		return (ENXIO);
 	}
 
-	mutex_enter(&c->tpmc_lock);
+	tpm_cancel(c);
 
-	/* XXX: Cancel any pending operations */
+	mutex_enter(&c->tpmc_lock);
 
 	tpm = conn->tpmc_tpm;
 	mutex_enter(&tpm->tpm_lock);
@@ -214,9 +305,11 @@ tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 
 	bzero(c->tpmc_buf, c->tpmc_buflen);
 	kmem_free(c->tpmc_buf, c->tpmc_buflen);
+
 	cv_destroy(c->tpmc_cv);
 	mutex_exit(&c->tpmc_lock);
 	mutex_destroy(&c->tpmc_lock);
+
 	ddi_soft_state_free(tpm_statep, minor);
 	id_space_free(tpm_minors, minor);
 	return (0);
@@ -235,19 +328,6 @@ tpm_uio_size(const struct uio_t *uiop)
 }
 
 static void
-tpm_client_reset(tpm_client_t *c)
-{
-	ASSERT(MUTEX_HELD(&c->tpmc_lock));
-
-	bzero(c->tpmc_buf, c->tpmc_buflen);
-	c->tpmc_bufused = c->tpmc_bufread = 0;
-	c->tpmc_state = TPM_CLIENT_IDLE;
-	c->tpmc_cmdresult = 0;
-	cv_broadcast(&c->tpmc_cv);
-	pollwakeup(&c->tpmc_pollhead, POLLOUT);
-}
-
-static void
 tpm_exec_cmd(void *arg)
 {
 	tpm_client_t	*c = arg;
@@ -260,16 +340,31 @@ tpm_exec_cmd(void *arg)
 	 * etc. to be able to come in and not be blocked.
 	 */
 	mutex_enter(&c->tpmc_lock);
-	VERIFY3S(c->tpmc_state, ==, TPMC_CLIENT_CMD_EXECUTION);
+	VERIFY3S(c->tpmc_state, ==, TPMC_CLIENT_CMD_DISPATCH);
 	tpm = c->tpmc_tpm;
 	mutex_enter(&tpm->tpm_lock);
+	c->tpmc_state = TPM_CLIENT_WAIT_FOR_TPM;
 	mutex_exit(&c->tpmc_lock);
 
-	while (tpm->tpm_active != NULL) {
+	while (tpm->tpm_active != NULL && !c->tpmc_cancelled) {
 		cv_wait(&tpm->tpm_cv, &tpm->tpm_lock);
 	}
+
+	if (c->tpmc_cancelled) {
+		mutex_exit(&tpm->tpm_lock);
+		mutex_enter(&c->tpmc_lock);
+		goto cancelled;
+	}
+
 	tpm->tpm_active = c;
 	mutex_exit(&tpm->tpm_lock);
+
+	mutex_enter(&c->tpmc_lock);
+	if (c->tpmc_cancelled) {
+		goto cancelled;
+	}
+	c->tpmc_state = TPM_CLIENT_CMD_EXECUTION;
+	mutex_exit(&c->tpmc_lock);
 
 	ret = tpm->tpm_exec(c);
 
@@ -278,6 +373,13 @@ tpm_exec_cmd(void *arg)
 	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
 	cv_broadcast(&c->tpmc_cv);
 	pollwakeup(&c->tpmc_pollhead, POLLIN);
+	mutex_exit(&c->tpmc_lock);
+
+	return;
+
+cancelled:
+	c->tpmc_cancelled = false;
+	cv_signal(&c->tpmc_cv);
 	mutex_exit(&c->tpmc_lock);
 }
 
@@ -319,7 +421,7 @@ tpm_dispatch_cmd(tpm_client_t *c)
 		return (EAGAIN);
 	}
 
-	c->tpmc_state = TPM_CLIENT_CMD_EXECUTION;
+	c->tpmc_state = TPM_CLIENT_CMD_DISPATCH;
 	return (0);
 }
 
@@ -347,17 +449,18 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 		goto done;
 	}
 
-	switch (c->tpmc_state) {
-	case TPM_CLIENT_IDLE:
-	case TPM_CLIENT_CMD_RECEPTION:
-		break;
-	case TPM_CLIENT_CMD_EXECUTION:
-	case TPM_CLIENT_CMD_COMPLETION:
+	if (!tpmc_is_writemode(c)) {
 		if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
 			ret = EAGAIN;
 			goto done;
 		}
 
+		/*
+		 * If we weren't in a writing mode when write(2) was called,
+		 * we want to explicitly wait for the TPM_CLIENT_IDLE state
+		 * since preumably that means we have a new command (and
+		 * not a fragment of an in-process command).
+		 */
 		while (c->tpmc_state != TPM_CLIENT_IDLE) {
 			ret = cv_wait_sig(&c->tpmc_cv, &c->tpmc_lock);
 			if (ret == 0) {
@@ -382,14 +485,13 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 		}
 
 		if (c->tpmc_state == TPM_CLIENT_IDLE) {
+			c->tpmc_state = TPM_CLIENT_CMD_RECEPTION;
 			cv_broadcast(&c->tpmc_cv);
 		}
 
-		c->tpmc_state = TPM_CLIENT_CMD_RECEPTION;
 		c->tpmc_bufused += to_copy;
 		amt_copied +- to_copy;
 		if (c->tpmc_bufused < TPM_HEADER_SIZE) {
-			pollwakeup(&c->tpmc_pollhead, POLLOUT);
 			goto done;
 		}
 	}
@@ -424,7 +526,6 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 	amt_copied +- to_copy;
 
 	if (to_copy < amt_needed) {
-		pollwakeup(&c->tpmc_pollhead, POLLOUT);
 		goto done;
 	}
 
@@ -442,10 +543,11 @@ done:
 		c->tpmc_bufused -= amt_copied;
 		if (c->tpmc_bufused == 0) {
 			c->tpmc_state = TPM_CLIENT_IDLE;
+			cv_broadcast(&c->tpmc_cv);
 		}
 	}
 
-	if (c->tpmc_state != TPM_CLIENT_CMD_EXECUTION) {
+	if (tpmc_is_writemode(c)) {
 		pollwakeup(&c->tpmc_pollhead, POLLOUT);
 	}
 	mutex_exit(&c->tpmc_lock);
@@ -472,8 +574,9 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	switch (c->tpmc_state) {
 	case TPM_CLIENT_IDLE:
-	case TPM_CLIENT_CMD_EXECUTION:
 	case TPM_CLIENT_CMD_RECEPTION:
+	case TPM_CLIENT_CMD_DISPATCH:
+	case TPM_CLIENT_CMD_EXECUTION:
 		if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
 			mutex_exit(&c->tpmc_lock);
 			return (EAGAIN);
@@ -588,24 +691,7 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		mutex_exit(&c->tpmc_lock);
 		break;
 	case TPMIOC_CANCEL:
-		mutex_enter(&c->tpmc_lock);
-		switch (c->tpmc_state) {
-		case TPM_CLIENT_IDLE:
-			break;
-		case TPM_CLIENT_CMD_RECEPTION:
-		case TPM_CLIENT_CMD_COMPLETION:
-			tpm_client_reset(c);
-			break;
-		case TPM_CLIENT_CMD_EXECUTION:
-			mutex_enter(&c->tpmc_tpm->tpm_lock);
-			VERIFY3P(c->tpmc_tpm->tpm_active, ==, c);
-			c->tpmc_tpm->tpm_active = NULL;
-			mutex_exit(&c->tpmc_tpm->tpm_lock);
-
-			tpm_client_reset(c);
-			mutex_exit(&c->tpmc_lock);
-			break;
-		}
+		tpm_cancel(c);
 		break;
 	case TPMIOC_MAKESTICKY:
 		/* XXX: TODO */
@@ -633,16 +719,11 @@ tpm_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 	mutex_enter(&c->tpmc_lock);
 	*reventsp = 0;
 
-	switch (c->tpmc_state) {
-	case TPM_CLIENT_IDLE:
-	case TPM_CLIENT_CMD_RECEPTION:
+	if (tpmc_is_writemode(c)) {
 		*reventsp |= POLLOUT;
-		break;
-	case TPM_CLIENT_CMD_EXECUTION:
-		break;
-	case TPM_CLIENT_CMD_COMPLETION:
+	}
+	if (tpmc_is_readmode(c)) {
 		*reventsp |= POLLIN;
-		break;
 	}
 	*reventsp &= events;
 
@@ -763,133 +844,6 @@ itpm_command(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
 }
 
 static int
-receive_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
-{
-	int size = 0;
-	int retried = 0;
-	uint8_t stsbits;
-
-	/* A number of consecutive bytes that can be written to TPM */
-	uint16_t burstcnt;
-
-	ASSERT(tpm != NULL && buf != NULL);
-retry:
-	while (size < bufsiz && (tpm_wait_for_stat(tpm,
-	    (TPM_STS_DATA_AVAIL|TPM_STS_VALID),
-	    tpm->timeout_c) == DDI_SUCCESS)) {
-		/*
-		 * Burstcount should be available within TIMEOUT_D
-		 * after STS is set to valid
-		 * burstcount is dynamic, so have to get it each time
-		 */
-		burstcnt = tpm_get_burstcount(tpm);
-		for (; burstcnt > 0 && size < bufsiz; burstcnt--) {
-			buf[size++] = tpm_get8(tpm, TPM_DATA_FIFO);
-		}
-	}
-	stsbits = tis_get_status(tpm);
-	/* check to see if we need to retry (just once) */
-	if (size < bufsiz && !(stsbits & TPM_STS_DATA_AVAIL) && retried == 0) {
-		/* issue responseRetry (TIS 1.2 pg 54) */
-		tpm_put8(tpm, TPM_STS, TPM_STS_RESPONSE_RETRY);
-		/* update the retry counter so we only retry once */
-		retried++;
-		/* reset the size to 0 and reread the entire response */
-		size = 0;
-		goto retry;
-	}
-	return (size);
-}
-
-/* Receive the data from the TPM */
-static int
-tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
-{
-	int ret;
-	int size = 0;
-	uint32_t expected, status;
-	uint32_t cmdresult;
-
-	ASSERT(tpm != NULL && buf != NULL);
-
-	if (bufsiz < TPM_HEADER_SIZE) {
-		/* There should be at least tag, paramsize, return code */
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: received data should contain at least "
-		    "the header which is %d bytes long",
-		    __func__, TPM_HEADER_SIZE);
-#endif
-		goto OUT;
-	}
-
-	/* Read tag(2 bytes), paramsize(4), and result(4) */
-	size = receive_data(tpm, buf, TPM_HEADER_SIZE);
-	if (size < TPM_HEADER_SIZE) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: recv TPM_HEADER failed, size = %d",
-		    __func__, size);
-#endif
-		goto OUT;
-	}
-
-	cmdresult = tpm_getbuf32(buf, TPM_RETURN_OFFSET);
-
-	/* Get 'paramsize'(4 bytes)--it includes tag and paramsize */
-	expected = tpm_getbuf32(buf, TPM_PARAMSIZE_OFFSET);
-	if (expected > bufsiz) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: paramSize is bigger "
-		    "than the requested size: paramSize=%d bufsiz=%d result=%d",
-		    __func__, (int)expected, (int)bufsiz, cmdresult);
-#endif
-		goto OUT;
-	}
-
-	/* Read in the rest of the data from the TPM */
-	size += receive_data(tpm, (uint8_t *)&buf[TPM_HEADER_SIZE],
-	    expected - TPM_HEADER_SIZE);
-	if (size < expected) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: received data length (%d) "
-		    "is less than expected (%d)", __func__, size, expected);
-#endif
-		goto OUT;
-	}
-
-	/* The TPM MUST set the state to stsValid within TIMEOUT_C */
-	ret = tpm_wait_for_stat(tpm, TPM_STS_VALID, tpm->timeout_c);
-
-	status = tis_get_status(tpm);
-	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: TPM didn't set stsValid after its I/O: "
-		    "status = 0x%08X", __func__, status);
-#endif
-		goto OUT;
-	}
-
-	/* There is still more data? */
-	if (status & TPM_STS_DATA_AVAIL) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: TPM_STS_DATA_AVAIL is set:0x%08X",
-		    __func__, status);
-#endif
-		goto OUT;
-	}
-
-	/*
-	 * Release the control of the TPM after we are done with it
-	 * it...so others can also get a chance to send data
-	 */
-	tis_release_locality(tpm, tpm->locality, 0);
-
-OUT:
-	tpm_set_ready(tpm);
-	tis_release_locality(tpm, tpm->locality, 0);
-	return (size);
-}
-
-static int
 tpm_resume(tpm_t *tpm)
 {
 	mutex_enter(&tpm->pm_mutex);
@@ -904,94 +858,24 @@ tpm_resume(tpm_t *tpm)
 	return (DDI_SUCCESS);
 }
 
-#ifdef sun4v
-static uint64_t hsvc_tpm_minor = 0;
-static hsvc_info_t hsvc_tpm = {
-	HSVC_REV_1, NULL, HSVC_GROUP_TPM, 1, 0, NULL
-};
-#endif
-
-/*
- * Sun DDI/DDK entry points
- */
-static int
-tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
+#ifdef amd64
+static bool
+tpm_attach_regs(tpm_t *tpm)
 {
+	uint_t idx;
+	int nregs;
 	int ret;
-	int instance;
-#ifndef sun4v
-	int idx, nregs;
-#endif
-	tpm_t *tpm = NULL;
 
-	ASSERT(dip != NULL);
-
-	instance = ddi_get_instance(dip);
-	if (instance < 0)
-		return (DDI_FAILURE);
-
-	/* Nothing out of ordinary here */
-	switch (cmd) {
-	case DDI_ATTACH:
-		if (ddi_soft_state_zalloc(statep, instance) == DDI_SUCCESS) {
-			tpm = ddi_get_soft_state(statep, instance);
-			if (tpm == NULL) {
-#ifdef DEBUG
-				cmn_err(CE_WARN,
-				    "!%s: cannot get state information.",
-				    __func__);
-#endif
-				return (DDI_FAILURE);
-			}
-			tpm->dip = dip;
-		} else {
-#ifdef DEBUG
-			cmn_err(CE_WARN,
-			    "!%s: cannot allocate state information.",
-			    __func__);
-#endif
-			return (DDI_FAILURE);
-		}
-		break;
-	case DDI_RESUME:
-		tpm = ddi_get_soft_state(statep, instance);
-		if (tpm == NULL) {
-#ifdef DEBUG
-			cmn_err(CE_WARN, "!%s: cannot get state information.",
-			    __func__);
-#endif
-			return (DDI_FAILURE);
-		}
-		return (tpm_resume(tpm));
-	default:
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: cmd %d is not implemented", __func__,
-		    cmd);
-#endif
-		ret = DDI_FAILURE;
-		goto FAIL;
+	ret = ddi_dev_nregs(tpm->tpm_dip, &nregs);
+	if (ret != DDI_SUCCESS) {
+		return (false);
 	}
 
-	/* Zeroize the flag, which is used to keep track of what is allocated */
-	tpm->flags = 0;
-
-#ifdef sun4v
-	ret = hsvc_register(&hsvc_tpm, &hsvc_tpm_minor);
-	if (ret != 0) {
-		cmn_err(CE_WARN, "!%s: failed to register with "
-		    "hypervisor: 0x%0x", __func__, ret);
-		goto FAIL;
+	if (nregs < 0) {
+		dev_err(tpm->tpm_dip, CE_WARN, "ddi_dev_nregs failed: %d",
+		    nregs);
+		return (false);
 	}
-	tpm->flags |= TPM_HSVC_REGISTERED;
-#else
-	tpm->accattr.devacc_attr_version = DDI_DEVICE_ATTR_V0;
-	tpm->accattr.devacc_attr_endian_flags = DDI_NEVERSWAP_ACC;
-	tpm->accattr.devacc_attr_dataorder = DDI_STRICTORDER_ACC;
-
-	idx = 0;
-	ret = ddi_dev_nregs(tpm->dip, &nregs);
-	if (ret != DDI_SUCCESS)
-		goto FAIL;
 
 	/*
 	 * TPM vendors put the TPM registers in different
@@ -1000,51 +884,372 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	 * Loop until we find the set that matches the expected
 	 * register size (0x5000).
 	 */
-	for (idx = 0; idx < nregs; idx++) {
+	for (idx = 0; idx < nregs; i++) {
 		off_t regsize;
 
-		if ((ret = ddi_dev_regsize(tpm->dip, idx, &regsize)) !=
-		    DDI_SUCCESS)
-			goto FAIL;
-		/* The TIS spec says the TPM registers must be 0x5000 bytes */
-		if (regsize == 0x5000)
-			break;
-	}
-	if (idx == nregs) {
-		ret = DDI_FAILURE;
-		goto FAIL;
-	}
-
-	ret = ddi_regs_map_setup(tpm->dip, idx, (caddr_t *)&tpm->addr,
-	    (offset_t)0, (offset_t)0x5000,
-	    &tpm->accattr, &tpm->handle);
-
-	if (ret != DDI_SUCCESS) {
-		goto FAIL;
-	}
-	tpm->flags |= TPM_DIDREGSMAP;
-#endif
-	/* Enable TPM device according to the TIS specification */
-	ret = tis_init(tpm);
-	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: tis_init() failed with error %d",
-		    __func__, ret);
-#endif
-
-		/* We need to clean up the ddi_regs_map_setup call */
-		if (tpm->flags & TPM_DIDREGSMAP) {
-			ddi_regs_map_free(&tpm->handle);
-			tpm->handle = NULL;
-			tpm->flags &= ~TPM_DIDREGSMAP;
+		ret = ddi_dev_regsize(tpm->tpm_dip, idx, &regsize);
+		if (ret != DDI_SUCCESS) {
+			dev_err(tpm->tpm_dip, CE_WARN,
+			    "ddi_dev_regsize failed: %d", ret);
+			return (false);
 		}
-		goto FAIL;
+
+		/* The TIS spec says the TPM registers must be 0x5000 bytes */
+		if (regsize == 0x5000) {
+			break;
+		}
 	}
 
-	/* Initialize the inter-process lock */
-	mutex_init(&tpm->dev_lock, NULL, MUTEX_DRIVER, NULL);
-	mutex_init(&tpm->pm_mutex, NULL, MUTEX_DRIVER, NULL);
-	cv_init(&tpm->suspend_cv, NULL, CV_DRIVER, NULL);
+	if (idx == nregs) {
+		return (false);
+	}
+
+	ret = ddi_regs_map_setup(tpm->tpm_dip, idx, (caddr_t *)&tpm->tpm_addr,
+	    0, regsize, &tpm_acc_attr, &tpm->tpm_handle);
+	if (ret != DDI_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "failed to map tpm registers: %d", ret);
+		return (false);
+	}
+
+	return (true);
+}
+
+static void
+tpm_cleanup_regs(tpm_t *tpm)
+{
+	ddi_regs_map_free(&tpm->tpm_handle);
+}
+
+static bool
+tpm_attach_intr_alloc(tpm_t *tpm)
+{
+	int types = 0;
+	int nintrs = 0;
+	int navail = 0;
+	int ret;
+
+	if (!tpm->tpm_use_interrupts) {
+		return (true);
+	}
+
+	if (ddi_intr_get_supported_types(tpm->tpm_dip, &types) != DDI_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "could not get supported interrupts");
+		return (false);
+	}
+
+	if ((types & DDI_INTR_TYPE_FIXED) != 0) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "fixed interrupts are not supported");
+		return (false);
+	}
+
+	if (ddi_intr_get_nintrs(tpm->tpm_dip, DDI_INTR_TYPE_FIXED,
+	    &nintrs) != DDI_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "could not count %s interrupts", "FIXED");
+		return (false);
+	}
+
+	if (nintrs < 1) {
+		dev_err(tpm->tpm_dip, CE_WARN, "no interrupts supported");
+		return (false);
+	}
+
+	if (nintrs != 1) {
+		/* No matter what, we're just going to use one interrupt */
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "!device supports unexpected number (%d) of interrupts",
+		    nintrs);
+		nintrs = 1;
+	}
+
+	ret = ddi_intr_alloc(tpm->tpm_dip, tpm->tpm_harray, DDI_INTR_TYPE_FIXED,
+	    0, 1, &tpm->tpm_nintr, DDI_INTR_ALLOC_STRICT);
+	if (ret != DDI_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "interrupt allocation failure %d", ret);
+		return (false);
+	}
+
+	return (true);
+}
+
+static void
+tpm_cleanup_intr_alloc(tpm_t *tpm)
+{
+	if (!tpm->tpm_use_interrupts) {
+		return;
+	}
+
+	VERIFY3S(ddi_intr_free(tpm_>tpm_harray), ==, DDI_SUCCESS);
+}
+
+static bool
+tpm_attach_intr_hdlrs(tpm_t *tpm)
+{
+	uint_t i;
+	int ret;
+
+	if (!tpm->tpm_use_interrupts) {
+		return (true);
+	}
+
+	for (i = 0; i < tpm->tpm_nintr; i++) {
+		ret = ddi_intr_add_handler(tpm->tpm_harray[i], tpm->tpm_isr,
+		    tpm, NULL);
+		if (ret != DDI_SUCCESS) {
+			dev_err(tpm->tpm_dip, CE_WARN,
+			    "failed to attach interrupt %u handler: %d",
+			    i, ret);
+			goto fail;
+		}
+	}
+
+	return (true);
+
+fail:
+	while (i > 0) {
+		ret = ddi_intr_remove_handler(tpm->tpm_harray[--i]);
+		VERIFY3S(ret, ==, DDI_SUCCESS);
+	}
+
+	return (false);
+}
+
+static void
+tpm_cleanup_intr_hdlrs(tpm_t *tpm)
+{
+	uint_t i;
+	int ret;
+
+	if (!tpm->tpm_use_interrupts) {
+		return;
+	}
+
+	i = tpm->tpm_nintr;
+	while (i > 0) {
+		ret = ddi_intr_remove_handler(tpm->tpm_harray[--i]);
+		VERIFY3S(ret, ==, DDI_SUCCESS);
+	}
+}
+#endif /* amd64 */
+
+static bool
+tpm_attach_sync(tpm_t *tpm)
+{
+	void *pri = tpm->tpm_use_interrupts ?
+	    DDI_INTR_PRI(tpm->tpm_intr_pri) : NULL;
+
+	mutex_init(&tpm->tpm_lock, NULL, MUTEX_DRIVER, pri);
+	cv_init(&tpm->tpm_cv, NULL, CV_DRIVER, pri);
+}
+
+static void
+tpm_cleanup_sync(tpm_t *tpm)
+{
+	cv_destroy(&tpm->tpm_cv);
+	mutex_destroy(&tpm->tpm_lock);
+}
+
+static bool
+tpm_attach_minor_node(tpm_t *tpm)
+{
+	int ret;
+
+	ret = ddi_create_minor_node(tpm->tpm_dip, "tpm", S_IFCHR,
+	    ddi_get_instance(tpm->tpm_dip), DDI_PSEUDO, 0);
+	if (ret != DDI_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "failed to create minor node: %d", ret);
+		return (false);
+	}
+
+	return (true);
+}
+
+static void
+tpm_cleanup_minor_node(tpm_t *tpm)
+{
+	ddi_remove_minor_node(tpm->tpm_dip, NULL);
+}
+
+#ifdef sun4v
+static uint64_t hsvc_tpm_minor = 0;
+static hsvc_info_t hsvc_tpm = {
+	HSVC_REV_1, NULL, HSVC_GROUP_TPM, 1, 0, NULL
+};
+
+static bool
+tpm_attach_hsvc(tpm_t *tpm)
+{
+	int ret;
+
+	ret = hsvc_register(&hsvc_tpm, &hscv_tpm_minor);
+	if (ret != 0) {
+		dev_err(tpm->tpm_dip,CE_WARN,
+		    "failed to register with hypervisor: 0x%0x", ret);
+		return (false);
+	}
+
+	return (true);
+}
+
+static void
+tpm_cleanup_hsvc(tpm_t *tpm)
+{
+	hsvc_unregister(&hsvc_tpm);
+}
+#endif
+
+static bool
+tpm_attach_rng(tpm_t *tpm)
+{
+	return (true);
+}
+
+static void
+tpm_cleanup_rng(tpm_t *tpm)
+{
+}
+
+static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
+#ifdef amd64
+	[TPM_ATTACH_REGS] = {
+		.tad_seq = TPM_ATTACH_REGS,
+		.tad_name = "registers",
+		.tad_attach = tpm_attach_regs,
+		.tad_cleanup = tpm_cleanup_regs,
+	},
+#endif
+#ifdef sun4v
+	[TPM_ATTACH_HSVC] = {
+		.tad_seq = TPM_ATTACH_HSVC,
+		.tad_name = "hypervisor",
+		.tad_attach = tpm_attach_hsvc,
+		.tad_cleanup = tpm_cleanup_hsvc,
+	},
+#endif
+	[TPM_ATTACH_DEV_INIT] = {
+		.tad_seq = TPM_ATTACH_DEV_INIT,
+		.tad_name = "device initialization",
+		.tad_attach = tpm_attach_dev_init,
+		.tad_cleanup = tpm_cleanup_dev_init,
+	},
+#ifdef amd64
+	[TPM_ATTACH_INTR_ALLOC] = {
+		.tad_seq = TPM_ATTACH_INTR_ALLOC,
+		.tad_name = "interrupt allocation",
+		.tad_attach = tpm_attach_intr_alloc,
+		.tad_cleanup = tpm_cleanup_intr_alloc,
+	},
+	[TPM_ATTACH_INTR_HDLRS] = {
+		.tad_seq = TPM_ATTACH_INTR_HDLRS,
+		.tad_name = "interrupt handlers",
+		.tad_attach = tpm_attach_intr_hdlr,
+		.tad_cleanup = tpm_cleanup_intr_hdlr,
+	},
+#endif
+	[TPM_ATTACH_SYNC] = {
+		.tad_seq = TPM_ATTACH_SYNC,
+		.tad_name = "synchronization",
+		.tad_attach = tpm_attach_sync,
+		.tad_cleanup = tpm_cleanup_sync,
+	},
+	[TPM_ATTACH_MINOR_NODE] = {
+		.tad_seq = TPM_ATTACH_MINOR_NODE,
+		.tad_name = "minor node",
+		.tad_attach = tpm_attach_minor_node,
+		.tad_cleanup = tpm_cleanup_minor_node,
+	},
+	[TPM_ATTACH_RAND] = {
+		.tad_seq = TPM_ATTACH_RAND,
+		.tad_name = "rng provider",
+		.tad_attach = tpm_attach_rng,
+		.tad_cleanup = tpm_cleanup_rng,
+	},
+};
+
+static void
+tpm_cleanup(tpm_t *tpm)
+{
+	if (tpm == NULL || tpm->tpm_attach_seq == 0) {
+		return;
+	}
+
+	VERIFY3U(tpm->tpm_attach_seq, <, TPM_ATTACH_NUM_ENTRIES);
+
+	while (tpm->tpm_attach_seq > 0) {
+		tpm_attach_seq_t seq = --tpm->tpm_attach_seq;
+		tpm_attach_desc_t desc = &tpm_attach_tbl[seq];
+
+		tpm_dbg(tpm, "running cleanup sequence %s (%d)",
+			desc->tad_name, seq);
+
+		desc->tad_cleanup(tpm);
+	}
+
+	ASSERT3U(tpm->tpm_attach_seq, ==, 0);
+}
+
+static int
+tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
+{
+	tpm_t *tpm = NULL;
+	int ret;
+	int instance;
+
+	instance = ddi_get_instance(dip);
+	if (instance < 0) {
+		return (DDI_FAILURE);
+	}
+
+	/* Nothing out of ordinary here */
+	switch (cmd) {
+	case DDI_ATTACH:
+		ret = ddi_soft_state_zalloc(tpm_statep, instance);
+		if (ret != DDI_SUCCESS) {
+			dev_err(dip, CE_WARN,
+			    "failed to allocate device soft state");
+			return (DDI_FAILURE);
+		}
+
+		tpm = ddi_get_soft_state(tpm_statep, instance);
+		tpm->tpm_dip = dip;
+		tpm->tpm_instance = instance;
+		break;
+	case DDI_RESUME:
+		tpm = ddi_get_soft_state(tpm_statep, instance);
+		if (tpm == NULL) {
+			dev_err(dip, CE_WARN,
+			    "failed to retreive device soft state");
+			return (DDI_FAILURE);
+		}
+
+		return (tpm_resume(tpm));
+	default:
+		return (DDI_FAILURE);
+	}
+
+	for (uint_t i = 0; i < ARRAY_SIZE(tpm_attach_tbl); i++) {
+		tpm_attach_desc_t *desc = &tpm_attach_tbl[i];
+
+		tpm_dbg(tpm, "running attach sequence %s (%d)", desc->tad_name,
+		    desc->tad_seq);
+
+		if (!desc->tad_attach(tpm)) {
+			dev_err(tpm->tpm_dip, CE_WARN,
+			    "attach sequence failed %s (%d)", desc->tad_desc,
+			    desc->tad_seq);
+			tpm_cleanup(tpm);
+			return (DDI_FAILURE);
+		}
+
+		tpm_dbg(tpm, "attach sequence completed: %s (%d)",
+			desc->tad-name, desc->tad_seq);
+		tpm->tpm_seq = desc->tad_seq;
+	}
 
 	/* Set the suspend/resume property */
 	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
@@ -1069,102 +1274,11 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	(void) ddi_prop_update_int(DDI_DEV_T_NONE, dip, "tpm-errata-revision",
 	    tpm->vers_info.errataRev);
 
-	mutex_enter(&tpm->pm_mutex);
-	tpm->suspended = 0;
-	mutex_exit(&tpm->pm_mutex);
-
-	tpm->flags |= TPM_DID_MUTEX;
-
-	/* Initialize the buffer and the lock associated with it */
-	tpm->bufsize = TPM_IO_BUF_SIZE;
-	tpm->iobuf = kmem_zalloc((sizeof (uint8_t))*(tpm->bufsize), KM_SLEEP);
-	tpm->flags |= TPM_DID_IO_ALLOC;
-
-	mutex_init(&tpm->iobuf_lock, NULL, MUTEX_DRIVER, NULL);
-	tpm->flags |= TPM_DID_IO_MUTEX;
-
-	cv_init(&tpm->iobuf_cv, NULL, CV_DRIVER, NULL);
-	tpm->flags |= TPM_DID_IO_CV;
-
-	/* Create minor node */
-	ret = ddi_create_minor_node(dip, "tpm", S_IFCHR, ddi_get_instance(dip),
-	    DDI_PSEUDO, 0);
-	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: ddi_create_minor_node failed", __func__);
-#endif
-		goto FAIL;
+	if (tpm->tpm_use_interrupts) {
+		tpm->tpm_set_interrupts(tpm, true);
 	}
-	tpm->flags |= TPM_DIDMINOR;
-
-#ifdef KCF_TPM_RNG_PROVIDER
-	/* register RNG with kcf */
-	if (tpmrng_register(tpm) != DDI_SUCCESS)
-		cmn_err(CE_WARN, "!%s: tpm RNG failed to register with kcf",
-		    __func__);
-#endif
 
 	return (DDI_SUCCESS);
-FAIL:
-	if (tpm != NULL) {
-		tpm_cleanup(dip, tpm);
-		ddi_soft_state_free(statep, instance);
-		tpm = NULL;
-	}
-
-	return (DDI_FAILURE);
-}
-
-/*
- * Called by tpm_detach and tpm_attach (only on failure)
- * Free up the resources that are allocated
- */
-static void
-tpm_cleanup(dev_info_t *dip, tpm_t *tpm)
-{
-	if (tpm == NULL)
-		return;
-
-#ifdef KCF_TPM_RNG_PROVIDER
-	(void) tpmrng_unregister(tpm);
-#endif
-
-#ifdef sun4v
-	if (tpm->flags & TPM_HSVC_REGISTERED) {
-		(void) hsvc_unregister(&hsvc_tpm);
-		tpm->flags &= ~(TPM_HSVC_REGISTERED);
-	}
-#endif
-	if (tpm->flags & TPM_DID_MUTEX) {
-		mutex_destroy(&tpm->dev_lock);
-		mutex_destroy(&tpm->pm_mutex);
-		cv_destroy(&tpm->suspend_cv);
-		tpm->flags &= ~(TPM_DID_MUTEX);
-	}
-	if (tpm->flags & TPM_DID_IO_ALLOC) {
-		ASSERT(tpm->iobuf != NULL);
-		kmem_free(tpm->iobuf, (sizeof (uint8_t))*(tpm->bufsize));
-		tpm->flags &= ~(TPM_DID_IO_ALLOC);
-	}
-	if (tpm->flags & TPM_DID_IO_MUTEX) {
-		mutex_destroy(&tpm->iobuf_lock);
-		tpm->flags &= ~(TPM_DID_IO_MUTEX);
-	}
-	if (tpm->flags & TPM_DID_IO_CV) {
-		cv_destroy(&tpm->iobuf_cv);
-		tpm->flags &= ~(TPM_DID_IO_CV);
-	}
-	if (tpm->flags & TPM_DIDREGSMAP) {
-		/* Free the mapped addresses */
-		if (tpm->handle != NULL)
-			ddi_regs_map_free(&tpm->handle);
-		tpm->flags &= ~(TPM_DIDREGSMAP);
-	}
-	if (tpm->flags & TPM_DIDMINOR) {
-		/* Remove minor node */
-		ddi_remove_minor_node(dip, NULL);
-		tpm->flags &= ~(TPM_DIDMINOR);
-	}
 }
 
 static int
@@ -1172,6 +1286,7 @@ tpm_suspend(tpm_t *tpm)
 {
 	if (tpm == NULL)
 		return (DDI_FAILURE);
+
 	mutex_enter(&tpm->pm_mutex);
 	if (tpm->suspended) {
 		mutex_exit(&tpm->pm_mutex);
@@ -1196,33 +1311,22 @@ tpm_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 		return (DDI_FAILURE);
 
 	if ((tpm = ddi_get_soft_state(statep, instance)) == NULL) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: stored pointer to tpm state is NULL",
-		    __func__);
-#endif
+		cmn_err(CE_WARN, "failed to retreive instance %d soft state",
+		    instance);
 		return (ENXIO);
 	}
 
 	switch (cmd) {
 	case DDI_DETACH:
-		/* Body is after the switch stmt */
 		break;
 	case DDI_SUSPEND:
 		return (tpm_suspend(tpm));
 	default:
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: case %d not implemented", __func__, cmd);
-#endif
 		return (DDI_FAILURE);
 	}
 
-	/* Since we are freeing tpm structure, we need to gain the lock */
-	tpm_cleanup(dip, tpm);
-
-	/* Free the soft state */
-	ddi_soft_state_free(statep, instance);
-	tpm = NULL;
-
+	tpm_cleanup(tpm);
+	ddi_soft_state_free(tpm_statep, instance);
 	return (DDI_SUCCESS);
 }
 
@@ -1464,7 +1568,7 @@ _init(void)
 {
 	int ret;
 
-	ret = ddi_soft_state_init(&statep, sizeof (tpm_t), 1);
+	ret = ddi_soft_state_init(&tpm_statep, sizeof (tpm_t), 1);
 	if (ret) {
 		cmn_err(CE_WARN, "!%s: ddi_soft_state_init failed: %d",
 		    __func__, ret);
@@ -1474,7 +1578,7 @@ _init(void)
 	if (ret != 0) {
 		cmn_err(CE_WARN, "!%s: mod_install returned %d",
 		    __func__, ret);
-		ddi_soft_state_fini(&statep);
+		ddi_soft_state_fini(&tpm_statep);
 		return (ret);
 	}
 
@@ -1501,7 +1605,7 @@ _fini()
 	if (ret != 0)
 		return (ret);
 
-	ddi_soft_state_fini(&statep);
+	ddi_soft_state_fini(&tpm_statep);
 
 	return (ret);
 }

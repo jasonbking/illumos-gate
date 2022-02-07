@@ -125,6 +125,14 @@ tpm_crb_init(tpm_t *tpm)
 	return (0);
 }
 
+static uint_t
+tpm_crb_intr(caddr_t arg0, caddr_t arg1)
+{
+	tpm_t *tpm = (tpm_t *)arg0;
+
+	
+}
+
 int
 tpm_crb_send_data(tpm_t *c, uint8_t *buf, size_t buflen)
 {

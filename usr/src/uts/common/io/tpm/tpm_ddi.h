@@ -54,26 +54,6 @@
 #define	TPM_COMMAND_CODE_OFFSET		6
 
 /*
- * Flags to keep track of for the allocated resources
- * so we know what to deallocate later on
- */
-enum tpm_ddi_resources_flags {
-	TPM_OPENED = 0x001,
-	TPM_DIDMINOR = 0x002,
-	TPM_DIDREGSMAP = 0x004,
-	TPM_DIDINTMUTEX = 0x008,
-	TPM_DIDINTCV = 0x010,
-	TPM_DID_IO_ALLOC = 0x100,
-	TPM_DID_IO_MUTEX = 0x200,
-	TPM_DID_IO_CV = 0x400,
-	TPM_DID_MUTEX = 0x800,
-	TPM_DID_SOFT_STATE = 0x1000,
-#ifdef sun4v
-	TPM_HSVC_REGISTERED = 0x2000
-#endif
-};
-
-/*
  * TPM interface methods. TPM_IF_TIS and TPM_IF_FIFO are effectively
  * identical except that TPM_IF_FIFO supports the TPM_INTF_CAPABILITY_x
  * registers.
@@ -111,6 +91,25 @@ typedef struct tpm_crb {
 	uint32_t	tcrb_intr;
 } tpm_crb_t;
 
+typedef enum tpm_attach_seq {
+#ifdef amd64
+	TPM_ATTACH_REGS =	1,
+#endif
+#ifdef sun4v
+	TPM_ATTACH_HSVC =	1,
+#endif
+	TPM_ATTACH_DEV_INIT,
+#ifdef amd64
+	TPM_ATTACH_INTR_ALLOC,
+	TPM_ATTACH_INTR_HDLRS,
+#endif
+	TPM_ATTACH_SYNC,
+	TPM_ATTACH_MINOR_NODE,
+	TPM_ATTACH_RAND,
+	TPM_ATTACH_END			/* should always be last */
+} tpm_attach_seq_t;
+#define	TPM_ATTACH_NUM_ENTRIES	(TPM_ATTACH_END - 1)
+
 typedef struct tpm tpm_t;
 typedef struct tpm_client tpm_client_t;
 
@@ -118,21 +117,24 @@ struct tpm {
 	/* TPM specific */
 	TPM_CAP_VERSION_INFO vers_info;
 
-	/* OS specific */
 	dev_info_t		*tpm_dip;
 	int			tpm_instance;
 	ddi_acc_handle_t	tpm_handle;
 
+	tpm_attach_seq_t	tpm_seq;
+
 	kmutex_t		tpm_lock;
 	kcondvar_t		tpm_cv;
 	uint8_t			*tpm_addr;	/* TPM mapped address */
-	ddi_intr_handle_t	*tpm_harray;
 	tpm_state_t		tpm_state;
 	uint_t			tpm_client_count;
 	uint_t			tpm_client_max;
-	uint_t			tpm_intr_pri;
-	bool			tpm_intr_enabled;
 	bool			tpm_exclusive;	/* Only allow 1 client */
+
+	ddi_intr_handle_t	*tpm_harray;
+	uint_t			tpm_nintr;
+	uint_t			tpm_intr_pri;
+	bool			tpm_use_interrupts;
 
 	tpm_client_t		*tpm_active;
 	ddi_taskq_t		tpm_taskq;
@@ -156,7 +158,8 @@ struct tpm {
 
 	int			(*tpm_exec)(tpm_client_t *);
 	int			(*tpm_cancel)(tpm_client_t *);
-	void			(*tpm_set_interrupts)(tpm_client_t *, bool);
+	void			(*tpm_set_interrupts)(tpm_t *, bool);
+	ddi_intr_handle_t	tpm_isr;
 
 	/* For power management. */
 	kmutex_t	pm_mutex;
@@ -169,7 +172,7 @@ struct tpm {
 	enum tis_intf_ver	intf_ver;
 	enum tis_xfer_size	xfer_size;
 
-	crypto_kcf_provider_handle_t	n_prov;
+	crypto_kcf_provider_handle_t	tpm_n_prov;
 };
 
 typedef enum tpm_mode {
@@ -186,6 +189,8 @@ typedef enum tpm_mode {
 typedef enum tpm_client_state {
 	TPM_CLIENT_IDLE,		/* No command in progress */
 	TPM_CLIENT_CMD_RECEPTION,	/* Reading command from client */
+	TPM_CLIENT_CMD_DISPATCH,	/* Command has been dispatched */
+	TPM_CLIENT_WAIT_FOR_TPM,	/* Waiting to get access to TPM */
 	TPM_CLIENT_CMD_EXECUTION,	/* Command is running on TPM */
 	TPM_CLIENT_CMD_COMPLETION,	/* Write command to client */
 } tpm_client_state_t;
@@ -204,6 +209,7 @@ struct tpm_client {
 	int			tpmc_instance;		/* WO */
 	uint8_t			tpmc_locality;		/* RW */
 	int			tpmc_cmdresult;		/* RW */
+	bool			tpmc_cancelled;		/* RW */
 };
 
 #define	TPM_LOCALITY_MAX	4
@@ -215,18 +221,19 @@ tpm_getbuf32(uchar_t *ptr, uint32_t offset)
 	return (BE_IN32(ptr + offset));
 }
 
-uint8_t tpm_get8(tpm_state_t *, unsigned long);
-uint32_t tpm_get32(tpm_state_t *, unsigned long);
-uint64_t tpm_get64(tpm_state_t *, unsigned long);
-void tpm_put8(tpm_state_t *, unsigned long, uint8_t);
+uint8_t tpm_get8(tpm_t *, unsigned long);
+uint32_t tpm_get32(tpm_t *, unsigned long);
+uint64_t tpm_get64(tpm_t *, unsigned long);
+void tpm_put8(tpm_t *, unsigned long, uint8_t);
 
+void tpm_dbg(tpm_t *, const char *, ...);
 
-int tpm12_seed_random(tpm_state_t *, uchar_t *, size_t);
-int tpm12_generate_random(tpm_state_t *, uchar_t *, size_t);
-int tpm12_init(tpm_state_t *);
+int tpm12_seed_random(tpm_t *, uchar_t *, size_t);
+int tpm12_generate_random(tpm_t *, uchar_t *, size_t);
+int tpm12_init(tpm_t *);
 
-int tpm20_init(tpm_state_t *);
-int tpm20_seed_random(tpm_state_t *, uchar_t *, size_t);
-int tpm20_generate_random(tpm_state_t *, uchar_t *, size_t);
+int tpm20_init(tpm_t *);
+int tpm20_seed_random(tpm_t *, uchar_t *, size_t);
+int tpm20_generate_random(tpm_t *, uchar_t *, size_t);
 
 #endif	/* _TPM_DDI_H */
