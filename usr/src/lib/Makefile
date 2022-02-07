@@ -30,7 +30,7 @@
 # Copyright 2018 Nexenta Systems, Inc.
 # Copyright (c) 2016, Chris Fraire <cfraire@me.com>.
 # Copyright 2017 RackTop Systems.
-# Copyright 2018 Jason King
+# Copyright 2022 Jason King
 # Copyright 2021 OmniOS Community Edition (OmniOSce) Association.
 #
 
@@ -163,6 +163,7 @@ SUBDIRS +=				\
 	libkvm		\
 	libldap5	\
 	liblgrp		\
+	liblldp		\
 	liblm		\
 	libm1		\
 	libmail		\
@@ -422,6 +423,7 @@ HDRSUBDIRS=				\
 	libkstat	\
 	libktest	\
 	libkvm		\
+	liblldp		\
 	libmail		\
 	libmapid	\
 	libmd		\
@@ -645,6 +647,7 @@ libkmf:		libcryptoutil pkcs11 libcustr
 libktest:	libnvpair
 libkvm:		../cmd/sgs/libelf
 libldap5:	libsasl
+liblldp:	libnvpair
 libmapid:	libresolv2 libscf
 libmlrpc:	libsmbfs libuuid
 libndmp:	libscf
