@@ -242,6 +242,133 @@ fail:
 	return (ret);
 }
 
+static int
+receive_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
+{
+	int size = 0;
+	int retried = 0;
+	uint8_t stsbits;
+
+	/* A number of consecutive bytes that can be written to TPM */
+	uint16_t burstcnt;
+
+	ASSERT(tpm != NULL && buf != NULL);
+retry:
+	while (size < bufsiz && (tpm_wait_for_stat(tpm,
+	    (TPM_STS_DATA_AVAIL|TPM_STS_VALID),
+	    tpm->timeout_c) == DDI_SUCCESS)) {
+		/*
+		 * Burstcount should be available within TIMEOUT_D
+		 * after STS is set to valid
+		 * burstcount is dynamic, so have to get it each time
+		 */
+		burstcnt = tpm_get_burstcount(tpm);
+		for (; burstcnt > 0 && size < bufsiz; burstcnt--) {
+			buf[size++] = tpm_get8(tpm, TPM_DATA_FIFO);
+		}
+	}
+	stsbits = tis_get_status(tpm);
+	/* check to see if we need to retry (just once) */
+	if (size < bufsiz && !(stsbits & TPM_STS_DATA_AVAIL) && retried == 0) {
+		/* issue responseRetry (TIS 1.2 pg 54) */
+		tpm_put8(tpm, TPM_STS, TPM_STS_RESPONSE_RETRY);
+		/* update the retry counter so we only retry once */
+		retried++;
+		/* reset the size to 0 and reread the entire response */
+		size = 0;
+		goto retry;
+	}
+	return (size);
+}
+
+/* Receive the data from the TPM */
+static int
+tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
+{
+	int ret;
+	int size = 0;
+	uint32_t expected, status;
+	uint32_t cmdresult;
+
+	ASSERT(tpm != NULL && buf != NULL);
+
+	if (bufsiz < TPM_HEADER_SIZE) {
+		/* There should be at least tag, paramsize, return code */
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: received data should contain at least "
+		    "the header which is %d bytes long",
+		    __func__, TPM_HEADER_SIZE);
+#endif
+		goto OUT;
+	}
+
+	/* Read tag(2 bytes), paramsize(4), and result(4) */
+	size = receive_data(tpm, buf, TPM_HEADER_SIZE);
+	if (size < TPM_HEADER_SIZE) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: recv TPM_HEADER failed, size = %d",
+		    __func__, size);
+#endif
+		goto OUT;
+	}
+
+	cmdresult = tpm_getbuf32(buf, TPM_RETURN_OFFSET);
+
+	/* Get 'paramsize'(4 bytes)--it includes tag and paramsize */
+	expected = tpm_getbuf32(buf, TPM_PARAMSIZE_OFFSET);
+	if (expected > bufsiz) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: paramSize is bigger "
+		    "than the requested size: paramSize=%d bufsiz=%d result=%d",
+		    __func__, (int)expected, (int)bufsiz, cmdresult);
+#endif
+		goto OUT;
+	}
+
+	/* Read in the rest of the data from the TPM */
+	size += receive_data(tpm, (uint8_t *)&buf[TPM_HEADER_SIZE],
+	    expected - TPM_HEADER_SIZE);
+	if (size < expected) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: received data length (%d) "
+		    "is less than expected (%d)", __func__, size, expected);
+#endif
+		goto OUT;
+	}
+
+	/* The TPM MUST set the state to stsValid within TIMEOUT_C */
+	ret = tpm_wait_for_stat(tpm, TPM_STS_VALID, tpm->timeout_c);
+
+	status = tis_get_status(tpm);
+	if (ret != DDI_SUCCESS) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: TPM didn't set stsValid after its I/O: "
+		    "status = 0x%08X", __func__, status);
+#endif
+		goto OUT;
+	}
+
+	/* There is still more data? */
+	if (status & TPM_STS_DATA_AVAIL) {
+#ifdef DEBUG
+		cmn_err(CE_WARN, "!%s: TPM_STS_DATA_AVAIL is set:0x%08X",
+		    __func__, status);
+#endif
+		goto OUT;
+	}
+
+	/*
+	 * Release the control of the TPM after we are done with it
+	 * it...so others can also get a chance to send data
+	 */
+	tis_release_locality(tpm, tpm->locality, 0);
+
+OUT:
+	tpm_set_ready(tpm);
+	tis_release_locality(tpm, tpm->locality, 0);
+	return (size);
+}
+
 /*
  * Checks whether the given locality is active
  * Use TPM_ACCESS register and the masks TPM_ACCESS_VALID,TPM_ACTIVE_LOCALITY
