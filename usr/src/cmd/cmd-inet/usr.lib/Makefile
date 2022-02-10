@@ -24,10 +24,23 @@
 # Copyright 2022 Garrett D'Amore
 #
 
-SUBDIRS=	bridged ilbd in.chargend in.daytimed \
-		in.discardd in.echod in.mpathd in.ndpd \
-		in.ripngd in.timed inetd mdnsd pppoe \
-		slpd vrrpd wpad
+SUBDIRS=	bridged \
+		ilbd \
+		in.chargend \
+		in.daytimed \
+		in.discardd \
+		in.echod \
+		in.mpathd \
+		in.ndpd \
+		in.ripngd \
+		in.timed \
+		inetd \
+		lldpd \
+		mdnsd \
+		pppoe \
+		slpd \
+		vrrpd \
+		wpad
 
 MSGSUBDIRS=	ilbd inetd vrrpd
 

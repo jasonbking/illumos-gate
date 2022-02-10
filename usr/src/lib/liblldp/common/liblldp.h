@@ -41,6 +41,7 @@ typedef enum lldp_chassis_type {
 typedef struct lldp_chassis {
 	lldp_chassis_type_t	llc_type;
 	uint8_t			llc_id[LLDP_CHASSIS_MAX];
+	uint8_t			llc_len;
 } lldp_chassis_t;
 
 typedef enum lldp_port_type {
@@ -56,7 +57,8 @@ typedef enum lldp_port_type {
 #define	LLDP_PORT_MAX		255
 typedef struct lldp_port {
 	lldp_port_type_t	llp_type;
-	uint8_t			lldp_id[LLDP_PORT_MAX];
+	uint8_t			llp_id[LLDP_PORT_MAX];
+	uint8_t			llp_len;
 } lldp_port_t;
 
 #define	LLDP_PORT_DESC_MAX	255
@@ -124,6 +126,17 @@ typedef enum lldp_tx_8023_tlv {
 	LLDP_TX_X3_AGGR =		(1 << 2),
 	LLDP_TX_X3_MTU =		(1 << 3),
 } lldp_tx_8023_tlv_t;
+
+typedef struct lldp_agent_stats {
+	uint64_t	las_ageouts;
+	uint64_t	las_discarded;
+	uint64_t	las_in_errors;
+	uint64_t	las_in_frames;
+	uint64_t	las_out_frames;
+	uint64_t	las_discarded_tlvs;
+	uint64_t	las_unknown_tlvs;
+	uint64_t	las_length_errs;
+} lldp_agent_stats_t;
 
 const char *lldp_admin_status_str(lldp_admin_status_t);
 const char *lldp_chassis_typestr(lldp_chassis_type_t);
