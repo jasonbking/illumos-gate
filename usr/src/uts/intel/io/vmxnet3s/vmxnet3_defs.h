@@ -42,10 +42,10 @@
 #define	VMXNET3_REG_WCMD	0xF18	/* Wireless Command */
 
 /* BAR 0 */
-#define	VMXNET3_REG_IMR		0x0	/* Interrupt Mask Register */
-#define	VMXNET3_REG_TXPROD	0x600	/* Tx Producer Index */
-#define	VMXNET3_REG_RXPROD	0x800	/* Rx Producer Index for ring 1 */
-#define	VMXNET3_REG_RXPROD2	0xA00	/* Rx Producer Index for ring 2 */
+#define	VMXNET3_REG_IMR(i)	(0x000 + (i) * 8) /* Interrupt Mask Register */
+#define	VMXNET3_REG_TXPROD(q)	(0x600 + (q) * 8) /* Tx Producer Index */
+#define	VMXNET3_REG_RXPROD(q)	(0x800 + (q) * 8) /* Rx Producer Index ring 1 */
+#define	VMXNET3_REG_RXPROD2(q)	(0xA00 + (q) * 8) /* Rx Producer Index ring 2 */
 
 #define	VMXNET3_PT_REG_SIZE	4096	/* BAR 0 */
 #define	VMXNET3_VD_REG_SIZE	4096	/* BAR 1 */
@@ -193,7 +193,6 @@ typedef struct Vmxnet3_TxDataDesc {
 #define	VMXNET3_TCD_TXIDX_SIZE		12
 #define	VMXNET3_TCD_GEN_DWORD_SHIFT	3
 
-#pragma pack(1)
 typedef struct Vmxnet3_TxCompDesc {
 	uint32_t	txdIdx:12;	/* Index of the EOP TxDesc */
 	uint32_t	ext1:20;
@@ -204,10 +203,8 @@ typedef struct Vmxnet3_TxCompDesc {
 	uint32_t	rsvd:24;
 	uint32_t	type:7;		/* completion type */
 	uint32_t	gen:1;		/* generation bit */
-} Vmxnet3_TxCompDesc;
-#pragma pack()
+} __packed Vmxnet3_TxCompDesc;
 
-#pragma pack(1)
 typedef struct Vmxnet3_RxDesc {
 	uint64_t	addr;
 	uint32_t	len:14;
@@ -216,8 +213,7 @@ typedef struct Vmxnet3_RxDesc {
 	uint32_t	rsvd:15;
 	uint32_t	gen:1;		/* Generation bit */
 	uint32_t	ext1;
-} Vmxnet3_RxDesc;
-#pragma pack()
+} __packed Vmxnet3_RxDesc;
 
 /* values of RXD.BTYPE */
 #define	VMXNET3_RXD_BTYPE_HEAD	0	/* head only */
@@ -227,7 +223,6 @@ typedef struct Vmxnet3_RxDesc {
 #define	VMXNET3_RXD_BTYPE_SHIFT	14
 #define	VMXNET3_RXD_GEN_SHIFT	31
 
-#pragma pack(1)
 typedef struct Vmxnet3_RxCompDesc {
 	uint32_t	rxdIdx:12;	/* Index of the RxDesc */
 	uint32_t	ext1:2;
@@ -253,8 +248,10 @@ typedef struct Vmxnet3_RxCompDesc {
 	uint32_t	fcs:1;		/* Frame CRC correct */
 	uint32_t	type:7;		/* completion type */
 	uint32_t	gen:1;		/* generation bit */
-} Vmxnet3_RxCompDesc;
-#pragma pack()
+} __packed Vmxnet3_RxCompDesc;
+CTASSERT(sizeof (Vmxnet3_TxCompDesc) == sizeof (Vmxnet3_RxCompDesc));
+CTASSERT(sizeof (Vmxnet3_TxDesc) == sizeof (Vmxnet3_RxDesc));
+CTASSERT(sizeof (Vmxnet3_TxCompDesc) == sizeof (Vmxnet3_TxDesc));
 
 /* fields in RxCompDesc we access via Vmxnet3_GenericDesc.dword[3] */
 #define	VMXNET3_RCD_TUC_SHIFT	16
@@ -311,6 +308,11 @@ typedef union Vmxnet3_GenericDesc {
 /* Ring size must be a multiple of 32 */
 #define	VMXNET3_RING_SIZE_ALIGN	32
 #define	VMXNET3_RING_SIZE_MASK	(VMXNET3_RING_SIZE_ALIGN - 1)
+
+#define	VMXNET3_TX_RING_MIN_SIZE	VMXNET3_RING_SIZE_ALIGN
+#define	VMXNET3_TC_RING_MIN_SIZE	VMXNET3_RING_SIZE_ALIGN
+#define	VMXNET3_RX_RING_MIN_SIZE	VMXNET3_RING_SIZE_ALIGN
+#define	VMXNET3_RC_RING_MIN_SIZE	VMXNET3_RING_SIZE_ALIGN
 
 /* Max ring size */
 #define	VMXNET3_TX_RING_MAX_SIZE	4096
@@ -547,7 +549,6 @@ typedef struct Vmxnet3_DSDevRead {
 } Vmxnet3_DSDevRead;
 #pragma pack()
 
-#pragma pack(1)
 typedef struct Vmxnet3_TxQueueDesc {
 	Vmxnet3_TxQueueCtrl ctrl;
 	Vmxnet3_TxQueueConf conf;
@@ -555,10 +556,8 @@ typedef struct Vmxnet3_TxQueueDesc {
 	Vmxnet3_QueueStatus status;
 	UPT1_TxStats	stats;
 	uint8_t		_pad[88];	/* 128 aligned */
-} Vmxnet3_TxQueueDesc;
-#pragma pack()
+} __packed Vmxnet3_TxQueueDesc;
 
-#pragma pack(1)
 typedef struct Vmxnet3_RxQueueDesc {
 	Vmxnet3_RxQueueCtrl ctrl;
 	Vmxnet3_RxQueueConf conf;
@@ -566,10 +565,9 @@ typedef struct Vmxnet3_RxQueueDesc {
 	Vmxnet3_QueueStatus status;
 	UPT1_RxStats	stats;
 	uint8_t		_pad[88];	/* 128 aligned */
-} Vmxnet3_RxQueueDesc;
-#pragma pack()
+} __packed Vmxnet3_RxQueueDesc;
+CTASSERT(sizeof (Vmxnet3_TxQueueDesc) == sizeof (Vmxnet3_RxQueueDesc));
 
-#pragma pack(1)
 typedef struct Vmxnet3_DriverShared {
 	uint32_t	magic;
 	uint32_t	pad;		/* make devRead start at */
@@ -577,8 +575,7 @@ typedef struct Vmxnet3_DriverShared {
 	Vmxnet3_DSDevRead devRead;
 	uint32_t	ecr;
 	uint32_t	reserved[5];
-} Vmxnet3_DriverShared;
-#pragma pack()
+} __packed Vmxnet3_DriverShared;
 
 #define	VMXNET3_ECR_RQERR	(1 << 0)
 #define	VMXNET3_ECR_TQERR	(1 << 1)

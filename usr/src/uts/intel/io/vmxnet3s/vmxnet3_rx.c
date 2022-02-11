@@ -15,11 +15,194 @@
 /*
  * Copyright (c) 2013, 2016 by Delphix. All rights reserved.
  * Copyright 2018 Joyent, Inc.
+ * Copyright 2022 RackTop Systems, Inc.
  */
 
 #include <vmxnet3.h>
 
 static void vmxnet3_put_rxbuf(vmxnet3_rxbuf_t *);
+static int vmxnet3_rx_populate(vmxnet3_softc_t *, vmxnet3_rxqueue_t *, uint16_t,
+    boolean_t, boolean_t);
+
+int
+vmxnet3_rx_start(mac_ring_driver_t rh, uint64_t gen_num)
+{
+	vmxnet3_rxqueue_t *rxq = (vmxnet3_rxqueue_t *)rh;
+	vmxnet3_softc_t *dp = rxq->sc;
+	vmxnet3_cmdring_t *cmd = &rxq->cmdRing;
+	uint_t ring_size;
+	int ret = 0;
+
+	VMXNET3_DEBUG(dp, 2, "%s: enter idx = %u", __func__,
+	    (uint_t)(rxq- dp->rxQueue));
+
+	mutex_enter(&dp->genLock);
+	VERIFY(dp->devEnabled);
+	VERIFY3U(dp->rxRingSize, <=, rxq->nalloc);
+	ring_size = dp->rxRingSize;
+	mutex_exit(&dp->genLock);
+
+#ifdef DEBUG
+	size_t sz = ring_size * sizeof (Vmxnet3_GenericDesc);
+	ASSERT3U(sz, <=, rxq->cmdRing.dma.bufLen);
+	ASSERT3U(sz, <=, rxq->compRing.dma.bufLen);
+#endif
+
+	rxq->gen_num = gen_num;
+
+	vmxnet3_init_cmdring(&rxq->cmdRing, ring_size);
+	vmxnet3_init_compring(&rxq->compRing, ring_size);
+
+	do {
+		ret = vmxnet3_rx_populate(dp, rxq, cmd->next2fill, B_TRUE,
+		    B_FALSE);
+		if (ret != 0)
+			goto error;
+
+		VMXNET3_INC_RING_IDX(cmd, cmd->next2fill);
+	} while (cmd->next2fill != 0);
+
+	return (0);
+
+error:
+	for (uint_t i = 0; i < rxq->nalloc; i++) {
+		vmxnet3_rxbuf_t *rxBuf = rxq->bufRing[i].rxBuf;
+
+		/*
+		 * These are all desballoc()ed mblk_ts, so freeing the
+		 * mblk_t will also release the mapped dblk_t as well.
+		 */
+		freemsg(rxBuf->mblk);
+		rxq->bufRing[i].rxBuf = NULL;
+	}
+
+	vmxnet3_init_cmdring(&rxq->cmdRing, ring_size);
+	vmxnet3_init_compring(&rxq->compRing, ring_size);
+	return (ret);
+}
+
+void
+vmxnet3_rx_stop(mac_ring_driver_t rh)
+{
+	vmxnet3_rxqueue_t *rxq = (vmxnet3_rxqueue_t *)rh;
+
+	VMXNET3_DEBUG(rxq->sc, 2, "%s: enter idx=%u", __func__,
+	    (uint_t)(rxq - rxq->sc->rxQueue));
+
+	mutex_enter(&rxq->rxLock);
+
+	for (uint_t i = 0; i < rxq->nalloc; i++) {
+		vmxnet3_rxbuf_t *rxBuf = rxq->bufRing[i].rxBuf;
+
+		/*
+		 * These are all desballoc()ed mblk_ts, so freeing the
+		 * mblk_t will also release the mapped dblk_t as well.
+		 */
+		freemsg(rxBuf->mblk);
+		rxq->bufRing[i].rxBuf = NULL;
+	}
+
+	mutex_exit(&rxq->rxLock);
+}
+
+#ifdef notyet
+mblk_t *
+vmxnet3_rx_poll(mac_ring_driver_t rh, int poll_bytes)
+{
+	vmxnet3_rxqueue_t	*rxq = (vmxnet3_rxqueue_t *)rh;
+	mblk_t			*mp;
+
+	mp = vmxnet3_rx(rxq->sc, rxq, poll_bytes);
+
+	return (mp);
+}
+#endif
+
+int
+vmxnet3_rx_stat(mac_ring_driver_t rh, uint_t stat, uint64_t *valp)
+{
+	vmxnet3_rxqueue_t	*rxq = (vmxnet3_rxqueue_t *)rh;
+	vmxnet3_softc_t		*dp = rxq->sc;
+	UPT1_RxStats		*rxStats;
+
+	rxStats = &VMXNET3_RQDESC(rxq)->stats;
+
+	switch (stat) {
+	case MAC_STAT_RBYTES:
+	case MAC_STAT_IPACKETS:
+		break;
+	default:
+		return (ENOTSUP);
+	}
+
+	mutex_enter(&dp->genLock);
+	vmxnet3_get_stats(dp);
+	mutex_exit(&dp->genLock);
+
+	mutex_enter(&rxq->rxLock);
+
+	switch (stat) {
+	case MAC_STAT_RBYTES:
+		*valp = rxStats->ucastBytesRxOK + rxStats->mcastBytesRxOK +
+		    rxStats->bcastBytesRxOK;
+		break;
+	case MAC_STAT_IPACKETS:
+		*valp = rxStats->ucastPktsRxOK + rxStats->mcastPktsRxOK +
+		    rxStats->bcastPktsRxOK;
+		break;
+	}
+
+	mutex_exit(&rxq->rxLock);
+	return (0);
+}
+
+uint_t
+vmxnet3_rx_intr(caddr_t arg1, caddr_t arg2)
+{
+	vmxnet3_rxqueue_t	*rxq = (vmxnet3_rxqueue_t *)arg1;
+	vmxnet3_softc_t		*dp = rxq->sc;
+	mblk_t			*mp;
+	uint64_t		gen_num;
+
+	/*
+	 * This is set during attach and never changed afterward,
+	 * and does not need genLock held to read.
+	 */
+	if (dp->intrMaskMode == VMXNET3_IMM_ACTIVE)
+		(void) vmxnet3_rx_intr_disable((mac_intr_handle_t)rxq);
+
+	mutex_enter(&rxq->rxLock);
+	mp = vmxnet3_rx(dp, rxq, 0);
+	gen_num = rxq->gen_num;
+	mutex_exit(&rxq->rxLock);
+
+	(void) vmxnet3_rx_intr_enable((mac_intr_handle_t)rxq);
+
+	if (mp != NULL)
+		mac_rx_ring(dp->mac, NULL, mp, gen_num);
+
+	return (DDI_INTR_CLAIMED);
+}
+
+int
+vmxnet3_rx_intr_enable(mac_intr_handle_t mih)
+{
+	vmxnet3_rxqueue_t *rxq = (vmxnet3_rxqueue_t *)mih;
+	vmxnet3_softc_t *sc = rxq->sc;
+
+	vmxnet3_intr_enable(sc, rxq->intr_idx);
+	return (0);
+}
+
+int
+vmxnet3_rx_intr_disable(mac_intr_handle_t mih)
+{
+	vmxnet3_rxqueue_t *rxq = (vmxnet3_rxqueue_t *)mih;
+	vmxnet3_softc_t *sc = rxq->sc;
+
+	vmxnet3_intr_disable(sc, rxq->intr_idx);
+	return (0);
+}
 
 /*
  * Allocate a new rxBuf from memory. All its fields are set except
@@ -148,11 +331,14 @@ vmxnet3_get_rxpool_buf(vmxnet3_softc_t *dp)
  * Returns:
  *	0 on success, non-zero on failure.
  */
-static int
+int
 vmxnet3_rxpool_init(vmxnet3_softc_t *dp)
 {
-	int err = 0;
 	vmxnet3_rxbuf_t *rxBuf;
+	int err = 0;
+
+	ASSERT(MUTEX_HELD(&dp->genLock));
+	ASSERT(!dp->devEnabled);
 
 	ASSERT(dp->rxPool.nBufsLimit > 0);
 	while (dp->rxPool.nBufs < dp->rxPool.nBufsLimit) {
@@ -163,13 +349,19 @@ vmxnet3_rxpool_init(vmxnet3_softc_t *dp)
 		VERIFY(vmxnet3_put_rxpool_buf(dp, rxBuf, B_TRUE));
 	}
 
-	if (err != 0) {
-		while ((rxBuf = vmxnet3_get_rxpool_buf(dp)) != NULL) {
-			vmxnet3_free_rxbuf(dp, rxBuf);
-		}
-	}
+	if (err != 0)
+		vmxnet3_rxpool_fini(dp);
 
 	return (err);
+}
+
+void
+vmxnet3_rxpool_fini(vmxnet3_softc_t *dp)
+{
+	vmxnet3_rxbuf_t *rxBuf;
+
+	while ((rxBuf = vmxnet3_get_rxpool_buf(dp)) != NULL)
+		vmxnet3_free_rxbuf(dp, rxBuf);
 }
 
 /*
@@ -205,8 +397,10 @@ vmxnet3_rx_populate(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq, uint16_t idx,
 		    rxBuf->dma.bufLen, BPRI_MED, &rxBuf->freeCB);
 		if (rxBuf->mblk == NULL) {
 			if (pool) {
+				mutex_enter(&dp->rxPoolLock);
 				VERIFY(vmxnet3_put_rxpool_buf(dp, rxBuf,
 				    B_FALSE));
+				mutex_exit(&dp->rxPoolLock);
 			} else {
 				vmxnet3_free_rxbuf(dp, rxBuf);
 			}
@@ -242,8 +436,7 @@ vmxnet3_rxqueue_init(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq)
 	vmxnet3_cmdring_t *cmdRing = &rxq->cmdRing;
 	int err;
 
-	dp->rxPool.nBufsLimit = vmxnet3_getprop(dp, "RxBufPoolLimit", 0,
-	    cmdRing->size * 10, cmdRing->size * 2);
+	dp->rxPool.nBufsLimit = dp->rxBufPool;
 
 	do {
 		if ((err = vmxnet3_rx_populate(dp, rxq, cmdRing->next2fill,
@@ -251,16 +444,7 @@ vmxnet3_rxqueue_init(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq)
 			goto error;
 		}
 		VMXNET3_INC_RING_IDX(cmdRing, cmdRing->next2fill);
-	} while (cmdRing->next2fill);
-
-	/*
-	 * Pre-allocate rxPool buffers so that we never have to allocate
-	 * new buffers from interrupt context when we need to replace a buffer
-	 * in the rxqueue.
-	 */
-	if ((err = vmxnet3_rxpool_init(dp)) != 0) {
-		goto error;
-	}
+	} while (cmdRing->next2fill != 0);
 
 	return (0);
 
@@ -283,10 +467,6 @@ vmxnet3_rxqueue_fini(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq)
 	unsigned int i;
 
 	ASSERT(!dp->devEnabled);
-
-	/* First the rxPool */
-	while ((rxBuf = vmxnet3_get_rxpool_buf(dp)))
-		vmxnet3_free_rxbuf(dp, rxBuf);
 
 	/* Then the ring */
 	for (i = 0; i < rxq->cmdRing.size; i++) {
@@ -335,15 +515,13 @@ vmxnet3_rx_hwcksum(vmxnet3_softc_t *dp, mblk_t *mp,
  *	A list of messages to pass to the MAC subystem.
  */
 mblk_t *
-vmxnet3_rx_intr(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq)
+vmxnet3_rx(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq, int bytes __unused)
 {
 	vmxnet3_compring_t *compRing = &rxq->compRing;
 	vmxnet3_cmdring_t *cmdRing = &rxq->cmdRing;
 	Vmxnet3_RxQueueCtrl *rxqCtrl = rxq->sharedCtrl;
 	Vmxnet3_GenericDesc *compDesc;
 	mblk_t *mplist = NULL, **mplistTail = &mplist;
-
-	ASSERT(mutex_owned(&dp->intrLock));
 
 	compDesc = VMXNET3_GET_DESC(compRing, compRing->next2comp);
 	while (compDesc->rcd.gen == compRing->gen) {
@@ -439,6 +617,7 @@ vmxnet3_rx_intr(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq)
 	}
 
 	if (rxqCtrl->updateRxProd) {
+		uint_t idx = (uint_t)(rxq - dp->rxQueue);
 		uint32_t rxprod;
 
 		/*
@@ -451,8 +630,7 @@ vmxnet3_rx_intr(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq)
 		} else {
 			rxprod = cmdRing->size - 1;
 		}
-		VMXNET3_BAR0_PUT32(dp, VMXNET3_REG_RXPROD, rxprod);
+		VMXNET3_BAR0_PUT32(dp, VMXNET3_REG_RXPROD(idx), rxprod);
 	}
-
 	return (mplist);
 }

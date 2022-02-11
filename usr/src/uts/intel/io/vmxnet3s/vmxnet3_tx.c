@@ -16,6 +16,7 @@
 /*
  * Copyright (c) 2012, 2016 by Delphix. All rights reserved.
  * Copyright 2018 Joyent, Inc.
+ * Copyright 2022 Racktop Systems, Inc.
  */
 
 #include <vmxnet3.h>
@@ -33,13 +34,91 @@ typedef struct vmxnet3_offload_t {
 	uint16_t msscof;
 } vmxnet3_offload_t;
 
-/*
- * Initialize a TxQueue. Currently nothing needs to be done.
- */
-/* ARGSUSED */
+/* Tx DMA engine description */
+ddi_dma_attr_t vmxnet3_dma_attrs_tx = {
+	.dma_attr_version =	DMA_ATTR_V0,
+	.dma_attr_addr_lo =	0x0000000000000000ull,
+	.dma_attr_addr_hi =	0xFFFFFFFFFFFFFFFFull,
+	.dma_attr_count_max =	0xFFFFFFFFFFFFFFFFull,
+	.dma_attr_align =	0x0000000000000001ull,
+	.dma_attr_burstsizes =	0x0000000000000001ull,
+	.dma_attr_minxfer =	0x00000001,
+	.dma_attr_maxxfer =	0x000000000000FFFFull,
+	.dma_attr_seg =		0xFFFFFFFFFFFFFFFFull,
+	.dma_attr_sgllen =	-1,
+	.dma_attr_granular =	0x00000001,
+	.dma_attr_flags =	0
+};
+
 int
-vmxnet3_txqueue_init(vmxnet3_softc_t *dp, vmxnet3_txqueue_t *txq)
+vmxnet3_tx_start(mac_ring_driver_t rh, uint64_t gen_num)
 {
+	vmxnet3_txqueue_t *txq = (vmxnet3_txqueue_t *)rh;
+
+	VMXNET3_DEBUG(txq->sc, 2, "%s: enter", __func__);
+
+	mutex_enter(&txq->txLock);
+
+	txq->gen_num = gen_num;
+
+	vmxnet3_init_cmdring(&txq->cmdRing, txq->sc->txRingSize);
+	vmxnet3_init_compring(&txq->compRing, txq->sc->rxRingSize);
+
+	/* TODO: tx copy buffers */
+
+	mutex_exit(&txq->txLock);
+	return (0);
+}
+
+void
+vmxnet3_tx_stop(mac_ring_driver_t rh)
+{
+	vmxnet3_txqueue_t	*txq = (vmxnet3_txqueue_t *)rh;
+	vmxnet3_softc_t		*dp = txq->sc;
+
+	VMXNET3_DEBUG(dp, 2, "%s: enter", __func__);
+
+	mutex_enter(&txq->txLock);
+	vmxnet3_tx_flush(txq);
+	vmxnet3_txqueue_fini(dp, txq);
+	mutex_exit(&txq->txLock);
+}
+
+int
+vmxnet3_tx_stat(mac_ring_driver_t rh, uint_t stat, uint64_t *valp)
+{
+	vmxnet3_txqueue_t	*txq = (vmxnet3_txqueue_t *)rh;
+	vmxnet3_softc_t		*dp = txq->sc;
+	UPT1_TxStats		*txStats;
+
+	txStats = &VMXNET3_TQDESC(txq)->stats;
+
+	switch (stat) {
+	case MAC_STAT_OBYTES:
+	case MAC_STAT_OPACKETS:
+		break;
+	default:
+		return (ENOTSUP);
+	}
+
+	mutex_enter(&dp->genLock);
+	vmxnet3_get_stats(dp);
+	mutex_exit(&dp->genLock);
+
+	mutex_enter(&txq->txLock);
+
+	switch (stat) {
+	case MAC_STAT_OBYTES:
+		*valp = txStats->ucastBytesTxOK + txStats->mcastBytesTxOK +
+		    txStats->bcastBytesTxOK;
+		break;
+	case MAC_STAT_OPACKETS:
+		*valp = txStats->ucastPktsTxOK + txStats->mcastPktsTxOK +
+		    txStats->bcastPktsTxOK;
+		break;
+	}
+
+	mutex_exit(&txq->txLock);
 	return (0);
 }
 
@@ -51,14 +130,21 @@ vmxnet3_txqueue_fini(vmxnet3_softc_t *dp, vmxnet3_txqueue_t *txq)
 {
 	unsigned int i;
 
-	ASSERT(!dp->devEnabled);
-
 	for (i = 0; i < txq->cmdRing.size; i++) {
 		mblk_t *mp = txq->metaRing[i].mp;
-		if (mp) {
-			freemsg(mp);
-		}
+
+		freemsg(mp);
+		txq->metaRing[i].mp = NULL;
 	}
+}
+
+void
+vmxnet3_tx_flush(vmxnet3_txqueue_t *txq)
+{
+	vmxnet3_softc_t *dp = txq->sc;
+	uint_t idx = (uint_t)(txq - dp->txQueue);
+
+	VMXNET3_BAR0_PUT32(dp, VMXNET3_REG_TXPROD(idx), 0);
 }
 
 /*
@@ -155,9 +241,10 @@ vmxnet3_tx_prepare_offload(vmxnet3_softc_t *dp, vmxnet3_offload_t *ol,
  *	The ring is filled if VMXNET3_TX_OK is returned.
  */
 static vmxnet3_txstatus
-vmxnet3_tx_one(vmxnet3_softc_t *dp, vmxnet3_txqueue_t *txq,
-    vmxnet3_offload_t *ol, mblk_t *mp)
+vmxnet3_tx_one(void *arg, vmxnet3_offload_t *ol, mblk_t *mp)
 {
+	vmxnet3_txqueue_t *txq = arg;
+	vmxnet3_softc_t *dp = txq->sc;
 	int ret = VMXNET3_TX_OK;
 	unsigned int frags = 0, totLen = 0;
 	vmxnet3_cmdring_t *cmdRing = &txq->cmdRing;
@@ -166,8 +253,6 @@ vmxnet3_tx_one(vmxnet3_softc_t *dp, vmxnet3_txqueue_t *txq,
 	uint16_t sopIdx, eopIdx;
 	uint8_t sopGen, curGen;
 	mblk_t *mblk;
-
-	mutex_enter(&dp->txLock);
 
 	sopIdx = eopIdx = cmdRing->next2fill;
 	sopGen = cmdRing->gen;
@@ -217,7 +302,7 @@ vmxnet3_tx_one(vmxnet3_softc_t *dp, vmxnet3_txqueue_t *txq,
 					goto error;
 				}
 				if (cmdRing->avail - frags <= 1) {
-					dp->txMustResched = B_TRUE;
+					txq->reschedule = B_TRUE;
 					(void) ddi_dma_unbind_handle(
 					    dp->txDmaHandle);
 					ret = VMXNET3_TX_RINGFULL;
@@ -233,8 +318,8 @@ vmxnet3_tx_one(vmxnet3_softc_t *dp, vmxnet3_txqueue_t *txq,
 				frags++;
 				eopIdx = cmdRing->next2fill;
 
-				txDesc = VMXNET3_GET_DESC(cmdRing, eopIdx);
-				ASSERT(txDesc->txd.gen != cmdRing->gen);
+				txDesc = &cmdRing->desc[eopIdx];
+				ASSERT3U(txDesc->txd.gen, !=, cmdRing->gen);
 
 				/* txd.addr */
 				txDesc->txd.addr = addr;
@@ -308,9 +393,92 @@ error:
 	}
 
 done:
-	mutex_exit(&dp->txLock);
-
 	return (ret);
+}
+
+static mblk_t *
+vmxnet3_tx_mp(void *arg, mblk_t *orig_mp)
+{
+	vmxnet3_txqueue_t *txq = arg;
+	vmxnet3_softc_t *dp = txq->sc;
+	mblk_t *mp = orig_mp;
+	vmxnet3_offload_t ol;
+	vmxnet3_txstatus status = VMXNET3_TX_OK;
+	int pullup;
+
+	mutex_enter(&txq->txLock);
+
+	pullup = vmxnet3_tx_prepare_offload(dp, &ol, mp);
+	if (pullup > 0) {
+		mp = msgpullup(orig_mp, pullup);
+		txq->tx_pullup_needed++;
+		if (mp == NULL) {
+			txq->tx_pullup_failed++;
+			txq->reschedule = B_TRUE;
+			mutex_exit(&txq->txLock);
+			return (orig_mp);
+		}
+	}
+
+	switch ((status = vmxnet3_tx_one(txq, &ol, mp))) {
+	case VMXNET3_TX_OK:
+		if (mp != orig_mp)
+			freemsg(orig_mp);
+		mutex_exit(&txq->txLock);
+		return (NULL);
+	case VMXNET3_TX_FAILURE:
+		txq->reschedule = B_TRUE;
+		/*FALLTHRU*/
+	case VMXNET3_TX_RINGFULL:
+		txq->tx_ring_full++;
+		if (mp != orig_mp)
+			freemsg(mp);
+		mutex_exit(&txq->txLock);
+		return (orig_mp);
+	case VMXNET3_TX_PULLUP:
+		if (mp != orig_mp) {
+			freemsg(mp);
+			mp = NULL;
+		}
+		break;
+	default:
+		dev_err(dp->dip, CE_PANIC,
+		    "vmxnet3_tx_one() invalid return value %d", status);
+	}
+
+	mp = msgpullup(orig_mp, -1);
+	if (mp == NULL) {
+		txq->tx_pullup_failed++;
+		txq->reschedule = B_TRUE;
+		mutex_exit(&txq->txLock);
+		return (orig_mp);
+	}
+	txq->tx_pullup_needed++;
+
+	switch ((status = vmxnet3_tx_one(txq, &ol, mp))) {
+	case VMXNET3_TX_OK:
+		break;
+	case VMXNET3_TX_FAILURE:
+	case VMXNET3_TX_RINGFULL:
+		txq->tx_ring_full++;
+		freemsg(mp);
+		txq->reschedule = B_TRUE;
+		mutex_exit(&txq->txLock);
+		return (orig_mp);
+	case VMXNET3_TX_PULLUP:
+		dev_err(dp->dip, CE_PANIC,
+		    "vmxnet3_tx_one() returned VMXNET3_TX_PULLUP on single "
+		    "mblk_t");
+		break;
+	default:
+		dev_err(dp->dip, CE_PANIC,
+		    "vmxnet3_tx_one() invalid return value %d", status);
+		break;
+	}
+
+	freemsg(orig_mp);
+	mutex_exit(&txq->txLock);
+	return (NULL);
 }
 
 /*
@@ -321,22 +489,16 @@ done:
  *	The mps to be retransmitted later if the ring is full.
  */
 mblk_t *
-vmxnet3_tx(void *data, mblk_t *mps)
+vmxnet3_tx_chain(void *mrh, mblk_t *mps)
 {
-	vmxnet3_softc_t *dp = data;
-	vmxnet3_txqueue_t *txq = &dp->txQueue;
+	vmxnet3_txqueue_t *txq = mrh;
+	vmxnet3_softc_t *dp = txq->sc;
 	vmxnet3_cmdring_t *cmdRing = &txq->cmdRing;
 	Vmxnet3_TxQueueCtrl *txqCtrl = txq->sharedCtrl;
-	vmxnet3_txstatus status = VMXNET3_TX_OK;
-	mblk_t *mp;
+	mblk_t *mp = mps;
+	uint_t qidx = (uint_t)(txq - dp->txQueue);
 
-	ASSERT(mps != NULL);
-
-	do {
-		vmxnet3_offload_t ol;
-		int pullup;
-
-		mp = mps;
+	while (mp != NULL) {
 		mps = mp->b_next;
 		mp->b_next = NULL;
 
@@ -349,74 +511,30 @@ vmxnet3_tx(void *data, mblk_t *mps)
 			 */
 			ASSERT(B_FALSE);
 			freemsg(mp);
+			mp = mps;
 			continue;
 		}
 
-		/*
-		 * Prepare the offload while we're still handling the original
-		 * message -- msgpullup() discards the metadata afterwards.
-		 */
-		pullup = vmxnet3_tx_prepare_offload(dp, &ol, mp);
-		if (pullup) {
-			mblk_t *new_mp = msgpullup(mp, pullup);
-			atomic_inc_32(&dp->tx_pullup_needed);
-			freemsg(mp);
-			if (new_mp) {
-				mp = new_mp;
-			} else {
-				atomic_inc_32(&dp->tx_pullup_failed);
-				continue;
-			}
-		}
+		mp = vmxnet3_tx_mp(txq, mp);
+		if (mp != NULL)
+			break;
 
-		/*
-		 * Try to map the message in the Tx ring.
-		 * This call might fail for non-fatal reasons.
-		 */
-		status = vmxnet3_tx_one(dp, txq, &ol, mp);
-		if (status == VMXNET3_TX_PULLUP) {
-			/*
-			 * Try one more time after flattening
-			 * the message with msgpullup().
-			 */
-			if (mp->b_cont != NULL) {
-				mblk_t *new_mp = msgpullup(mp, -1);
-				atomic_inc_32(&dp->tx_pullup_needed);
-				freemsg(mp);
-				if (new_mp) {
-					mp = new_mp;
-					status = vmxnet3_tx_one(dp, txq, &ol,
-					    mp);
-				} else {
-					atomic_inc_32(&dp->tx_pullup_failed);
-					continue;
-				}
-			}
-		}
-		if (status != VMXNET3_TX_OK && status != VMXNET3_TX_RINGFULL) {
-			/* Fatal failure, drop it */
-			atomic_inc_32(&dp->tx_error);
-			freemsg(mp);
-		}
-	} while (mps && status != VMXNET3_TX_RINGFULL);
-
-	if (status == VMXNET3_TX_RINGFULL) {
-		atomic_inc_32(&dp->tx_ring_full);
-		mp->b_next = mps;
-		mps = mp;
-	} else {
-		ASSERT(!mps);
+		mp = mps;
 	}
 
 	/* Notify the device */
-	mutex_enter(&dp->txLock);
+	mutex_enter(&txq->txLock);
 	if (txqCtrl->txNumDeferred >= txqCtrl->txThreshold) {
 		txqCtrl->txNumDeferred = 0;
-		VMXNET3_BAR0_PUT32(dp, VMXNET3_REG_TXPROD, cmdRing->next2fill);
+		VMXNET3_BAR0_PUT32(dp, VMXNET3_REG_TXPROD(qidx),
+		    cmdRing->next2fill);
 	}
-	mutex_exit(&dp->txLock);
+	mutex_exit(&txq->txLock);
 
-	return (mps);
+	if (mp != NULL)
+		mp->b_next = mps;
+
+	return (mp);
 }
 
 /*
@@ -434,9 +552,9 @@ vmxnet3_tx_complete(vmxnet3_softc_t *dp, vmxnet3_txqueue_t *txq)
 	boolean_t completedTx = B_FALSE;
 	boolean_t ret = B_FALSE;
 
-	mutex_enter(&dp->txLock);
+	mutex_enter(&txq->txLock);
 
-	compDesc = VMXNET3_GET_DESC(compRing, compRing->next2comp);
+	compDesc = &compRing->desc[compRing->next2comp];
 	while (compDesc->tcd.gen == compRing->gen) {
 		vmxnet3_metatx_t *sopMetaDesc, *eopMetaDesc;
 		uint16_t sopIdx, eopIdx;
@@ -464,15 +582,58 @@ vmxnet3_tx_complete(vmxnet3_softc_t *dp, vmxnet3_txqueue_t *txq)
 		    eopIdx);
 
 		VMXNET3_INC_RING_IDX(compRing, compRing->next2comp);
-		compDesc = VMXNET3_GET_DESC(compRing, compRing->next2comp);
+		compDesc = &compRing->desc[compRing->next2comp];
 	}
 
-	if (dp->txMustResched && completedTx) {
-		dp->txMustResched = B_FALSE;
+	if (txq->reschedule && completedTx) {
+		txq->reschedule = B_FALSE;
 		ret = B_TRUE;
 	}
 
-	mutex_exit(&dp->txLock);
+	mutex_exit(&txq->txLock);
 
 	return (ret);
+}
+
+/* MSI-X TX completion interrupt */
+uint_t
+vmxnet3_tx_intr(caddr_t arg1, caddr_t arg2)
+{
+	vmxnet3_txqueue_t	*txq = (vmxnet3_txqueue_t *)arg1;
+	vmxnet3_softc_t		*dp = txq->sc;
+
+	if (dp->intrMaskMode == VMXNET3_IMM_ACTIVE)
+		(void) vmxnet3_tx_intr_disable((mac_intr_handle_t)txq);
+
+	/*
+	 * XXX: The FreeBSD source suggests that the work done by
+	 * vmxnet3_tx_complete could be expensive. It explicitly does not
+	 * use TX interrupts for completion. Perhaps we should do this
+	 * in a softint?
+	 */
+	if (vmxnet3_tx_complete(dp, txq))
+		mac_tx_ring_update(dp->mac, txq->mrh);
+
+	(void) vmxnet3_tx_intr_enable((mac_intr_handle_t)txq);
+	return (DDI_INTR_CLAIMED);
+}
+
+int
+vmxnet3_tx_intr_enable(mac_intr_handle_t mih)
+{
+	vmxnet3_txqueue_t *txq = (vmxnet3_txqueue_t *)mih;
+	vmxnet3_softc_t *dp = txq->sc;
+
+	vmxnet3_intr_enable(dp, txq->intr_idx);
+	return (0);
+}
+
+int
+vmxnet3_tx_intr_disable(mac_intr_handle_t mih)
+{
+	vmxnet3_txqueue_t *txq = (vmxnet3_txqueue_t *)mih;
+	vmxnet3_softc_t *dp = txq->sc;
+
+	vmxnet3_intr_disable(dp, txq->intr_idx);
+	return (0);
 }
