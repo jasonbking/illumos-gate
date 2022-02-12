@@ -62,6 +62,9 @@ typedef enum log_type {
 	LOG_T_OBJ,
 } log_type_t;
 
+void log_sysinit(void);
+void log_sysfini(void);
+
 int log_init(const char *, log_t **);
 int log_child(const log_t *, log_t **, ...) __sentinel(0);
 void log_fini(log_t *);
@@ -73,7 +76,7 @@ int log_stream_syslog(struct nvlist *, const char *, void *);
 int log_key_add(log_t *, ...) __sentinel(0);
 int log_key_remove(log_t *, const char *);
 
-void log(log_t *, log_level_t, const char *, ...) __sentinel(0);
+void log_lvl(log_t *, log_level_t, const char *, ...) __sentinel(0);
 void log_trace(log_t *, const char *, ...) __sentinel(0);
 void log_debug(log_t *, const char *, ...) __sentinel(0);
 void log_info(log_t *, const char *, ...) __sentinel(0);
@@ -89,6 +92,18 @@ int logobj_init(logobj_t *, ...) __sentinel(0);
 int logobj_key_add(logobj_t *, ...) __sentinel(0);
 int logobj_key_remove(logobj_t *, const char *);
 void logobj_fini(logobj_t *);
+
+extern __thread log_t *log;
+
+#define	TRACE_ENTER(_l)				\
+	log_trace((_l), "function enter",	\
+	    LOG_T_STRING, "function", __func__,	\
+	    LOG_T_END);
+
+#define	TRACE_RETURN(_l)			\
+	log_trace((_l), "function return",	\
+	    LOG_T_STRING, "function", __func__,	\
+	    LOG_T_END);
 
 #ifdef __cplusplus
 }

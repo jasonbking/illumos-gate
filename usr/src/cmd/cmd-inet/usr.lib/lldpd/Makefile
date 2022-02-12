@@ -16,10 +16,12 @@
 PROG =		lldpd
 MANIFEST =	lldpd.xml
 
-OBJS =		agent.o \
-		lldpd.o \
-		log.o	\
-		pdu.o	\
+OBJS =		agent.o 	\
+		lldpd.o 	\
+		log.o		\
+		neighbor.o	\
+		pdu.o		\
+		timer.o		\
 		util.o
 
 SRCS =		$(OBJS:%.o=%.c)
@@ -56,7 +58,7 @@ $(PROG):	$(OBJS)
 		$(LINK.c) $(OBJS) -o $@ $(LDLIBS)
 		$(POST_PROCESS)
 
-include		$(SRC)/cmd/cmd-inet/Makefile.lib
+include		$(SRC)/cmd/cmd-inet/usr.lib/Makefile.lib
 
 install:	all $(ROOTLIBINETPROG) $(ROOTMANIFEST)
 
