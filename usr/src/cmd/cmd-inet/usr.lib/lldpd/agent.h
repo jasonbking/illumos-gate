@@ -24,11 +24,14 @@
 #include <libuutil.h>
 
 #include "buf.h"
-#include "log.h"
+#include "timer.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+struct log;
+struct neighbor;
 
 typedef enum tx_state {
 	TX_LLDP_INITIALIZE	= 0,
@@ -38,15 +41,36 @@ typedef enum tx_state {
 } tx_state_t;
 #define	TX_BEGIN		TX_LLDP_INITIALIZE
 
-typedef enum timer_state {
+typedef struct tx {
+	tx_state_t	tx_state;
+	struct log	*tx_log;
+
+	buf_t		tx_buf;
+
+	lldp_timer_t	tx_shutdown;
+	uint16_t	tx_ttl;
+	bool		tx_now;
+} tx_t;
+
+typedef enum ttr_state {
 	TX_TIMER_INITIALIZE	= 0,
 	TX_TIMER_IDLE		= 1,
 	TX_TIMER_EXPIRES	= 2,
 	SIGNAL_TX		= 3,
 	TX_TICK			= 4,
 	TX_FAST_START		= 5,
-} timer_state_t;
-#define	TIMER_BEGIN		TX_TIMER_INITIALIZE
+} ttr_state_t;
+#define	TTR_BEGIN		TX_TIMER_INITIALIZE
+
+typedef struct ttr {
+	ttr_state_t	ttr_state;
+	struct log	*ttr_log;
+
+	lldp_timer_t	ttr_timer;
+	uint16_t	ttr_tx_fast;
+	uint16_t	ttr_tx_credit;
+	bool		ttr_tick;
+} ttr_t;
 
 typedef enum rx_state {
 	LLDP_WAIT_PORT_OPERATIONAL	= 0,
@@ -59,78 +83,76 @@ typedef enum rx_state {
 } rx_state_t;
 #define	RX_BEGIN		LLDP_WAIT_PORT_OPERATIONAL
 
-struct log;
+typedef struct rx {
+	rx_state_t		rx_state;
+	struct log		*rx_log;
+
+	buf_t			rx_buf;
+	struct neighbor		*rx_neighbor;
+	struct neighbor		*rx_curr_neighbor;
+	uu_list_index_t		rx_curr_idx;
+	uint16_t		rx_ttl;
+
+	lldp_timer_t		rx_too_many_neighbors_timer;
+	bool			rx_info_age;
+	bool			rx_recv_frame;
+	bool			rx_bad_frame;
+	bool			rx_changes;
+	bool			rx_too_many_neighbors;
+} rx_t;
+
+typedef struct agent_cfg {
+	lldp_port_t		ac_port;
+	lldp_admin_status_t	ac_status;
+	uint16_t		ac_tx_hold;
+	uint16_t		ac_tx_interval;
+	uint16_t		ac_reinit_delay;
+	uint16_t		ac_tx_credit_max;
+	uint16_t		ac_tx_fast_init;
+
+	uint16_t		ac_neighbor_max;
+} agent_cfg_t;
 
 typedef struct agent {
-	mutex_t			lock;
-	condvar_t		cv;
+	mutex_t			a_lock;
+	cond_t			a_cv;
 
-	char			*name;
-	log_t			*log;
-	thread_t		tid;
+	char			*a_name;
+	struct log		*a_log;
+	thread_t		a_tid;
 
-	dlpi_handle_t		dlh;
-	dlpi_notifyid_t		dl_nid;
-	dlpi_info_t		dl_info;
+	dlpi_handle_t		a_dlh;
+	dlpi_notifyid_t		a_dl_nid;
+	dlpi_info_t		a_dl_info;
 
-	bool			exit;
-	bool			port_enabled;
-	lldp_admin_status_t	status;
+	bool			a_exit;
+	bool			a_port_enabled;
 
-	uu_list_t		*neighbors;
+	agent_cfg_t		a_cfg;
 
-	lldp_clock_t		clk;
-	lldp_timer_t		ttx_timer;
-	lldp_timer_t		ttx_shutdown;
-	lldp_timer_t		t_toomany;
+	uu_list_t		*a_neighbors;
 
-	tx_state_t		tx_state;
-	log_t			tx_log;
+	lldp_clock_t		a_clk;
+	rx_t			a_rx;
+	tx_t			a_tx;
+	ttr_t			a_ttr;
 
-	rx_state_t		rx_state;
-	log_t			rx_log;
+	bool			a_local_changes;
+	bool			a_new_neighbor;
 
-	timer_state_t		timer_state;
-	log_t			timer_log;
+	lldp_agent_stats_t	a_stats;
+} agent_t;
 
-	uint16_t		tx_ttl;
-	uint16_t		rx_ttl;
-	uint16_t		tx_interval;
-	uint16_t		tx_fast_msg;
-	uint8_t			tx_credit_max;
-	uint8_t			tx_credit;
-	uint8_t			tx_fast;
-	uint8_t			tx_fast_init;
-	uint8_t			tx_msg_hold;
-	uint8_t			reinit_delay;
+agent_t	*agent_create(const char *);
+void	agent_destroy(agent_t *);
+bool	agent_enable(agent_t *);
+void	agent_disable(agent_t *);
 
-	bool			tx_ttr;
-	bool			tx_shutdown;
-	bool			tx_now;
-	bool			rx_info_age;
-	bool			recv_frame;
-	bool			rx_changes;
-	bool			bad_frame;
-	bool			local_changes;
-	bool			new_neighbor;
-	bool			tx_tick;
-	bool			too_many_neighbors;
+void			agent_set_status(agent_t *, lldp_admin_status_t);
+lldp_admin_status_t	agent_get_status(agent_t *);
 
-	buf_t			rxbuf;
-	buf_t			txbuf;
-
-	lldp_agent_stats_t	stats;
-} lldp_agent_t;
-
-agent_t *agent_create(const char *, int, struct periodic_handle);
-void agent_destroy(agent_t *);
-
-bool agent_enable(agent_t *);
-void agent_disable(agent_t *);
-void agent_set_status(agent_t *, lldp_admin_status_t);
 void agent_local_change(agent_t *);
 void agent_rx_frame(agent_t *);
-void agent_age_rxinfo(agent_t *);
 size_t agent_num_neighbors(agent_t *);
 
 #ifdef __cplusplus
