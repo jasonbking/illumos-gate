@@ -50,13 +50,6 @@ typedef enum dir_flags {
 	DF_IS_SYMLINK =	1 << 2,
 } dir_flags_t;
 
-typedef struct path {
-	custr_t	*p_name;
-	size_t	*p_idx;
-	uint_t	p_n;
-	uint_t	p_alloc;
-} path_t;
-
 typedef struct name {
 	char	*n_name;
 	bool	n_is_symlink;
@@ -83,25 +76,28 @@ typedef struct obj {
 	elfinfo_t	obj_elfinfo;
 } obj_t;
 
-static void path_init(path_t *, const char *);
-static void path_append(path_t *, const char *);
-static bool path_pop(path_t *);
+static void path_init(custr_t **, const char *);
+static size_t path_append(custr_t *, const char *);
 
 static bool maybe_obj(const char *, mode_t);
 static bool get_elfinfo(const char *, int, elfinfo_t *);
-static void add_name(obj_t *, path_t *, bool);
+static void add_name(obj_t *, custr_t *, bool);
 static int cmp_id(const void *, const void *);
 static int cmp_objname(const void *, const void *);
 static int cmp_names(const void *, const void *);
 
-static void process_dir(path_t *, int, const struct stat *, dir_flags_t);
-static void process_file(path_t *, int, const struct stat *, bool);
+static void process_dir(custr_t *, int, const struct stat *, dir_flags_t);
+static void process_file(custr_t *, int, const struct stat *, bool);
 static void process_arg(char *);
 
 static void sort_names(void *, void *);
 static void print_entry(void *, void *);
 
 static void foreach_avl(avl_tree_t *, void (*)(void *, void *), void *);
+
+static void nomem(void);
+static char *xstrdup(const char *);
+static void *xcalloc(size_t, size_t);
 
 static avl_tree_t avl_byid;
 static avl_tree_t avl_byname;
@@ -187,13 +183,13 @@ main(int argc, char **argv)
 	foreach_avl(&avl_byid, sort_names, &avl_byname);
 	foreach_avl(&avl_byname, print_entry, NULL);
 
-	return (0);
+	return (EXIT_SUCCESS);
 }
 
 static void
 process_arg(char *arg)
 {
-	path_t path;
+	custr_t *path = NULL;
 	struct stat sb;
 	int fd;
 
@@ -218,16 +214,13 @@ process_arg(char *arg)
 		}
 
 		rootfd = fd;
-		process_dir(&path, fd, &sb, DF_NONE);
+		/* process_dir() will close fd */
+		process_dir(path, fd, &sb, DF_NONE);
+		custr_free(path);
 		return;
 	}
 
-	char *argcopy = strdup(arg);
-
-	if (argcopy == NULL) {
-		err(EXIT_FAILURE, "strdup");
-	}
-
+	char *argcopy = xstrdup(arg);
 	char *dir = dirname(argcopy);
 
 	if (!S_ISREG(sb.st_mode)) {
@@ -242,13 +235,14 @@ process_arg(char *arg)
 	if (relpath) {
 		path_init(&path, NULL);
 		(void) printf("PREFIX %s\n", dir);
-		path_append(&path, basename(arg));
+		(void) path_append(path, basename(arg));
 	} else {
 		path_init(&path, arg);
 	}
 	free(argcopy);
 
-	process_file(&path, fd, &sb, DF_NONE);
+	process_file(path, fd, &sb, DF_NONE);
+	custr_free(path);
 }
 
 /*
@@ -268,14 +262,14 @@ process_arg(char *arg)
  * Note that dirfd is always closed upon return from process_dir().
  */
 static void
-process_dir(path_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
+process_dir(custr_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 {
 	DIR *d;
 	struct dirent *de;
 
 	d = fdopendir(dirfd);
 	if (d == NULL) {
-		warn("opendir(%s)", custr_cstr(p->p_name));
+		warn("opendir(%s)", custr_cstr(p));
 		VERIFY0(close(dirfd));
 		return;
 	}
@@ -284,22 +278,23 @@ process_dir(path_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 		struct stat sb;
 		int fd;
 		bool is_link = false;
+		size_t plen;
 
 		if (strcmp(de->d_name, ".") == 0 ||
 		    strcmp(de->d_name, "..") == 0) {
 			continue;
 		}
 
-		path_append(p, de->d_name);
+		plen = path_append(p, de->d_name);
 
-		if (fstatat(rootfd, custr_cstr(p->p_name), &sb,
+		if (fstatat(rootfd, custr_cstr(p), &sb,
 		    AT_SYMLINK_NOFOLLOW) < 0) {
-			warn("%s", custr_cstr(p->p_name));
-			VERIFY(path_pop(p));
+			warn("%s", custr_cstr(p));
+			VERIFY0(custr_trunc(p, plen));
 			continue;
 		}
 
-		fd = openat(rootfd, custr_cstr(p->p_name), O_RDONLY);
+		fd = openat(rootfd, custr_cstr(p), O_RDONLY);
 		if (fd < 0) {
 			/*
 			 * Symlinks in the proto area may point to a path
@@ -307,9 +302,9 @@ process_dir(path_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 			 * Silently skip such entries.
 			 */
 			if (errno != ENOENT || !S_ISLNK(sb.st_mode)) {
-				warn("%s", custr_cstr(p->p_name));
+				warn("%s", custr_cstr(p));
 			}
-			VERIFY(path_pop(p));
+			VERIFY0(custr_trunc(p, plen));
 			continue;
 		}
 
@@ -317,8 +312,8 @@ process_dir(path_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 			is_link = true;
 
 			if (fstat(fd, &sb) < 0) {
-				warn("stat %s", custr_cstr(p->p_name));
-				VERIFY(path_pop(p));
+				warn("stat %s", custr_cstr(p));
+				VERIFY0(custr_trunc(p, plen));
 				continue;
 			}
 		}
@@ -326,7 +321,7 @@ process_dir(path_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 		if (S_ISDIR(sb.st_mode)) {
 			if ((dflags & DF_IS_SELF) != 0) {
 				VERIFY0(close(fd));
-				VERIFY(path_pop(p));
+				VERIFY0(custr_trunc(p, plen));
 				continue;
 			}
 
@@ -341,7 +336,7 @@ process_dir(path_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 		} else if (S_ISREG(sb.st_mode)) {
 			if (!maybe_obj(de->d_name, sb.st_mode)) {
 				VERIFY0(close(fd));
-				VERIFY(path_pop(p));
+				VERIFY0(custr_trunc(p, plen));
 				continue;
 			}
 
@@ -352,7 +347,7 @@ process_dir(path_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 			process_file(p, fd, &sb, is_link);
 		}
 
-		VERIFY(path_pop(p));
+		VERIFY0(custr_trunc(p, plen));
 	}
 
 	/* Closes dirfd */
@@ -361,7 +356,7 @@ process_dir(path_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 
 /* Note that fd is always closed upon return */
 static void
-process_file(path_t *p, int fd, const struct stat *sb, bool is_link)
+process_file(custr_t *p, int fd, const struct stat *sb, bool is_link)
 {
 	avl_index_t where = { 0 };
 	obj_t templ = {
@@ -374,15 +369,12 @@ process_file(path_t *p, int fd, const struct stat *sb, bool is_link)
 	if (obj != NULL)
 		goto done;
 
-	if (!get_elfinfo(custr_cstr(p->p_name), fd, &elfinfo)) {
+	if (!get_elfinfo(custr_cstr(p), fd, &elfinfo)) {
 		VERIFY0(close(fd));
 		return;
 	}
 
-	obj = calloc(1, sizeof (*obj));
-	if (obj == NULL)
-		err(EXIT_FAILURE, "calloc");
-
+	obj = xcalloc(1, sizeof (*obj));
 	obj->obj_dev = sb->st_dev;
 	obj->obj_inode = sb->st_ino;
 	obj->obj_elfinfo = elfinfo;
@@ -612,15 +604,14 @@ name_new(names_t *names)
 	 * reallocarray and such, we can replace most of this logic
 	 * with it.
 	 *
-	 * Also use calloc so we get the unused entries zeroed already.
+	 * Also use xcalloc so we get the unused entries zeroed already.
 	 * Not strictly necessary, but useful for debugging.
 	 */
-	newn = calloc(newamt, sizeof (name_t));
-	if (newn == NULL)
-		err(EXIT_FAILURE, "Failed to extend name array");
+	newn = xcalloc(newamt, sizeof (name_t));
 
 	/* Move over existing entries */
 	(void) memcpy(newn, names->ns_names, names->ns_num * sizeof (name_t));
+
 	free(names->ns_names);
 
 	names->ns_names = newn;
@@ -629,10 +620,10 @@ name_new(names_t *names)
 }
 
 static void
-add_name(obj_t *obj, path_t *p, bool is_symlink)
+add_name(obj_t *obj, custr_t *p, bool is_symlink)
 {
 	names_t *ns = &obj->obj_names;
-	const char *srcname = custr_cstr(p->p_name);
+	const char *srcname = custr_cstr(p);
 
 	/* We should never have duplicates */
 	for (size_t i = 0; i < ns->ns_num; i++)
@@ -640,8 +631,7 @@ add_name(obj_t *obj, path_t *p, bool is_symlink)
 
 	name_t *n = name_new(ns);
 
-	if ((n->n_name = strdup(srcname)) == NULL)
-		err(EXIT_FAILURE, "Failed to duplicate string");
+	n->n_name = xstrdup(srcname);
 	n->n_is_symlink = is_symlink;
 
 	if (is_symlink)
@@ -694,73 +684,34 @@ add_name(obj_t *obj, path_t *p, bool is_symlink)
 #define	PATH_INIT	16
 
 static void
-path_init(path_t *p, const char *name)
+path_init(custr_t **p, const char *name)
 {
-	(void) memset(p, '\0', sizeof (*p));
-
-	if (custr_alloc(&p->p_name) < 0)
-		err(EXIT_FAILURE, "custr_alloc");
-
-	if (name != NULL && custr_append(p->p_name, name) < 0)
-		err(EXIT_FAILURE, "custr_append");
-
-	size_t len = custr_len(p->p_name);
-
-	/* Trim off any trailing /'s, but don't trim '/' to an empty path */
-	while (len > 1 && custr_cstr(p->p_name)[len - 1] == '/') {
-		VERIFY0(custr_rtrunc(p->p_name, 1));
-		len--;
+	if (custr_alloc(p) < 0) {
+		nomem();
 	}
 
-	if ((p->p_idx = calloc(PATH_INIT, sizeof (size_t))) == NULL)
-		err(EXIT_FAILURE, "calloc");
-	p->p_alloc = PATH_INIT;
+	if (name != NULL && custr_append(*p, name) < 0)
+		nomem();
+
+	size_t len = custr_len(*p);
+
+	/* Trim off any trailing /'s, but don't trim '/' to an empty path */
+	while (len > 1 && custr_cstr(*p)[len - 1] == '/') {
+		VERIFY0(custr_rtrunc(*p, 1));
+		len--;
+	}
 }
 
-static void
-path_reserve(path_t *p, uint_t n)
+static size_t 
+path_append(custr_t *p, const char *name)
 {
-	if (p->p_n + n <= p->p_alloc)
-		return;
-
-	size_t newamt = p->p_alloc * 2;
-	size_t *newidx = calloc(newamt, sizeof (uint_t));
-
-	if (newidx == NULL)
-		err(EXIT_FAILURE, "calloc");
-
-	(void) memcpy(newidx, p->p_idx, p->p_n * sizeof (uint_t));
-	free(p->p_idx);
-	p->p_idx = newidx;
-	p->p_alloc = newamt;
-}
-
-static void
-path_append(path_t *p, const char *name)
-{
-	size_t clen = custr_len(p->p_name);
-
-	path_reserve(p, 1);
+	size_t clen = custr_len(p);
 
 	if (clen > 0)
-		VERIFY0(custr_appendc(p->p_name, '/'));
+		VERIFY0(custr_appendc(p, '/'));
+	VERIFY0(custr_append(p, name));
 
-	VERIFY0(custr_append(p->p_name, name));
-	p->p_idx[p->p_n++] = clen;
-}
-
-static bool
-path_pop(path_t *p)
-{
-	if (p->p_n == 0)
-		return (false);
-
-	size_t idx = --p->p_n;
-
-	VERIFY0(custr_trunc(p->p_name, p->p_idx[idx]));
-	p->p_idx[idx] = 0;
-
-	return (true);
+	return (clen);
 }
 
 static int
@@ -850,4 +801,36 @@ foreach_avl(avl_tree_t *avl, void (*cb)(void *, void *), void *arg)
 
 	for (obj = avl_first(avl); obj != NULL; obj = AVL_NEXT(avl, obj))
 		cb(obj, arg);
+}
+
+static char *
+xstrdup(const char *s)
+{
+	char *news = strdup(s);
+
+	if (news == NULL) {
+		nomem();
+	}
+	return (news);
+}
+
+static void *
+xcalloc(size_t nelem, size_t elsize)
+{
+	void *p = calloc(nelem, elsize);
+
+	if (p == NULL) {
+		nomem();
+	}
+
+	return (p);
+}
+
+#define	NOMEM_MSG "out of memory\n"
+static void __NORETURN
+nomem(void)
+{
+	/* Try to get the error out before aborting */
+	(void) write(STDERR_FILENO, NOMEM_MSG, sizeof (NOMEM_MSG));
+	abort();
 }
