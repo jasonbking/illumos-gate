@@ -16,27 +16,12 @@
 
 static char panicbuf[256];
 
-/*
- * Iterate through a list, invoking cb on each item. Stop iteration if
- * cb returns != 0. Returns 0 if entire list was successfully iterated, or
- * the return value of cb.
- */
-int
-list_foreach(list_t *l, int (*cb)(list_t *, void *, void *), void *arg)
+#define	NOMEM_MSG	"out of memory\0"
+
+void __NORETURN
+nomem(void)
 {
-	void *o = list_head(l);
-
-	while (o != NULL) {
-		void *next = list_next(l, o);
-		int ret = cb(l, o, arg);
-
-		if (ret != 0)
-			return (ret);
-
-		o = next;
-	}
-
-	return (0);
+	upanic(NOMEM_MSG, sizeof (NOMEM_MSG));
 }
 
 void __NORETURN
@@ -53,4 +38,15 @@ panic(const char *msg, ...)
 		len = sizeof (panicbuf) - 1;
 
 	upanic(panicbuf, len);
+}
+
+char *
+xstrdup(const char *s)
+{
+	char *ns = strdup(s);
+
+	if (ns == NULL)
+		nomem();
+
+	return (ns);
 }
