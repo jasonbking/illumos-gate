@@ -291,7 +291,7 @@ process_dir(path_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 			continue;
 		}
 
-		fd = openat(rootfd, path_name(p), O_RDONLY);
+		fd = openat(dirfd, de->d_name, O_RDONLY);
 		if (fd < 0) {
 			/*
 			 * Symlinks in the proto area may point to a path
