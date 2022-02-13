@@ -561,9 +561,9 @@ sort_names(void *a, void *b)
 	/*
 	 * If the first pathname (in sorted order) isn't the first
 	 * name entry, we swap it into first place (while also updating
-	 * the names AVL tree)
+	 * the names AVL tree).
 	 */
-	if (first != &names->ns_names[0]) {
+	if (first != NULL && first != &names->ns_names[0]) {
 		name_t tmp = names->ns_names[0];
 
 		avl_remove(name_avl, obj);
