@@ -25,6 +25,7 @@ CUSTRDIR = $(SRC)/lib/libcustr/common
 OBJS = find_elf.o custr.o
 
 include $(SRC)/tools/Makefile.tools
+include $(SRC)/cmd/Makefile.ctf
 
 LDLIBS = -lelf -lavl
 NATIVE_LIBS += libelf.so libc.so libavl.so
@@ -54,8 +55,10 @@ $(PROG): $(OBJS)
 
 %.o: %.c
 	$(COMPILE.c) -o $@ $<
+	$(POST_PROCESS_O)
 
 %.o: $(CUSTRDIR)/%.c
 	$(COMPILE.c) -o $@ $<
+	$(POST_PROCESS_O)
 
 include $(SRC)/tools/Makefile.targ
