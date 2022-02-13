@@ -50,6 +50,11 @@ typedef enum dir_flags {
 	DF_IS_SYMLINK =	1 << 2,
 } dir_flags_t;
 
+typedef struct path {
+	custr_t	*p_name;
+	size_t	p_pfxidx;
+} path_t;
+
 typedef struct name {
 	char	*n_name;
 	bool	n_is_symlink;
@@ -76,18 +81,21 @@ typedef struct obj {
 	elfinfo_t	obj_elfinfo;
 } obj_t;
 
-static void path_init(custr_t **, const char *);
-static size_t path_append(custr_t *, const char *);
+static void path_init(path_t *, const char *, bool);
+static size_t path_append(path_t *, const char *);
+static const char *path_name(const path_t *);
+static const char *path_fullpath(const path_t *);
+static void path_pop(path_t *, size_t);
 
 static bool maybe_obj(const char *, mode_t);
-static bool get_elfinfo(const char *, int, elfinfo_t *);
-static void add_name(obj_t *, custr_t *, bool);
+static bool get_elfinfo(const path_t *, int, elfinfo_t *);
+static void add_name(obj_t *, const path_t *, bool);
 static int cmp_id(const void *, const void *);
 static int cmp_objname(const void *, const void *);
 static int cmp_names(const void *, const void *);
 
-static void process_dir(custr_t *, int, const struct stat *, dir_flags_t);
-static void process_file(custr_t *, int, const struct stat *, bool);
+static void process_dir(path_t *, int, const struct stat *, dir_flags_t);
+static void process_file(path_t *, int, const struct stat *, bool);
 static void process_arg(char *);
 
 static void sort_names(void *, void *);
@@ -189,7 +197,7 @@ main(int argc, char **argv)
 static void
 process_arg(char *arg)
 {
-	custr_t *path = NULL;
+	path_t path;
 	struct stat sb;
 	int fd;
 
@@ -202,21 +210,14 @@ process_arg(char *arg)
 	}
 
 	if (S_ISDIR(sb.st_mode)) {
+		path_init(&path, arg, relpath);
 		if (relpath) {
-			/*
-			 * If relative paths are used, we don't want path
-			 * to start with the top directory.
-			 */
-			path_init(&path, NULL);
 			(void) printf("PREFIX %s\n", arg);
-		} else {
-			path_init(&path, arg);
 		}
 
 		rootfd = fd;
 		/* process_dir() will close fd */
-		process_dir(path, fd, &sb, DF_NONE);
-		custr_free(path);
+		process_dir(&path, fd, &sb, DF_NONE);
 		return;
 	}
 
@@ -232,17 +233,13 @@ process_arg(char *arg)
 		err(EXIT_FAILURE, "%s", dir);
 	}
 
+	path_init(&path, dir, relpath);
 	if (relpath) {
-		path_init(&path, NULL);
 		(void) printf("PREFIX %s\n", dir);
-		(void) path_append(path, basename(arg));
-	} else {
-		path_init(&path, arg);
 	}
 	free(argcopy);
 
-	process_file(path, fd, &sb, DF_NONE);
-	custr_free(path);
+	process_file(&path, fd, &sb, DF_NONE);
 }
 
 /*
@@ -262,14 +259,14 @@ process_arg(char *arg)
  * Note that dirfd is always closed upon return from process_dir().
  */
 static void
-process_dir(custr_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
+process_dir(path_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 {
 	DIR *d;
 	struct dirent *de;
 
 	d = fdopendir(dirfd);
 	if (d == NULL) {
-		warn("opendir(%s)", custr_cstr(p));
+		warn("opendir(%s)", path_fullpath(p));
 		VERIFY0(close(dirfd));
 		return;
 	}
@@ -287,14 +284,14 @@ process_dir(custr_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 
 		plen = path_append(p, de->d_name);
 
-		if (fstatat(rootfd, custr_cstr(p), &sb,
+		if (fstatat(rootfd, path_name(p), &sb,
 		    AT_SYMLINK_NOFOLLOW) < 0) {
-			warn("%s", custr_cstr(p));
-			VERIFY0(custr_trunc(p, plen));
+			warn("%s", path_fullpath(p));
+			path_pop(p, plen);
 			continue;
 		}
 
-		fd = openat(rootfd, custr_cstr(p), O_RDONLY);
+		fd = openat(rootfd, path_name(p), O_RDONLY);
 		if (fd < 0) {
 			/*
 			 * Symlinks in the proto area may point to a path
@@ -302,9 +299,9 @@ process_dir(custr_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 			 * Silently skip such entries.
 			 */
 			if (errno != ENOENT || !S_ISLNK(sb.st_mode)) {
-				warn("%s", custr_cstr(p));
+				warn("%s", path_fullpath(p));
 			}
-			VERIFY0(custr_trunc(p, plen));
+			path_pop(p, plen);
 			continue;
 		}
 
@@ -312,8 +309,8 @@ process_dir(custr_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 			is_link = true;
 
 			if (fstat(fd, &sb) < 0) {
-				warn("stat %s", custr_cstr(p));
-				VERIFY0(custr_trunc(p, plen));
+				warn("stat %s", path_fullpath(p));
+				path_pop(p, plen);
 				continue;
 			}
 		}
@@ -321,7 +318,7 @@ process_dir(custr_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 		if (S_ISDIR(sb.st_mode)) {
 			if ((dflags & DF_IS_SELF) != 0) {
 				VERIFY0(close(fd));
-				VERIFY0(custr_trunc(p, plen));
+				path_pop(p, plen);
 				continue;
 			}
 
@@ -336,7 +333,7 @@ process_dir(custr_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 		} else if (S_ISREG(sb.st_mode)) {
 			if (!maybe_obj(de->d_name, sb.st_mode)) {
 				VERIFY0(close(fd));
-				VERIFY0(custr_trunc(p, plen));
+				path_pop(p, plen);
 				continue;
 			}
 
@@ -347,7 +344,7 @@ process_dir(custr_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 			process_file(p, fd, &sb, is_link);
 		}
 
-		VERIFY0(custr_trunc(p, plen));
+		path_pop(p, plen);
 	}
 
 	/* Closes dirfd */
@@ -356,7 +353,7 @@ process_dir(custr_t *p, int dirfd, const struct stat *dirsb, dir_flags_t dflags)
 
 /* Note that fd is always closed upon return */
 static void
-process_file(custr_t *p, int fd, const struct stat *sb, bool is_link)
+process_file(path_t *p, int fd, const struct stat *sb, bool is_link)
 {
 	avl_index_t where = { 0 };
 	obj_t templ = {
@@ -369,7 +366,7 @@ process_file(custr_t *p, int fd, const struct stat *sb, bool is_link)
 	if (obj != NULL)
 		goto done;
 
-	if (!get_elfinfo(custr_cstr(p), fd, &elfinfo)) {
+	if (!get_elfinfo(p, fd, &elfinfo)) {
 		VERIFY0(close(fd));
 		return;
 	}
@@ -441,7 +438,7 @@ print_entry(void *a, void *arg __unused)
  * returns false.
  */
 static bool
-get_elfinfo(const char *name, int fd, elfinfo_t *eip)
+get_elfinfo(const path_t *p, int fd, elfinfo_t *eip)
 {
 	Elf *elf = NULL;
 	Elf_Scn *scn = NULL;
@@ -451,8 +448,10 @@ get_elfinfo(const char *name, int fd, elfinfo_t *eip)
 	if ((elf = elf_begin(fd, ELF_C_READ, NULL)) == NULL)
 		goto fail_noend;
 
-	if ((eip->ei_class = gelf_getclass(elf)) == ELFCLASSNONE)
+	if ((eip->ei_class = gelf_getclass(elf)) == ELFCLASSNONE) {
+		VERIFY0(elf_end(elf));
 		return (false);
+	}
 
 	if (gelf_getehdr(elf, &ehdr) == NULL)
 		goto fail;
@@ -498,7 +497,7 @@ fail:
 fail_noend:
 	eval = elf_errno();
 
-	warnx("%s: %s", name, elf_errmsg(eval));
+	warnx("%s: %s", path_fullpath(p), elf_errmsg(eval));
 	return (false);
 }
 
@@ -620,10 +619,10 @@ name_new(names_t *names)
 }
 
 static void
-add_name(obj_t *obj, custr_t *p, bool is_symlink)
+add_name(obj_t *obj, const path_t *p, bool is_symlink)
 {
 	names_t *ns = &obj->obj_names;
-	const char *srcname = custr_cstr(p);
+	const char *srcname = path_name(p);
 
 	/* We should never have duplicates */
 	for (size_t i = 0; i < ns->ns_num; i++)
@@ -684,34 +683,56 @@ add_name(obj_t *obj, custr_t *p, bool is_symlink)
 #define	PATH_INIT	16
 
 static void
-path_init(custr_t **p, const char *name)
+path_init(path_t *p, const char *name, bool relpath)
 {
-	if (custr_alloc(p) < 0) {
+	(void) memset(p, '\0', sizeof (*p));
+
+	if (custr_alloc(&p->p_name) < 0) {
 		nomem();
 	}
 
-	if (name != NULL && custr_append(*p, name) < 0)
+	if (name != NULL && custr_append(p->p_name, name) < 0)
 		nomem();
 
-	size_t len = custr_len(*p);
+	size_t len = custr_len(p->p_name);
 
 	/* Trim off any trailing /'s, but don't trim '/' to an empty path */
-	while (len > 1 && custr_cstr(*p)[len - 1] == '/') {
-		VERIFY0(custr_rtrunc(*p, 1));
+	while (len > 1 && custr_cstr(p->p_name)[len - 1] == '/') {
+		VERIFY0(custr_rtrunc(p->p_name, 1));
 		len--;
 	}
+
+	p->p_pfxidx = relpath ? len + 1 : 0;
 }
 
-static size_t 
-path_append(custr_t *p, const char *name)
+static size_t
+path_append(path_t *p, const char *name)
 {
-	size_t clen = custr_len(p);
+	size_t clen = custr_len(p->p_name);
 
 	if (clen > 0)
-		VERIFY0(custr_appendc(p, '/'));
-	VERIFY0(custr_append(p, name));
+		VERIFY0(custr_appendc(p->p_name, '/'));
+	VERIFY0(custr_append(p->p_name, name));
 
 	return (clen);
+}
+
+static const char *
+path_name(const path_t *p)
+{
+	return (custr_cstr(p->p_name) + p->p_pfxidx);
+}
+
+static const char *
+path_fullpath(const path_t *p)
+{
+	return (custr_cstr(p->p_name));
+}
+
+static void
+path_pop(path_t *p, size_t idx)
+{
+	VERIFY0(custr_trunc(p->p_name, idx));
 }
 
 static int
