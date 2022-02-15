@@ -23,7 +23,7 @@ extern "C" {
 
 /*
  * This is very much based off the bunyan logger in SmartOS.
- */ 
+ */
 typedef struct log log_t;
 typedef struct logobj logobj_t;
 
@@ -65,13 +65,15 @@ typedef enum log_type {
 void log_sysinit(void);
 void log_sysfini(void);
 
-int log_init(const char *, log_t **);
+void log_init(const char *, log_t **);
 int log_child(const log_t *, log_t **, ...) __sentinel(0);
 void log_fini(log_t *);
 
-typedef int (*log_stream_f)(struct nvlist *, void *);
+typedef int (*log_stream_f)(struct nvlist *, const char *, void *);
 int log_stream_fd(struct nvlist *, const char *, void *);
 int log_stream_syslog(struct nvlist *, const char *, void *);
+
+int log_stream_add(log_t *, const char *, log_level_t, log_stream_f, void *);
 
 int log_key_add(log_t *, ...) __sentinel(0);
 int log_key_remove(log_t *, const char *);
