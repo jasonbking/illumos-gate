@@ -61,7 +61,7 @@ void		neighbor_free(neighbor_t *);
 uu_list_t	*neighbor_list_new(struct agent *);
 neighbor_t	*neighbor_get(const lldp_chassis_t *, const lldp_port_t *);
 
-bool		neighbor_cmp_msap(const neighbor_t *, const neighbor_t *);
+int		neighbor_cmp_msap(const neighbor_t *, const neighbor_t *);
 bool		neighbor_cmp(const neighbor_t *, const neighbor_t *);
 
 #ifdef __cplusplus

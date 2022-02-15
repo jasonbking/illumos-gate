@@ -13,15 +13,18 @@
  * Copyright 2022 Jason King
  */
 
+#include <sys/debug.h>
 #include <sys/types.h>
 #include <sys/signalfd.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
 #include <err.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <paths.h>
 #include <port.h>
 #include <priv_utils.h>
 #include <signal.h>
@@ -31,9 +34,11 @@
 #include <liblldp.h>
 
 #include "agent.h"
+#include "lldpd.h"
 #include "log.h"
 #include "neighbor.h"
 #include "timer.h"
+#include "util.h"
 
 static const char *doorpath = "/var/run/lldpd";
 
@@ -54,7 +59,7 @@ usage(void)
 int
 main(int argc, char **argv)
 {
-	int c; pfd, sigfd;
+	int c, pfd;
 
 	/*
 	 * For simplicity, memory allocation failures are always treated
@@ -84,10 +89,10 @@ main(int argc, char **argv)
 	closefrom(STDERR_FILENO + 1);
 
 	log_sysinit();
-	log_init("lldpd", &log);
+	(void) log_init("lldpd", &log);
 
 	VERIFY0(log_stream_add(log, "stderr",
-	    debug ? LOG_LEVEL_DEBUG : LOG_LEVEL_INFO, log_stream_fd,
+	    debug ? LOG_L_DEBUG : LOG_L_INFO, log_stream_fd,
 	    (void *)(uintptr_t)STDERR_FILENO));
 
 	log_info(log, "startup...", LOG_T_END);
@@ -113,11 +118,32 @@ main(int argc, char **argv)
 	return (0);
 }
 
+static void
+lldp_main(void)
+{
+}
 
 static int
 lldp_daemonize(void)
 {
 	return (0);
+}
+
+bool
+schedule_fd(int fd, fd_cb_t *cb)
+{
+	if (port_associate(evport, PORT_SOURCE_FD, fd, POLLIN, cb) < 0) {
+		log_syserr(log, "port associate failed", errno);
+		return (false);
+	}
+
+	return (true);
+}
+
+void
+cancel_fd(int fd)
+{
+	(void) port_dissociate(evport, PORT_SOURCE_FD, fd);
 }
 
 static int
@@ -131,13 +157,13 @@ lldp_umem_nomem_cb(void)
 const char *
 _umem_debug_init(void)
 {
-        return ("default,verbose");
+	return ("default,verbose");
 }
 
 const char *
 _umem_logging_init(void)
 {
-        return ("fail,contents");
+	return ("fail,contents");
 }
 #else
 const char *

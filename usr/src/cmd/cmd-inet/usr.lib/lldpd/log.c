@@ -16,10 +16,13 @@
 
 #include <errno.h>
 #include <netdb.h>
+#include <libdlpi.h>
+#include <libnvpair.h>
 #include <libuutil.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/debug.h>
+#include <sys/ethernet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/sysmacros.h>
@@ -33,6 +36,7 @@
 #include <umem.h>
 
 #include "log.h"
+#include "util.h"
 
 struct log_key;
 struct log_stream;
@@ -69,7 +73,9 @@ static uu_list_pool_t	*key_pool;
 static uu_list_pool_t	*stream_pool;
 static umem_cache_t	*key_cache;
 
+#ifdef notyet
 static const int log_version = 0;
+#endif
 
 __thread log_t *log;
 
@@ -94,7 +100,7 @@ log_fd_unlock(int fd)
 }
 
 static void
-log_key_fini(log_key_t *k) {
+log_key_fini(log_key_t *k)
 {
 	if (k->lk_type == LOG_T_OBJ) {
 		uu_list_t *list = k->lk_data;
@@ -115,7 +121,7 @@ log_key_fini(log_key_t *k) {
 	k->lk_name = NULL;
 	k->lk_data = NULL;
 	k->lk_len = 0;
-	umem_cache_free(k);
+	umem_cache_free(key_cache, k);
 }
 
 static void
@@ -128,14 +134,13 @@ log_stream_fini(log_stream_t *ls)
 void
 log_init(const char *name, log_t **lp)
 {
-	log_t		*l = NULL:
-	int		ret;
+	log_t		*l = NULL;
 
 	VERIFY3P(name, !=, NULL);
 
 	l = umem_zalloc(sizeof (*l), UMEM_NOFAIL);
 
-	VERIFY0(mutex_init(&l->l_lock, ERRORCHECKMUTEX, NULL));
+	VERIFY0(mutex_init(&l->l_lock, USYNC_THREAD|LOCK_ERRORCHECK, NULL));
 	VERIFY0(gethostname(l->l_host, sizeof (l->l_host)));
 	l->l_host[sizeof (l->l_host) - 1] = '\0';
 
@@ -144,7 +149,7 @@ log_init(const char *name, log_t **lp)
 	if (l->l_keys == NULL)
 		nomem();
 
-	l->l_streams = uu_list_create(stream_pool, NULL, UU_LIST_DEBUG);	
+	l->l_streams = uu_list_create(stream_pool, NULL, UU_LIST_DEBUG);
 	if (l->l_streams == NULL)
 		nomem();
 
@@ -177,10 +182,10 @@ log_fini(log_t *lp)
 int
 log_stream_fd(nvlist_t *nvl, const char *js, void *arg)
 {
-	uintptr_t	fd = arg;
+	uintptr_t	fd = (uintptr_t)arg;
 	size_t		jslen = strlen(js);
 	off_t		off = 0;
-	ssize_t		ret = 0;	
+	ssize_t		ret = 0;
 	static int	maxbuf = -1;
 
 	if (maxbuf == -1)
@@ -211,24 +216,13 @@ log_stream_fd(nvlist_t *nvl, const char *js, void *arg)
 	return (ret < 0 ? 1 : 0);
 }
 
-static int
-log_stream_checkdup(list_t *l, void *o, void *arg)
-{
-	log_stream_t *ls = o;
-	const char *name = arg;
-
-	if (strcmp(ls->ls_name, name) == 0)
-		return (EEXIST);
-	return (0);
-}
-
 int
-log_stream_add(log_t *l, const char *name, log_level_t level,
-    log_stream_f func, void *arg)
+log_stream_add(log_t *l, const char *name, log_level_t level, log_stream_f func,
+    void *arg)
 {
 	log_stream_t *ls;
 	log_stream_t templ = {
-		.ls_name = name,
+		.ls_name = (char *)name,
 	};
 
 	if (name == NULL)
@@ -242,14 +236,14 @@ log_stream_add(log_t *l, const char *name, log_level_t level,
 	ls->ls_count = 0;
 
 	mutex_enter(&l->l_lock);
-	if (uu_list_find(l->l_streams, &templ, NULL) != NULL) {
+	if (uu_list_find(l->l_streams, &templ, NULL, NULL) != NULL) {
 		mutex_exit(&l->l_lock);
 		uu_free(ls->ls_name);
 		umem_free(ls, sizeof (*ls));
 		return (EEXIST);
 	}
 
-	VERIFY0(uu_list_insert_after(l->l_streams, uu_list_end(l->l_streams),
+	VERIFY0(uu_list_insert_after(l->l_streams, uu_list_last(l->l_streams),
 	    ls));
 
 	mutex_exit(&l->l_lock);
@@ -261,11 +255,11 @@ log_stream_remove(log_t *l, const char *name)
 {
 	log_stream_t *stream;
 	log_stream_t templ = {
-		.ls_name = name,
+		.ls_name = (char *)name,
 	};
 
 	mutex_enter(&l->l_lock);
-	stream = uu_list_find(l->l_streams, &templ, NULL);
+	stream = uu_list_find(l->l_streams, &templ, NULL, NULL);
 	if (stream != NULL)
 		uu_list_remove(l->l_streams, stream);
 	mutex_exit(&l->l_lock);
@@ -274,13 +268,14 @@ log_stream_remove(log_t *l, const char *name)
 		return (ENOENT);
 
 	log_stream_fini(stream);
-	return (0);	
+	return (0);
 }
 
 static log_key_t *
-log_key_create(const char *name, log_key_t type, const void *arg)
+log_key_create(const char *name, log_type_t type, const void *arg)
 {
 	log_key_t *k;
+	void *cookie = NULL;
 	size_t len = 0;
 
 	VERIFY3S(type, !=, _LOG_T_END);
@@ -296,6 +291,9 @@ log_key_create(const char *name, log_key_t type, const void *arg)
 	}
 
 	switch (type) {
+	case _LOG_T_END:
+		panic("invalid type");
+		break;
 	case LOG_T_STRING:
 		k->lk_len = strlen(arg) + 1;
 		k->lk_data = umem_zalloc(k->lk_len, UMEM_NOFAIL);
@@ -309,7 +307,7 @@ log_key_create(const char *name, log_key_t type, const void *arg)
 	case LOG_T_INT64:
 	case LOG_T_UINT64:
 	case LOG_T_XINT64:
-		k->lk_data = (uintptr_t)arg;
+		k->lk_data = (void *)arg;
 		k->lk_len = 0;
 		return (k);
 	case LOG_T_MAC:
@@ -325,7 +323,7 @@ log_key_create(const char *name, log_key_t type, const void *arg)
 	case LOG_T_IPV6:
 		k->lk_data = umem_zalloc(sizeof (in6_addr_t), UMEM_NOFAIL);
 		(void) memcpy(k->lk_data, arg, sizeof (in6_addr_t));
-		k->lk_data = sizeof (in6_addr_t);
+		k->lk_data = (void *)(uintptr_t)sizeof (in6_addr_t);
 		return (k);
 	case LOG_T_OBJ:
 		break;
@@ -335,18 +333,18 @@ log_key_create(const char *name, log_key_t type, const void *arg)
 	uu_list_walk_t *wk;
 	log_key_t *ok;
 
-	wk = uu_list_walk_start(arg, 0);
+	wk = uu_list_walk_start((void *)arg, 0);
 	if (wk == NULL)
 		nomem();
 
 	while ((ok = uu_list_walk_next(wk)) != NULL) {
-		log_key_t *nk = log_key_create(ok->lk_name, ok->ok_type,
-		    ok->ok_data);
+		log_key_t *nk = log_key_create(ok->lk_name, ok->lk_type,
+		    ok->lk_data);
 
 		if (nk == NULL)
 			goto fail;
 
-		uu_list_insert(ol, nk, uu_list_last(ol));
+		(void) uu_list_insert_after(ol, uu_list_last(ol), nk);
 	}
 
 	k->lk_data = ol;
@@ -354,7 +352,7 @@ log_key_create(const char *name, log_key_t type, const void *arg)
 	return (k);
 
 fail:
-	while ((ok = uu_list_teardown(ol)) != NULL)
+	while ((ok = uu_list_teardown(ol, &cookie)) != NULL)
 		log_key_fini(ok);
 
 	uu_list_destroy(ol);
@@ -368,14 +366,14 @@ log_key_add_one(log_t *l, const char *name, log_type_t type, const void *arg)
 	log_key_t	*k;
 	log_key_t	*ok;
 	log_key_t	templ = {
-		.lk_name = name,
+		.lk_name = (char *)name,
 	};
 	uu_list_index_t	idx;
 
 	if (type == _LOG_T_END)
 		return (EINVAL);
 
-	k = log_key_create(type, arg);
+	k = log_key_create(name, type, arg);
 	if (k == NULL)
 		return (ENOMEM);
 
@@ -393,7 +391,6 @@ static int
 log_key_vadd(log_t *l, va_list *ap)
 {
 	log_type_t type;
-	int ret;
 	void *data = NULL;
 
 	while ((type = va_arg(*ap, int)) != _LOG_T_END) {
@@ -401,6 +398,8 @@ log_key_vadd(log_t *l, va_list *ap)
 		int ret;
 
 		switch (type) {
+		case _LOG_T_END:
+			break;
 		case LOG_T_STRING:
 		case LOG_T_POINTER:
 		case LOG_T_BOOLEAN:
@@ -414,6 +413,7 @@ log_key_vadd(log_t *l, va_list *ap)
 		case LOG_T_IPV4:
 		case LOG_T_IPV6:
 		case LOG_T_OBJ:
+			break;
 		}
 
 		ret = log_key_add_one(l, name, type, data);
@@ -431,7 +431,7 @@ log_key_add(log_t *l, ...)
 	int ret;
 
 	va_start(ap, l);
-	ret = log_key_vadd(l, ap);
+	ret = log_key_vadd(l, &ap);
 	va_end(ap);
 
 	return (ret);
@@ -456,10 +456,10 @@ log_dlerr(log_t *l, const char *msg, int eval)
 }
 
 static int
-log_key_cmp(void *a, void *b, void *dummy __unused)
+log_key_cmp(const void *a, const void *b, void *dummy __unused)
 {
-	log_key_t *l = a;
-	log_key_t *r = b;
+	const log_key_t *l = a;
+	const log_key_t *r = b;
 	int ret = strcmp(l->lk_name, r->lk_name);
 
 	if (ret < 0)
@@ -470,10 +470,10 @@ log_key_cmp(void *a, void *b, void *dummy __unused)
 }
 
 static int
-log_stream_cmp(void *a, void *b, void *dummy __unused)
+log_stream_cmp(const void *a, const void *b, void *dummy __unused)
 {
-	log_stream_t *l = a;
-	log_stream_t *r = b;
+	const log_stream_t *l = a;
+	const log_stream_t *r = b;
 	int ret = strcmp(l->ls_name, r->ls_name);
 
 	if (ret < 0)
@@ -489,7 +489,7 @@ key_ctor(void *buf, void *cbdata __unused, int flags __unused)
 	log_key_t *k = buf;
 
 	(void) memset(buf, '\0', sizeof (log_key_t));
-	uu_list_node_init(k, &k->ls_node, key_pool);
+	uu_list_node_init(k, &k->lk_node, key_pool);
 	return (0);
 }
 
@@ -498,14 +498,16 @@ key_dtor(void *buf, void *cbdata __unused)
 {
 	log_key_t *k = buf;
 
-	uu_list_node_fini(k, &k->ls_node, key_pool);
+	uu_list_node_fini(k, &k->lk_node, key_pool);
 }
 
 void
 log_sysinit(void)
 {
-	for (uint_t i = 0; i < ARRAY_SIZE(fd_mutex); i++)
-		VERIFY0(mutex_init(&fd_mutex[i], ERRORCHECKMUTEX, NULL);
+	for (uint_t i = 0; i < ARRAY_SIZE(fd_mutex); i++) {
+		VERIFY0(mutex_init(&fd_mutex[i], USYNC_THREAD|LOCK_ERRORCHECK,
+		    NULL));
+	}
 
 	key_pool = uu_list_pool_create("log keys", sizeof (log_key_t),
 	    offsetof(log_key_t, lk_node), log_key_cmp, UU_LIST_POOL_DEBUG);
@@ -517,7 +519,7 @@ log_sysinit(void)
 	VERIFY3P(stream_pool, !=, NULL);
 
 	key_cache = umem_cache_create("log keys", sizeof (log_key_t),
-	    0, key_ctor, key_dtor, NULL, NULL, 0);
+	    0, key_ctor, key_dtor, NULL, NULL, NULL, 0);
 	VERIFY3P(key_cache, !=, NULL);
 }
 

@@ -13,11 +13,15 @@
  * Copyright 2022 Jason King
  */
 
+#include <sys/sysmacros.h>
 #include <stddef.h>
+#include <string.h>
 #include <umem.h>
+
 #include "agent.h"
 #include "neighbor.h"
 #include "log.h"
+#include "util.h"
 
 static uu_list_pool_t	*nb_pool;
 
@@ -94,17 +98,21 @@ port_cmp(const lldp_port_t *l, const lldp_port_t *r)
 	return (0);
 }
 
-static int
-neighbor_cmp(void *a, void *b, void *arg __private)
+int
+neighbor_cmp_msap(const neighbor_t *l, const neighbor_t *r)
 {
-	neighbor_t *l = a;
-	neighbor_t *r = b;
 	int ret;
 
-	ret = chassis_cmp(l, r);
+	ret = chassis_cmp(&l->nb_chassis, &r->nb_chassis);
 	if (ret != 0)
 		return (ret);
-	return (port_cmp(l, r));
+	return (port_cmp(&l->nb_port, &r->nb_port));
+}
+
+static int
+neighbor_cmp_msap_uu(const void *a, const void *b, void *private __unused)
+{
+	return (neighbor_cmp_msap(a, b));
 }
 
 void
@@ -113,7 +121,8 @@ neighbor_init(void)
 	log_trace(log, "creating neighbor list pool", LOG_T_END);
 
 	nb_pool = uu_list_pool_create("neighbors", sizeof (neighbor_t),
-	    offsetof(neighbor_t, nb_node), neighbor_cmp, UU_LIST_POOL_DEBUG);
+	    offsetof(neighbor_t, nb_node), neighbor_cmp_msap_uu,
+	    UU_LIST_POOL_DEBUG);
 	if (nb_pool == NULL)
 		panic("failed to create neighbor list pool");
 }

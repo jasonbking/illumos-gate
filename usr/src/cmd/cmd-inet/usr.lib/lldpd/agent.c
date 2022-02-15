@@ -44,6 +44,8 @@
 #define	LLDP_PDU_MAX		512
 
 static void *agent_thread(void *);
+static bool open_port(agent_t *);
+static void recv_frame(int, void *);
 
 static void tx_initialize(agent_t *);
 static void rx_init_lldp(agent_t *);
@@ -116,7 +118,7 @@ agent_create(const char *name)
 	a->a_name = xstrdup(name);
 	a->a_port_enabled = false;
 
-	log_child(log, &a->a_log,
+	(void) log_child(log, &a->a_log,
 	    LOG_T_STRING, "agent", a->a_name,
 	    LOG_T_END);
 
@@ -133,6 +135,9 @@ agent_create(const char *name)
 	a->a_cfg.ac_tx_fast_init = DEFAULT_TX_FAST_INIT;
 
 	/* XXX: Override defaults from config */
+
+	a->a_dl_cb.fc_fn = recv_frame;
+	a->a_dl_cb.fc_arg = a;
 
 	ret = thr_create(NULL, 0, agent_thread, a, 0, &a->a_tid);
 	if (ret != 0)
@@ -267,6 +272,25 @@ agent_thread(void *arg)
 
 	lldp_clock_tick(&a->a_clk, &tick);
 	while (!a->a_exit) {
+		if (a->a_port_enabled && a->a_dlh == NULL) {
+			if (!open_port(a)) {
+				a->a_port_enabled = false;
+				continue;
+			}
+
+			if (!schedule_fd(dlpi_fd(a->a_dlh), &a->a_dl_cb)) {
+				log_syserr(log, "failed to schedule port",
+				    errno);
+				a->a_port_enabled = false;
+			}
+		}
+
+		if (!a->a_port_enabled && a->a_dlh != NULL) {
+			cancel_fd(dlpi_fd(a->a_dlh));
+			dlpi_close(a->a_dlh);
+			a->a_dlh = NULL;
+		}
+
 		/*
 		 * Run each state machine until they are 'idle' -- i.e.
 		 * there are no conditions present to allow the state
@@ -286,7 +310,7 @@ agent_thread(void *arg)
 		 * to tick, then recheck for any state transitions.
 		 */
 		while (!run_tx && !run_rx && !run_ttr) {
-			ret = cond_reltimedwait(&a->a_cv, &a->a_lock, &tick);
+			ret = cond_timedwait(&a->a_cv, &a->a_lock, &tick);
 
 			if (a->a_exit)
 				break;
@@ -317,7 +341,7 @@ tx_ttl(const agent_t *a)
 static void
 tx_init(agent_t *a, tx_t *tx)
 {
-	log_child(a->a_log, &tx->tx_log,
+	(void) log_child(a->a_log, &tx->tx_log,
 	    LOG_T_STRING, "state_machine", "tx",
 	    LOG_T_END);
 
@@ -436,7 +460,7 @@ rx_init(agent_t *a, rx_t *rx)
 {
 	(void) memset(rx, '\0', sizeof (*rx));
 
-	log_child(a->a_log, &rx->rx_log,
+	(void) log_child(a->a_log, &rx->rx_log,
 	    LOG_T_STRING, "state_machine", "rx",
 	    LOG_T_END);
 
@@ -588,7 +612,7 @@ rx_machine(rx_t *rx)
 static void
 ttr_init(agent_t *a, ttr_t *ttr)
 {
-	log_child(a->a_log, &ttr->ttr_log,
+	(void) log_child(a->a_log, &ttr->ttr_log,
 	    LOG_T_STRING, "state_machine", "ttr",
 	    LOG_T_END);
 	lldp_timer_init(&a->a_clk, &ttr->ttr_timer, "txTTR", ttr, ttr->ttr_log,
@@ -730,46 +754,11 @@ rx_init_lldp(agent_t *a)
 	rx_t		*rx = &a->a_rx;
 	void		*cookie = NULL;
 	neighbor_t	*nb;
-	int		ret;
 
 	rx->rx_too_many_neighbors = false;
 
 	while ((nb = uu_list_teardown(a->a_neighbors, &cookie)) != NULL)
 		neighbor_free(nb);
-
-	ret = dlpi_open(a->a_name, &a->a_dlh, 0);
-	if (ret != DLPI_SUCCESS) {
-		log_dlerr(rx->rx_log, "failed to open link", ret);
-		a->a_port_enabled = false;
-		return;
-	}
-
-	ret = dlpi_info(a->a_dlh, &a->a_dl_info, 0);
-	if (ret != DLPI_SUCCESS) {
-		log_dlerr(rx->rx_log, "failed to get link info", ret);
-		goto fail;
-	}
-
-	ret = dlpi_enabmulti(a->a_dlh, lldp_addr, sizeof (lldp_addr));
-	if (ret != DLPI_SUCCESS) {
-		log_dlerr(rx->rx_log,
-		    "failed to bind to LLDP multicast address", ret);
-		goto fail;
-	}
-
-	ret = dlpi_bind(a->a_dlh, lldp_sap, NULL);
-	if (ret != DLPI_SUCCESS) {
-		log_dlerr(rx->rx_log, "failed to bind to LLDP SAP", ret);
-		goto fail;
-	}
-
-	/* TODO: schedule fd */
-	return;
-
-fail:
-	dlpi_close(a->a_dlh);
-	a->a_dlh = NULL;
-	a->a_port_enabled = false;
 }
 
 static void
@@ -780,7 +769,7 @@ update_objects(agent_t *a)
 	neighbor_t *nb = rx->rx_neighbor;
 
 	ASSERT3P(old_nb, !=, nb);
-	ASSERT(neighbor_cmp_msap(old_nb, nb));
+	ASSERT(neighbor_cmp(old_nb, nb));
 
 	lldp_timer_init(&a->a_clk, &nb->nb_timer, "rxInfoAge", nb,
 	    rx->rx_log, "rxInfoAge", &rx->rx_info_age);
@@ -816,7 +805,7 @@ delete_objects(agent_t *a)
 		if (lldp_timer_val(&nb->nb_timer) > 0)
 			continue;
 
-		(void) lldp_chassis_str(&nb->nb_chassis , chassis,
+		(void) lldp_chassis_str(&nb->nb_chassis, chassis,
 		    sizeof (chassis));
 		(void) lldp_port_str(&nb->nb_port, port, sizeof (port));
 
@@ -867,21 +856,28 @@ tx_add_credit(agent_t *a)
 	a->a_ttr.ttr_tx_credit++;
 }
 
-static bool
-recv_frame(rx_t *rx, dlpi_handle_t dlh)
+static void
+recv_frame(int fd __unused, void *arg)
 {
+	agent_t		*a = arg;
+	rx_t		*rx = &a->a_rx;
 	buf_t		*b = &rx->rx_buf;
 	uint8_t		src[DLPI_PHYSADDR_MAX] = { 0 };
 	dlpi_recvinfo_t	di = { 0 };
 	size_t		srclen = 0;
-	size_t 		blen = b->b_size;
+	size_t		blen = b->b_size;
 	int		ret;
 
-	ret = dlpi_recv(dlh, &src, &srclen, b->b_data, &blen, 0, &di);
+	/* We should be running outside the agent's thread */
+	VERIFY3U(thr_self(), !=, a->a_tid);
+
+	mutex_enter(&a->a_lock);
+
+	ret = dlpi_recv(a->a_dlh, &src, &srclen, b->b_data, &blen, 0, &di);
 	if (ret != DLPI_SUCCESS) {
 		log_dlerr(rx->rx_log, "receive error", ret);
 		rx->rx_bad_frame = true;
-		return (false);
+		goto done;
 	}
 
 	if (di.dri_totmsglen > b->b_size) {
@@ -891,8 +887,12 @@ recv_frame(rx_t *rx, dlpi_handle_t dlh)
 		    LOG_T_END);
 		rx->rx_bad_frame = true;
 		/* XXX: do we need to drain dlh? */
-		return (false);
+
+		goto done;
 	}
+
+	if (di.dri_totmsglen == 0)
+		goto done;
 
 	log_debug(rx->rx_log, "received frame",
 	    LOG_T_MAC, "src", src,
@@ -900,7 +900,15 @@ recv_frame(rx_t *rx, dlpi_handle_t dlh)
 	    LOG_T_END);
 
 	b->b_idx = blen;
-	return (true);
+	rx->rx_recv_frame = true;
+
+done:
+	if (!schedule_fd(dlpi_fd(a->a_dlh), &a->a_dl_cb)) {
+		log_syserr(log, "failed to schedule port", errno);
+		a->a_port_enabled = false;
+	}
+	mutex_exit(&a->a_lock);
+	VERIFY0(cond_signal(&a->a_cv));
 }
 
 static void
@@ -908,10 +916,6 @@ rx_process_frame(agent_t *a)
 {
 	rx_t *rx = &a->a_rx;
 	buf_t *b = &rx->rx_buf;
-
-	if (!recv_frame(rx, a->a_dlh)) {
-		return;
-	}
 
 	if (!process_pdu(rx->rx_log, b, &rx->rx_neighbor)) {
 		rx->rx_bad_frame = true;
@@ -934,6 +938,46 @@ rx_process_frame(agent_t *a)
 		neighbor_free(rx->rx_neighbor);
 		rx->rx_neighbor = NULL;
 	}
+}
+
+static bool
+open_port(agent_t *a)
+{
+	int ret;
+
+	ret = dlpi_open(a->a_name, &a->a_dlh, 0);
+	if (ret != DLPI_SUCCESS) {
+		log_dlerr(log, "failed to open link", ret);
+		goto fail;
+	}
+
+	ret = dlpi_info(a->a_dlh, &a->a_dl_info, 0);
+	if (ret != DLPI_SUCCESS) {
+		log_dlerr(log, "failed to get link info", ret);
+		goto fail;
+	}
+
+	ret = dlpi_enabmulti(a->a_dlh, lldp_addr, sizeof (lldp_addr));
+	if (ret != DLPI_SUCCESS) {
+		log_dlerr(log, "failed to bind to LLDP multicast address", ret);
+		goto fail;
+	}
+
+	ret = dlpi_bind(a->a_dlh, lldp_sap, NULL);
+	if (ret != DLPI_SUCCESS) {
+		log_dlerr(log, "failed to bind to LLDP SAP", ret);
+		goto fail;
+	}
+
+	return (true);
+
+fail:
+	if (a->a_dlh != NULL) {
+		dlpi_close(a->a_dlh);
+		a->a_dlh = NULL;
+	}
+
+	return (false);
 }
 
 #define	STR(x) case x: return (#x)
