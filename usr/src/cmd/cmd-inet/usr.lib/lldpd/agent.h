@@ -24,6 +24,7 @@
 #include <libuutil.h>
 
 #include "buf.h"
+#include "lldpd.h"
 #include "timer.h"
 
 #ifdef __cplusplus
@@ -108,6 +109,7 @@ typedef struct agent_cfg {
 	uint16_t		ac_tx_interval;
 	uint16_t		ac_reinit_delay;
 	uint16_t		ac_tx_credit_max;
+	uint16_t		ac_tx_fast_msg;
 	uint16_t		ac_tx_fast_init;
 
 	uint16_t		ac_neighbor_max;
@@ -124,6 +126,7 @@ typedef struct agent {
 	dlpi_handle_t		a_dlh;
 	dlpi_notifyid_t		a_dl_nid;
 	dlpi_info_t		a_dl_info;
+	fd_cb_t			a_dl_cb;
 
 	bool			a_exit;
 	bool			a_port_enabled;
