@@ -10,6 +10,7 @@
  */
 
 #include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include <upanic.h>
 #include "util.h"

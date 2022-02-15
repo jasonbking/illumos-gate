@@ -15,6 +15,8 @@
 
 #include <inttypes.h>
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/debug.h>
 #include <sys/time.h>
 
@@ -40,7 +42,7 @@ lldp_timers_sysfini(void)
 	uu_list_pool_destroy(clock_pool);
 }
 
-bool
+void
 lldp_timer_init(lldp_clock_t *clk, lldp_timer_t *t, const char *name,
     void *parent, log_t *plog, const char *flagname, bool *flagp)
 {
@@ -53,7 +55,7 @@ lldp_timer_init(lldp_clock_t *clk, lldp_timer_t *t, const char *name,
 
 	uu_list_node_init(t, &t->lt_node, clock_pool);
 
-	log_child(plog, &t->lt_log,
+	(void) log_child(plog, &t->lt_log,
 	    LOG_T_STRING, "timer", name,
 	    LOG_T_END);
 
@@ -68,7 +70,7 @@ void
 lldp_timer_fini(lldp_timer_t *t)
 {
 	log_fini(t->lt_log);
-	uu_avl_node_fini(t, &t->lt_node, timer_pool);
+	uu_list_node_fini(t, &t->lt_node, clock_pool);
 }
 
 void
@@ -91,9 +93,9 @@ bool
 lldp_clock_init(agent_t *a, lldp_clock_t *clk)
 {
 	clk->lc_agent = a;
-	clk->lc_timers = uu_list_create(clock_pool, a, UU_AVL_DEBUG);
-	if (clk->lts_timers == NULL) {
-		log_uuerr(a->log, "failed to initialize timer tree");
+	clk->lc_timers = uu_list_create(clock_pool, a, UU_LIST_DEBUG);
+	if (clk->lc_timers == NULL) {
+		log_uuerr(a->a_log, "failed to initialize timer tree");
 		return (false);
 	}
 	return (true);
@@ -109,19 +111,22 @@ lldp_timers_fini(lldp_clock_t *clk)
 void
 lldp_clock_tick(lldp_clock_t *clk, timestruc_t *tick)
 {
+	struct timeval now = { 0 };
 	uint32_t msec = 1000;
 
 	TRACE_ENTER(clk->lc_agent->a_log);
 
-	if (agent_num_neighors(clk->lc_agent) > 1) {
+	VERIFY0(gettimeofday(&now, NULL));
+
+	if (uu_list_numnodes(clk->lc_agent->a_neighbors) > 1) {
 		msec -= 200 + arc4random_uniform(401);
 	}
 
-	if (amt >= 1000) {
-		tick->tv_sec = 1;
-		amt -= 1000;
+	tick->tv_nsec = USEC2NSEC(now.tv_usec) + MSEC2NSEC(msec);
+	if (tick->tv_nsec > NANOSEC) {
+		tick->tv_sec = now.tv_sec + 1;
+		tick->tv_nsec -= NANOSEC;
 	}
-	tick->tv_nsec = MSEC2NSEC(amt);
 
 	TRACE_RETURN(clk->lc_agent->a_log);
 }
@@ -131,14 +136,14 @@ lldp_clock_tock(lldp_clock_t *clk)
 {
 	TRACE_ENTER(clk->lc_agent->a_log);
 
-	clk->lc_agent->tx_tick = true;
+	clk->lc_agent->a_ttr.ttr_tick = true;
 
 	for (lldp_timer_t *t = uu_list_first(clk->lc_timers); t != NULL;
-	    t = uu_list_next(clk->lc_timers)) {
-		if (t->lt_ttl == 0)
+	    t = uu_list_next(clk->lc_timers, t)) {
+		if (t->lt_val == 0)
 			continue;
 
-		if (--t->lt_ttl != 0)
+		if (--t->lt_val != 0)
 			continue;
 
 		log_debug(t->lt_log, "timer fired", LOG_T_END);

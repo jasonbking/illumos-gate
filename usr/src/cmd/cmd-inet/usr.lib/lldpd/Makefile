@@ -16,11 +16,10 @@
 PROG =		lldpd
 MANIFEST =	lldpd.xml
 
-OBJS =		agent.o 	\
-		lldpd.o 	\
+OBJS =		agent.o		\
+		lldpd.o		\
 		log.o		\
 		neighbor.o	\
-		pdu.o		\
 		timer.o		\
 		util.o
 
@@ -41,14 +40,14 @@ CHECKHDRS=	$(HDRS:%.h=%.check)
 CPPFLAGS +=	-D_REENTRANT -D__EXTENSIONS__
 CPPFLAGS +=	-I$(LIB_INC)
 
-CSTD =      	$(CSTD_GNU99)
+CSTD =		$(CSTD_GNU99)
 
 all:=		TARGET= all
 install:=	TARGET= install
 clean:=		TARGET= clean
 clobber:=	TARGET= clobber
 
-LDLIBS +=	-luutil
+LDLIBS +=	-ldlpi -lumem -luutil
 
 .KEEP_STATE:
 
