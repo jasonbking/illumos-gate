@@ -166,8 +166,6 @@ struct tpm {
 	kcondvar_t	suspend_cv;
 	uint32_t	suspended;
 
-	tpm_if_t	iftype;
-
 	enum tis_tpm_family	tpm_family;
 	enum tis_intf_ver	intf_ver;
 	enum tis_xfer_size	xfer_size;
