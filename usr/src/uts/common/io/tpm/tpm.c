@@ -174,7 +174,9 @@ tpm_cancel(tpm_client_t *c)
 		tpm->tpm_cancel(c);
 		tpm_client_reset(c);
 		break;
-	case TPM_CLIENT_WAIT_FOR_TPM:
+	case TPM_CLIENT_WAIT_FOR_TPM: {
+		int ret;
+
 		c->tpmc_cancelled = true;
 		membar_producer();
 
@@ -187,12 +189,21 @@ tpm_cancel(tpm_client_t *c)
 		 */
 		cv_broadcast(&c->tpmc_tpm->tpm_cv);
 
+		/*
+		 * Cancelling an in-process command may take some time.
+		 * While we can't 'undo' the cancellation, we can at least
+		 * stop blocking the caller, and just let the cleanup happen
+		 * asynchronously.
+		 */
 		while (c->tpmc_cancelled)
-			cv_wait(&c->tpmc_cv, &tpmc->tpmc_lock);
+			ret = cv_wait_sig(&c->tpmc_cv, &tpmc->tpmc_lock);
 
-		tpm_client_reset(c);
+		if (ret != 0)
+			tpm_client_reset(c);
+
 		mutex_exit(&c->tpmc_lock);
 		break;
+	}
 	default:
 		cmn_err(CE_PANIC, "unexpected tpm connection state 0x%x",
 		    c->tpmc_state);
@@ -371,7 +382,7 @@ tpm_exec_cmd(void *arg)
 	mutex_enter(&c->tpmc_lock);
 	c->tpmc_cmdresult = ret;
 	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
-	cv_broadcast(&c->tpmc_cv);
+	cv_signal(&c->tpmc_cv);
 	pollwakeup(&c->tpmc_pollhead, POLLIN);
 	mutex_exit(&c->tpmc_lock);
 
@@ -379,6 +390,7 @@ tpm_exec_cmd(void *arg)
 
 cancelled:
 	c->tpmc_cancelled = false;
+	c->tpmc_cmdresult = ECANCELED;
 	cv_signal(&c->tpmc_cv);
 	mutex_exit(&c->tpmc_lock);
 }
@@ -593,9 +605,11 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	}
 
 	if (c->tpmc_cmdresult != 0) {
+		int ret = c->tpmc_cmdresult;
+
 		tpm_client_reset(c);
 		mutex_exit(&c->tpmc_lock);
-		return (EIO);
+		return (ret);
 	}
 
 	size_t amt_avail = tpm_uio_size(uiop);
