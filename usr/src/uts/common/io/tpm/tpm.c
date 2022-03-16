@@ -281,7 +281,7 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 	}
 
 	*devp = makedevice(getmajor(*devp), minor);
-	return (0);		
+	return (0);
 }
 
 static int
@@ -997,7 +997,7 @@ tpm_cleanup_intr_alloc(tpm_t *tpm)
 		return;
 	}
 
-	VERIFY3S(ddi_intr_free(tpm_>tpm_harray), ==, DDI_SUCCESS);
+	VERIFY3S(ddi_intr_free(tpm->tpm_harray), ==, DDI_SUCCESS);
 }
 
 static bool
@@ -1102,7 +1102,7 @@ tpm_attach_hsvc(tpm_t *tpm)
 
 	ret = hsvc_register(&hsvc_tpm, &hscv_tpm_minor);
 	if (ret != 0) {
-		dev_err(tpm->tpm_dip,CE_WARN,
+		dev_err(tpm->tpm_dip, CE_WARN,
 		    "failed to register with hypervisor: 0x%0x", ret);
 		return (false);
 	}
@@ -1199,7 +1199,7 @@ tpm_cleanup(tpm_t *tpm)
 		tpm_attach_desc_t desc = &tpm_attach_tbl[seq];
 
 		tpm_dbg(tpm, "running cleanup sequence %s (%d)",
-			desc->tad_name, seq);
+		    desc->tad_name, seq);
 
 		desc->tad_cleanup(tpm);
 	}
@@ -1261,7 +1261,7 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		}
 
 		tpm_dbg(tpm, "attach sequence completed: %s (%d)",
-			desc->tad-name, desc->tad_seq);
+		    desc->tad-name, desc->tad_seq);
 		tpm->tpm_seq = desc->tad_seq;
 	}
 
@@ -1486,7 +1486,7 @@ tpm_reg_addr(const tpm_t *tpm, unsigned long offset)
 uint8_t
 tpm_get8(tpm_t *tpm, unsigned long offset)
 {
-	return (ddi_get8(tpm->tpm_handle, tpm_reg_addr(tpm, offset));
+	return (ddi_get8(tpm->tpm_handle, tpm_reg_addr(tpm, offset)));
 }
 
 uint8_t
@@ -1501,13 +1501,13 @@ tpm_get8_loc(tpm_t *tpm, uint8_t locality, unsigned long offset)
 uint32_t
 tpm_get32(tpm_t *tpm, unsigned long offset)
 {
-	return (ddi_get32(tpm->tpm_handle, tpm_reg_addr(tpm, offset));
+	return (ddi_get32(tpm->tpm_handle, tpm_reg_addr(tpm, offset)));
 }
 
 uint64_t
 tpm_get64(tpm_t *tpm, unsigned long offset)
 {
-	return (ddi_get64(tpm->tpm_handle, tpm_reg_addr(tpm, offset));
+	return (ddi_get64(tpm->tpm_handle, tpm_reg_addr(tpm, offset)));
 }
 
 void

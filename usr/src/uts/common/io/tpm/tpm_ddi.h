@@ -78,7 +78,7 @@ typedef enum tpm_tis_xfer_size {
 
 /* TIS/FIFO specific data */
 typedef struct tpm_tis {
-	tpm_tis_xfer_size_t	ttis_xfer_size;	
+	tpm_tis_xfer_size_t	ttis_xfer_size;
 	uint32_t		ttis_intr;
 } tpm_tis_t;
 
@@ -132,6 +132,7 @@ struct tpm {
 	bool			tpm_exclusive;	/* Only allow 1 client */
 
 	ddi_intr_handle_t	*tpm_harray;
+	kcondvar_t		tpm_intr_cv;
 	uint_t			tpm_nintr;
 	uint_t			tpm_intr_pri;
 	bool			tpm_use_interrupts;

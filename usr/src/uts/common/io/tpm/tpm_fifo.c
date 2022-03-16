@@ -71,7 +71,8 @@ tpm_tis_wait_for_stat(tpm_state_t *tpm, uint8_t mask, clock_t timeout)
  * Returns: 0 if error, burst count if sucess
  */
 static uint16_t
-tpm_tis_get_burstcount(tpm_state_t *tpm) {
+tpm_tis_get_burstcount(tpm_state_t *tpm)
+{
 	clock_t stop;
 	uint16_t burstcnt;
 
