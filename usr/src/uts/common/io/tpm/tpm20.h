@@ -24,7 +24,7 @@ struct tpm_state;
 
 /*
  * From 6.5.1.4, Table 18 (all in milliseconds)
- */ 
+ */
 #define	TPM20_TIMEOUT_A	750
 #define	TPM20_TIMEOUT_B	2000
 #define	TPM20_TIMEOUT_C	200

@@ -34,7 +34,7 @@
  * (TIS 1.2 pg 27)
  */
 #define	TIS_MEM_BASE	0xFED40000
-#define	TIS_MEM_LEN    	0x5000
+#define	TIS_MEM_LEN	0x5000
 
 #define	TPM_LOCALITY_OFFSET(x)	((x) << 12)
 
@@ -51,7 +51,7 @@
 /* Status Register */
 #define	TPM_STS			0x0018
 /* I/O FIFO */
-#define	TPM_DATA_FIFO   	0x0024
+#define	TPM_DATA_FIFO		0x0024
 /* Interface Id (1.3) */
 #define	TPM_INTERFACE_ID	0x0030
 /* I/O XFIFO (1.3) */
@@ -126,7 +126,7 @@ enum tis_intf_ver {
 	TPM_INTF_VERSION_1_3,
 	TPM_INTF_VERSION_1_3_TPM20
 };
-#define	TIS_INTF_VER_VAL(x) 		(((x) >> 28) & 0x7)
+#define	TIS_INTF_VER_VAL(x)		(((x) >> 28) & 0x7)
 
 /*
  * Because of the gaps, we can't just cast the masked value of the
@@ -148,7 +148,7 @@ enum tis_xfer_size {
 	TPM_INTF_XFER_32,
 	TPM_INTF_XFER_64
 };
-#define	TIS_INTF_XFER_VAL(x) 	(((x) >> 9) & 0x3)
+#define	TIS_INTF_XFER_VAL(x)	(((x) >> 9) & 0x3)
 
 /* Valid bits in TPM_INTF_CAP */
 #define	TPM_INTF_MASK	0x700007ff

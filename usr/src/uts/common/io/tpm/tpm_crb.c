@@ -23,7 +23,9 @@
 #define	TPM_LOC_STATE		0x00
 #define	TPM_LOC_STATE_REG_VALID		0x80
 #define	TPM_LOC_STATE_LOC_ASSIGNED	0x02
-#define	TPM_LOC_ACTIVE(x) 		(((x) >> 2) & 0x7)
+#define	TPM_LOC_ACTIVE(x)		(((x) >> 2) & 0x7)
+#define	TPM_LOC_ASSIGNED(x)		\
+	(((x) & TPM_LOC_STATE_LOC_ASSIGNED) == TPM_LOC_STATE_LOC_ASSIGNED)
 
 #define	TPM_LOC_CTRL		0x08
 #define	TPM_LOC_CTRL_SEIZE		0x04
@@ -67,9 +69,49 @@
 
 static int
 tpm_crb_wait_u32(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t val,
-    clock_t timeout)
+    clock_t timeout, bool intr_wait)
 {
+	clock_t deadline;
+	uint32_t status;
+	int ret = 0;
+
+	if (!tpm->tpm_use_interrupts)
+		intr_wait = false;
+
+	/* Use an absolute timeout since other interrupts may wake us. */
+	deadline = ddi_get_lbolt() + timeout;
+
+	while (((status = tpm_get32(reg)) & mask) != val) {
+		if (intr_wait) {
+			ret = cv_timedwait(&tpm->tpm_intr_cv, &tpm->tpm_lock,
+			    deadline);
+			if (ret == -1) {
+				/* Check one final time */
+				status = tpm_get32(reg) & mask;
+				if (status != val) {
+					goto timedout;
+				}
+
+				return (0);
+			}
+		} else {
+			if (ddi_get_lbolt() >= deadline) {
+				goto timedout;
+			}
+
+			delay(tpm->tpm_timeout_poll);
+		}
+	}
+
 	return (0);
+
+timedout:
+#ifdef DEBUG
+	dev_err(tpm->tpm_dip, CE_WARN, "!%s: timeout (%ld usecs) waiting for "
+	    "reg 0x%lx & 0x%x == 0x%x", __func__, drv_hztousec(timeout),
+	    reg, mask, val);
+#endif
+	return (ETIME);
 }
 
 static int
@@ -79,15 +121,16 @@ tpm_crb_go_idle(tpm_t *tpm)
 
 	/* Now wait for bit to clear */
 	return (tpm_crb_wait_u32(tpm, TPM_CRB_CTRL_REQ,
-	    TPM_CRB_CTRL_REQ_GO_IDLE, 0), tpm->tpm_timeout_c);
+	    TPM_CRB_CTRL_REQ_GO_IDLE, 0, tpm->tpm_timeout_c, false));
 }
 
 static int
 tpm_crb_go_ready(tpm_t *tpm)
 {
 	tpm_put32(tpm, TPM_CRB_CTRL_REQ, TPM_CRB_CTRL_REQ_CMD_READY);
+
 	return (tpm_crb_wait_u32(tpm, TPM_CRB_CTRL_REQ,
-	    TPM_CRB_CTRL_REQ_CMD_READY, 0), tpm->tpm_timeout_c);
+	    TPM_CRB_CTRL_REQ_CMD_READY, 0, tpm->tpm_timeout_c, true));
 }
 
 int
@@ -130,11 +173,11 @@ tpm_crb_intr(caddr_t arg0, caddr_t arg1)
 {
 	tpm_t *tpm = (tpm_t *)arg0;
 
-	
+	return (0);
 }
 
 int
-tpm_crb_send_data(tpm_t *c, uint8_t *buf, size_t buflen)
+tpm_crb_send_data(tpm_client_t *c, uint8_t *buf, size_t buflen)
 {
 	ASSERT(MUTEX_HELD(&c->tpmc_lock));
 	ASSERT(MUTEX_HELD(&c->tpmc_tpm->tpm_lock));
@@ -161,11 +204,13 @@ tpm_crb_send_data(tpm_t *c, uint8_t *buf, size_t buflen)
 
 	clock_t timeout = get_timeout(buf, buflen);
 
+	/* XXX: should this be replaced with a 64-bit copy loop? */
 	bcopy(buf, tpm->tpm_addr + crb->tcrb_cmd_off, buflen);
-	tpm_put32(tpm, TPM_CRB_CTRL_START, 1);
-	ret = tpm_crb_wait_u32(tpm, TPM_CRB_CTRL_START, 1, 0, timeout);
 
-	return (0);
+	tpm_put32(tpm, TPM_CRB_CTRL_START, 1);
+	ret = tpm_crb_wait_u32(tpm, TPM_CRB_CTRL_START, 1, 0, timeout, true);
+
+	return (ret);
 }
 
 int
@@ -174,9 +219,10 @@ tpm_crb_request_locality(tpm_t *tpm, uint8_t locality)
 	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
 
 	uint32_t status;
+	uint32_t mask;
 
 	/*
-	 * TPM_CRB_LOC_STATE is mirrored across all localities (to enable
+	 * TPM_CRB_LOC_STATE is mirrored across all localities (to allow
 	 * determination of the active locality), so it doesn't matter
 	 * which locality is used to read the state.
 	 */
@@ -188,18 +234,14 @@ tpm_crb_request_locality(tpm_t *tpm, uint8_t locality)
 	}
 
 	/* Locality is already active. Nothing to do. */
-	if (TPM_LOC_ACTIVE(status) == locality) {
+	if (TPM_LOC_ASSIGNED(status) &&
+	    TPM_LOC_ACTIVE(status) == locality) {
 		tpm->tpm_locality = locality;
 		return (0);
 	}
 
-	if ((status & mask) != mask) {
-		return (EIO);
-	}
-
-	if (TPM_LOC_ACTIVE(status) == locality) {
-		return (0);
-	}
+	mask = TPM_LOC_STATE_REG_VALID | TPM_LOC_STATE_LOC_ASSIGNED |
+	    (uint32_t)locality & 0x7 << 2;
 
 	/*
 	 * The TPM_LOC_CTRL_REQUEST register is write only. Bits written as
@@ -207,16 +249,16 @@ tpm_crb_request_locality(tpm_t *tpm, uint8_t locality)
 	 * write the value with the desired flags set.
 	 */
 	tpm_put32_loc(tpm, locality, TPM_LOC_CTRL, TPM_LOC_CTRL_REQUEST);
-	ret = tpm_wait_for_u32(tpm, TPM_LOC_STATE, req_mask, req_mask,
-	    tpm->timeout_c);
 
+	ret = tpm_wait_for_u32(tpm, TPM_CRB_LOC_STATE, mask, mask,
+	    tpm->tpm_timeout_c, true);
 	if (ret == 0) {
 		tpm->tpm_locality = locality;
 		return (0);
 	}
 
 	/*
-	 * TODO: This should probably generate a fault event and possibly
+	 * TODO: This should probably generate an fm event and possibly
 	 * disable access to the TPM. Need to research more.
 	 */
 	return (ret);
@@ -235,4 +277,16 @@ tpm_crb_release_locality(tpm_t *tpm, uint8_t locality)
 }
 
 int
-tpm_crb_exec_cmd(tpm_client_t *c
+tpm_crb_exec_cmd(tpm_client_t *c)
+{
+
+	int ret;
+
+	ret = tpm_crb_send_data(c, c->tpmc_buf, c->tpmc_bufused);
+	if (ret != 0) {
+		return (ret);
+	}
+
+	/* XXX: read in the response */
+	return (ret);
+}

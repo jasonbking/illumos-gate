@@ -213,5 +213,5 @@ tpmrng_generate_random(crypto_provider_handle_t provider,
 {
 	tpm_state_t *tpm = (tpm_state_t *)provider;
 
-	return (tpm12_generate_random(tpm, buf, len);
+	return (tpm12_generate_random(tpm, buf, len));
 }
