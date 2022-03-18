@@ -67,6 +67,59 @@
 
 #define	TPM_CRB_DATA_BUFFER	0x80
 
+
+/* Make sure our bitfield is large enough */
+CTASSERT(sizeof (uint32_t) >= NBBY*TCRB_ST_MAX);
+#define	B(x) ((uint32_t)1 << ((uint_t)x))
+
+/* For each state, a bit field indicating which next states are allowed */
+static uint32_t tpm_crb_state_tbl[TCRB_ST_MAX] = {
+	[TCRB_ST_IDLE] = B(TCRB_ST_READY),
+	[TCRB_ST_READY] =
+	    B(TCRB_ST_IDLE)|B(TCRB_ST_READY)|B(TCRB_ST_CMD_RECEPTION),
+	[TCRB_ST_CMD_RECEPTION] =
+	    B(TCRB_ST_READY)|B(TCRB_ST_CMD_RECEPTION|B(TCRB_ST_CMD_EXECUTION),
+	[TCRB_ST_CMD_EXECUTION] = B(TCRB_ST_CMD_COMPLETION),
+	[TCRB_ST_CMD_COMPLETION] =
+	    B(TCRB_ST_IDLE)|B(TCRB_ST_READY)|B(TCRB_ST_CMD_COMPLETION)|
+	    B(TCRB_ST_CMD_RECEPTION),
+};
+
+static void
+tpm_crb_set_state(tpm_t *tpm, tpm_crb_state_t next_state)
+{
+	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
+
+	VERIFY3S(next_state, <, TCRB_ST_MAX);
+
+	mutex_enter(&crb->tcrb_lock);
+
+	/* Make sure the next state is generally allowed */
+	VERIFY((tpm_crb_state_tbl[crb->tcrb_state] & B(next_state)) != 0);
+
+	/* More specific checks */
+	switch (crb->tcrb_state) {
+	case TCRB_ST_CMD_COMPLETION:
+		switch (next_state) {
+			case TCRB_ST_READY:
+				/*
+				 * CMD_COMPLETION -> READY only allowed when
+				 * idle bypass feature is supported.
+				 */
+				VERIFY(crb->tcrb_idle_bypass);
+				break;
+			default:
+				break;
+		}
+		break;
+	default:
+		break;
+	}
+
+	crb->tcrb_state = next_state;
+	mutex_exit(&crb->tcrb_lock);
+}
+
 static int
 tpm_crb_wait_u32(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t val,
     clock_t timeout, bool intr_wait)
@@ -136,34 +189,39 @@ tpm_crb_go_ready(tpm_t *tpm)
 int
 tpm_crb_init(tpm_t *tpm)
 {
+	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
+
+	mutex_init(&crb->tcrb_lock, NULL, MUTEX_DRIVER, NULL);
+	crb->tcrb_state = TCRB_ST_IDLE;
+
 	/*
 	 * The cmd address register is not at an 8-byte aligned offset, so
 	 * it must be read as two 32-bit values.
 	 */
-	tpm->crb_cmd_off = tpm_get32(tpm, TPM_CRB_CMD_LADDR) |
+	crb->tcrb_cmd_off = tpm_get32(tpm, TPM_CRB_CMD_LADDR) |
 	    tpm_get32(tpm, TPM_CRB_CMD_HADDR) << 32;
-	tpm->crb_cmdbuf_size = tpm_get32(tpm, TPM_CRB_CMD_SIZE);
+	crb->tcrb_cmdbuf_size = tpm_get32(tpm, TPM_CRB_CMD_SIZE);
 
 	/*
 	 * The command response buffer address is however at an 8-byte
 	 * aligned offset.
 	 */
-	tpm->crb_resp_off = tpm_get64(tpm, TPM_CRB_RSP_ADDR);
-	tpm->crb_respbuf_size = tpm_get32(tpm, TPM_CRB_RSP_SIZE);
+	crb->tcrb_resp_off = tpm_get64(tpm, TPM_CRB_RSP_ADDR);
+	crb->tcrb_respbuf_size = tpm_get32(tpm, TPM_CRB_RSP_SIZE);
 
 	/*
 	 * The command and response buffer may be the same offset. If they are,
 	 * the buffer sizes SHALL be the same (Table 25).
 	 */
-	if (tpm->crb_cmd_off == tpm->crb_resp_off &&
-	    tpm->crb_cmdbuf_size != tpm->crb_respbuf_size) {
+	if (crb->tcrb_cmd_off == crb->tcrb_resp_off &&
+	    crb->tcrb_cmdbuf_size != crb->tcrb_respbuf_size) {
 		cmn_err(CE_WARN, "!%s: tpm shared command and response buffer "
 		    "have different sizes (cmd size %llu != resp size %llu)",
-		    __func__, tpm->crb_cmdbuf_size, tpm->crb_respbuf_size);
+		    __func__, crb->tcrb_cmdbuf_size, crb->tcrb_respbuf_size);
 		return (EIO);
 	}
 
-	tpm->iftype = TPM_IF_CRB;
+	tpm->tpm_iftype = TPM_IF_CRB;
 
 	return (0);
 }
