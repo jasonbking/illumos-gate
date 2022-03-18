@@ -82,13 +82,33 @@ typedef struct tpm_tis {
 	uint32_t		ttis_intr;
 } tpm_tis_t;
 
+/*
+ * From PC-Client-Specific-Platform-TPM-Profile 6.5.3.8
+ *
+ * Note that while the diagram does include a TPM_Init state, the system firmware should
+ * always transition the TPM out of that state long before we ever have a chance to
+ * access the TPM.
+ */
+typedef enum tpm_crb_state {
+	TCRB_ST_IDLE,
+	TCRB_ST_READY,
+	TCRB_ST_CMD_RECEPTION,
+	TCRB_ST_CMD_EXECUTION,
+	TCRB_ST_CMD_COMPLETION,
+	TCRB_ST_MAX			/* Must be last */
+} tpm_crb_state_t;
+
 /* CRB Interface specific data */
 typedef struct tpm_crb {
-	uint64_t	tcrb_cmd_off;
-	size_t		tcrb_cmb_size;
-	uint64_t	tcrb_resp_off;
-	size_t		tcrb_resp_size;
+	kmutex_t	tcrb_lock;
+	tpm_crb_state_t	tcrb_state;		/* RW */
+
+	uint64_t	tcrb_cmd_off;		/* WO */
+	size_t		tcrb_cmb_size;		/* WO */
+	uint64_t	tcrb_resp_off;		/* WO */
+	size_t		tcrb_resp_size;		/* WO */
 	uint32_t	tcrb_intr;
+	bool		tcrb_idle_bypass;	/* WO */
 } tpm_crb_t;
 
 typedef enum tpm_attach_seq {
