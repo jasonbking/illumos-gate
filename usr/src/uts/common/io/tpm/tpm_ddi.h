@@ -88,10 +88,11 @@ typedef enum tpm_tis_xfer_size {
 
 /* TIS/FIFO specific data */
 typedef struct tpm_tis {
-	kmutex_t		ttis_lock;
 	tpm_tis_state_t		ttis_state;		/* RW */
 	tpm_tis_xfer_size_t	ttis_xfer_size;		/* WO */
 	uint32_t		ttis_intr;
+	bool			ttis_has_sts_valid_int;	/* WO */
+	bool			ttis_has_cmd_ready_int;	/* WO */
 } tpm_tis_t;
 
 /*
@@ -112,14 +113,12 @@ typedef enum tpm_crb_state {
 
 /* CRB Interface specific data */
 typedef struct tpm_crb {
-	kmutex_t	tcrb_lock;
 	tpm_crb_state_t	tcrb_state;		/* RW */
 
 	uint64_t	tcrb_cmd_off;		/* WO */
 	size_t		tcrb_cmb_size;		/* WO */
 	uint64_t	tcrb_resp_off;		/* WO */
 	size_t		tcrb_resp_size;		/* WO */
-	uint32_t	tcrb_intr;
 	bool		tcrb_idle_bypass;	/* WO */
 } tpm_crb_t;
 
@@ -165,6 +164,18 @@ typedef enum tpm_wait {
 	TPM_WAIT_POLLONCE,
 } tpm_wait_t;
 
+/*
+ * However some operations do not generate an interrupt on completion.
+ * For those, we want to translate TPM_WAIT_INTR to TPM_WAIT_POLL.
+ */
+static inline tpm_wait_t
+tpm_wait_nointr(const tpm_t *tpm)
+{
+	if (tpm->tpm_wait == TPM_WAIT_INTR)
+		return (TPM_WAIT_POLL);
+	return (tpm->tpm_wait);
+}
+
 typedef enum tpm_attach_seq {
 #ifdef amd64
 	TPM_ATTACH_REGS =	1,
@@ -178,6 +189,7 @@ typedef enum tpm_attach_seq {
 	TPM_ATTACH_INTR_HDLRS,
 #endif
 	TPM_ATTACH_SYNC,
+	TPM_ATTACH_THREAD,
 	TPM_ATTACH_MINOR_NODE,
 	TPM_ATTACH_RAND,
 	TPM_ATTACH_END			/* should always be last */
@@ -198,23 +210,26 @@ struct tpm {
 	tpm_attach_seq_t	tpm_seq;
 
 	kmutex_t		tpm_lock;
-	kcondvar_t		tpm_cv;
 	uint8_t			*tpm_addr;	/* TPM mapped address */
-	tpm_state_t		tpm_state;
-	uint_t			tpm_client_count;
-	uint_t			tpm_client_max;
-	bool			tpm_exclusive;	/* Only allow 1 client */
+	tpm_state_t		tpm_state;		/* RW */
+	uint_t			tpm_client_count;	/* RW */
+	uint_t			tpm_client_max;		/* RW */
+	bool			tpm_exclusive;		/* WO */
 
-	ddi_intr_handle_t	*tpm_harray;
-	kcondvar_t		tpm_intr_cv;
-	uint_t			tpm_nintr;
-	uint_t			tpm_intr_pri;
-	bool			tpm_use_interrupts;
+	ddi_intr_handle_t	*tpm_harray;		/* WO */
+	uint_t			tpm_nintr;		/* WO */
+	uint_t			tpm_intr_pri;		/* WO */
+	tpm_wait_t		tpm_wait;		/* WO */
+	bool			tpm_use_interrupts;	/* WO */
+	kcondvar_t		tpm_intr_cv;		
 
-	tpm_client_t		*tpm_active;
-	ddi_taskq_t		tpm_taskq;
+	kt_did_t		tpm_thread_id;		/* WO */
+	kcondvar_t		tpm_thr_cv;
+	bool			tpm_thr_quit;		/* RW */
+	bool			tpm_thr_cancelreq;	/* RW */
+	list_t			tpm_pending;		/* RW */
 
-	tpm_if_t		tpm_iftype;
+	tpm_if_t		tpm_iftype;		/* WO */
 	union {
 		tpm_tis_t	tpmu_tis;
 		tpm_crb_t	tpmu_crb;
@@ -225,11 +240,11 @@ struct tpm {
 	uint32_t flags;		/* flags to keep track of what is allocated */
 	clock_t duration[4];	/* short,medium,long,undefined */
 
-	clock_t			tpm_timeout_a;
-	clock_t			tpm_timeout_b;
-	clock_t			tpm_timeout_c;
-	clock_t			tpm_timeout_d;
-	clock_t timeout_poll;
+	clock_t			tpm_timeout_a;		/* WO */
+	clock_t			tpm_timeout_b;		/* WO */
+	clock_t			tpm_timeout_c;		/* WO */
+	clock_t			tpm_timeout_d;		/* WO */
+	clock_t			tpm_timeout_poll;	/* WO */
 
 	int			(*tpm_exec)(tpm_client_t *);
 	int			(*tpm_cancel)(tpm_client_t *);
@@ -248,6 +263,18 @@ struct tpm {
 	crypto_kcf_provider_handle_t	tpm_n_prov;
 };
 
+static inline bool
+tpm_is_cancelled(tpm_t *tpm)
+{
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+
+	if (tpm->tpm_active == NULL) {
+		return (false);
+	}
+
+	return (tpm->tpm_active->tpmc_canceled);
+}
+
 typedef enum tpm_mode {
 	TPM_MODE_RDONLY =	0,
 	TPM_MODE_WRITE =	(1 << 0),
@@ -263,15 +290,17 @@ typedef enum tpm_client_state {
 	TPM_CLIENT_IDLE,		/* No command in progress */
 	TPM_CLIENT_CMD_RECEPTION,	/* Reading command from client */
 	TPM_CLIENT_CMD_DISPATCH,	/* Command has been dispatched */
-	TPM_CLIENT_WAIT_FOR_TPM,	/* Waiting to get access to TPM */
 	TPM_CLIENT_CMD_EXECUTION,	/* Command is running on TPM */
 	TPM_CLIENT_CMD_COMPLETION,	/* Write command to client */
 } tpm_client_state_t;
 
 struct tpm_client {
+	volatile uint_t		tpmc_refcnt;
+	list_node_t		tpmc_node;
 	kmutex_t		tpmc_lock;
 	kcondvar_t		tpmc_cv;
 	tpm_t			*tpmc_tpm;		/* Write once (WO) */
+	int			tpmc_minor;		/* WO */
 	tpm_mode_t		tpmc_mode;		/* WO */
 	tpm_client_state_t	tpmc_state;		/* RW */
 	pollhead_t		tpmc_pollhead;		/* RW */
@@ -283,7 +312,14 @@ struct tpm_client {
 	uint8_t			tpmc_locality;		/* RW */
 	int			tpmc_cmdresult;		/* RW */
 	bool			tpmc_cancelled;		/* RW */
+	bool			tpmc_closing;		/* WO */
 };
+
+static inline bool
+tpm_client_nonblock(const tpm_client_t *c)
+{
+	return ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0 ? true : false);
+}
 
 #define	TPM_LOCALITY_MAX	4
 #define	TPM_OFFSET_MAX		0x0fff
@@ -298,6 +334,7 @@ uint8_t tpm_get8(tpm_t *, unsigned long);
 uint32_t tpm_get32(tpm_t *, unsigned long);
 uint64_t tpm_get64(tpm_t *, unsigned long);
 void tpm_put8(tpm_t *, unsigned long, uint8_t);
+int tpm_wait_u32(tpm_t *, unsigned long, uint32_t, uint32_t, clock_t, bool);
 
 void tpm_dbg(tpm_t *, const char *, ...);
 
@@ -308,5 +345,18 @@ int tpm12_init(tpm_t *);
 int tpm20_init(tpm_t *);
 int tpm20_seed_random(tpm_t *, uchar_t *, size_t);
 int tpm20_generate_random(tpm_t *, uchar_t *, size_t);
+
+void tpm_client_refrele(tpm_client_t *);
+void tpm_client_reset(tpm_client_t *);
+
+int tpm_tis_init(tpm_t *);
+int tpm_tis_exec_cmd(tpm_client_t *);
+int tpm_tis_cancel_cmd(tpm_client_t *);
+void tpm_tis_intr_mgmt(tpm_t *, bool);
+
+int tpm_crb_init(tpm_t *);
+int tpm_crb_exec_cmd(tpm_client_t *);
+int tpm_crb_cancel_cmd(tpm_client_t *);
+void tpm_tis_intr_mgmt(tpm_t *, bool);
 
 #endif	/* _TPM_DDI_H */

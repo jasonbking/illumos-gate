@@ -42,7 +42,7 @@
 
 #define	TPM_CRB_CTRL_STS	0x44
 #define	TPM_CRB_CTRL_STS_IDLE		0x02
-#define	TPM_CRB_CTRL_STS_ONLINE		0x01
+#define	TPM_CRB_CTRL_STS_FATAL		0x01
 #define	TPM_CRB_CTRL_CANCEL	0x48
 #define	TPM_CRB_CTRL_START	0x4c
 
@@ -51,7 +51,7 @@
 #define	TPM_CRB_INT_EN_LOC_CHANGED	0x00000008
 #define	TPM_CRB_INT_EN_EST_CLEAR	0x00000004
 #define	TPM_CRB_INT_EN_CMD_READY	0x00000002
-#define	TPM_CRB_INT_ENT_START_INT	0x00000001
+#define	TPM_CRB_INT_ENT_START		0x00000001
 
 #define	TPM_CRB_INT_STS		0x54
 #define	TPM_CRB_INT_LOC_CHANGED		0x00000008
@@ -67,7 +67,6 @@
 
 #define	TPM_CRB_DATA_BUFFER	0x80
 
-
 /* Make sure our bitfield is large enough */
 CTASSERT(sizeof (uint32_t) >= NBBY*TCRB_ST_MAX);
 #define	B(x) ((uint32_t)1 << ((uint_t)x))
@@ -78,7 +77,7 @@ static uint32_t tpm_crb_state_tbl[TCRB_ST_MAX] = {
 	[TCRB_ST_READY] =
 	    B(TCRB_ST_IDLE)|B(TCRB_ST_READY)|B(TCRB_ST_CMD_RECEPTION),
 	[TCRB_ST_CMD_RECEPTION] =
-	    B(TCRB_ST_READY)|B(TCRB_ST_CMD_RECEPTION|B(TCRB_ST_CMD_EXECUTION),
+	    B(TCRB_ST_IDLE)|B(TCRB_ST_CMD_RECEPTION|B(TCRB_ST_CMD_EXECUTION),
 	[TCRB_ST_CMD_EXECUTION] = B(TCRB_ST_CMD_COMPLETION),
 	[TCRB_ST_CMD_COMPLETION] =
 	    B(TCRB_ST_IDLE)|B(TCRB_ST_READY)|B(TCRB_ST_CMD_COMPLETION)|
@@ -90,9 +89,8 @@ tpm_crb_set_state(tpm_t *tpm, tpm_crb_state_t next_state)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
 	VERIFY3S(next_state, <, TCRB_ST_MAX);
-
-	mutex_enter(&crb->tcrb_lock);
 
 	/* Make sure the next state is generally allowed */
 	VERIFY((tpm_crb_state_tbl[crb->tcrb_state] & B(next_state)) != 0);
@@ -101,9 +99,10 @@ tpm_crb_set_state(tpm_t *tpm, tpm_crb_state_t next_state)
 	switch (crb->tcrb_state) {
 	case TCRB_ST_CMD_COMPLETION:
 		switch (next_state) {
+			case TCRB_ST_CMD_RECEPTION:
 			case TCRB_ST_READY:
 				/*
-				 * CMD_COMPLETION -> READY only allowed when
+				 * Only allowed when
 				 * idle bypass feature is supported.
 				 */
 				VERIFY(crb->tcrb_idle_bypass);
@@ -117,79 +116,78 @@ tpm_crb_set_state(tpm_t *tpm, tpm_crb_state_t next_state)
 	}
 
 	crb->tcrb_state = next_state;
-	mutex_exit(&crb->tcrb_lock);
-}
-
-static int
-tpm_crb_wait_u32(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t val,
-    clock_t timeout, bool intr_wait)
-{
-	clock_t deadline, now;
-	uint32_t status;
-	int ret = 0;
-
-	if (!tpm->tpm_use_interrupts)
-		intr_wait = false;
-
-	/*
-	 * Our wait loop may be interrupted, possibly several times -- either
-	 * due to the ISR signaling completion, or if we're in polling mode
-	 * and re-checking the status periodically. Either way, we want to
-	 * use a deadline to determine when we should give up.
-	 */
-	deadline = ddi_get_lbolt() + timeout;
-
-	while (((status = tpm_get32(reg)) & mask) != val &&
-	    ((now = ddi_get_lbolt()) < deadline)) {
-		clock_t waitamt;
-
-		if (intr_wait) {
-			waitamt = deadline;
-		} else {
-			waitamt = now + tpm->tpm_timeout_poll;
-			if (waitamt > deadline)
-				waitamt = deadline;
-		}
-
-		ret = cv_timedwait(&tpm->tpm_intr_cv, &tpm->tpm_lock, waitamt);
-	}
-
-	/* We timed out, check the status one final time */
-	if (ret <= 0) {
-		status = tpm_get32(reg) & mask;
-		if (status != val) {
-			goto timedout;
-		}
-	}
-
-	return (0);
-
-timedout:
-#ifdef DEBUG
-	dev_err(tpm->tpm_dip, CE_WARN, "!%s: timeout (%ld usecs) waiting for "
-	    "reg 0x%lx & 0x%x == 0x%x", __func__, drv_hztousec(timeout),
-	    reg, mask, val);
-#endif
-	return (ETIME);
 }
 
 static int
 tpm_crb_go_idle(tpm_t *tpm)
 {
+	tpm_crb_t *crb = tpm->tpm_u.tpmu_crb;
+	uint32_t status;
+	int ret;
+
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+
+	status = tpm_get32(tpm, TPM_CRB_CTRL_STS);
+	if ((status & TPM_CRB_CTRL_STS_FATAL) != 0) {
+		/* XXX: fm err? */
+		return (EIO);
+	}
+
+	if ((status & TPM_CRB_CTRL_STS_IDLE) != 0) {
+		/*
+		 * If the TPM is reporting it's in the IDLE state, we
+		 * should agree.
+		 */
+		VERIFY3S(crb->tcrb_state, ==, TPM_ST_IDLE);
+		return (0);
+	}
+
 	tpm_put32(tpm, TPM_CRB_CTRL_REQ, TPM_CRB_CTRL_REQ_GO_IDLE);
 
-	/* Now wait for bit to clear */
-	return (tpm_crb_wait_u32(tpm, TPM_CRB_CTRL_REQ,
-	    TPM_CRB_CTRL_REQ_GO_IDLE, 0, tpm->tpm_timeout_c, false));
+	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_REQ,
+	    TPM_CRB_CTRL_REQ_GO_IDLE, 0, tpm->tpm_timeout_c, false);
+	if (ret != 0)
+		return (ret);
+
+	/*
+	 * The TPM should assert the idle state in TPM_CRB_CTRL_STS once
+	 * idle. If not, we abort.
+	 */
+	status = tpm_get32(tpm, TPM_CRB_CTRL_STS);
+	if ((status & TPM_CRB_CTRL_STS_IDLE) == 0) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "TPM cleared goIdle bit, but did not update tpmIdle");
+		/* XXX: fm err? */
+		return (EIO);
+	}
+
+	tpm_crb_set_state(tpm, TPM_ST_IDLE);
+	return (0);
 }
 
 static int
 tpm_crb_go_ready(tpm_t *tpm)
 {
-	tpm_put32(tpm, TPM_CRB_CTRL_REQ, TPM_CRB_CTRL_REQ_CMD_READY);
+	int ret;
 
-	return (tpm_crb_wait_u32(tpm, TPM_CRB_CTRL_REQ,
-	    TPM_CRB_CTRL_REQ_CMD_READY, 0, tpm->tpm_timeout_c, true));
+	VERIFY(MUTEX_HELD(tpm->tpm_lock));
+
+	/*
+	 * Per Table 35, if we are already in the READY state and assert
+	 * cmdReady, the TPM will just clear the bit and remain in the
+	 * READY state.
+	 */
+	tpm_put32(tpm, TPM_CRB_CTRL_REQ, TPM_CRB_CTRL_REQ_CMD_READY);
+	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_REQ,
+	    TPM_CRB_CTRL_REQ_CMD_READY, 0, tpm->tpm_timeout_c, true);
+	if (ret == 0) {
+		tpm_crb_set_state(tpm, TPM_ST_READY);
+		return (0);
+	}
+
+	/* If we timed out, try to go back to the idle state */
+	(void) tpm_crb_go_idle(tpm);
+	return (ret);
 }
 
 int
@@ -197,7 +195,6 @@ tpm_crb_init(tpm_t *tpm)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 
-	mutex_init(&crb->tcrb_lock, NULL, MUTEX_DRIVER, NULL);
 	crb->tcrb_state = TCRB_ST_IDLE;
 
 	/*
@@ -233,28 +230,41 @@ tpm_crb_init(tpm_t *tpm)
 }
 
 static uint_t
-tpm_crb_intr(caddr_t arg0, caddr_t arg1)
+tpm_crb_intr(caddr_t arg0, caddr_t arg1 __unused)
 {
-	tpm_t *tpm = (tpm_t *)arg0;
+	const uint32_t intr_mask = TPM_CRB_INT_LOC_CHANGED|
+	    TPM_CRB_INT_EST_CLEAR|TPM_CRB_INT_CMD_READY|TPMM_CRB_INT_START;
 
-	return (0);
+	tpm_t *tpm = (tpm_t *)arg0;
+	uint32_t status;
+
+	status = tpm_get32(tpm, TPM_CRB_INT_SYS);
+	if ((status & intr_mask) == 0) {
+		/* Wasn't us */
+		return (DDI_INTR_UNCLAIMED);
+	}
+
+	/* Ack the interrupt */
+	tpm_put32(tpm, status);
+
+	/*
+	 * For now at least, it's just enough to signal the waiting
+	 * command to recheck the appropriate registers.
+	 *
+	 * TODO: It might be nice to have dtrace sdt probes for each
+	 * type of interrupt.
+	 */
+	cv_signal(tpm->tpm_intr_cv);
+
+	return (DDI_INTR_CLAIMED);
 }
 
-int
+static int
 tpm_crb_send_data(tpm_client_t *c, uint8_t *buf, size_t buflen)
 {
-	ASSERT(MUTEX_HELD(&c->tpmc_lock));
-	ASSERT(MUTEX_HELD(&c->tpmc_tpm->tpm_lock));
-	ASSERT3S(c->tpmc_tpm->tpm_iftype, ==, TPM_IF_CRB);
-
 	tpm_t *tpm = c->tpmc_tpm;
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 	int ret;
-
-	ret = tpm_crb_request_locality(tpm, c->tpmc_locality);
-	if (ret != 0) {
-		return (ret);
-	}
 
 	ret = tpm_crb_go_idle(tpm);
 	if (ret != 0) {
@@ -268,16 +278,63 @@ tpm_crb_send_data(tpm_client_t *c, uint8_t *buf, size_t buflen)
 
 	clock_t timeout = get_timeout(buf, buflen);
 
+	/*
+	 * Technically, the TPM doesn't transition into the Command Reception
+	 * state until the first byte is written, but nothing should get
+	 * inbetween us doing this, so we update the state first.
+	 */
+	tpm_crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
+
 	/* XXX: should this be replaced with a 64-bit copy loop? */
 	bcopy(buf, tpm->tpm_addr + crb->tcrb_cmd_off, buflen);
 
 	tpm_put32(tpm, TPM_CRB_CTRL_START, 1);
-	ret = tpm_crb_wait_u32(tpm, TPM_CRB_CTRL_START, 1, 0, timeout, true);
+	tpm_crb_set_state(tpm, TCRB_ST_CMD_EXECUTION);
 
 	return (ret);
 }
 
-int
+static int
+tpm_crb_recv_data(tpm_client_t *c, uint8_t *buf, size_t buflen, size_t *rlenp)
+{
+	tpm_t *tpm = c->tpmc_tpm;
+	int ret;
+
+	/* We should be given a buffer large enough to hold any response */
+	VERIFY3U(buflen, >=, TPM_IO_BUF_SIZE);
+
+	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_START, 1, 0, timeout, false);
+	if (ret != 0) {
+		return (ret);
+	}
+
+	tpm_crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
+
+	/* First, read in the header */
+	bcopy(tpm->tpm_addr, buf, TPM_HEADER_SIZE);
+
+	/* Check for sanity. */
+	size_t resp_len = BE_IN32(buf + TPM_PARAMSIZE_OFFSET);
+
+	if (resp_len > buflen) {
+		/* XXX: fm report? */
+		dev_err(tpm->tpm_dip, "received and excessively large (%lu) "
+		    "sized response", (unsigned long)resp_len);
+
+		/* Try to recover by going idle */
+		(void) tpm_crb_go_idle(tpm);
+		return (ret);
+	}
+
+	/* Read in rest of the response */
+	bcopy(tpm->tpm_addr + TPM_HEADER_SIZE, buf + TPM_HEADER_SIZE,
+	    resp_len - TPM_HEADER_SIZE);
+	*rlenp = resp_len;
+
+	return (0);
+}
+
+static int
 tpm_crb_request_locality(tpm_t *tpm, uint8_t locality)
 {
 	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
@@ -328,7 +385,7 @@ tpm_crb_request_locality(tpm_t *tpm, uint8_t locality)
 	return (ret);
 }
 
-int
+static int
 tpm_crb_release_locality(tpm_t *tpm, uint8_t locality)
 {
 	/*
@@ -343,14 +400,96 @@ tpm_crb_release_locality(tpm_t *tpm, uint8_t locality)
 int
 tpm_crb_exec_cmd(tpm_client_t *c)
 {
+	tpm_t *tpm = c->tpmc_tpm;
+	int ret, ret2;
 
-	int ret;
+	VERIFY3S(tpm->tpm_iftype, ==, TPM_IF_CRB);
 
-	ret = tpm_crb_send_data(c, c->tpmc_buf, c->tpmc_bufused);
+	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+	VERIFY3S(c->tpmc_state, ==, TPMC_CLIENT_CMD_EXECUTION);
+
+	mutex_enter(&tpm->tpm_lock);
+	mutex_exit(&c->tpmc_lock);
+
+	ret = tpm_crb_request_locality(tpm, c->tpmc_locality);
 	if (ret != 0) {
+		mutex_exit(&tpm->tpm_lock);
 		return (ret);
 	}
 
-	/* XXX: read in the response */
-	return (ret);
+	ret = tpm_crb_send_data(c, c->tpmc_buf, c->tpmc_bufused);
+	if (ret != 0) {
+		goto done;
+	}
+
+	c->tpmc_bufread = 0;
+	ret = tpm_crb_recv_data(c, c->tpmc_buf, c->tpmc_buflen,
+	     &c->tpmc_bufused);
+
+done:
+	/*
+	 * Release the locality after completion to allow a lower value
+	 * locality to use the TPM.
+	 */
+	ret2 = tpm_crb_release_locality(tpm, c->tpmc_locality);
+	mutex_exit(&tpm->tpm_lock);
+
+	mutex_enter(&c->tpmc_lock);
+	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
+	return ((ret != 0) ? ret : ret2);
+}
+
+int
+tpm_crb_cancel_cmd(tpm_client_t *c)
+{
+	tpm_t *tpm = c->tpmc_tpm;
+	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
+
+	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+	/*
+	 * We should only be called when the client is in the process of
+	 * executing a command.
+	 */
+	VERIFY3S(c->tpmc_state, ==, TPMC_CLIENT_CMD_EXECUTION);
+
+	mutex_enter(&tpm->tpm_lock);
+
+	/* We also should't be called from the tpm service thread either. */
+	VERIFY3U(curthread->t_did, !=, tpm->tpm_thread_id);
+
+	tpm->tpm_thr_cancelreq = true;
+	cv_signal(tpm->tpm_thr_cv);
+
+	if (tpm_client_nonblock(c)) {
+		mutex_exit(&tpm->tpm_lock);
+		return (0);
+	}
+
+	while (tpm->tpm_thr_cancelreq) {
+		int ret = cv_wait_sig(&tpm->tpm_thr_cv, &tpm->tpm_lock);
+
+		if (ret == 0) {
+			mutex_exit(&tpm->tpm_lock);
+			return (EINTR);
+		}
+	}
+
+	mutex_exit(&tpm->tpm_lock);
+	return (0);
+
+	tpm_client_reset(c);
+	return (0);
+}
+
+void
+tpm_crb_intr_mgmt(tpm_t *tpm, bool enable)
+{
+	if (enable) {
+		tpm_put32(tpm, TPM_CRB_INT_ENABLE,
+		    TPM_CRB_INT_EN_GLOBAL|TPM_CRB_INT_EN_LOC_CHANGED|
+		    TPM_CRB_INT_EN_EST_CLEAR|TPM_CRB_INT_EN_CMD_READY|
+		    TPM_CRB_INT_EN_START);
+	} else {
+		tpm_put32(tpm, TPM_CRB_INT_ENABLE, 0);
+	}
 }
