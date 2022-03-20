@@ -164,4 +164,10 @@ enum tis_int_enable {
 	TPM_INT_STS_DATA_AVAIL_EN = 0x01
 };
 
+enum tis_int_mask {
+	TPM_TIS_INT_CMD_READY =		0x80,
+	TPM_TIS_INT_LOCALITY_CHANGED =	0x04,
+	TPM_TIS_INT_STATUS_VALID =	0x02,
+	TPM_TIS_INT_DATA_AVAIL =	0x01,
+};
 #endif	/* _TPM_TIS_H */
