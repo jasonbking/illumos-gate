@@ -66,7 +66,7 @@ tpm_tis_wait_for_stat(tpm_state_t *tpm, uint8_t mask, clock_t timeout)
 /*
  * Whenever the driver wants to write to the DATA_IO register, it needs
  * to figure out the burstcount.  This is the amount of bytes it can write
- * before having to wait for long LPC bus cycle
+ * before having to wait for the long LPC bus cycle
  *
  * Returns: 0 if error, burst count if sucess
  */
@@ -91,7 +91,7 @@ tpm_tis_get_burstcount(tpm_state_t *tpm)
 		burstcnt = tpm_get8(tpm, TPM_STS + 1);
 		burstcnt += tpm_get8(tpm, TPM_STS + 2) << 8;
 
-		if (burstcnt)
+		if (burstcnt > 0)
 			return (burstcnt);
 
 		delay(tpm->timeout_poll);
@@ -213,7 +213,7 @@ tis_fifo_send_data(tpm_state_t *tpm, uint8_t *buf, size_t bufsize)
 	tpm_put8(tpm, TPM_STS, TPM_STS_GO);
 
 	/* Ordinal/Command_code is located in buf[6..9] */
-	ordinal = load32(buf, TPM_COMMAND_CODE_OFFSET);
+	orginal = BE_IN32(buf + TPM_COMMAND_CODE_OFFSET);
 
 	ret = tpm_tis_wait_for_stat(tpm, TPM_STS_DATA_AVAIL | TPM_STS_VALID,
 	    tpm_get_ordinal_duration(tpm, ordinal));
@@ -441,4 +441,78 @@ tpm_tis_relinquish_locality(tpm_state_t *tpm, uint8_t locality, bool force)
 		tpm_put8_loc(tpm, locality, TPM_ACCESS,
 		    TPM_ACCESS_ACTIVE_LOCALITY);
 	}
+}
+
+static uint_t
+tpm_tis_intr(caddr_t arg0, caddr_t arg1 __unused)
+{
+	const uint32_t mask = TPM_TIS_INT_CMD_READY |
+	    TPM_TIS_INT_LOCALITY_CHANGED | TPM_TIS_INT_STATUS_VALID |
+	    TPM_TIS_INT_DATA_AVAIL;
+
+	tpm_t *tpm = (tpm_t *)arg0;
+	uint32_t status;
+
+	status = tpm_get32(tpm, TPM_INT_STATUS);
+	if ((status & mask) == 0) {
+		/* Not us */
+		return (DDI_INTR_UNCLAIMED);
+	}
+
+	/* Ack the interrupt */
+	tpm_put32(tpm, TPM_INT_STATUS, status);
+
+	/*
+	 * For now at least, it's enough to signal the waiting command to
+	 * recheck their appropriate register.
+	 */
+	cv_signal(tpm->tpm_intr_cv);
+
+	return (DDI_INTR_CLAIMED);
+}
+
+int
+tpm_tis_init(tpm_t *tpm)
+{
+	return (0);
+}
+
+int
+tpm_tis_exec_cmd(tpm_client_t *c)
+{
+	return (0);
+}
+
+int
+tpm_tis_cancel_cmd(tpm_client_t *c)
+{
+	return (0);
+}
+
+void
+tpm_tis_intr_mgmt(tpm_t *tpm, bool enable)
+{
+	tpm_tis_t *tis = &tpm->tpm_u.tpmu_tis;
+	uint32_t mask = 0;
+
+	if (enable) {
+		/* Enable global interrupts */
+		mask |= TPM_INT_GLOBAL_EN;
+
+		/*
+		 * Enable locality change and data available. These are
+		 * always supported.
+		 */
+		mask |= TPM_INT_LOCAL_CHANGE_INT_EN;
+		mask |= TPM_INT_STS_DATA_AVAIL_EN;
+
+		if (tis->ttis_has_sts_valid_int) {
+			mask |= TPM_INT_STS_VALID_EN;
+		}
+		if (tis->ttis_has_cmd_ready_int) {
+			mask |= TPM_INT_STS_DATA_AVAIL_EN;
+		}
+	}
+
+	tpm_put32(tpm, TPM_INT_ENABLE, mask);
 }

@@ -142,6 +142,31 @@ tpm_dbg(const tpm_t *tpm, const char *fmt, ...)
 	}
 }
 
+static tpm_client_t *c
+tpm_client_get(dev_t dev)
+{
+	tpm_client_t *c;
+
+	c = ddi_get_soft_state(tpm_statep, getminor(dev));
+	if (c == NULL) {
+		return (NULL);
+	}
+
+	mutex_enter(&c->tpmc_lock);
+	if (c->tpmc_closing) {
+		mutex_exit(&c->tpmc_lock);
+		return (NULL);
+	}
+
+	c->tpmc_refcnt++;
+	return (c);
+}
+
+static void
+tpm_client_refrele(tpm_client_t *c)
+{
+}
+
 static void
 tpm_client_reset(tpm_client_t *c)
 {
@@ -158,10 +183,9 @@ tpm_client_reset(tpm_client_t *c)
 static void
 tpm_cancel(tpm_client_t *c)
 {
-	tpm_t *tpm;
+	tpm_t *tpm = c->tpmc_tpm;
 
-	mutex_enter(&c->tpmc_lock);
-	tpm = c->tpmc_tpm;
+	VERIFY(MUTEX_HELD(&c->tpmc_lock));
 
 	switch (c->tpmc_state) {
 	case TPM_CLIENT_IDLE:
@@ -171,52 +195,61 @@ tpm_cancel(tpm_client_t *c)
 		tpm_client_reset(c);
 		break;
 	case TPM_CLIENT_CMD_EXECUTION:
+		/*
+		 * The interface specific cancellation method will
+		 * reset the client state after it has completed cancelling
+		 * the current command.
+		 */
 		tpm->tpm_cancel(c);
+		break;
+	case TPM_CLIENT_DISPATCH:
+		if (list_link_active(&c->tpmc_link)) {
+			/*
+			 * If we're still on the pending list, the tpm thread
+			 * has not started processing our request. We can
+			 * merely remove ourself from the list and reset.
+			 */
+			mutex_enter(&tpm->tpm_lock);
+			list_remove(&tpm->tpm_pending, c);
+			mutex_exit(&tpm->tpm_lock);
+
+			tpm_client_refrele(c);
+		} else {
+			/*
+			 * The tpm thread has pulled us off the list, but
+			 * since we were able to acquire tpmc_lock, it has
+			 * not been able to transition to
+			 * TPM_CLIENT_CMD_EXECUTION (because we always grab
+			 * the client lock, then the tpm lock, there is a
+			 * small window in the tpm thread where it's removed
+			 * the next client from the list, but has not yet
+			 * acquired the client lock to update the status
+			 * ). Tell the tpm thread to just cancel instead
+			 * of executing the command.
+			 *
+			 * The tpm svc thread will release it's refhold.
+			 * This way a non-blocking client can cancel and
+			 * have it processed in the background.
+			 */
+			c->tpmc_cancelled = true;
+
+			while (c->tpmc_cancelled) {
+				cv_wait(&c->tpmc_cv, &c->tpmc_lock);
+			}
+		}
 		tpm_client_reset(c);
 		break;
-	case TPM_CLIENT_WAIT_FOR_TPM: {
-		int ret;
-
-		c->tpmc_cancelled = true;
-		membar_producer();
-
-		/*
-		 * The taskq is waiting on tpm_cv, so we have to wake up
-		 * all of the clients waiting so our client will see
-		 * the request has been cancelled. In practice, the number
-		 * of expected connections is expected to be small enough
-		 * that doing a broadcast shouldn't present a problem.
-		 */
-		cv_broadcast(&c->tpmc_tpm->tpm_cv);
-
-		/*
-		 * Cancelling an in-process command may take some time.
-		 * While we can't 'undo' the cancellation, we can at least
-		 * stop blocking the caller, and just let the cleanup happen
-		 * asynchronously.
-		 */
-		while (c->tpmc_cancelled)
-			ret = cv_wait_sig(&c->tpmc_cv, &tpmc->tpmc_lock);
-
-		if (ret != 0)
-			tpm_client_reset(c);
-
-		mutex_exit(&c->tpmc_lock);
-		break;
-	}
 	default:
 		cmn_err(CE_PANIC, "unexpected tpm connection state 0x%x",
 		    c->tpmc_state);
 	}
-
-	mutex_exit(&c->tpmc_lock);
 }
 
 static int
 tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 {
 	tpm_t *tpm;
-	tpm_conn_t *conn;
+	tpm_client_t *c;
 	int minor;
 
 	if (otype != OTYP_CHR) {
@@ -263,21 +296,26 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 		id_free(tpm_minors, minor);
 		return (ENOMEM);
 	}
-	conn = ddi_get_soft_state(tpm_statep, minor);
+	c = ddi_get_soft_state(tpm_statep, minor);
 
-	mutex_init(&conn->tpmc_lock, NULL, MUTEX_DRIVER, NULL);
-	cv_init(&conn->tpmc_cv, NULL, CV_DRIVER, NULL);
-	conn->tpmc_tpm = tpm;
-	conn->tpmc_state = TPM_STATE_IDLE;
-	conn->tpmc_buf = kmem_zalloc(TPM_IO_BUF_SIZE, KM_SLEEP);
-	conn->tpmc_buflen = TPM_IO_BUF_SIZE;
-	conn->tpmc_locality = DEFAULT_LOCALITY;
+	void *pri = tpm->tpm_use_interrupts ?
+	    DDI_INTR_PRI(tpm->tpm_intr_pri) : NULL;
+
+	mutex_init(&c->tpmc_lock, NULL, MUTEX_DRIVER, pri);
+	cv_init(&c->tpmc_cv, NULL, CV_DRIVER, pri);
+
+	c->tpmc_tpm = tpm;
+	c->tpmc_minor = minor;
+	c->tpmc_state = TPM_STATE_IDLE;
+	c->tpmc_buf = kmem_zalloc(TPM_IO_BUF_SIZE, KM_SLEEP);
+	c->tpmc_buflen = TPM_IO_BUF_SIZE;
+	c->tpmc_locality = DEFAULT_LOCALITY;
 
 	if ((flag & FWRITE) == FWRITE) {
-		conn->tpmc_mode |= TPM_CONN_WRITE;
+		c->tpmc_mode |= TPM_CONN_WRITE;
 	}
 	if ((flag & FNDELAY) == FNDELAY) {
-		conn->tpmc_mode |= TPM_CONN_NONBLOCK;
+		c->tpmc_mode |= TPM_CONN_NONBLOCK;
 	}
 
 	*devp = makedevice(getmajor(*devp), minor);
@@ -288,25 +326,43 @@ static int
 tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 {
 	tpm_t *tpm;
-	tpm_conn_t *c;
-	int minor;
+	tpm_client_t *c;
 
 	if (otyp != OTYP_CHR) {
 		return (EINVAL);
 	}
 
-	minor = getminor(dev);
-
-	conn = ddi_get_soft_state(tpm_statep, minor);
-	if (conn == NULL) {
+	c = tpm_client_get(dev);
+	if (c == NULL) {
 		return (ENXIO);
 	}
 
+	c->tpmc_closing = true;
+
 	tpm_cancel(c);
 
-	mutex_enter(&c->tpmc_lock);
+	/*
+	 * After cancelling, we have to wait for the client to become idle
+	 * to ensure the tpm thread is not using the client.
+	 */
+	while (c->tpmc_state != TPM_CLIENT_IDLE) {
+		int ret = cv_wait_sig(&c->tpmc_cv, &c->tpmc_lock);
 
-	tpm = conn->tpmc_tpm;
+		if (ret <= 0) {
+			mutex_exit(&c->tpmc_lock);
+			return (EAGAIN);
+		}
+	}
+
+	tpm_cleanup(c);
+	return (0);
+}
+
+void
+tpm_cleanup(tpm_client_t *c)
+{
+	tpm_t *tpm = c->tpmc_tpm;
+
 	mutex_enter(&tpm->tpm_lock);
 	VERIFY3U(tpm->tpm_client_count, >, 0);
 	IMPLY(tpm->tpm_exclusive, tpm->tpm_client_count == 1);
@@ -323,7 +379,6 @@ tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 
 	ddi_soft_state_free(tpm_statep, minor);
 	id_space_free(tpm_minors, minor);
-	return (0);
 }
 
 static size_t
@@ -339,102 +394,20 @@ tpm_uio_size(const struct uio_t *uiop)
 }
 
 static void
-tpm_exec_cmd(void *arg)
-{
-	tpm_client_t	*c = arg;
-	tpm_t		*tpm;
-	int		ret;
-
-	/*
-	 * Since we are executing, that gives us exclusive access to
-	 * tpmc->tpm_buf. We can drop tpmc_lock so to allow cancellations,
-	 * etc. to be able to come in and not be blocked.
-	 */
-	mutex_enter(&c->tpmc_lock);
-	VERIFY3S(c->tpmc_state, ==, TPMC_CLIENT_CMD_DISPATCH);
-	tpm = c->tpmc_tpm;
-	mutex_enter(&tpm->tpm_lock);
-	c->tpmc_state = TPM_CLIENT_WAIT_FOR_TPM;
-	mutex_exit(&c->tpmc_lock);
-
-	while (tpm->tpm_active != NULL && !c->tpmc_cancelled) {
-		cv_wait(&tpm->tpm_cv, &tpm->tpm_lock);
-	}
-
-	if (c->tpmc_cancelled) {
-		mutex_exit(&tpm->tpm_lock);
-		mutex_enter(&c->tpmc_lock);
-		goto cancelled;
-	}
-
-	tpm->tpm_active = c;
-	mutex_exit(&tpm->tpm_lock);
-
-	mutex_enter(&c->tpmc_lock);
-	if (c->tpmc_cancelled) {
-		goto cancelled;
-	}
-	c->tpmc_state = TPM_CLIENT_CMD_EXECUTION;
-	mutex_exit(&c->tpmc_lock);
-
-	ret = tpm->tpm_exec(c);
-
-	mutex_enter(&c->tpmc_lock);
-	c->tpmc_cmdresult = ret;
-	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
-	cv_signal(&c->tpmc_cv);
-	pollwakeup(&c->tpmc_pollhead, POLLIN);
-	mutex_exit(&c->tpmc_lock);
-
-	return;
-
-cancelled:
-	c->tpmc_cancelled = false;
-	c->tpmc_cmdresult = ECANCELED;
-	cv_signal(&c->tpmc_cv);
-	mutex_exit(&c->tpmc_lock);
-}
-
-static int
 tpm_dispatch_cmd(tpm_client_t *c)
 {
-	ASSERT(MUTEX_HELD(&c->tpmc_lock));
-	ASSERT3S(c->tpmc_state, ==, TPM_CLIENT_CMD_RECEPTION);
-	ASSERT3U(c->tpmc_bufused, >=, TPM_HEADER_SIZE);
+	tpm_t *tpm = c->tpmc_tpm;
 
-	tpm_t *tpm;
-	size_t cmd_len = BE_IN32(c->tpmc_buf + TPM_PARAMSIZE_OFFSET);
-	uint_t flags;
-	int ret;
-
-	/*
-	 * We should only be dispatching once the full command has been
-	 * received.
-	 */
-	VERIFY3U(c->tpmc_buflen, ==, cmd_len);
-
-	if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
-		flags = DDI_NOSLEEP;
-	} else {
-		flags = DDI_SLEEP;
-	}
-
-	tpm = c->tpmc_tpm;
-
-	mutex_enter(&tpm->tpm_lock);
-	ret = ddi_taskq_dispatch(&tpm->tpm_taskq, tpm_exec_cmd, c, flags);
-	mutex_exit(&tpm->tpm_lock);
-
-	if (ret != DDI_SUCCESS) {
-		/*
-		 * AFAIK, ddi_taskq_dispatch() can only fail due to lack of
-		 * memory, so assume it's retryable.
-		 */
-		return (EAGAIN);
-	}
+	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+	VERIFY3S(c->tpmc_state, ==, TPM_CLIENT_CMD_RECEPTION);
 
 	c->tpmc_state = TPM_CLIENT_CMD_DISPATCH;
-	return (0);
+
+	mutex_enter(&tpm->tpm_lock);
+	tpm_client_refhold(c);			/* ref for svc thread */
+	list_insert_tail(&tpm->tpm_pending, c);
+	cv_signal(&tpm->tpm_thr_cv);
+	mutex_exit(&tpm->tpm_lock);
 }
 
 static int
@@ -442,12 +415,12 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 {
 	tpm_client_t *c;
 
-	c = ddi_get_soft_state(tpm_statep, getminor(dev));
+	c = tpm_client_get(dev);
 	if (c == NULL) {
 		return (ENXIO);
 	}
 
-	mutex_enter(&c->tpmc_lock);
+	VERIFY(MUTEX_HELD(&c->tpmc_lock));
 
 	size_t amt_copied = 0;
 	size_t amt_avail = tpm_uio_size(uiop);
@@ -541,7 +514,7 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 		goto done;
 	}
 
-	ret = tpm_dispatch_cmd(c);
+	tpm_dispatch_cmd(c);
 
 done:
 	if (ret != 0) {
@@ -563,11 +536,13 @@ done:
 		pollwakeup(&c->tpmc_pollhead, POLLOUT);
 	}
 	mutex_exit(&c->tpmc_lock);
+	tpm_client_refrele(c);
 	return (ret);
 
 abort:
 	tpm_client_reset(c);
 	mutex_exit(&c->tpmc_lock);
+	tpm_client_refrele(c);
 	return (ret);
 }
 
@@ -577,12 +552,12 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	tpm_client_t *c;
 	int ret = 0;
 
-	c = ddi_get_soft_state(tpm_statep, getminor(dev));
+	c = tpm_client_get(dev);
 	if (c == NULL) {
 		return (ENXIO);
 	}
 
-	mutex_enter(&c->tpmc_lock);
+	VERIFY(MUTEX_HELD(&c->tpmc_lock));
 
 	switch (c->tpmc_state) {
 	case TPM_CLIENT_IDLE:
@@ -591,6 +566,7 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	case TPM_CLIENT_CMD_EXECUTION:
 		if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
 			mutex_exit(&c->tpmc_lock);
+			tpm_client_refrele(c);
 			return (EAGAIN);
 		}
 
@@ -598,6 +574,7 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 			ret = cv_wait_sig(&c->tpmc_cv, &c->tpmc_lock);
 			if (ret == 0) {
 				mutex_exit(&c->tpmc_lock);
+				tpm_client_refrele(c);
 				return (EINTR);
 			}
 		}
@@ -609,6 +586,7 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 
 		tpm_client_reset(c);
 		mutex_exit(&c->tpmc_lock);
+		tpm_client_refrele(c);
 		return (ret);
 	}
 
@@ -628,6 +606,7 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 
 done:
 	mutex_exit(&c->tpmc_lock);
+	tpm_client_refrele(c);
 	return (ret);
 }
 
@@ -638,10 +617,12 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 	int err = 0;
 	int val;
 
-	c = ddi_get_soft_state(tpm_statep, getminor(dev));
+	c = tpm_client_get(dev);
 	if (c == NULL) {
 		return (ENXIO);
 	}
+
+	VERIFY(MUTEX_HELD(&c->tpmc_lock));
 
 	switch (cmd) {
 	case TPMIOC_GETVERSION:
@@ -653,7 +634,8 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 			val = TPMDEV_VERSION_2_0;
 			break;
 		default:
-			return (EINVAL);
+			dev_err(c->tpmc_tpm->tpm_dip, CE_PANIC,
+			    "invalid TPM version");
 		}
 
 		if (ddi_copyout(&val, (void *)data, sizeof (val), md) != 0) {
@@ -686,11 +668,9 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		}
 
 		/* Only change locality while the client is idle. */
-		mutex_enter(&c->tpmc_lock);
 		if (c->tpmc_state != TPMC_CLIENT_IDLE) {
 			if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
 				err = EAGAIN;
-				mutex_exit(&c->tpmc_lock);
 				goto done;
 			}
 			while (c->tpmc_state != TPMC_CLIENT_IDLE) {
@@ -702,7 +682,6 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 			}
 		}
 		conn->tpmc_locality = val;
-		mutex_exit(&c->tpmc_lock);
 		break;
 	case TPMIOC_CANCEL:
 		tpm_cancel(c);
@@ -716,6 +695,8 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 	}
 
 done:
+	mutex_exit(&c->tpmc_lock);
+	tpm_client_refrele(c);
 	return (err);
 }
 
@@ -725,12 +706,13 @@ tpm_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 {
 	tpm_client_t *c;
 
-	c = ddi_get_soft_state(tpm_statep, getminor(dev));
+	c = tpm_client_get(dev);
 	if (c == NULL) {
 		return (ENXIO);
 	}
 
-	mutex_enter(&c->tpmc_lock);
+	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+
 	*reventsp = 0;
 
 	if (tpmc_is_writemode(c)) {
@@ -742,11 +724,121 @@ tpm_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 	*reventsp &= events;
 
 	if ((*reventsp == 0 && !anyyet) || (events & POLLET)) {
-		*phpp = &conn->tpmc_pollhead;
+		*phpp = &c->tpmc_pollhead;
 	}
-	mutex_exit(&conn->tpmc_lock);
+	mutex_exit(&c->tpmc_lock);
+
+	tpm_client_refrele(c);
+	return (0);
+}
+
+static void
+tpm_exec_thread(void *arg)
+{
+	tpm_t *tpm = arg;
+
+	for (;;) {
+		int ret;
+
+		mutex_enter(&tpm->tpm_lock);
+		while (!tpm->tpm_thr_quit && list_empty(&tpm->tpm_pending)) {
+			cv_wait(&tpm->tpm_thr_cv, &tpm->tpm_lock);
+		}
+
+		if (tpm->tpm_thr_quit) {
+			mutex_exit(&tpm->tpm_lock);
+			return;
+		}
+
+		tpm_client_t *c = list_remove_head(&tpm->tpm_pending);
+
+		mutex_exit(&tpm->tpm_lock);
+
+		mutex_enter(&c->tpmc_lock);
+		/*
+		 * This is somewhat subtle. We remove the client from the
+		 * list, but there is a small window of opportunity between
+		 * releasing the tpm lock and acquiring the client lock
+		 * where a client could cancel. In this scenario, the
+		 * cancelling client will set tpmc_cancelled prior to
+		 * releasing the client lock, and wait for us to acknowledge
+		 * the cancellation by signaling tpmc_cv.
+		 */
+		if (c->tpmc_cancelled) {
+			c->tpmc_cancelled = false;
+			cv_signal(&c->tpmc_cv);
+			mutex_exit(&c->tpmc_lock);
+
+			continue;
+		}
+
+		c->tpmc_state = TPMC_CLIENT_CMD_EXECUTION;
+		ret = tpm->tpm_exec(c);
+
+		VERIFY(MUTEX_HELD(&c->tpmc_lock));
+		c->tpmc_result = ret;
+		cv_signal(&c->tpmc_cv);
+		pollwakeup(&c->tpmc_pollhead, POLLIN);
+		mutex_exit(&c->tpmc_lock);
+
+		tpm_client_refrele(c);
+	}
+}
+
+/*
+ * Wait for a register to return a (possibly masked) value.
+ * If wait_intr (or XXX) is set, we wait the full timeout value before
+ * checking (under the assumption an interrupt will wake us if the value
+ * has been set sooner than the timeout), otherwise we re-check every
+ * tpm_timeout_poll cycles.
+ */
+int
+tpm_wait_u32(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t val,
+    clock_t timeout, bool wait_intr)
+{
+	clock_t deadline, now;
+	uint32_t status;
+	int ret = 0;
+	tpm_wait_t wait = wait_intr ? tpm->tpm_wait : tpm_wait_nointr(tpm);
+
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+
+	deadline = ddi_get_lbolt() + timeout;
+	while (((status = tpm_get32(tpm, reg)) & mask) != val &&
+	    ((now = ddi_get_lbolt()) < deadline)) {
+		clock_t until;
+
+		switch (wait_type) {
+		case TPM_WAIT_POLLONCE:
+		case TPM_WAIT_INTR:
+			until = deadline;
+			break;
+		case TPM_WAIT_POLL:
+			until = now + tpm->tpm_timeout_poll;
+			if (until > deadline)
+				until = deadline;
+			break;
+		}
+
+		ret = cv_timedwait(&tpm->tpm_intr_cv, &tpm->tpm_lock, until);
+	}
+
+	/* We timed out, check the status one final time */
+	if (ret <= 0) {
+		status = tpm_get32(tpm, reg) & mask;
+		if (status != val) {
+			goto timedout;
+		}
+	}
 
 	return (0);
+
+timedout:
+	/* XXX: Generate ereport? */
+	dev_err(tpm->tpm_dip, CE_WARN, "!%s: timeout (%ld usecs) waiting for "
+	    "reg 0x%lx & 0x%x == 0x%x", __func__, drv_hztousec(timeout),
+	    reg, mask, val);
+	return (ETIME);
 }
 
 /*
@@ -1057,14 +1149,39 @@ tpm_attach_sync(tpm_t *tpm)
 	    DDI_INTR_PRI(tpm->tpm_intr_pri) : NULL;
 
 	mutex_init(&tpm->tpm_lock, NULL, MUTEX_DRIVER, pri);
-	cv_init(&tpm->tpm_cv, NULL, CV_DRIVER, pri);
+	cv_init(&tpm->tpm_thr_cv, NULL, CV_DRIVER, pri);
+	cv_init(&tpm->tpm_intr_cv, NULL, CV_DRIVER, pri);
+	return (true);
 }
 
 static void
 tpm_cleanup_sync(tpm_t *tpm)
 {
-	cv_destroy(&tpm->tpm_cv);
+	cv_destroy(&tpm->tpm_intr_cv);
+	cv_destroy(&tpm->tpm_thr_cv);
 	mutex_destroy(&tpm->tpm_lock);
+}
+
+static bool
+tpm_attach_thread(tpm_t *tpm)
+{
+	list_create(&tpm->tpm_pending, sizeof (tpm_client_t),
+	    offsetof(tpm_client_t, tpmc_node));
+	tpm->tpm_thread_id = thread_create(NULL, 0, tpm_exec_thread, tpm, 0,
+	    &p0, TS_RUN, minclsyspri);
+	return (true);
+}
+
+static void
+tpm_cleanup_thread(tpm_t *tpm)
+{
+	if (tpm->tpm_thread_id != 0) {
+		tpm->tpm_thr_quit = true;
+		membar_producer();
+		cv_signal(&tpm->tpm_thr_cv);
+		thread_join(tpm->tpm_thread_id);
+	}
+	list_destroy(&tpm->tpm_pending);
 }
 
 static bool
@@ -1170,6 +1287,12 @@ static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
 		.tad_name = "synchronization",
 		.tad_attach = tpm_attach_sync,
 		.tad_cleanup = tpm_cleanup_sync,
+	},
+	[TPM_ATTACH_THREAD] = {
+		.tad_seq = TPM_ATTACH_THREAD,
+		.tad_name = "service thread",
+		.tad_attach = tpm_attach_thread,
+		.tad_cleanup = tpm_cleanup_thread,
 	},
 	[TPM_ATTACH_MINOR_NODE] = {
 		.tad_seq = TPM_ATTACH_MINOR_NODE,
