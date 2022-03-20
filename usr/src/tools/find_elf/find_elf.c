@@ -698,7 +698,7 @@ path_init(path_t *p, const char *name, bool relpath)
 
 	/* Trim off any trailing /'s, but don't trim '/' to an empty path */
 	while (len > 1 && custr_cstr(p->p_name)[len - 1] == '/') {
-		VERIFY0(custr_rtrunc(p->p_name, 1));
+		VERIFY0(custr_rtrunc(p->p_name, 0));
 		len--;
 	}
 
