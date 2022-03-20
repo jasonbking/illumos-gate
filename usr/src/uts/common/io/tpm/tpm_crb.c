@@ -124,35 +124,41 @@ static int
 tpm_crb_wait_u32(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t val,
     clock_t timeout, bool intr_wait)
 {
-	clock_t deadline;
+	clock_t deadline, now;
 	uint32_t status;
 	int ret = 0;
 
 	if (!tpm->tpm_use_interrupts)
 		intr_wait = false;
 
-	/* Use an absolute timeout since other interrupts may wake us. */
+	/*
+	 * Our wait loop may be interrupted, possibly several times -- either
+	 * due to the ISR signaling completion, or if we're in polling mode
+	 * and re-checking the status periodically. Either way, we want to
+	 * use a deadline to determine when we should give up.
+	 */
 	deadline = ddi_get_lbolt() + timeout;
 
-	while (((status = tpm_get32(reg)) & mask) != val) {
+	while (((status = tpm_get32(reg)) & mask) != val &&
+	    ((now = ddi_get_lbolt()) < deadline)) {
+		clock_t waitamt;
+
 		if (intr_wait) {
-			ret = cv_timedwait(&tpm->tpm_intr_cv, &tpm->tpm_lock,
-			    deadline);
-			if (ret == -1) {
-				/* Check one final time */
-				status = tpm_get32(reg) & mask;
-				if (status != val) {
-					goto timedout;
-				}
-
-				return (0);
-			}
+			waitamt = deadline;
 		} else {
-			if (ddi_get_lbolt() >= deadline) {
-				goto timedout;
-			}
+			waitamt = now + tpm->tpm_timeout_poll;
+			if (waitamt > deadline)
+				waitamt = deadline;
+		}
 
-			delay(tpm->tpm_timeout_poll);
+		ret = cv_timedwait(&tpm->tpm_intr_cv, &tpm->tpm_lock, waitamt);
+	}
+
+	/* We timed out, check the status one final time */
+	if (ret <= 0) {
+		status = tpm_get32(reg) & mask;
+		if (status != val) {
+			goto timedout;
 		}
 	}
 

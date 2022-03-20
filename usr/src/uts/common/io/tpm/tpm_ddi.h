@@ -69,6 +69,16 @@ typedef enum tpm_family {
 	TPM_FAMILY_2_0,
 } tpm_family_t;
 
+/* From section 6.5.2.5.1 */
+typedef enum tpm_tis_state {
+	TPMT_ST_IDLE,
+	TPMT_ST_READY,
+	TPMT_ST_CMD_RECEPTION,
+	TPMT_ST_CMD_EXECUTION,
+	TPMT_ST_CMD_COMPLETION,
+	TPMT_ST_MAX			/* Must be last */
+} tpm_tis_state_t;
+
 typedef enum tpm_tis_xfer_size {
 	TPM_TIS_XFER_LEGACY,
 	TPM_TIS_XFER_8,
@@ -78,16 +88,18 @@ typedef enum tpm_tis_xfer_size {
 
 /* TIS/FIFO specific data */
 typedef struct tpm_tis {
-	tpm_tis_xfer_size_t	ttis_xfer_size;
+	kmutex_t		ttis_lock;
+	tpm_tis_state_t		ttis_state;		/* RW */
+	tpm_tis_xfer_size_t	ttis_xfer_size;		/* WO */
 	uint32_t		ttis_intr;
 } tpm_tis_t;
 
 /*
  * From PC-Client-Specific-Platform-TPM-Profile 6.5.3.8
  *
- * Note that while the diagram does include a TPM_Init state, the system firmware should
- * always transition the TPM out of that state long before we ever have a chance to
- * access the TPM.
+ * Note that while the diagram does include a TPM_Init state, the system
+ * firmware should always transition the TPM out of that state long before the
+ * kernel ever has a chance to access the TPM.
  */
 typedef enum tpm_crb_state {
 	TCRB_ST_IDLE,
@@ -110,6 +122,48 @@ typedef struct tpm_crb {
 	uint32_t	tcrb_intr;
 	bool		tcrb_idle_bypass;	/* WO */
 } tpm_crb_t;
+
+/*
+ * The TPM can be operated with or without interrupts. Without interrupts
+ * enabled, one must write to a register, and then poll periodically (up to
+ * a timeout value) for the TPM to set or clear a bit in a register. Using
+ * interrupts avoids the need to poll.
+ *
+ * We offer three modes of waiting for command completion:
+ *
+ * TPM_WAIT_POLL	Poll every tpm_timeout_poll ms for the desired status.
+ *			Fail the request if not complete within the desired
+ *			timeout amount. If tpm_timeout_poll is larger than the
+ *			the desired timeout, only wait for the desired timeout
+ *			amount before checking the status.
+ *
+ * TPM_WAIT_INTR	Use an interrupt to signal the completion of the
+ * 			request.
+ *
+ * TPM_WAIT_POLLONCE	Always wait the full timeout amount before checking
+ *			the status of the request.
+ *
+ * For TPM1.2 devices the default is TPM_WAIT_POLL (to match the historic
+ * behavior of the TPM driver). For TPM2.0 devices, it possible the TPM device
+ * can process requests much faster than the timeouts specified by the standard
+ * (e.g. software TPMs aka fTPMs that run on the host processor at a special
+ * privilege level). As such, the default for TPM2.0 devices is TPM_WAIT_INTR.
+ *
+ * However, it is currently unknown how vulnerable TPM devices are to
+ * timing attacks. At the same, it is also possible that a given TPM
+ * implementation may legitimately be able to process commands faster than
+ * the maximum timeouts allowed by the spec without being vulnerable to
+ * timing attacks.
+ *
+ * Since evaluating every TPM model is not realistic, instead we offer
+ * an escape hatch. Enabling TPM_WAIT_POLLONCE via the tpm.conf device
+ * configuration file will force each request to wait the full timeout amount.
+ */
+typedef enum tpm_wait {
+	TPM_WAIT_POLL,
+	TPM_WAIT_INTR,
+	TPM_WAIT_POLLONCE,
+} tpm_wait_t;
 
 typedef enum tpm_attach_seq {
 #ifdef amd64
