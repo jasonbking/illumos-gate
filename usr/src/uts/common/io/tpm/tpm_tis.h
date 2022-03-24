@@ -48,8 +48,13 @@
 #define	TPM_INT_STATUS		0x0010
 /* Supported Interrupts */
 #define	TPM_INTF_CAP		0x0014
+#define	TPM_INTF_CAP_CMD_READY		0x0080
+#define	TPM_INTF_CAP_LOC_CHANGED	0x0004
+#define	TPM_INTF_CAP_STS_VALID		0x0002
+#define	TPM_INTF_CAP_DATA_AVAIL		0x0001
 /* Status Register */
 #define	TPM_STS			0x0018
+#define	TPM_STS_BURSTCOUNT(x)	(((x) >> 8) & 0xffff)
 /* I/O FIFO */
 #define	TPM_DATA_FIFO		0x0024
 /* Interface Id (1.3) */
@@ -102,12 +107,6 @@ enum tis_status {
 #define	TIS_STATUS_CANCEL	(1 << 24)
 #define	TIS_STATUS_RESET_EST	(1 << 25)
 
-enum tis_tpm_family {
-	TPM_FAMILY_1_2,
-	TPM_FAMILY_2_0
-};
-#define	TIS_STATUS_FAMILY(x)	(((x) >> 26) & 0x3)
-
 /* Possible TPM_INTF_CAPABILITY register values (TIS 1.2 pg.55) */
 enum tis_intf_cap {
 	TPM_INTF_BURST_COUNT_STATIC = 0x100,
@@ -138,16 +137,6 @@ enum tis_intf_ver {
 #define	TIS_INTF_VER_VAL_1_3		2
 #define	TIS_INTF_VER_VAL_1_3_TPM	3
 				/*	4-7 reserved */
-/*
- * However, for the data transfer size, we can just cast the
- * resulting value.
- */
-enum tis_xfer_size {
-	TPM_INTF_XFER_LEGACY = 0,
-	TPM_INTF_XFER_8,
-	TPM_INTF_XFER_32,
-	TPM_INTF_XFER_64
-};
 #define	TIS_INTF_XFER_VAL(x)	(((x) >> 9) & 0x3)
 
 /* Valid bits in TPM_INTF_CAP */

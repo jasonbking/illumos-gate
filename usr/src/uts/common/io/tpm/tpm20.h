@@ -20,7 +20,7 @@
 extern "C" {
 #endif
 
-struct tpm_state;
+struct tpm;
 
 /*
  * From 6.5.1.4, Table 18 (all in milliseconds)
@@ -53,8 +53,8 @@ struct tpm_state;
 #define	TPM_CC_GetCapability		0x0000017a
 #define	TPM_CC_NV_Read			0x0000014e
 
-int tpm20_init(struct tpm_state *);
-clock_t tpm20_get_timeout(struct tpm_state *, uint32_t);
+int tpm20_init(struct tpm *);
+clock_t tpm20_get_timeout(uint32_t);
 
 #ifdef __cplusplus
 }

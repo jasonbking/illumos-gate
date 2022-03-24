@@ -594,7 +594,7 @@ tpm12_get_version(tpm_state_t *tpm)
 }
 
 clock_t
-tpm12_get_ordinal_duration(tpm_state_t *tpm, uint8_t ordinal)
+tpm12_get_ordinal_duration(tpm_t *tpm, uint32_t ordinal)
 {
 	uint8_t index;
 
@@ -752,7 +752,7 @@ tpm12_generate_random(tpm_state_t *tpm, uchar_t *buf, size_t buflen)
  * 3. Determine timeouts and commands duration
  */
 int
-tpm12_init(tpm_state_t *tpm)
+tpm12_init(tpm_t *tpm)
 {
 	char *str = NULL;
 	uint32_t intf_caps;
@@ -834,6 +834,27 @@ tpm12_init(tpm_state_t *tpm)
 		cmn_err(CE_WARN, "!%s: tpm_get_version error", __func__);
 		return (DDI_FAILURE);
 	}
+
+
+	/* XXX: Cleanup */
+	char buf[32];
+
+	(void) snprintf(buf, sizeof (buf), "%d.%d",
+	    tpm->vers_info.version.major,
+	    tpm->vers_info.version.minor);
+	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
+	    "tpm-version", buf);
+
+	(void) snprintf(buf, sizeof (buf), "%d.%d",
+	    tpm->vers_info.version.revMajor,
+	    tpm->vers_info.version.revMinor);
+	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
+	    "tpm-revision", buf);
+
+	(void) ddi_prop_update_int(DDI_DEV_T_NONE, dip, "tpm-speclevel",
+	    ntohs(tpm->vers_info.specLevel));
+	(void) ddi_prop_update_int(DDI_DEV_T_NONE, dip, "tpm-errata-revision",
+	    tpm->vers_info.errataRev);
 
 	/*
 	 * Unless the TPM completes the test of its commands,
