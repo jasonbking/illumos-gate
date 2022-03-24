@@ -29,6 +29,15 @@
 #ifndef	_TPM_DDI_H
 #define	_TPM_DDI_H
 
+#include <stdbool.h>
+#include <inttypes.h>
+#include <sys/types.h>
+#include <sys/ddi.h>
+#include <sys/sunddi.h>
+#include <sys/debug.h>
+#include <sys/ksynch.h>
+#include <sys/list.h>
+#include <sys/byteorder.h>
 #include "tpm_tis.h"
 
 /* Duration index is SHORT, MEDIUM, LONG, UNDEFINED */
@@ -80,7 +89,7 @@ typedef enum tpm_tis_state {
 } tpm_tis_state_t;
 
 typedef enum tpm_tis_xfer_size {
-	TPM_TIS_XFER_LEGACY,
+	TPM_TIS_XFER_LEGACY = 0,
 	TPM_TIS_XFER_8,
 	TPM_TIS_XFER_32,
 	TPM_TIS_XFER_64,
@@ -116,7 +125,7 @@ typedef struct tpm_crb {
 	tpm_crb_state_t	tcrb_state;		/* RW */
 
 	uint64_t	tcrb_cmd_off;		/* WO */
-	size_t		tcrb_cmb_size;		/* WO */
+	size_t		tcrb_cmd_size;		/* WO */
 	uint64_t	tcrb_resp_off;		/* WO */
 	size_t		tcrb_resp_size;		/* WO */
 	bool		tcrb_idle_bypass;	/* WO */
@@ -136,8 +145,10 @@ typedef struct tpm_crb {
  *			the desired timeout, only wait for the desired timeout
  *			amount before checking the status.
  *
- * TPM_WAIT_INTR	Use an interrupt to signal the completion of the
- * 			request.
+ * TPM_WAIT_INTR	Use an interrupt (when supported by the TPM module) to
+ *			signal the completion of the request. If the condition
+ *			does not support being signaled by an interrupt, poll
+ *			instead.
  *
  * TPM_WAIT_POLLONCE	Always wait the full timeout amount before checking
  *			the status of the request.
@@ -164,18 +175,6 @@ typedef enum tpm_wait {
 	TPM_WAIT_POLLONCE,
 } tpm_wait_t;
 
-/*
- * However some operations do not generate an interrupt on completion.
- * For those, we want to translate TPM_WAIT_INTR to TPM_WAIT_POLL.
- */
-static inline tpm_wait_t
-tpm_wait_nointr(const tpm_t *tpm)
-{
-	if (tpm->tpm_wait == TPM_WAIT_INTR)
-		return (TPM_WAIT_POLL);
-	return (tpm->tpm_wait);
-}
-
 typedef enum tpm_attach_seq {
 #ifdef amd64
 	TPM_ATTACH_REGS =	1,
@@ -183,8 +182,8 @@ typedef enum tpm_attach_seq {
 #ifdef sun4v
 	TPM_ATTACH_HSVC =	1,
 #endif
-	TPM_ATTACH_DEV_INIT,
 #ifdef amd64
+	TPM_ATTACH_DEV_INIT,
 	TPM_ATTACH_INTR_ALLOC,
 	TPM_ATTACH_INTR_HDLRS,
 #endif
@@ -200,9 +199,6 @@ typedef struct tpm tpm_t;
 typedef struct tpm_client tpm_client_t;
 
 struct tpm {
-	/* TPM specific */
-	TPM_CAP_VERSION_INFO vers_info;
-
 	dev_info_t		*tpm_dip;
 	int			tpm_instance;
 	ddi_acc_handle_t	tpm_handle;
@@ -211,7 +207,6 @@ struct tpm {
 
 	kmutex_t		tpm_lock;
 	uint8_t			*tpm_addr;	/* TPM mapped address */
-	tpm_state_t		tpm_state;		/* RW */
 	uint_t			tpm_client_count;	/* RW */
 	uint_t			tpm_client_max;		/* RW */
 	bool			tpm_exclusive;		/* WO */
@@ -228,7 +223,9 @@ struct tpm {
 	bool			tpm_thr_quit;		/* RW */
 	bool			tpm_thr_cancelreq;	/* RW */
 	list_t			tpm_pending;		/* RW */
+	tpm_client_t		*tpm_active;		/* RW */
 
+	tpm_family_t		tpm_family;		/* WO */
 	tpm_if_t		tpm_iftype;		/* WO */
 	union {
 		tpm_tis_t	tpmu_tis;
@@ -246,34 +243,11 @@ struct tpm {
 	clock_t			tpm_timeout_d;		/* WO */
 	clock_t			tpm_timeout_poll;	/* WO */
 
-	int			(*tpm_exec)(tpm_client_t *);
-	int			(*tpm_cancel)(tpm_client_t *);
-	void			(*tpm_set_interrupts)(tpm_t *, bool);
 	ddi_intr_handle_t	tpm_isr;
-
-	/* For power management. */
-	kmutex_t	pm_mutex;
-	kcondvar_t	suspend_cv;
-	uint32_t	suspended;
-
-	enum tis_tpm_family	tpm_family;
-	enum tis_intf_ver	intf_ver;
-	enum tis_xfer_size	xfer_size;
-
+#if 0
 	crypto_kcf_provider_handle_t	tpm_n_prov;
+#endif
 };
-
-static inline bool
-tpm_is_cancelled(tpm_t *tpm)
-{
-	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
-
-	if (tpm->tpm_active == NULL) {
-		return (false);
-	}
-
-	return (tpm->tpm_active->tpmc_canceled);
-}
 
 typedef enum tpm_mode {
 	TPM_MODE_RDONLY =	0,
@@ -321,42 +295,75 @@ tpm_client_nonblock(const tpm_client_t *c)
 	return ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0 ? true : false);
 }
 
+static inline bool
+tpm_is_cancelled(tpm_t *tpm)
+{
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+
+	if (tpm->tpm_active == NULL) {
+		return (false);
+	}
+
+	return (tpm->tpm_active->tpmc_cancelled);
+}
+
 #define	TPM_LOCALITY_MAX	4
 #define	TPM_OFFSET_MAX		0x0fff
 
-static inline uint32
+static inline uint32_t
 tpm_getbuf32(uchar_t *ptr, uint32_t offset)
 {
 	return (BE_IN32(ptr + offset));
+}
+
+/*
+ * Some operations do not generate an interrupt on completion.
+ * For those, we want to translate TPM_WAIT_INTR to TPM_WAIT_POLL.
+ */
+static inline tpm_wait_t
+tpm_wait_nointr(const tpm_t *tpm)
+{
+	if (tpm->tpm_wait == TPM_WAIT_INTR)
+		return (TPM_WAIT_POLL);
+	return (tpm->tpm_wait);
 }
 
 uint8_t tpm_get8(tpm_t *, unsigned long);
 uint32_t tpm_get32(tpm_t *, unsigned long);
 uint64_t tpm_get64(tpm_t *, unsigned long);
 void tpm_put8(tpm_t *, unsigned long, uint8_t);
+void tpm_put32(tpm_t *, unsigned long, uint32_t);
+
+int tpm_wait_u8(tpm_t *, unsigned long, uint8_t, uint8_t, clock_t, bool);
 int tpm_wait_u32(tpm_t *, unsigned long, uint32_t, uint32_t, clock_t, bool);
 
-void tpm_dbg(tpm_t *, const char *, ...);
+void tpm_dbg(tpm_t *, int, const char *, ...);
+
+clock_t tpm_get_timeout(tpm_t *, uint32_t);
 
 int tpm12_seed_random(tpm_t *, uchar_t *, size_t);
 int tpm12_generate_random(tpm_t *, uchar_t *, size_t);
 int tpm12_init(tpm_t *);
+clock_t tpm12_get_ordinal_duration(tpm_t *, uint32_t);
 
 int tpm20_init(tpm_t *);
 int tpm20_seed_random(tpm_t *, uchar_t *, size_t);
 int tpm20_generate_random(tpm_t *, uchar_t *, size_t);
+clock_t tpm20_get_timeout(uint32_t);
 
 void tpm_client_refrele(tpm_client_t *);
 void tpm_client_reset(tpm_client_t *);
 
-int tpm_tis_init(tpm_t *);
+bool tpm_tis_init(tpm_t *);
 int tpm_tis_exec_cmd(tpm_client_t *);
 int tpm_tis_cancel_cmd(tpm_client_t *);
 void tpm_tis_intr_mgmt(tpm_t *, bool);
+uint_t tpm_crb_intr(caddr_t, caddr_t);
 
-int tpm_crb_init(tpm_t *);
+bool tpm_crb_init(tpm_t *);
 int tpm_crb_exec_cmd(tpm_client_t *);
 int tpm_crb_cancel_cmd(tpm_client_t *);
 void tpm_tis_intr_mgmt(tpm_t *, bool);
+uint_t tpm_tis_intr(caddr_t, caddr_t);
 
 #endif	/* _TPM_DDI_H */

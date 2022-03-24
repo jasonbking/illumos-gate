@@ -13,8 +13,9 @@
  * Copyright 2022 Jason King
  */
 
-#include "tpm_tis.h"
 #include "tpm_ddi.h"
+#include "tpm_tis.h"
+#include "tpm20.h"
 
 /*
  * CRB Register offsets. From TCG PC Client Platform TPM Profile Specification
@@ -26,6 +27,7 @@
 #define	TPM_LOC_ACTIVE(x)		(((x) >> 2) & 0x7)
 #define	TPM_LOC_ASSIGNED(x)		\
 	(((x) & TPM_LOC_STATE_LOC_ASSIGNED) == TPM_LOC_STATE_LOC_ASSIGNED)
+#define	TPM_LOC_SET(x)			(((uint32_t)(x) & 0x7) << 2)
 
 #define	TPM_LOC_CTRL		0x08
 #define	TPM_LOC_CTRL_SEIZE		0x04
@@ -51,7 +53,7 @@
 #define	TPM_CRB_INT_EN_LOC_CHANGED	0x00000008
 #define	TPM_CRB_INT_EN_EST_CLEAR	0x00000004
 #define	TPM_CRB_INT_EN_CMD_READY	0x00000002
-#define	TPM_CRB_INT_ENT_START		0x00000001
+#define	TPM_CRB_INT_EN_START		0x00000001
 
 #define	TPM_CRB_INT_STS		0x54
 #define	TPM_CRB_INT_LOC_CHANGED		0x00000008
@@ -68,7 +70,7 @@
 #define	TPM_CRB_DATA_BUFFER	0x80
 
 /* Make sure our bitfield is large enough */
-CTASSERT(sizeof (uint32_t) >= NBBY*TCRB_ST_MAX);
+CTASSERT(sizeof (uint32_t) * NBBY >= TCRB_ST_MAX);
 #define	B(x) ((uint32_t)1 << ((uint_t)x))
 
 /* For each state, a bit field indicating which next states are allowed */
@@ -77,12 +79,23 @@ static uint32_t tpm_crb_state_tbl[TCRB_ST_MAX] = {
 	[TCRB_ST_READY] =
 	    B(TCRB_ST_IDLE)|B(TCRB_ST_READY)|B(TCRB_ST_CMD_RECEPTION),
 	[TCRB_ST_CMD_RECEPTION] =
-	    B(TCRB_ST_IDLE)|B(TCRB_ST_CMD_RECEPTION|B(TCRB_ST_CMD_EXECUTION),
+	    B(TCRB_ST_IDLE)|B(TCRB_ST_CMD_RECEPTION)|B(TCRB_ST_CMD_EXECUTION),
 	[TCRB_ST_CMD_EXECUTION] = B(TCRB_ST_CMD_COMPLETION),
 	[TCRB_ST_CMD_COMPLETION] =
 	    B(TCRB_ST_IDLE)|B(TCRB_ST_READY)|B(TCRB_ST_CMD_COMPLETION)|
 	    B(TCRB_ST_CMD_RECEPTION),
 };
+
+static inline bool
+state_allowed(tpm_crb_state_t curr, tpm_crb_state_t next)
+{
+	VERIFY3S(curr, <, TCRB_ST_MAX);
+	VERIFY3S(next, <, TCRB_ST_MAX);
+
+	if ((tpm_crb_state_tbl[curr] & B(next)) != 0)
+		return (true);
+	return (false);
+}
 
 static void
 tpm_crb_set_state(tpm_t *tpm, tpm_crb_state_t next_state)
@@ -93,7 +106,7 @@ tpm_crb_set_state(tpm_t *tpm, tpm_crb_state_t next_state)
 	VERIFY3S(next_state, <, TCRB_ST_MAX);
 
 	/* Make sure the next state is generally allowed */
-	VERIFY((tpm_crb_state_tbl[crb->tcrb_state] & B(next_state)) != 0);
+	VERIFY(state_allowed(crb->tcrb_state, next_state));
 
 	/* More specific checks */
 	switch (crb->tcrb_state) {
@@ -121,7 +134,7 @@ tpm_crb_set_state(tpm_t *tpm, tpm_crb_state_t next_state)
 static int
 tpm_crb_go_idle(tpm_t *tpm)
 {
-	tpm_crb_t *crb = tpm->tpm_u.tpmu_crb;
+	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 	uint32_t status;
 	int ret;
 
@@ -138,7 +151,7 @@ tpm_crb_go_idle(tpm_t *tpm)
 		 * If the TPM is reporting it's in the IDLE state, we
 		 * should agree.
 		 */
-		VERIFY3S(crb->tcrb_state, ==, TPM_ST_IDLE);
+		VERIFY3S(crb->tcrb_state, ==, TCRB_ST_IDLE);
 		return (0);
 	}
 
@@ -161,7 +174,7 @@ tpm_crb_go_idle(tpm_t *tpm)
 		return (EIO);
 	}
 
-	tpm_crb_set_state(tpm, TPM_ST_IDLE);
+	tpm_crb_set_state(tpm, TCRB_ST_IDLE);
 	return (0);
 }
 
@@ -170,7 +183,7 @@ tpm_crb_go_ready(tpm_t *tpm)
 {
 	int ret;
 
-	VERIFY(MUTEX_HELD(tpm->tpm_lock));
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
 
 	/*
 	 * Per Table 35, if we are already in the READY state and assert
@@ -181,7 +194,7 @@ tpm_crb_go_ready(tpm_t *tpm)
 	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_REQ,
 	    TPM_CRB_CTRL_REQ_CMD_READY, 0, tpm->tpm_timeout_c, true);
 	if (ret == 0) {
-		tpm_crb_set_state(tpm, TPM_ST_READY);
+		tpm_crb_set_state(tpm, TCRB_ST_READY);
 		return (0);
 	}
 
@@ -190,7 +203,7 @@ tpm_crb_go_ready(tpm_t *tpm)
 	return (ret);
 }
 
-int
+bool
 tpm_crb_init(tpm_t *tpm)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
@@ -201,51 +214,50 @@ tpm_crb_init(tpm_t *tpm)
 	 * The cmd address register is not at an 8-byte aligned offset, so
 	 * it must be read as two 32-bit values.
 	 */
-	crb->tcrb_cmd_off = tpm_get32(tpm, TPM_CRB_CMD_LADDR) |
-	    tpm_get32(tpm, TPM_CRB_CMD_HADDR) << 32;
-	crb->tcrb_cmdbuf_size = tpm_get32(tpm, TPM_CRB_CMD_SIZE);
+	crb->tcrb_cmd_off = tpm_get32(tpm, TPM_CRB_CTRL_CMD_LADDR) |
+	    (uint64_t)tpm_get32(tpm, TPM_CRB_CTRL_CMD_HADDR) << 32;
+	crb->tcrb_cmd_size = tpm_get32(tpm, TPM_CRB_CTRL_CMD_SIZE);
 
 	/*
 	 * The command response buffer address is however at an 8-byte
 	 * aligned offset.
 	 */
-	crb->tcrb_resp_off = tpm_get64(tpm, TPM_CRB_RSP_ADDR);
-	crb->tcrb_respbuf_size = tpm_get32(tpm, TPM_CRB_RSP_SIZE);
+	crb->tcrb_resp_off = tpm_get64(tpm, TPM_CRB_CTRL_RSP_ADDR);
+	crb->tcrb_resp_size = tpm_get32(tpm, TPM_CRB_CTRL_RSP_SIZE);
 
 	/*
 	 * The command and response buffer may be the same offset. If they are,
 	 * the buffer sizes SHALL be the same (Table 25).
 	 */
 	if (crb->tcrb_cmd_off == crb->tcrb_resp_off &&
-	    crb->tcrb_cmdbuf_size != crb->tcrb_respbuf_size) {
+	    crb->tcrb_cmd_size != crb->tcrb_resp_size) {
 		cmn_err(CE_WARN, "!%s: tpm shared command and response buffer "
-		    "have different sizes (cmd size %llu != resp size %llu)",
-		    __func__, crb->tcrb_cmdbuf_size, crb->tcrb_respbuf_size);
-		return (EIO);
+		    "have different sizes (cmd size %lu != resp size %lu)",
+		    __func__, crb->tcrb_cmd_size, crb->tcrb_resp_size);
+		return (false);
 	}
 
-	tpm->tpm_iftype = TPM_IF_CRB;
-
-	return (0);
+	/* CRB always implies a TPM 2.0 device */
+	return (tpm20_init(tpm));
 }
 
-static uint_t
+uint_t
 tpm_crb_intr(caddr_t arg0, caddr_t arg1 __unused)
 {
 	const uint32_t intr_mask = TPM_CRB_INT_LOC_CHANGED|
-	    TPM_CRB_INT_EST_CLEAR|TPM_CRB_INT_CMD_READY|TPMM_CRB_INT_START;
+	    TPM_CRB_INT_EST_CLEAR|TPM_CRB_INT_CMD_READY|TPM_CRB_INT_START;
 
 	tpm_t *tpm = (tpm_t *)arg0;
 	uint32_t status;
 
-	status = tpm_get32(tpm, TPM_CRB_INT_SYS);
+	status = tpm_get32(tpm, TPM_CRB_INT_STS);
 	if ((status & intr_mask) == 0) {
 		/* Wasn't us */
 		return (DDI_INTR_UNCLAIMED);
 	}
 
 	/* Ack the interrupt */
-	tpm_put32(tpm, status);
+	tpm_put32(tpm, TPM_CRB_INT_STS, status);
 
 	/*
 	 * For now at least, it's just enough to signal the waiting
@@ -254,7 +266,7 @@ tpm_crb_intr(caddr_t arg0, caddr_t arg1 __unused)
 	 * TODO: It might be nice to have dtrace sdt probes for each
 	 * type of interrupt.
 	 */
-	cv_signal(tpm->tpm_intr_cv);
+	cv_signal(&tpm->tpm_intr_cv);
 
 	return (DDI_INTR_CLAIMED);
 }
@@ -276,8 +288,6 @@ tpm_crb_send_data(tpm_client_t *c, uint8_t *buf, size_t buflen)
 		return (ret);
 	}
 
-	clock_t timeout = get_timeout(buf, buflen);
-
 	/*
 	 * Technically, the TPM doesn't transition into the Command Reception
 	 * state until the first byte is written, but nothing should get
@@ -295,7 +305,8 @@ tpm_crb_send_data(tpm_client_t *c, uint8_t *buf, size_t buflen)
 }
 
 static int
-tpm_crb_recv_data(tpm_client_t *c, uint8_t *buf, size_t buflen, size_t *rlenp)
+tpm_crb_recv_data(tpm_client_t *c, uint8_t *buf, size_t buflen, size_t *rlenp,
+    clock_t to)
 {
 	tpm_t *tpm = c->tpmc_tpm;
 	int ret;
@@ -303,7 +314,7 @@ tpm_crb_recv_data(tpm_client_t *c, uint8_t *buf, size_t buflen, size_t *rlenp)
 	/* We should be given a buffer large enough to hold any response */
 	VERIFY3U(buflen, >=, TPM_IO_BUF_SIZE);
 
-	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_START, 1, 0, timeout, false);
+	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_START, 1, 0, to, false);
 	if (ret != 0) {
 		return (ret);
 	}
@@ -318,8 +329,9 @@ tpm_crb_recv_data(tpm_client_t *c, uint8_t *buf, size_t buflen, size_t *rlenp)
 
 	if (resp_len > buflen) {
 		/* XXX: fm report? */
-		dev_err(tpm->tpm_dip, "received and excessively large (%lu) "
-		    "sized response", (unsigned long)resp_len);
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "received and excessively large (%lu) sized response",
+		    (unsigned long)resp_len);
 
 		/* Try to recover by going idle */
 		(void) tpm_crb_go_idle(tpm);
@@ -337,17 +349,19 @@ tpm_crb_recv_data(tpm_client_t *c, uint8_t *buf, size_t buflen, size_t *rlenp)
 static int
 tpm_crb_request_locality(tpm_t *tpm, uint8_t locality)
 {
-	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
-
 	uint32_t status;
 	uint32_t mask;
+	int ret;
+	uint8_t old_locality;
+
+	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
 
 	/*
 	 * TPM_CRB_LOC_STATE is mirrored across all localities (to allow
 	 * determination of the active locality), so it doesn't matter
 	 * which locality is used to read the state.
 	 */
-	status = tpm_get32(tpm, TPM_CRB_LOC_STATE);
+	status = tpm_get32(tpm, TPM_LOC_STATE);
 
 	/* If we can't determine the current locality, punt. */
 	if ((status & TPM_LOC_STATE_REG_VALID) == 0) {
@@ -362,26 +376,34 @@ tpm_crb_request_locality(tpm_t *tpm, uint8_t locality)
 	}
 
 	mask = TPM_LOC_STATE_REG_VALID | TPM_LOC_STATE_LOC_ASSIGNED |
-	    (uint32_t)locality & 0x7 << 2;
+	    TPM_LOC_SET(locality);
+
+	/*
+	 * Set the new locality now so the tpm_put32() command writes the
+	 * request to the correct locality request register. If we fail,
+	 * we restore the old value.
+	 */
+	old_locality = tpm->tpm_locality;
+	tpm->tpm_locality = locality;
 
 	/*
 	 * The TPM_LOC_CTRL_REQUEST register is write only. Bits written as
 	 * 0 are ignored, so we don't need to read | OR to set a flag -- just
 	 * write the value with the desired flags set.
 	 */
-	tpm_put32_loc(tpm, locality, TPM_LOC_CTRL, TPM_LOC_CTRL_REQUEST);
+	tpm_put32(tpm, TPM_LOC_CTRL, TPM_LOC_CTRL_REQUEST);
 
-	ret = tpm_wait_for_u32(tpm, TPM_CRB_LOC_STATE, mask, mask,
+	ret = tpm_wait_u32(tpm, TPM_LOC_STATE, mask, mask,
 	    tpm->tpm_timeout_c, true);
-	if (ret == 0) {
-		tpm->tpm_locality = locality;
-		return (0);
+	if (ret != 0) {
+		/*
+		 * XXX: Should this generate an ereport? Maybe even disable
+		 * access to the TPM?
+		 */
+		tpm->tpm_locality = old_locality;
+		return (ret);
 	}
 
-	/*
-	 * TODO: This should probably generate an fm event and possibly
-	 * disable access to the TPM. Need to research more.
-	 */
 	return (ret);
 }
 
@@ -401,12 +423,14 @@ int
 tpm_crb_exec_cmd(tpm_client_t *c)
 {
 	tpm_t *tpm = c->tpmc_tpm;
+	clock_t to;
 	int ret, ret2;
+	uint32_t cmd;
 
 	VERIFY3S(tpm->tpm_iftype, ==, TPM_IF_CRB);
 
 	VERIFY(MUTEX_HELD(&c->tpmc_lock));
-	VERIFY3S(c->tpmc_state, ==, TPMC_CLIENT_CMD_EXECUTION);
+	VERIFY3S(c->tpmc_state, ==, TPM_CLIENT_CMD_EXECUTION);
 
 	mutex_enter(&tpm->tpm_lock);
 	mutex_exit(&c->tpmc_lock);
@@ -422,9 +446,13 @@ tpm_crb_exec_cmd(tpm_client_t *c)
 		goto done;
 	}
 
+	VERIFY3U(c->tpmc_buflen, >=, TPM_HEADER_SIZE);
+	cmd = BE_IN32(c->tpmc_buf + TPM_COMMAND_CODE_OFFSET);
+	to = tpm20_get_timeout(cmd);
+
 	c->tpmc_bufread = 0;
 	ret = tpm_crb_recv_data(c, c->tpmc_buf, c->tpmc_buflen,
-	     &c->tpmc_bufused);
+	     &c->tpmc_bufused, to);
 
 done:
 	/*
@@ -443,14 +471,14 @@ int
 tpm_crb_cancel_cmd(tpm_client_t *c)
 {
 	tpm_t *tpm = c->tpmc_tpm;
-	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 
 	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+
 	/*
 	 * We should only be called when the client is in the process of
 	 * executing a command.
 	 */
-	VERIFY3S(c->tpmc_state, ==, TPMC_CLIENT_CMD_EXECUTION);
+	VERIFY3S(c->tpmc_state, ==, TPM_CLIENT_CMD_EXECUTION);
 
 	mutex_enter(&tpm->tpm_lock);
 
@@ -458,7 +486,7 @@ tpm_crb_cancel_cmd(tpm_client_t *c)
 	VERIFY3U(curthread->t_did, !=, tpm->tpm_thread_id);
 
 	tpm->tpm_thr_cancelreq = true;
-	cv_signal(tpm->tpm_thr_cv);
+	cv_signal(&tpm->tpm_thr_cv);
 
 	if (tpm_client_nonblock(c)) {
 		mutex_exit(&tpm->tpm_lock);
@@ -475,8 +503,6 @@ tpm_crb_cancel_cmd(tpm_client_t *c)
 	}
 
 	mutex_exit(&tpm->tpm_lock);
-	return (0);
-
 	tpm_client_reset(c);
 	return (0);
 }
@@ -484,6 +510,8 @@ tpm_crb_cancel_cmd(tpm_client_t *c)
 void
 tpm_crb_intr_mgmt(tpm_t *tpm, bool enable)
 {
+	VERIFY(tpm->tpm_use_interrupts);
+
 	if (enable) {
 		tpm_put32(tpm, TPM_CRB_INT_ENABLE,
 		    TPM_CRB_INT_EN_GLOBAL|TPM_CRB_INT_EN_LOC_CHANGED|
