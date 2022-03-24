@@ -75,10 +75,19 @@ typedef struct tpm_attach_desc {
 #define	TEN_MILLISECONDS		10000	/* 10 milliseconds */
 #define	FOUR_HUNDRED_MILLISECONDS	400000	/* 4 hundred milliseconds */
 
-/* For now, we assume a system will only have a single TPM device. */
+/* We assume a system will only have a single TPM device. */
 #define	TPM_CTL_MINOR		0
 
 #define	DEFAULT_LOCALITY	0
+
+#define	TPM_INTERFACE_ID	0x30
+#define	TPM_INTF_IFTYPE(x)	((x) & 0xf)
+#define	TPM_INTF_IFTYPE_FIFO	(0x0)
+#define	TPM_INTF_IFTYPE_CRB	(0x1)
+#define	TPM_INTF_IFTYPE_TIS	(0xf)
+#define	TPM_INTF_DID(x)		((x) >> 48)
+#define	TPM_INTF_VID(x)		(BE_16(((x) >> 32 & 0xffff)))
+#define	TPM_INTF_RID(x)		((x) >> 24 & 0xff)
 
 /*
  * Explicitly not static as it is a tunable. Set to true to enable
@@ -122,24 +131,21 @@ tpmc_is_readmode(const tpm_client_t *c)
 }
 
 void
-tpm_dbg(const tpm_t *tpm, const char *fmt, ...)
+tpm_dbg(const tpm_t *tpm, int level, const char *fmt, ...)
 {
 	if (!tpm->debug) {
 		return;
 	}
 
 	va_list	ap;
-	char	msg[1024];
 
-	va_start(ap, msg);
-	(void) vsnprintf(msg, sizeof (msg), fmt, ap);
-	va_end(ap);
-
+	va_start(ap, fmt);
 	if (tpm != NULL && tpm->tpm_dip != NULL) {
-		dev_err(tpm->tpm_dip, CE_NOTE, "!%s", msg);
+		vdev_err(tpm->tpm_dip, level, msg, ap);
 	} else {
-		cmn_err(CE_NOTE, "!%s", msg);
+		vcmn_err(level, msg, ap);
 	}
+	va_end(ap);
 }
 
 static tpm_client_t *c
@@ -200,7 +206,15 @@ tpm_cancel(tpm_client_t *c)
 		 * reset the client state after it has completed cancelling
 		 * the current command.
 		 */
-		tpm->tpm_cancel(c);
+		switch (tpm->tpm_iftype) {
+		case TPM_IF_TIS:
+		case TPM_IF_FIFO:
+			(void) tpm_tis_cancel_cmd(c);
+			break;
+		case TPM_IF_CRB:
+			(void) tpm_crb_cancel_cmd(c);
+			break;
+		}
 		break;
 	case TPM_CLIENT_DISPATCH:
 		if (list_link_active(&c->tpmc_link)) {
@@ -773,6 +787,7 @@ tpm_exec_thread(void *arg)
 		}
 
 		c->tpmc_state = TPMC_CLIENT_CMD_EXECUTION;
+		/* tpm_tis_exec_cmd(c) / tpm_crb_exec_cmd(c) */
 		ret = tpm->tpm_exec(c);
 
 		VERIFY(MUTEX_HELD(&c->tpmc_lock));
@@ -783,6 +798,25 @@ tpm_exec_thread(void *arg)
 
 		tpm_client_refrele(c);
 	}
+}
+
+static clock_t
+tpm_get_waittime(tpm_t *tpm, tpm_wait_t wait_type, clock_t now,
+    clock_t deadline)
+{
+	clock_t until;
+
+	switch (wait_type) {
+	case TPM_WAIT_POLLONCE:
+	case TPM_WAIT_INTR:
+		return (deadline);
+	case TPM_WAIT_POLL:
+		until = now + tpm->tpm_timeout_poll;
+		return ((until < deadline) ? until : deadline);
+	}
+	cmn_err(CE_PANIC, "invalid wait_type %d", wait_type);
+	/*NOTREACHED*/
+	return (0);
 }
 
 /*
@@ -806,19 +840,7 @@ tpm_wait_u32(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t val,
 	deadline = ddi_get_lbolt() + timeout;
 	while (((status = tpm_get32(tpm, reg)) & mask) != val &&
 	    ((now = ddi_get_lbolt()) < deadline)) {
-		clock_t until;
-
-		switch (wait_type) {
-		case TPM_WAIT_POLLONCE:
-		case TPM_WAIT_INTR:
-			until = deadline;
-			break;
-		case TPM_WAIT_POLL:
-			until = now + tpm->tpm_timeout_poll;
-			if (until > deadline)
-				until = deadline;
-			break;
-		}
+		clock_t until = tpm_get_waittime(tpm, wait_type, now, deadline);
 
 		ret = cv_timedwait(&tpm->tpm_intr_cv, &tpm->tpm_lock, until);
 	}
@@ -837,6 +859,43 @@ timedout:
 	/* XXX: Generate ereport? */
 	dev_err(tpm->tpm_dip, CE_WARN, "!%s: timeout (%ld usecs) waiting for "
 	    "reg 0x%lx & 0x%x == 0x%x", __func__, drv_hztousec(timeout),
+	    reg, mask, val);
+	return (ETIME);
+}
+
+int
+tpm_wait_u8(tpm_t *tpm, unsigned long reg, uint8_t mask, uint8_t val,
+    clock_t timeout, bool wait_intr)
+{
+	clock_t deadline, now;
+	int ret = 0;
+	tpm_wait_t wait = wait_intr ? tpm->tpm_wait : tpm_wait_nointr(tpm);
+	uint8_t val;
+
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+
+	deadline = ddi_get_lbolt() + timeout;
+	while (((val = tpm_get8(tpm, reg)) & mask) != val &&
+	    ((now = ddi_get_lbolt()) < deadline)) {
+		clock_t until = tpm_get_waittime(tpm, wait_type, now, deadline);
+
+		ret = cv_timedwait(&tpm->tpm_intr_cv, &tpm->tpm_lock, until);
+	}
+
+	/* We timed out, check the status one final time */
+	if (ret <= 0) {
+		val = tpm_get8(tpm, reg) & mask;
+		if (status != val) {
+			goto timedout;
+		}
+	}
+
+	return (0);
+
+timedout:
+	/* XXX: Generate ereport? */
+	dev_err(tpm->tpm_dip, CE_WARN, "!%2: timeout (%ld usecs) waiting for "
+	    "reg 0x%lx & 0x%x == 0x%x", __func__, dev_hztousec(timeout),
 	    reg, mask, val);
 	return (ETIME);
 }
@@ -887,68 +946,6 @@ tpm_wait_for_u32(tpm_t *tpm, uint32_t reg, uint32_t mask, uint32_t val,
  * Auxilary Functions
  */
 
-/*
- * Internal TPM Transmit Function:
- * Calls implementation specific sendto and receive
- * The code assumes that the buffer is in network byte order
- */
-int
-itpm_command(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
-{
-	int ret;
-	uint32_t count;
-
-	ASSERT(tpm != NULL && buf != NULL);
-
-	/* The byte order is network byte order so convert it */
-	count = tpm_getbuf32(buf, TPM_PARAMSIZE_OFFSET);
-
-	if (count == 0 || (count > bufsiz)) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: invalid byte count value "
-		    "(%d > bufsiz %d)", __func__, (int)count, (int)bufsiz);
-#endif
-		return (DDI_FAILURE);
-	}
-
-	/* Send the command */
-	ret = tis_send_data(tpm, buf, count);
-	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: tis_send_data failed with error %x",
-		    __func__, ret);
-#endif
-		return (DDI_FAILURE);
-	}
-
-	/*
-	 * Now receive the data from the tpm
-	 * Should at least receive "the common" 10 bytes (TPM_HEADER_SIZE)
-	 */
-	ret = tis_recv_data(tpm, buf, bufsiz);
-	if (ret < TPM_HEADER_SIZE) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: tis_recv_data failed", __func__);
-#endif
-		return (DDI_FAILURE);
-	}
-
-	/* Check the return code */
-	ret = tpm_getbuf32(buf, TPM_RETURN_OFFSET);
-	if (ret != TPM_SUCCESS) {
-		if (ret == TPM_E_DEACTIVATED)
-			cmn_err(CE_WARN, "!%s: TPM is deactivated", __func__);
-		else if (ret == TPM_E_DISABLED)
-			cmn_err(CE_WARN, "!%s: TPM is disabled", __func__);
-		else
-			cmn_err(CE_WARN, "!%s: TPM error code 0x%0x",
-			    __func__, ret);
-		return (DDI_FAILURE);
-	}
-
-	return (DDI_SUCCESS);
-}
-
 static int
 tpm_resume(tpm_t *tpm)
 {
@@ -984,11 +981,14 @@ tpm_attach_regs(tpm_t *tpm)
 	}
 
 	/*
-	 * TPM vendors put the TPM registers in different
+	 * TPM 1.2 vendors put the TPM registers in different
 	 * slots in their register lists.  They are not always
 	 * the 1st set of registers, for instance.
 	 * Loop until we find the set that matches the expected
 	 * register size (0x5000).
+	 *
+	 * For TPM 2.0 devices, we'll always end up using the
+	 * first register set.
 	 */
 	for (idx = 0; idx < nregs; i++) {
 		off_t regsize;
@@ -1025,6 +1025,64 @@ static void
 tpm_cleanup_regs(tpm_t *tpm)
 {
 	ddi_regs_map_free(&tpm->tpm_handle);
+}
+
+static bool
+tpm_attach_dev_init(tpm_t *tpm)
+{
+	uint64_t id;
+
+	/*
+	 * The TPM_INTERFACE_ID_x register is purposely identical between
+	 * TIS/FIFO and CRB access methods. It also allows us to determine
+	 * if this is a TPM1.2 or TPM2.0 module.
+	 */
+	id = tpm_get64(tpm, TPM_INTERFACE_ID);
+
+	switch (TPM_INTF_IFTYPE(id)) {
+	case TPM_INTF_IFTYPE_TIS:
+		tpm->tpm_iftype = TPM_IF_TIS;
+		/*
+		 * For TPMs using the TIS 1.3 interface, tpm_tis_init()
+		 * will set tpm_family since both TPM1.2 and TPM2.0
+		 * devices can use this interface.
+		 */
+		return (tpm_tis_init(tpm));
+	case TPM_INTF_IFTYPE_FIFO:
+		tpm->tpm_iftype = TPM_IF_FIFO;
+		tpm->tpm_family = TPM_FAMILY_2_0;
+		/*
+		 * While the id value can be also be used to determine the
+		 * VID/DID/RID of the TPM module for TPM2.0 devices using
+		 * the FIFO interface, it can also be read from specific
+		 * registers that will also work for TPM1.2 and TPM2.0
+		 * modules using the TIS interface, so tpm_tis_init()
+		 * will set the properties for both TIS and FIFO.
+		 */
+		return (tpm_tis_init(tpm));
+	case TPM_INTF_IFTYPE_CRB:
+		tpm->tpm_iftype = TPM_IF_CRB;
+		tpm->tpm_family = TPM_FAMILY_2_0;
+
+		(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+		    "tpm-deviceid", TPM_INTF_DID(id));
+		(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+		    "tpm-vendorid", TPM_INTF_VID(id));
+		(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+		    "tpm-revision", TPM_INTF_RID(id));
+
+		return (tpm_crb_init(tpm));
+	default:
+		cmn_err(CE_NOTE, "!%s: unknown TPM interface type 0x%x",
+		    __func__, TPM_INTF_IFTYPE(id));
+		return (false);
+	}
+}
+
+static void
+tpm_cleanup_dev_init(tpm_t *tpm)
+{
+	/* Nothing needed */
 }
 
 static bool
@@ -1095,6 +1153,7 @@ tpm_cleanup_intr_alloc(tpm_t *tpm)
 static bool
 tpm_attach_intr_hdlrs(tpm_t *tpm)
 {
+	ddi_intr_handle_t isr;
 	uint_t i;
 	int ret;
 
@@ -1102,9 +1161,18 @@ tpm_attach_intr_hdlrs(tpm_t *tpm)
 		return (true);
 	}
 
+	switch (tpm->tpm_iftype) {
+	case TPM_IF_TIS:
+	case TPM_IF_FIFO:
+		isr = tpm_tis_intr;
+		break;
+	case TPM_IF_CRB:
+		isr = tpm_crb_intr;
+		break;
+	}
+	
 	for (i = 0; i < tpm->tpm_nintr; i++) {
-		ret = ddi_intr_add_handler(tpm->tpm_harray[i], tpm->tpm_isr,
-		    tpm, NULL);
+		ret = ddi_intr_add_handler(tpm->tpm_harray[i], isr, tpm, NULL);
 		if (ret != DDI_SUCCESS) {
 			dev_err(tpm->tpm_dip, CE_WARN,
 			    "failed to attach interrupt %u handler: %d",
@@ -1262,13 +1330,13 @@ static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
 		.tad_cleanup = tpm_cleanup_hsvc,
 	},
 #endif
+#ifdef amd64
 	[TPM_ATTACH_DEV_INIT] = {
 		.tad_seq = TPM_ATTACH_DEV_INIT,
 		.tad_name = "device initialization",
 		.tad_attach = tpm_attach_dev_init,
 		.tad_cleanup = tpm_cleanup_dev_init,
 	},
-#ifdef amd64
 	[TPM_ATTACH_INTR_ALLOC] = {
 		.tad_seq = TPM_ATTACH_INTR_ALLOC,
 		.tad_name = "interrupt allocation",
@@ -1369,6 +1437,16 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		return (DDI_FAILURE);
 	}
 
+	tpm->tpm_locality = DEFAULT_LOCALITY;
+
+	/*
+	 * We default to polling. Once everything has been initialized,
+	 * we may then switch to using interrupts.
+	 */
+	tpm->tpm_wait = TPM_WAIT_POLL;
+
+	/* XXX: set tpm_use_interrupts */
+
 	for (uint_t i = 0; i < ARRAY_SIZE(tpm_attach_tbl); i++) {
 		tpm_attach_desc_t *desc = &tpm_attach_tbl[i];
 
@@ -1392,27 +1470,27 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
 	    "pm-hardware-state", "needs-suspend-resume");
 
-	char buf[32];
+	switch (tpm->tpm_family) {
+	case TPM_FAMILY_1_2:
+		tpm->tpm_wait = TPM_WAIT_POLL;
+		break;
+	case TPM_FAMILY_2_0:
+		tpm->tpm_wait = TPM_WAIT_INTR;
+		break;
+	}
 
-	(void) snprintf(buf, sizeof (buf), "%d.%d",
-	    tpm->vers_info.version.major,
-	    tpm->vers_info.version.minor);
-	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
-	    "tpm-version", buf);
-
-	(void) snprintf(buf, sizeof (buf), "%d.%d",
-	    tpm->vers_info.version.revMajor,
-	    tpm->vers_info.version.revMinor);
-	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
-	    "tpm-revision", buf);
-
-	(void) ddi_prop_update_int(DDI_DEV_T_NONE, dip, "tpm-speclevel",
-	    ntohs(tpm->vers_info.specLevel));
-	(void) ddi_prop_update_int(DDI_DEV_T_NONE, dip, "tpm-errata-revision",
-	    tpm->vers_info.errataRev);
+	/* XXX: Check for tpm_wait override */
 
 	if (tpm->tpm_use_interrupts) {
-		tpm->tpm_set_interrupts(tpm, true);
+		switch (tpm->tpm_iftype) {
+		case TPM_IF_TIS:
+		case TPM_IF_FIFO:
+			tpm_tis_intr_mgmt(tpm, enable);
+			break;
+		case TPM_IF_CRB:
+			tpm_crb_intr_mgmt(tpm, enable);
+			break;
+		}
 	}
 
 	return (DDI_SUCCESS);
@@ -1467,25 +1545,22 @@ tpm_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	return (DDI_SUCCESS);
 }
 
-/*ARGSUSED*/
 static int
-tpm_getinfo(dev_info_t *dip, ddi_info_cmd_t cmd, void *arg, void **resultp)
+tpm_getinfo(dev_info_t *dip __unused, ddi_info_cmd_t cmd, void *arg __unused,
+    void **resultp)
 {
-	int instance;
 	tpm_t *tpm;
 
-	instance = ddi_get_instance(dip);
-	if ((tpm = ddi_get_soft_state(statep, instance)) == NULL) {
-#ifdef DEBUG
+	/* We only support a single TPM instance */
+	if ((tpm = ddi_get_soft_state(statep, 0)) == NULL) {
 		cmn_err(CE_WARN, "!%s: stored pointer to tpm state is NULL",
 		    __func__);
-#endif
 		return (DDI_FAILURE);
 	}
 
 	switch (cmd) {
 	case DDI_INFO_DEVT2DEVINFO:
-		*resultp = tpm->dip;
+		*resultp = tpm->tpm_dip;
 		break;
 	case DDI_INFO_DEVT2INSTANCE:
 		*resultp = 0;
@@ -1500,35 +1575,10 @@ tpm_getinfo(dev_info_t *dip, ddi_info_cmd_t cmd, void *arg, void **resultp)
 	return (DDI_SUCCESS);
 }
 
-/*
- * This is to deal with the contentions for the iobuf
- */
-static inline int
-tpm_io_lock(tpm_t *tpm)
+clock_t
+tpm_get_ordinal_duration(tpm_t *tpm, uint8_t ordinal)
 {
-	int ret;
-	clock_t timeout;
-
-	mutex_enter(&tpm->iobuf_lock);
-	ASSERT(mutex_owned(&tpm->iobuf_lock));
-
-	timeout = ddi_get_lbolt() + drv_usectohz(TPM_IO_TIMEOUT);
-
-	/* Wait until the iobuf becomes free with the timeout */
-	while (tpm->iobuf_inuse) {
-		ret = cv_timedwait(&tpm->iobuf_cv, &tpm->iobuf_lock, timeout);
-		if (ret <= 0) {
-			/* Timeout reached */
-			mutex_exit(&tpm->iobuf_lock);
-#ifdef DEBUG
-			cmn_err(CE_WARN, "!tpm_io_lock:iorequest timed out");
-#endif
-			return (ETIME);
-		}
-	}
-	tpm->iobuf_inuse = 1;
-	mutex_exit(&tpm->iobuf_lock);
-	return (0);
+	
 }
 
 /*

@@ -17,7 +17,7 @@
 #include "tpm_ddi.h"
 #include "tpm20.h"
 
-int
+bool
 tpm20_init(tpm_state_t *tpm)
 {
 	/*
@@ -30,16 +30,11 @@ tpm20_init(tpm_state_t *tpm)
 	tpm->timeout_c = TPM20_TIMEOUT_C;
 	tpm->timeout_d = TPM20_TIMEOUT_D;
 
-	switch (tpm->iftype) {
-	case TPM_IF_FIFO:
-		return (tpm20_fifo_init(tpm));
-	case TPM_IF_CRB:
-		return (tpm_crb_init(tpm));
-	}
+	return (true);
 }
 
 clock_t
-tpm20_get_timeout(tpm_state_t *tpm __unused, uint32_t cmd)
+tpm20_get_timeout(uint32_t cmd)
 {
 	switch (cmd) {
 	case TPM_CC_Startup:
