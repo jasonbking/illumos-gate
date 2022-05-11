@@ -26,6 +26,8 @@
 /*	Copyright (c) 1984, 1986, 1987, 1988, 1989 AT&T	*/
 /*	  All Rights Reserved	*/
 
+/* Copyright 2022 Racktop Systems, Inc. */
+
 #include	<stdio.h>
 #include	<stdlib.h>
 #include	<unistd.h>
@@ -44,6 +46,7 @@
 #include	<sys/types.h>
 #include	<sys/console.h>
 #include	<libdevinfo.h>
+#include	<libscf.h>
 #include	"ttymon.h"
 #include	"tmextern.h"
 #include	"tmstruct.h"
@@ -56,6 +59,10 @@ static	void	ttymon_options(int, char **, struct pmtab *);
 static	void	getty_options(int, char **, struct pmtab *);
 static	void	usage(void);
 static	char	*find_ttyname(int);
+
+/* cannot include libdevinfo.h */
+extern int di_devperm_logout(const char *);
+static void check_console(struct pmtab *);
 
 /*
  * ttymon_express - This is call when ttymon is invoked with args
@@ -138,6 +145,7 @@ ttymon_express(int argc, char **argv)
 		if (Retry)		/* open failed */
 			exit(1);
 	}
+	check_console(pmtab);
 	tmchild(pmtab);
 	exit(1);	/*NOTREACHED*/
 }
@@ -438,4 +446,35 @@ revokedevaccess(char *dev, uid_t uid, gid_t gid, mode_t mode)
 	/* Remove ACLs */
 
 	(void) acl_strip(dev, uid, gid, mode);
+}
+
+static void
+check_console(struct pmtab *pm)
+{
+	struct cons_getdev cnd;
+	struct stat sb;
+	int cfd;
+
+	/* We only care if the device is not /dev/console */
+	if (strcmp(pm->p_device, "/dev/console") == 0)
+		return;
+
+	if (fstat(pm->p_fd, &sb) < 0) {
+		fatal("fstat on %s failed: %s:\n", pm->p_device,
+		    strerror(errno));
+	}
+
+	if ((cfd = open("/dev/console", O_RDONLY)) < 0)
+		fatal("could not open /dev/console: %s", strerror(errno));
+
+	if (ioctl(cfd, CONS_GETDEV, &cnd) < 0) {
+		fatal("CONS_GETDEV ioctl on /dev/console failed: %s\n",
+		    strerror(errno));
+	}
+	(void) close(cfd);
+
+	if (cnd.cnd_rconsdev == sb.st_rdev) {
+		log("%s is the console, gracefully exiting", pm->p_device);
+		exit(SMF_EXIT_NODAEMON);
+	}
 }
