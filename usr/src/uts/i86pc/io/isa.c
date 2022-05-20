@@ -1223,41 +1223,6 @@ isa_enumerate(int reprogram)
 	if (reprogram)
 		return;
 
-	if (isa_dip == NULL) {
-		if (get_hwenv() != HW_MICROSOFT)
-			return;
-
-		/*
-		 * If we're running under Hyper-V, a Gen1 VM will have a
-		 * virtual PCI-ISA bridge device, which will create an isa
-		 * device node under the pci bus where the virtual PCI-ISA
-		 * exists. A Gen2 VM however does not have a virtual PCI-ISA
-		 * bridge. As such we must explicitly create the device node.
-		 *
-		 * Currently, the only known way to determine (as a guest)
-		 * if the VM is a Gen1 or Gen2 VM is to detect the absence
-		 * of the PCI-ISA bridge. This requires waiting until the PCI
-		 * enumeration is complete. Since the ISA bus is (currently)
-		 * enumerated after the PCI bus (to allow the PCI enumeration
-		 * to discover any PCI-ISA bridges), we must defer the ISA
-		 * node creation until now. At this point, if we are running
-		 * under Hyper-V, and there is no existing isa device node,
-		 * we know we are running as a Gen2 VM and can create the
-		 * device node.
-		 *
-		 * In a Gen2 VM, since there is no parent bus (as in the case
-		 * of the PCI-ISA bridge), the isa node is explicitly added
-		 * under the root node.
-		 */
-		ndi_devi_alloc_sleep(ddi_root_node(), "isa",
-		    (pnode_t)DEVI_SID_NODEID, &isa_dip);
-		(void) ndi_prop_update_string(DDI_DEV_T_NONE, isa_dip,
-		    "device_type", "isa");
-		(void) ndi_prop_update_string(DDI_DEV_T_NONE, isa_dip,
-		    "bus-type", "isa");
-		(void) ndi_devi_bind_driver(isa_dip, 0);
-	}
-
 	bzero(isa_extra_resource, MAX_EXTRA_RESOURCE * sizeof (struct regspec));
 
 	ndi_devi_enter(isa_dip, &circ);

@@ -39,11 +39,13 @@
 
 /*
  * Copyright (c) 2017 by Delphix. All rights reserved.
+ * Copyright 2022 Racktop Systems, Inc.
  */
 
 /*
  * VM Bus Driver Implementation
  */
+#include <sys/framebuffer.h>
 #include <sys/hyperv.h>
 #include <sys/vmbus_xact.h>
 #include <vmbus/hyperv_var.h>
@@ -59,6 +61,7 @@
 #include <sys/x_call.h>
 #include <sys/x86_archext.h>
 #include <sys/sunndi.h>
+#include <sys/ddi_subrdefs.h>
 
 #define	curcpu	CPU->cpu_id
 
@@ -100,6 +103,9 @@ static void			vmbus_xcall(vmbus_xcall_func_t, void *);
 
 static void			*vmbus_state = NULL;
 static struct vmbus_softc	*vmbus_sc;
+
+static dev_info_t		*hv_fb_dip = NULL;
+static boolean_t		hv_isgen2;
 
 uint32_t			vmbus_current_version;
 
@@ -1198,6 +1204,14 @@ vmbus_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 
 	ddi_report_dev(dip);
 	mutex_exit(&vmbus_lock);
+
+	/*
+	 * We must explicitly attach the framebuffer device so consplat
+	 * will pick it up.
+	 */
+	if (hv_fb_dip != NULL)
+		(void)i_ddi_attach_node_hierarchy(hv_fb_dip);
+
 	return (ret);
 }
 
@@ -1376,6 +1390,70 @@ vmbus_ctlops(dev_info_t *dip, dev_info_t *rdip,
 
 }
 
+static void
+vmbus_enumerate(int reprogram)
+{
+	if (reprogram)
+		return;
+
+	dev_info_t *isa_dip = ddi_find_devinfo("isa", -1, 0);
+
+	/*
+	 * On Gen1 VMs, there will be a virtual PCI-ISA bridge. Since PCI
+	 * devices are explicitly enumerated first, by the time we're called
+	 * if there isn't an ISA device instance, we know we're a Gen2 VM
+	 * and can instantiate a pseudo ISA bus for any non VMBus devices
+	 * (e.g. display, serial ports).
+	 */
+	if (isa_dip != NULL)
+		return;
+
+	/*
+	 * _init() should prevent us from getting this far if we're not
+	 * running under Hyper-V.
+	 */
+	VERIFY(get_hwenv() == HW_MICROSOFT);
+
+	/* We should only ever be called once */
+	VERIFY3P(hv_fb_dip, ==, NULL);
+
+	hv_isgen2 = B_TRUE;
+
+	ndi_devi_alloc_sleep(ddi_root_node(), "isa", (pnode_t)DEVI_SID_NODEID,
+	    &isa_dip);
+	(void) ndi_prop_update_string(DDI_DEV_T_NONE, isa_dip, "device_type",
+	    "isa");
+	(void) ndi_prop_update_string(DDI_DEV_T_NONE, isa_dip, "bus-type",
+	    "isa");
+	(void) ndi_devi_bind_driver(isa_dip, 0);
+
+	/*
+	 * On Gen2 VMs, there is nothing in ACPI that will instantiate the
+	 * console. There is apparently a vmbus interface to the framebuffer,
+	 * however currently the driver is GPL only, so we cannot use it.
+	 * Instead we rely on the EFI console interfaces by creating a
+	 * display node.
+	 */
+	char *compat[] = { "pnpPNP,900" };
+	struct regspec reg = {
+		.regspec_bustype = 0,	/* MMIO */
+		.regspec_addr = fb_info.paddr,
+		.regspec_size = fb_info.fb_size,
+	};
+
+	ndi_devi_alloc_sleep(isa_dip, "display", (pnode_t)DEVI_SID_NODEID,
+	    &hv_fb_dip);
+	(void) ndi_prop_update_string(DDI_DEV_T_NONE, hv_fb_dip, "device_type",
+	    "display");
+	(void) ndi_prop_update_string_array(DDI_DEV_T_NONE, hv_fb_dip,
+	    "compatible", compat, ARRAY_SIZE(compat));
+	(void) ndi_prop_update_string(DDI_DEV_T_NONE, hv_fb_dip, "model",
+	    "Hyper-V EFI Virtual Frame Buffer");
+	(void) ndi_prop_update_int_array(DDI_DEV_T_NONE, hv_fb_dip, "reg",
+	    (int *)&reg, 3);
+	(void) ndi_devi_bind_driver(hv_fb_dip, 0);
+}
+
 static struct cb_ops vmbus_cb_ops = {
 	nulldev,	/* open */
 	nulldev,	/* close */
@@ -1465,7 +1543,11 @@ _init(void)
 		return (ENOTSUP);
 
 	int error = mod_install(&modlinkage);
-	return (error);
+	if (error != 0)
+		return (error);
+
+	impl_bus_add_probe(vmbus_enumerate);
+	return (0);
 }
 
 int
@@ -1477,6 +1559,8 @@ _info(struct modinfo *modinfop)
 int
 _fini(void)
 {
+	impl_bus_delete_probe(vmbus_enumerate);
+
 	int error = mod_remove(&modlinkage);
 	if (error == 0) {
 		ddi_soft_state_fini(vmbus_state);
