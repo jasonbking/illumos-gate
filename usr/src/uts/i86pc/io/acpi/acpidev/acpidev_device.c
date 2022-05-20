@@ -82,6 +82,16 @@ static acpidev_filter_rule_t acpidev_device_filters[] = {
 		ACPIDEV_OBJECT_NAME_SB,
 		ACPIDEV_NODE_NAME_MODULE_SBD,
 	},
+	{
+		NULL,
+		0,
+		ACPIDEV_FILTER_DEFAULT,
+		&acpidev_class_list_device,
+		2,
+		INT_MAX,
+		"VMBS",
+		"hv_vmbus",
+	},
 	{	/* Ignore other device objects under ACPI root object */
 		NULL,
 		0,
