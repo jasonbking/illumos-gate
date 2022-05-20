@@ -1220,7 +1220,7 @@ isa_enumerate(int reprogram)
 
 	cons = console_hypervisor_dev_type(&ttyn);
 #endif
-	if (reprogram)
+	if (reprogram || isa_dip == NULL)
 		return;
 
 	bzero(isa_extra_resource, MAX_EXTRA_RESOURCE * sizeof (struct regspec));
