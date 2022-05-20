@@ -47,6 +47,7 @@
 #include <sys/pci.h>
 #include <sys/framebuffer.h>
 #include <sys/boot_console.h>
+#include <sys/x86_archext.h>
 #if defined(__xpv)
 #include <sys/hypervisor.h>
 #endif
@@ -190,6 +191,23 @@ plat_devpath(char *name, char *path)
 	return (path);
 }
 
+static char *
+hyperv_kbdpath(char *buf)
+{
+	dev_info_t *isa_dip;
+
+	if (get_hwenv() != HW_MICROSOFT)
+		return (NULL);
+
+	if ((isa_dip = ddi_find_devinfo("isa", -1, 0)) == NULL)
+		return (NULL);
+
+	if (ddi_get_parent(isa_dip) != ddi_root_node())
+		return (NULL);
+
+	return (plat_devpath("hv_kbd", buf));
+}
+
 /*
  * Return generic path to keyboard device from the alias.
  */
@@ -204,6 +222,9 @@ plat_kbdpath(void)
 	 */
 	if (pseudo_isa)
 		return ("/isa/i8042@1,60/keyboard@0");
+
+	if (hyperv_kbdpath(kbpath) != NULL)
+		return (kbpath);
 
 	if (plat_devpath("kb8042", kbpath) == NULL)
 		return (NULL);

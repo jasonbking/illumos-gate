@@ -242,6 +242,10 @@ $(OBJS_DIR)/%.o:		$(UTSBASE)/intel/io/hyperv/storvsc/%.c
 	$(COMPILE.c) -o $@ $<
 	$(CTFCONVERT_O)
 
+$(OBJS_DIR)/%.o:		$(UTSBASE)/intel/io/hyperv/kbd/%.c
+	$(COMPILE.c) -o $@ $<
+	$(CTFCONVERT_O)
+
 $(OBJS_DIR)/%.o:		$(UTSBASE)/intel/io/hyperv/netvsc/%.c
 	$(COMPILE.c) -o $@ $<
 	$(CTFCONVERT_O)

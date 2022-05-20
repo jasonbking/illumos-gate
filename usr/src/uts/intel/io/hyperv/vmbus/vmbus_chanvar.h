@@ -193,5 +193,6 @@ void		vmbus_event_proc_compat(struct vmbus_softc *, int);
 void		vmbus_chan_msgproc(struct vmbus_softc *,
 		    const struct vmbus_message *);
 void		vmbus_chan_destroy_all(struct vmbus_softc *);
+void		vmbus_chan_detach(struct vmbus_channel *chan);
 
 #endif	/* !_VMBUS_CHANVAR_H_ */

@@ -75,7 +75,6 @@ static void			vmbus_chan_cpu_default(struct vmbus_channel *);
 static int			vmbus_chan_release(struct vmbus_channel *);
 static void			vmbus_chan_set_chmap(struct vmbus_channel *);
 static void			vmbus_chan_clear_chmap(struct vmbus_channel *);
-static void			vmbus_chan_detach(struct vmbus_channel *);
 static boolean_t		vmbus_chan_wait_revoke(
 				    const struct vmbus_channel *, boolean_t);
 
@@ -95,9 +94,7 @@ static void			vmbus_chan_rem_sublist(struct vmbus_channel *,
 static void			vmbus_chan_task(void *);
 static void			vmbus_chan_task_nobatch(void *);
 static void			vmbus_chan_clrchmap_task(void *);
-static void			vmbus_prichan_attach_task(void *);
 static void			vmbus_subchan_attach_task(void *);
-static void			vmbus_prichan_detach_task(void *);
 static void			vmbus_subchan_detach_task(void *);
 
 static void			vmbus_chan_msgproc_choffer(struct vmbus_softc *,
@@ -106,9 +103,11 @@ static void			vmbus_chan_msgproc_chrescind(
 				    struct vmbus_softc *,
 				    const struct vmbus_message *);
 
+#define	VMBUS_CHAN_DEV(chan) \
+	((chan)->ch_dev == NULL ? (chan)->ch_vmbus->vmbus_dev : (chan)->ch_dev)
+
 #define	vmbus_chan_printf(chan, fmt...) \
-	dev_err(chan->ch_dev == NULL ? \
-	    chan->ch_vmbus->vmbus_dev : chan->ch_dev, CE_WARN, fmt)
+	dev_err(VMBUS_CHAN_DEV(chan), CE_WARN, fmt)
 
 /*
  * Vmbus channel message processing.
@@ -152,11 +151,12 @@ vmbus_chan_signal_tx(const struct vmbus_channel *chan)
 static void
 vmbus_chan_ins_prilist(struct vmbus_softc *sc, struct vmbus_channel *chan)
 {
-
 	ASSERT(MUTEX_HELD(&sc->vmbus_prichan_lock));
+
 	if (test_and_set_bit(&chan->ch_stflags,
 	    VMBUS_CHAN_ST_ONPRIL_SHIFT) == -1) {
-		panic("channel %u is already on the prilist", chan->ch_id);
+		dev_err(VMBUS_CHAN_DEV(chan), CE_PANIC,
+		    "channel %u is alredy on the prilist", chan->ch_id);
 	}
 	TAILQ_INSERT_TAIL(&sc->vmbus_prichans, chan, ch_prilink);
 }
@@ -168,7 +168,8 @@ vmbus_chan_rem_prilist(struct vmbus_softc *sc, struct vmbus_channel *chan)
 	ASSERT(MUTEX_HELD(&sc->vmbus_prichan_lock));
 	if (test_and_clear_bit(&chan->ch_stflags,
 	    VMBUS_CHAN_ST_ONPRIL_SHIFT) == -1) {
-		panic("channel %u is not on the prilist", chan->ch_id);
+		dev_err(VMBUS_CHAN_DEV(chan), CE_PANIC,
+		    "channel %u is not on the prilist", chan->ch_id);
 	}
 	TAILQ_REMOVE(&sc->vmbus_prichans, chan, ch_prilink);
 }
@@ -182,8 +183,9 @@ vmbus_chan_ins_sublist(struct vmbus_channel *prichan,
 
 	if (test_and_set_bit(&chan->ch_stflags,
 	    VMBUS_CHAN_ST_ONSUBL_SHIFT) == -1) {
-		panic("channel %u is already on the sublist %u",
-		    prichan->ch_id, chan->ch_id);
+		dev_err(VMBUS_CHAN_DEV(chan), CE_PANIC,
+		    "channel %u is already on sublist %u", prichan->ch_id,
+		    chan->ch_id);
 	}
 	TAILQ_INSERT_TAIL(&prichan->ch_subchans, chan, ch_sublink);
 
@@ -203,7 +205,8 @@ vmbus_chan_rem_sublist(struct vmbus_channel *prichan,
 
 	if (test_and_clear_bit(&chan->ch_stflags,
 	    VMBUS_CHAN_ST_ONSUBL_SHIFT) == -1) {
-		panic("channel: %u is not on the sublist", chan->ch_id);
+		dev_err(VMBUS_CHAN_DEV(chan), CE_PANIC,
+		    "channel %u is not on the sublist", chan->ch_id);
 	}
 	TAILQ_REMOVE(&prichan->ch_subchans, chan, ch_sublink);
 }
@@ -215,7 +218,8 @@ vmbus_chan_ins_list(struct vmbus_softc *sc, struct vmbus_channel *chan)
 	ASSERT(MUTEX_HELD(&sc->vmbus_chan_lock));
 	if (test_and_set_bit(&chan->ch_stflags,
 	    VMBUS_CHAN_ST_ONLIST_SHIFT) == -1) {
-		panic("channel %u is already on the list", chan->ch_id);
+		dev_err(VMBUS_CHAN_DEV(chan), CE_PANIC,
+		    "channel %u is already on the list", chan->ch_id);
 	}
 	TAILQ_INSERT_TAIL(&sc->vmbus_chans, chan, ch_link);
 }
@@ -227,7 +231,8 @@ vmbus_chan_rem_list(struct vmbus_softc *sc, struct vmbus_channel *chan)
 	ASSERT(MUTEX_HELD(&sc->vmbus_chan_lock));
 	if (test_and_clear_bit(&chan->ch_stflags,
 	    VMBUS_CHAN_ST_ONLIST_SHIFT) == -1) {
-		panic("channel %u is not on the list", chan->ch_id);
+		dev_err(VMBUS_CHAN_DEV(chan), CE_PANIC,
+		    "channel %u is not on the list", chan->ch_id);
 	}
 	TAILQ_REMOVE(&sc->vmbus_chans, chan, ch_link);
 }
@@ -243,7 +248,7 @@ vmbus_chan_open(struct vmbus_channel *chan, int txbr_size, int rxbr_size,
 	 * Allocate the TX+RX bufrings.
 	 */
 	if (chan->ch_bufring != NULL)
-		dev_err(chan->ch_dev, CE_WARN, "bufrings are allocated");
+		vmbus_chan_printf(chan, "bufrings are allocated");
 	ASSERT(chan->ch_bufring == NULL);
 	chan->ch_bufring = hyperv_dmamem_alloc(chan->ch_dev,
 	    PAGE_SIZE, 0, txbr_size + rxbr_size, &chan->ch_bufring_dma,
@@ -311,7 +316,8 @@ vmbus_chan_open_br(struct vmbus_channel *chan, const struct vmbus_chan_br *cbr,
 
 	if (test_and_set_bit(&chan->ch_stflags,
 	    VMBUS_CHAN_ST_OPENED_SHIFT) == -1) {
-		panic("double-open chan %u", chan->ch_id);
+		dev_err(VMBUS_CHAN_DEV(chan), CE_PANIC, "double open chan%u",
+		    chan->ch_id);
 	}
 
 	chan->ch_cb = cb;
@@ -426,8 +432,8 @@ vmbus_chan_open_br(struct vmbus_channel *chan, const struct vmbus_chan_br *cbr,
 	vmbus_msghc_put(sc, mh);
 
 	if (status == 0) {
-		if (boothowto & RB_VERBOSE)
-			vmbus_chan_printf(chan, "chan%u opened", chan->ch_id);
+		dev_err(VMBUS_CHAN_DEV(chan), CE_CONT, "?chan%u opened\n",
+		    chan->ch_id);
 		return (0);
 	}
 
@@ -579,9 +585,10 @@ vmbus_chan_gpadl_connect(struct vmbus_channel *chan, paddr_t paddr,
 
 	/* Done; commit the GPADL id. */
 	*gpadl0 = gpadl;
-	if (boothowto & RB_VERBOSE)
-		vmbus_chan_printf(chan, "gpadl_conn(chan%u) succeeded",
-		    chan->ch_id);
+	if (boothowto & RB_VERBOSE) {
+		dev_err(VMBUS_CHAN_DEV(chan), CE_CONT,
+		    "gpadl_conn(chan%u) succeeded\n", chan->ch_id);
+	}
 	return (0);
 }
 
@@ -658,7 +665,7 @@ vmbus_chan_gpadl_disconnect(struct vmbus_channel *chan, uint32_t gpadl)
 	return (0);
 }
 
-static void
+void
 vmbus_chan_detach(struct vmbus_channel *chan)
 {
 	uint32_t refs;
@@ -672,12 +679,16 @@ vmbus_chan_detach(struct vmbus_channel *chan)
 		/*
 		 * Detach the target channel.
 		 */
-		if (boothowto & RB_VERBOSE) {
-			vmbus_chan_printf(chan, "chan%u detached",
-			    chan->ch_id);
+
+		VMBUS_DEBUG(chan->ch_vmbus, "?chan%u detached\n",
+		    chan->ch_id);
+		if (VMBUS_CHAN_ISPRIMARY(chan)) {
+			(void) vmbus_chan_release(chan);
+			(void) vmbus_chan_free(chan);
+		} else {
+			(void) ddi_taskq_dispatch(chan->ch_mgmt_tq,
+			    chan->ch_detach_task, chan, DDI_SLEEP);
 		}
-		(void) ddi_taskq_dispatch(chan->ch_mgmt_tq,
-		    chan->ch_detach_task, chan, DDI_SLEEP);
 	}
 }
 
@@ -724,10 +735,7 @@ vmbus_chan_close_internal(struct vmbus_channel *chan)
 	}
 	if ((old_stflags & VMBUS_CHAN_ST_OPENED) == 0) {
 		/* Not opened yet; done */
-		if (boothowto & RB_VERBOSE) {
-			vmbus_chan_printf(chan, "chan%u not opened",
-			    chan->ch_id);
-		}
+		VMBUS_DEBUG(sc, "?chan%u not opened\n", chan->ch_id);
 		return (0);
 	}
 
@@ -767,8 +775,7 @@ vmbus_chan_close_internal(struct vmbus_channel *chan)
 		goto disconnect;
 	}
 
-	if (boothowto & RB_VERBOSE)
-		vmbus_chan_printf(chan, "chan%u closed", chan->ch_id);
+	VMBUS_DEBUG(sc, "?chan%u closed\n", chan->ch_id);
 
 disconnect:
 	/*
@@ -1209,11 +1216,9 @@ vmbus_chan_update_evtflagcnt(struct vmbus_softc *sc,
 		if (old_flag_cnt >= flag_cnt)
 			break;
 		if (atomic_cmpset_int(flag_cnt_ptr, old_flag_cnt, flag_cnt)) {
-			if (boothowto & RB_VERBOSE) {
-				vmbus_chan_printf(chan,
-				    "chan%u update cpu%d flag_cnt to %d",
-				    chan->ch_id, chan->ch_cpuid, flag_cnt);
-			}
+			dev_err(VMBUS_CHAN_DEV(chan), CE_CONT,
+			    "?chan%u update cpu%d flag_cnt to %d\n",
+			    chan->ch_id, chan->ch_cpuid, flag_cnt);
 			break;
 		}
 	}
@@ -1369,10 +1374,13 @@ done:
 	vmbus_chan_ins_list(sc, newchan);
 	mutex_exit(&sc->vmbus_chan_lock);
 
-	if (boothowto & RB_VERBOSE) {
-		vmbus_chan_printf(newchan, "chan%u subidx%u offer",
-		    newchan->ch_id, newchan->ch_subidx);
-	}
+#ifdef	DEBUG
+	char inst[HYPERV_GUID_STRLEN];
+
+	(void) hyperv_guid2str(&newchan->ch_guid_inst, inst, sizeof (inst));
+	VMBUS_DEBUG(sc, "?inst %s chan%u subidx%u offer\n", inst,
+	    newchan->ch_id, newchan->ch_subidx);
+#endif
 
 	/* Select default cpu for this channel. */
 	vmbus_chan_cpu_default(newchan);
@@ -1384,7 +1392,7 @@ void
 vmbus_chan_cpu_set(struct vmbus_channel *chan, int cpu)
 {
 	struct vmbus_softc *sc = chan->ch_vmbus;
-	/* ASSERT(cpu >= 0 && cpu < mp_ncpus);  ("invalid cpu %d", cpu)); */
+
 	ASSERT(cpu >= 0 && cpu < ncpus);
 
 	if (sc->vmbus_version == VMBUS_VERSION_WS2008 ||
@@ -1396,11 +1404,9 @@ vmbus_chan_cpu_set(struct vmbus_channel *chan, int cpu)
 	chan->ch_cpuid = cpu;
 	chan->ch_vcpuid = VMBUS_PCPU_GET(sc, vcpuid, cpu);
 
-	if (boothowto & RB_VERBOSE) {
-		vmbus_chan_printf(chan,
-		    "chan%u: assigned to cpu%u [vcpu%u]",
-		    chan->ch_id, chan->ch_cpuid, chan->ch_vcpuid);
-	}
+	dev_err(VMBUS_CHAN_DEV(chan), CE_CONT,
+	    "?chan%u assigned to cpu%u [vcpu%u]\n", chan->ch_id, chan->ch_cpuid,
+	    chan->ch_vcpuid);
 }
 
 void
@@ -1465,8 +1471,10 @@ vmbus_chan_msgproc_choffer(struct vmbus_softc *sc,
 		chan->ch_txflags |= VMBUS_CHAN_TXF_HASMNF;
 
 		trig_idx = offer->chm_montrig / VMBUS_MONTRIG_LEN;
-		if (trig_idx >= VMBUS_MONTRIGS_MAX)
-			panic("invalid monitor trigger %u", offer->chm_montrig);
+		if (trig_idx >= VMBUS_MONTRIGS_MAX) {
+			dev_err(sc->vmbus_dev, CE_PANIC,
+			    "invalid monitor trigger %u", offer->chm_montrig);
+		}
 		chan->ch_montrig =
 		    &sc->vmbus_mnf2->mnf_trigs[trig_idx].mt_pending;
 
@@ -1484,17 +1492,13 @@ vmbus_chan_msgproc_choffer(struct vmbus_softc *sc,
 	/*
 	 * Setup attach and detach tasks.
 	 */
-	if (VMBUS_CHAN_ISPRIMARY(chan)) {
-		chan->ch_mgmt_tq = sc->vmbus_devtq;
-		attach_fn = vmbus_prichan_attach_task;
-		detach_fn = vmbus_prichan_detach_task;
-	} else {
+	if (!VMBUS_CHAN_ISPRIMARY(chan)) {
 		chan->ch_mgmt_tq = sc->vmbus_subchtq;
 		attach_fn = vmbus_subchan_attach_task;
 		detach_fn = vmbus_subchan_detach_task;
+		chan->ch_attach_task = attach_fn;
+		chan->ch_detach_task = detach_fn;
 	}
-	chan->ch_attach_task = attach_fn;
-	chan->ch_detach_task = detach_fn;
 
 	error = vmbus_chan_add(chan);
 	if (error) {
@@ -1504,8 +1508,11 @@ vmbus_chan_msgproc_choffer(struct vmbus_softc *sc,
 		vmbus_chan_free(chan);
 		return;
 	}
-	(void) ddi_taskq_dispatch(chan->ch_mgmt_tq, chan->ch_attach_task,
-	    chan, DDI_SLEEP);
+
+	if (!VMBUS_CHAN_ISPRIMARY(chan)) {
+		(void) ddi_taskq_dispatch(chan->ch_mgmt_tq, chan->ch_attach_task,
+		    chan, DDI_SLEEP);
+	}
 }
 
 static void
@@ -1559,16 +1566,17 @@ vmbus_chan_msgproc_chrescind(struct vmbus_softc *sc,
 	 */
 
 	if (test_and_set_bit(&chan->ch_stflags,
-	    VMBUS_CHAN_ST_REVOKED_SHIFT) == -1)
-		panic("channel has already been revoked");
+	    VMBUS_CHAN_ST_REVOKED_SHIFT) == -1) {
+		dev_err(sc->vmbus_dev, CE_PANIC,
+		    "channel has already been revoked");
+	}
 
 	mutex_enter(&chan->ch_orphan_lock);
 	if (chan->ch_orphan_xact != NULL)
 		(void) vmbus_xact_ctx_orphan(chan->ch_orphan_xact);
 	mutex_exit(&chan->ch_orphan_lock);
 
-	if (boothowto & RB_VERBOSE)
-		vmbus_chan_printf(chan, "chan%u rescinded", note->chm_chanid);
+	vmbus_chan_printf(chan, "?chan%u rescinded", note->chm_chanid);
 
 	vmbus_chan_detach(chan);
 }
@@ -1601,28 +1609,9 @@ vmbus_chan_release(struct vmbus_channel *chan)
 		    "chfree(chan%u) msg hypercall exec failed: %d",
 		    chan->ch_id, error);
 	} else {
-		if (boothowto & RB_VERBOSE)
-			vmbus_chan_printf(chan, "chan%u freed", chan->ch_id);
+		VMBUS_DEBUG(sc, "?chan%u freed", chan->ch_id);
 	}
 	return (error);
-}
-
-static void
-vmbus_prichan_detach_task(void *xchan)
-{
-	struct vmbus_channel *chan = xchan;
-
-	ASSERT(VMBUS_CHAN_ISPRIMARY(chan));
-	    /* ("chan%u is not primary channel", chan->ch_id); */
-
-	/* Delete and detach the device associated with this channel. */
-	(void) vmbus_delete_child(chan);
-
-	/* Release this channel (back to vmbus). */
-	(void) vmbus_chan_release(chan);
-
-	/* Free this channel's resource. */
-	vmbus_chan_free(chan);
 }
 
 static void
@@ -1646,16 +1635,6 @@ vmbus_subchan_detach_task(void *xchan)
 
 	/* Free this channel's resource. */
 	vmbus_chan_free(chan);
-}
-
-static void
-vmbus_prichan_attach_task(void *xchan)
-{
-
-	/*
-	 * Add device for this primary channel.
-	 */
-	(void) vmbus_add_child(xchan);
 }
 
 /* ARGSUSED */
@@ -1691,6 +1670,7 @@ vmbus_chan_destroy_all(struct vmbus_softc *sc)
 		mutex_enter(&sc->vmbus_prichan_lock);
 		vmbus_chan_rem_prilist(sc, chan);
 		mutex_exit(&sc->vmbus_prichan_lock);
+
 
 		(void) ddi_taskq_dispatch(chan->ch_mgmt_tq,
 		    chan->ch_detach_task, chan, DDI_SLEEP);
