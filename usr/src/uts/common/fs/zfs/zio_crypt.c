@@ -15,7 +15,7 @@
 
 /*
  * Copyright (c) 2017, Datto, Inc. All rights reserved.
- * Copyright 2021 Jason King
+ * Copyright 2022 Jason King
  */
 
 #include <sys/zio_crypt.h>
@@ -1136,15 +1136,30 @@ int
 zio_crypt_do_objset_hmacs(zio_crypt_key_t *key, void *data, uint_t datalen,
     boolean_t should_bswap, uint8_t *portable_mac, uint8_t *local_mac)
 {
+	objset_phys_t *osp = data;
+	int ret;
+
+	ret = zio_crypt_do_objset_portable_hmac(key, osp, should_bswap,
+	    portable_mac);
+	if (ret != 0) {
+		return (ret);
+	}
+
+	return (zio_crypt_do_objset_local_hmac(key, osp, datalen, should_bswap,
+	    local_mac, OBJSET_COMPAT_HASH(osp) ? B_TRUE : B_FALSE));
+}
+
+int
+zio_crypt_do_objset_portable_hmac(zio_crypt_key_t *key, objset_phys_t *osp,
+    boolean_t should_bswap, uint8_t *portable_mac)
+{
 	int ret;
 	crypto_mechanism_t mech;
 	crypto_context_t ctx;
 	crypto_data_t cd;
-	objset_phys_t *osp = data;
 	uint64_t intval;
 	boolean_t le_bswap = (should_bswap == ZFS_HOST_BYTEORDER);
 	uint8_t raw_portable_mac[SHA512_DIGEST_LENGTH];
-	uint8_t raw_local_mac[SHA512_DIGEST_LENGTH];
 
 	/* initialize HMAC mechanism */
 	mech.cm_type = crypto_mech2id(SUN_CKM_SHA512_HMAC);
@@ -1210,102 +1225,22 @@ zio_crypt_do_objset_hmacs(zio_crypt_key_t *key, void *data, uint_t datalen,
 	}
 
 	bcopy(raw_portable_mac, portable_mac, ZIO_OBJSET_MAC_LEN);
-
-	/*
-	 * The local MAC protects the user, group and project accounting.
-	 * If these objects are not present, the local MAC is zeroed out.
-	 */
-	if ((datalen >= OBJSET_PHYS_SIZE_V3 &&
-	    osp->os_userused_dnode.dn_type == DMU_OT_NONE &&
-	    osp->os_groupused_dnode.dn_type == DMU_OT_NONE &&
-	    osp->os_projectused_dnode.dn_type == DMU_OT_NONE) ||
-	    (datalen >= OBJSET_PHYS_SIZE_V2 &&
-	    osp->os_userused_dnode.dn_type == DMU_OT_NONE &&
-	    osp->os_groupused_dnode.dn_type == DMU_OT_NONE) ||
-	    (datalen <= OBJSET_PHYS_SIZE_V1)) {
-		bzero(local_mac, ZIO_OBJSET_MAC_LEN);
-		return (0);
-	}
-
-	/* calculate the local MAC from the userused and groupused dnodes */
-	ret = crypto_mac_init(&mech, &key->zk_hmac_key, NULL, &ctx, NULL);
-	if (ret != CRYPTO_SUCCESS) {
-		ret = SET_ERROR(EIO);
-		goto error;
-	}
-
-	/* add in the non-portable os_flags */
-	intval = osp->os_flags;
-	if (should_bswap)
-		intval = BSWAP_64(intval);
-	intval &= ~OBJSET_CRYPT_PORTABLE_FLAGS_MASK;
-	/* CONSTCOND */
-	if (!ZFS_HOST_BYTEORDER)
-		intval = BSWAP_64(intval);
-
-	cd.cd_length = sizeof (uint64_t);
-	cd.cd_raw.iov_base = (char *)&intval;
-	cd.cd_raw.iov_len = cd.cd_length;
-
-	ret = crypto_mac_update(ctx, &cd, NULL);
-	if (ret != CRYPTO_SUCCESS) {
-		ret = SET_ERROR(EIO);
-		goto error;
-	}
-
-	/* add in fields from the user accounting dnodes */
-	if (osp->os_userused_dnode.dn_type != DMU_OT_NONE) {
-		ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
-		    should_bswap, &osp->os_userused_dnode);
-		if (ret)
-			goto error;
-	}
-
-	if (osp->os_groupused_dnode.dn_type != DMU_OT_NONE) {
-		ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
-		    should_bswap, &osp->os_groupused_dnode);
-		if (ret)
-			goto error;
-	}
-
-	if (osp->os_projectused_dnode.dn_type != DMU_OT_NONE &&
-	    datalen >= OBJSET_PHYS_SIZE_V3) {
-		ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
-		    should_bswap, &osp->os_projectused_dnode);
-		if (ret)
-			goto error;
-	}
-
-	/* store the final digest in a temporary buffer and copy what we need */
-	cd.cd_length = SHA512_DIGEST_LENGTH;
-	cd.cd_raw.iov_base = (char *)raw_local_mac;
-	cd.cd_raw.iov_len = cd.cd_length;
-
-	ret = crypto_mac_final(ctx, &cd, NULL);
-	if (ret != CRYPTO_SUCCESS) {
-		ret = SET_ERROR(EIO);
-		goto error;
-	}
-
-	bcopy(raw_local_mac, local_mac, ZIO_OBJSET_MAC_LEN);
-
 	return (0);
 
 error:
 	bzero(portable_mac, ZIO_OBJSET_MAC_LEN);
-	bzero(local_mac, ZIO_OBJSET_MAC_LEN);
 	return (ret);
 }
 
 int
-zio_crypt_do_objset_compat_hmacs(zio_crypt_key_t *key, void *data,
-    uint_t datalen, boolean_t should_bswap, uint8_t *local_mac)
+zio_crypt_do_objset_local_hmac(zio_crypt_key_t *key, objset_phys_t *osp,
+    uint_t datalen, boolean_t should_bswap, uint8_t *local_mac,
+    boolean_t compat)
 {
 	int ret;
 	crypto_mechanism_t mech;
 	crypto_context_t ctx;
 	crypto_data_t cd;
-	objset_phys_t *osp = data;
 	uint64_t intval;
 	boolean_t le_bswap = (should_bswap == ZFS_HOST_BYTEORDER);
 	uint8_t raw_local_mac[SHA512_DIGEST_LENGTH];
@@ -1369,6 +1304,14 @@ zio_crypt_do_objset_compat_hmacs(zio_crypt_key_t *key, void *data,
 			goto error;
 	}
 
+	if (!compat && osp->os_projectused_dnode.dn_type != DMU_OT_NONE &&
+	    datalen >= OBJSET_PHYS_SIZE_V3) {
+		ret = zio_crypt_do_dnode_hmac_updates(ctx, key->zk_version,
+		    should_bswap, &osp->os_projectused_dnode);
+		if (ret)
+			goto error;
+	}
+
 	cd.cd_length = SHA512_DIGEST_LENGTH;
 	cd.cd_raw.iov_base = (char *)raw_local_mac;
 	cd.cd_raw.iov_len = cd.cd_length;
@@ -1380,7 +1323,6 @@ zio_crypt_do_objset_compat_hmacs(zio_crypt_key_t *key, void *data,
 	}
 
 	bcopy(raw_local_mac, local_mac, ZIO_OBJSET_MAC_LEN);
-
 	return (0);
 
 error:

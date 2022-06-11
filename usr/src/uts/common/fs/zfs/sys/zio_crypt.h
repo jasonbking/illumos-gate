@@ -15,7 +15,7 @@
 
 /*
  * Copyright (c) 2017, Datto, Inc. All rights reserved.
- * Copyright 2021 Jason King
+ * Copyright 2022 Jason King
  */
 
 #ifndef	_SYS_ZIO_CRYPT_H
@@ -34,6 +34,7 @@ extern "C" {
 
 /* forward declarations */
 struct zbookmark_phys;
+struct objset_phys;
 
 #define	WRAPPING_KEY_LEN	32
 #define	WRAPPING_IV_LEN		ZIO_DATA_IV_LEN
@@ -137,8 +138,11 @@ int zio_crypt_do_hmac(zio_crypt_key_t *key, uint8_t *data, uint_t datalen,
     uint8_t *digestbuf, uint_t digestlen);
 int zio_crypt_do_objset_hmacs(zio_crypt_key_t *key, void *data, uint_t datalen,
     boolean_t byteswap, uint8_t *portable_mac, uint8_t *local_mac);
-int zio_crypt_do_objset_compat_hmacs(zio_crypt_key_t *key, void *data,
-    uint_t datalen, boolean_t byteswap, uint8_t *local_mac);
+int zio_crypt_do_objset_portable_hmac(zio_crypt_key_t *key,
+    struct objset_phys *osp, boolean_t byteswap, uint8_t *local_mac);
+int zio_crypt_do_objset_local_hmac(zio_crypt_key_t *key,
+    struct objset_phys *osp, uint_t datalen, boolean_t byteswap,
+    uint8_t *local_mac, boolean_t compat);
 int zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key,
     dmu_object_type_t ot, boolean_t byteswap, uint8_t *salt, uint8_t *iv,
     uint8_t *mac, uint_t datalen, uint8_t *plainbuf, uint8_t *cipherbuf,

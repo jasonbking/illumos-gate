@@ -16,7 +16,7 @@
 /*
  * Copyright (c) 2017, Datto, Inc. All rights reserved.
  * Copyright (c) 2018 by Delphix. All rights reserved.
- * Copyright 2021 Jason King
+ * Copyright 2022 Jason King
  */
 
 #include <sys/dsl_crypt.h>
@@ -2711,18 +2711,13 @@ spa_gen_crypt_objset_mac_buf(zio_crypt_key_t *key, void *buf, uint_t datalen,
 	uint8_t local_mac[ZIO_OBJSET_MAC_LEN];
 	int ret;
 
-	ret = zio_crypt_do_objset_port_hmac(key, buf, datalen, byteswap,
+	ret = zio_crypt_do_objset_portable_hmac(key, osp, byteswap,
 	    portable_mac);
 	if (ret != 0)
 		return (ret);
 
-	if (!OBJSET_ALLOW_COMPAT_HASH(osp)) {
-		ret = zio_crypt_do_objset_local_hmac(key, buf, datalen,
-		    byteswap, local_mac);
-	} else {
-		ret = zio_crypt_do_objset_compat_hmac(key, buf, datalen,
-		    byteswap, local_mac);
-	}
+	ret = zio_crypt_do_objset_local_hmac(key, osp, datalen, byteswap,
+	    local_mac, OBJSET_COMPAT_HASH(osp) ? B_TRUE : B_FALSE);
 	if (ret != 0)
 		return (ret);
 
@@ -2732,38 +2727,29 @@ spa_gen_crypt_objset_mac_buf(zio_crypt_key_t *key, void *buf, uint_t datalen,
 }
 
 static int
-spa_verify_crypt_objset_mac_buf(spa_t *spa, zio_crypt_key *key, void *buf,
-    uint_t datalen, boolean_t byteswap, boolean_t spa_has_hash_errata)
+spa_verify_crypt_objset_mac_buf(spa_t *spa, zio_crypt_key_t *key, void *buf,
+    uint_t datalen, boolean_t byteswap)
 {
 	objset_phys_t *osp = buf;
 	uint8_t portable_mac[ZIO_OBJSET_MAC_LEN];
 	uint8_t local_mac[ZIO_OBJSET_MAC_LEN];
 	int ret;
 
-	ret = zio_crypt_do_objset_port_hmac(key, buf, datalen, byteswap,
+	ret = zio_crypt_do_objset_portable_hmac(key, osp, byteswap,
 	    portable_mac);
 	if (ret != 0) {
 		return (ret);
 	}
 
-	if (!OBJSET_ALLOW_COMPAT_HASH(osp) || !spa_has_hash_errata) {
-		ret = zio_crypt_do_objset_local_hmac(key, buf, datalen,
-		    byteswap, local_mac);
-	} else {
-		ret = zio_crypt_do_objset_compat_hmac(key, buf, datalen,
-		    byteswap, local_mac);
-	}
+	ret = zio_crypt_do_objset_local_hmac(key, osp, datalen, byteswap,
+	    local_mac, OBJSET_COMPAT_HASH(osp) ? B_TRUE : B_FALSE);
+
 	if (ret != 0) {
 		return (ret);
 	}
 
 	boolean_t port_ok, local_ok;
 
-	/*
-	 * For the common case of no errata compatability, we attempt to do
-	 * the MAC verification in roughtly constant time (i.e. don't short
-	 * circuit).
-	 */
 	if (bcmp(portable_mac, osp->os_portable_mac, ZIO_OBJSET_MAC_LEN) == 0) {
 		port_ok = B_TRUE;
 	} else {
@@ -2778,23 +2764,49 @@ spa_verify_crypt_objset_mac_buf(spa_t *spa, zio_crypt_key *key, void *buf,
 
 	if (port_ok && local_ok) {
 		return (0);
-	}
-
-	if (port_ok && !OBJSET_ALLOW_COMPAT_HASH(osp)) {
-		return (SET_ERROR(ECKSUM));
-	}
-
-	if (spa_has_hash_errata) {
-		ret = zio_crypt_do_objset_local_hmac(key, buf, datalen,
-		    byteswap, local_mac);
 	} else {
-		ret = zio_crypt_do_objset_compat_hmac(key, buf, datalen,
-		    byteswap, local_mac);
-	}
-	if (bcmp(local_mac, osp->os_local_mac, ZIO_OBJSET_MAC_LEN) != 0)
 		return (SET_ERROR(ECKSUM));
+	}
+}
 
-	spa->spa_errata = ZPOOL_ERRATA_ILLUMOS_13795_ENCRYPTION;
+static int
+spa_probe_objset_mac(spa_t *spa, zio_crypt_key_t *key, void *buf,
+    uint_t datalen, boolean_t byteswap, boolean_t *updatedp)
+{
+	objset_phys_t *osp = buf;
+	uint8_t compat_mac[ZIO_OBJSET_MAC_LEN];
+	uint8_t local_mac[ZIO_OBJSET_MAC_LEN];
+	int ret;
+
+	/* The hash used is known, no need to check again */
+	if ((osp->os_flags & OBJSET_FLAG_HAS_UGP_FLAG) != 0) {
+		*updatedp = B_FALSE;
+		return (0);
+	}
+
+	ret = zio_crypt_do_objset_local_hmac(key, osp, datalen, byteswap,
+	    compat_mac, B_TRUE);
+	if (ret != 0) {
+		return (ret);
+	}
+
+	ret = zio_crypt_do_objset_local_hmac(key, osp, datalen, byteswap,
+	    local_mac, B_FALSE);
+	if (ret != 0) {
+		return (ret);
+	}
+
+	if (bcmp(local_mac, osp->os_local_mac, ZIO_OBJSET_MAC_LEN) == 0) {
+		osp->os_flags |= OBJSET_FLAG_UGP_HASH;
+	} else if (bcmp(compat_mac, osp->os_local_mac,
+	    ZIO_OBJSET_MAC_LEN) == 0) {
+		osp->os_flags &= ~OBJSET_FLAG_UGP_HASH;
+	} else {
+		return (SET_ERROR(ECKSUM));
+	}
+
+	osp->os_flags |= OBJSET_FLAG_HAS_UGP_FLAG;
+	*updatedp = B_TRUE;
 	return (0);
 }
 
@@ -2805,6 +2817,7 @@ spa_do_crypt_objset_mac_abd(boolean_t generate, spa_t *spa, uint64_t dsobj,
 	dsl_crypto_key_t *dck = NULL;
 	void *buf = abd_borrow_buf_copy(abd, datalen);
 	int ret;
+	boolean_t updated = B_FALSE;
 
 	/* look up the key from the spa's keystore */
 	ret = spa_keystore_lookup_key(spa, dsobj, FTAG, &dck);
@@ -2816,13 +2829,20 @@ spa_do_crypt_objset_mac_abd(boolean_t generate, spa_t *spa, uint64_t dsobj,
 		ret = spa_gen_crypt_objset_mac_buf(&dck->dck_key, buf, datalen,
 		    byteswap);
 	} else {
+		ret = spa_probe_objset_mac(spa, &dck->dck_key, buf, datalen,
+		    byteswap, &updated);
+		if (ret != 0) {
+			abd_return_buf(abd, buf, datalen);
+			return (ret);
+		}
+
 		ret = spa_verify_crypt_objset_mac_buf(spa, &dck->dck_key, buf,
 		    datalen, byteswap);
 	}
 
 	spa_keystore_dsl_key_rele(spa, dck, FTAG);
 
-	if (generate && ret == 0) {
+	if (generate && ret == 0 || updated) {
 		/* if we generated a MAC, return the buf as modified */
 		abd_return_buf_copy(abd, buf, datalen);
 	} else {
