@@ -24,7 +24,7 @@
  * Copyright (c) 2013 by Saso Kiselkov. All rights reserved.
  * Copyright (c) 2014 Spectra Logic Corporation, All rights reserved.
  * Copyright (c) 2014 Integros [integros.com]
- * Copyright 2021 Jason King
+ * Copyright 2022 Jason King
  */
 
 /* Portions Copyright 2010 Robert Milkowski */
@@ -64,19 +64,38 @@ struct dmu_tx;
 #define	OBJSET_FLAG_USERACCOUNTING_COMPLETE	(1ULL << 0)
 #define	OBJSET_FLAG_USEROBJACCOUNTING_COMPLETE	(1ULL << 1)
 #define	OBJSET_FLAG_PROJECTQUOTA_COMPLETE	(1ULL << 2)
-#define	OBJSET_FLAG_UGP_HASH			(1ULL << 3)
+#define	OBJSET_FLAG_HAS_UGP_FLAG		(1ULL << 3)
+#define	OBJSET_FLAG_UGP_HASH			(1ULL << 4)
+
+/*
+ * illumos and macOS both did not hash the project dnode in the objset hash due
+ * to a missed on-disk format bug prior to releasing encryption support.
+ *
+ * To allow for interoperability, two flags are used to indicate how the
+ * objset hash should be treated. If OBJSET_FLAG_HAS_UGP_FLAG is set, then
+ * OBJSET_FAG_UGP_HASH indicates if the project dnode should be included or
+ * not in the objset hash. If OBJSET_FLAG_HAS_UGP_FLAG is not set, then
+ * we use the historic objset hash for the platform (user+group for illumos
+ * and macOS, user+group+project for others).
+ *
+ * When an encrypted objset is first opened, OBJSET_FLAG_HAS_UGP_FLAG is
+ * set (if unset), and OBJSET_FLAG_UGP_HASH reflects the current hash used.
+ * Since these flags are ignored on older releases, this does not result in
+ * an incompatible change to existing datasets. An operator can then explicit
+ * select which hash format to use on each dataset.
+ */
+#ifdef __illumos
+#define	OBJSET_COMPAT_HASH(osp) \
+	(!(((osp)->os_flags & OBJSET_FLAG_HAS_UGP_FLAG) && \
+	((osp)->os_flags & OBJSET_FLAG_UGP_HASH))
+#else
+#define	OBJSET_COMPAT_HASH(obp) \
+	(((osp)->os_flags & OBJSET_FLAG_HAS_UGP_FLAG) && \
+	!((osp)->os_flags & OBJSET_FLAG_UGP_HASH))
+#endif
 
 /* all flags are currently non-portable */
 #define	OBJSET_CRYPT_PORTABLE_FLAGS_MASK	(0)
-
-/*
- * If OBJSET_FLAG_UGP_HASH (user, group, project) is set, that means that
- * the objset crypto hash MUST contain the user, group, and project dnodes.
- * If unset, it may contain hash(user, group, project) OR the errata
- * compatible hash(user, group).
- */
-#define	OBJSET_ALLOW_COMPAT_HASH(osp) \
-	(!((osp)->os_flags & OBJSET_FLAG_UGP_HASH))
 
 typedef struct objset_phys {
 	dnode_phys_t os_meta_dnode;
