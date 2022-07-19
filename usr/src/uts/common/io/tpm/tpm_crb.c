@@ -483,7 +483,7 @@ tpm_crb_cancel_cmd(tpm_client_t *c)
 	mutex_enter(&tpm->tpm_lock);
 
 	/* We also should't be called from the tpm service thread either. */
-	VERIFY3U(curthread->t_did, !=, tpm->tpm_thread_id);
+	VERIFY3P(curthread, !=, tpm->tpm_thread);
 
 	tpm->tpm_thr_cancelreq = true;
 	cv_signal(&tpm->tpm_thr_cv);

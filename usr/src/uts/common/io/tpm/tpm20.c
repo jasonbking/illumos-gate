@@ -18,17 +18,17 @@
 #include "tpm20.h"
 
 bool
-tpm20_init(tpm_state_t *tpm)
+tpm20_init(tpm_t *tpm)
 {
 	/*
 	 * TPM2.0 defines explicit timeouts (unlike TPM1.2 where there are
 	 * default timeouts, but the TPM can advertise it's own timeout
 	 * values if desired).
 	 */
-	tpm->timeout_a = TPM20_TIMEOUT_A;
-	tpm->timeout_b = TPM20_TIMEOUT_B;
-	tpm->timeout_c = TPM20_TIMEOUT_C;
-	tpm->timeout_d = TPM20_TIMEOUT_D;
+	tpm->tpm_timeout_a = TPM20_TIMEOUT_A;
+	tpm->tpm_timeout_b = TPM20_TIMEOUT_B;
+	tpm->tpm_timeout_c = TPM20_TIMEOUT_C;
+	tpm->tpm_timeout_d = TPM20_TIMEOUT_D;
 
 	return (true);
 }

@@ -41,8 +41,13 @@
 #include <sys/uio.h>		/* used by read */
 #include <sys/stat.h>		/* defines S_IFCHR */
 #include <sys/poll.h>
+#include <sys/id_space.h>
+#include <sys/stddef.h>
+#include <sys/proc.h>
+#include <sys/atomic.h>
 
 #include <sys/byteorder.h>	/* for ntohs, ntohl, htons, htonl */
+#include <sys/sysmacros.h>
 
 #include <sys/tpm.h>
 
@@ -57,8 +62,10 @@
 #include "tpm_tis.h"
 #include "tpm_ddi.h"
 
+extern pri_t minclsyspri;
+
 typedef bool (*tpm_attach_fn_t)(tpm_t *);
-typedef void (tpm_cleanup_fn_t)(tpm_t *);
+typedef void (*tpm_cleanup_fn_t)(tpm_t *);
 
 typedef struct tpm_attach_desc {
 	tpm_attach_seq_t	tad_seq;
@@ -80,7 +87,6 @@ typedef struct tpm_attach_desc {
 
 #define	DEFAULT_LOCALITY	0
 
-#define	TPM_INTERFACE_ID	0x30
 #define	TPM_INTF_IFTYPE(x)	((x) & 0xf)
 #define	TPM_INTF_IFTYPE_FIFO	(0x0)
 #define	TPM_INTF_IFTYPE_CRB	(0x1)
@@ -95,7 +101,7 @@ typedef struct tpm_attach_desc {
  */
 bool				tpm_debug = false;
 
-static id_space_t		tpm_minors;
+static id_space_t		*tpm_minors;
 static void			*tpm_statep = NULL;
 
 #ifdef __x86
@@ -110,7 +116,7 @@ static ddi_device_acc_attr_t	tpm_acc_attr = {
 static inline bool
 tpmc_is_writemode(const tpm_client_t *c)
 {
-	ASSERT(MUTEX_HELD(&c->tpmc_client));
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
 
 	switch (c->tpmc_state) {
 	case TPM_CLIENT_IDLE:
@@ -125,7 +131,7 @@ tpmc_is_writemode(const tpm_client_t *c)
 static inline bool
 tpmc_is_readmode(const tpm_client_t *c)
 {
-	ASSERT(MUTEX_HELD(&c->tpmc_client));
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
 
 	return ((c->tpmc_state == TPM_CLIENT_CMD_COMPLETION) ? true : false);
 }
@@ -133,7 +139,7 @@ tpmc_is_readmode(const tpm_client_t *c)
 void
 tpm_dbg(const tpm_t *tpm, int level, const char *fmt, ...)
 {
-	if (!tpm->debug) {
+	if (!tpm_debug) {
 		return;
 	}
 
@@ -141,14 +147,14 @@ tpm_dbg(const tpm_t *tpm, int level, const char *fmt, ...)
 
 	va_start(ap, fmt);
 	if (tpm != NULL && tpm->tpm_dip != NULL) {
-		vdev_err(tpm->tpm_dip, level, msg, ap);
+		vdev_err(tpm->tpm_dip, level, fmt, ap);
 	} else {
-		vcmn_err(level, msg, ap);
+		vcmn_err(level, fmt, ap);
 	}
 	va_end(ap);
 }
 
-static tpm_client_t *c
+static tpm_client_t *
 tpm_client_get(dev_t dev)
 {
 	tpm_client_t *c;
@@ -168,12 +174,19 @@ tpm_client_get(dev_t dev)
 	return (c);
 }
 
-static void
-tpm_client_refrele(tpm_client_t *c)
+void
+tpm_client_refhold(tpm_client_t *c)
 {
+	atomic_inc_uint(&c->tpmc_refcnt);
 }
 
-static void
+void
+tpm_client_refrele(tpm_client_t *c)
+{
+	atomic_dec_uint(&c->tpmc_refcnt);	
+}
+
+void
 tpm_client_reset(tpm_client_t *c)
 {
 	ASSERT(MUTEX_HELD(&c->tpmc_lock));
@@ -216,8 +229,8 @@ tpm_cancel(tpm_client_t *c)
 			break;
 		}
 		break;
-	case TPM_CLIENT_DISPATCH:
-		if (list_link_active(&c->tpmc_link)) {
+	case TPM_CLIENT_CMD_DISPATCH:
+		if (list_link_active(&c->tpmc_node)) {
 			/*
 			 * If we're still on the pending list, the tpm thread
 			 * has not started processing our request. We can
@@ -320,26 +333,48 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 
 	c->tpmc_tpm = tpm;
 	c->tpmc_minor = minor;
-	c->tpmc_state = TPM_STATE_IDLE;
+	c->tpmc_state = TPM_CLIENT_IDLE;
 	c->tpmc_buf = kmem_zalloc(TPM_IO_BUF_SIZE, KM_SLEEP);
 	c->tpmc_buflen = TPM_IO_BUF_SIZE;
 	c->tpmc_locality = DEFAULT_LOCALITY;
 
 	if ((flag & FWRITE) == FWRITE) {
-		c->tpmc_mode |= TPM_CONN_WRITE;
+		c->tpmc_mode |= TPM_MODE_WRITE;
 	}
 	if ((flag & FNDELAY) == FNDELAY) {
-		c->tpmc_mode |= TPM_CONN_NONBLOCK;
+		c->tpmc_mode |= TPM_MODE_NONBLOCK;
 	}
 
 	*devp = makedevice(getmajor(*devp), minor);
 	return (0);
 }
 
+void
+tpm_client_cleanup(tpm_client_t *c)
+{
+	tpm_t *tpm = c->tpmc_tpm;
+
+	mutex_enter(&tpm->tpm_lock);
+	VERIFY3U(tpm->tpm_client_count, >, 0);
+	IMPLY(tpm->tpm_exclusive, tpm->tpm_client_count == 1);
+	tpm->tpm_client_count--;
+	tpm->tpm_exclusive = false;
+	mutex_exit(&tpm->tpm_lock);
+
+	bzero(c->tpmc_buf, c->tpmc_buflen);
+	kmem_free(c->tpmc_buf, c->tpmc_buflen);
+
+	cv_destroy(&c->tpmc_cv);
+	mutex_exit(&c->tpmc_lock);
+	mutex_destroy(&c->tpmc_lock);
+
+	ddi_soft_state_free(tpm_statep, c->tpmc_minor);
+	id_free(tpm_minors, c->tpmc_minor);
+}
+
 static int
 tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 {
-	tpm_t *tpm;
 	tpm_client_t *c;
 
 	if (otyp != OTYP_CHR) {
@@ -368,35 +403,12 @@ tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 		}
 	}
 
-	tpm_cleanup(c);
+	tpm_client_cleanup(c);
 	return (0);
 }
 
-void
-tpm_cleanup(tpm_client_t *c)
-{
-	tpm_t *tpm = c->tpmc_tpm;
-
-	mutex_enter(&tpm->tpm_lock);
-	VERIFY3U(tpm->tpm_client_count, >, 0);
-	IMPLY(tpm->tpm_exclusive, tpm->tpm_client_count == 1);
-	tpm->tpm_conn_count--;
-	tpm->tpm_exclusive = false;
-	mutex_exit(&tpm->tpm_lock);
-
-	bzero(c->tpmc_buf, c->tpmc_buflen);
-	kmem_free(c->tpmc_buf, c->tpmc_buflen);
-
-	cv_destroy(c->tpmc_cv);
-	mutex_exit(&c->tpmc_lock);
-	mutex_destroy(&c->tpmc_lock);
-
-	ddi_soft_state_free(tpm_statep, minor);
-	id_space_free(tpm_minors, minor);
-}
-
 static size_t
-tpm_uio_size(const struct uio_t *uiop)
+tpm_uio_size(const struct uio *uiop)
 {
 	size_t amt = 0;
 
@@ -425,7 +437,7 @@ tpm_dispatch_cmd(tpm_client_t *c)
 }
 
 static int
-tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
+tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 {
 	tpm_client_t *c;
 
@@ -457,7 +469,7 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 		/*
 		 * If we weren't in a writing mode when write(2) was called,
 		 * we want to explicitly wait for the TPM_CLIENT_IDLE state
-		 * since preumably that means we have a new command (and
+		 * since presumably that means we have a new command (and
 		 * not a fragment of an in-process command).
 		 */
 		while (c->tpmc_state != TPM_CLIENT_IDLE) {
@@ -467,7 +479,6 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 				goto done;
 			}
 		}
-		break;
 	}
 
 	/*
@@ -489,7 +500,7 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 		}
 
 		c->tpmc_bufused += to_copy;
-		amt_copied +- to_copy;
+		amt_copied += to_copy;
 		if (c->tpmc_bufused < TPM_HEADER_SIZE) {
 			goto done;
 		}
@@ -522,7 +533,7 @@ tpm_write(dev_t dev, struct uio_t *uiop, cred_t *credp)
 		goto done;
 	}
 	c->tpmc_bufused += to_copy;
-	amt_copied +- to_copy;
+	amt_copied += to_copy;
 
 	if (to_copy < amt_needed) {
 		goto done;
@@ -593,6 +604,8 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 			}
 		}
 		break;
+	case TPM_CLIENT_CMD_COMPLETION:
+		break;
 	}
 
 	if (c->tpmc_cmdresult != 0) {
@@ -628,7 +641,7 @@ static int
 tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 {
 	tpm_client_t *c;
-	int err = 0;
+	int ret = 0;
 	int val;
 
 	c = tpm_client_get(dev);
@@ -653,23 +666,23 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		}
 
 		if (ddi_copyout(&val, (void *)data, sizeof (val), md) != 0) {
-			err = EFAULT;
+			ret = EFAULT;
 		}
 		break;
 	case TPMIOC_SETLOCALITY:
-		if ((c->tpmc_mode & TPM_CONN_WRITE) != 0) {
+		if ((c->tpmc_mode & TPM_MODE_WRITE) != 0) {
 			/* XXX: better value? didn't open for write */
-			err = ENXIO;
+			ret = ENXIO;
 			break;
 		}
 
 		if (ddi_copyin((void *)data, &val, sizeof (val), md) != 0) {
-			err = EFAULT;
+			ret = EFAULT;
 			break;
 		}
 
 		if (val < 0 || val > TPM_LOCALITY_MAX) {
-			err = EINVAL;
+			ret = EINVAL;
 			break;
 		}
 
@@ -677,17 +690,17 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		 * XXX: For now we only allow access to locality 0.
 		 */
 		if (val != 0) {
-			err = EPERM;
+			ret = EPERM;
 			break;
 		}
 
 		/* Only change locality while the client is idle. */
-		if (c->tpmc_state != TPMC_CLIENT_IDLE) {
+		if (c->tpmc_state != TPM_CLIENT_IDLE) {
 			if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
-				err = EAGAIN;
+				ret = EAGAIN;
 				goto done;
 			}
-			while (c->tpmc_state != TPMC_CLIENT_IDLE) {
+			while (c->tpmc_state != TPM_CLIENT_IDLE) {
 				ret = cv_wait_sig(&c->tpmc_cv, &c->tpmc_lock);
 				if (ret == 0) {
 					ret = EINTR;
@@ -695,28 +708,28 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 				}
 			}
 		}
-		conn->tpmc_locality = val;
+		c->tpmc_locality = val;
 		break;
 	case TPMIOC_CANCEL:
 		tpm_cancel(c);
 		break;
 	case TPMIOC_MAKESTICKY:
 		/* XXX: TODO */
-		err = ENOTSUP;
+		ret = ENOTSUP;
 		break;
 	default:
-		err = ENOTTY;
+		ret = ENOTTY;
 	}
 
 done:
 	mutex_exit(&c->tpmc_lock);
 	tpm_client_refrele(c);
-	return (err);
+	return (ret);
 }
 
 static int
 tpm_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
-    struct pollhead *phpp)
+    struct pollhead **phpp)
 {
 	tpm_client_t *c;
 
@@ -752,10 +765,10 @@ tpm_exec_thread(void *arg)
 	tpm_t *tpm = arg;
 
 	for (;;) {
-		int ret;
+		int ret = 0;
 
 		mutex_enter(&tpm->tpm_lock);
-		while (!tpm->tpm_thr_quit && list_empty(&tpm->tpm_pending)) {
+		while (!tpm->tpm_thr_quit && list_is_empty(&tpm->tpm_pending)) {
 			cv_wait(&tpm->tpm_thr_cv, &tpm->tpm_lock);
 		}
 
@@ -786,12 +799,19 @@ tpm_exec_thread(void *arg)
 			continue;
 		}
 
-		c->tpmc_state = TPMC_CLIENT_CMD_EXECUTION;
-		/* tpm_tis_exec_cmd(c) / tpm_crb_exec_cmd(c) */
-		ret = tpm->tpm_exec(c);
+		c->tpmc_state = TPM_CLIENT_CMD_EXECUTION;
+		switch (tpm->tpm_iftype) {
+		case TPM_IF_TIS:
+		case TPM_IF_FIFO:
+			ret = tpm_tis_exec_cmd(c);
+			break;
+		case TPM_IF_CRB:
+			ret = tpm_crb_exec_cmd(c);
+			break;
+		}
 
 		VERIFY(MUTEX_HELD(&c->tpmc_lock));
-		c->tpmc_result = ret;
+		c->tpmc_cmdresult = ret;
 		cv_signal(&c->tpmc_cv);
 		pollwakeup(&c->tpmc_pollhead, POLLIN);
 		mutex_exit(&c->tpmc_lock);
@@ -821,34 +841,41 @@ tpm_get_waittime(tpm_t *tpm, tpm_wait_t wait_type, clock_t now,
 
 /*
  * Wait for a register to return a (possibly masked) value.
- * If wait_intr (or XXX) is set, we wait the full timeout value before
- * checking (under the assumption an interrupt will wake us if the value
- * has been set sooner than the timeout), otherwise we re-check every
- * tpm_timeout_poll cycles.
+ *
+ * If intr is set, wait the full timeout value and expect an interrupt
+ * should wake us when the condition we're checking has been satisified.
+ *
+ * If intr is not set, check every tpm->tpm_timeout_poll cycles.
+ *
+ * If tpm->tpm_wait == TPM_WAIT_POLLONCE, always wait the full timeout value
+ * regardless of the setting of wait_intr.
  */
-int
-tpm_wait_u32(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t val,
-    clock_t timeout, bool wait_intr)
-{
+static int
+tpm_wait_common(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t value,
+    clock_t timeout, bool intr,
+    uint32_t (*getf)(tpm_t *, unsigned long, uint32_t)) {
 	clock_t deadline, now;
 	uint32_t status;
-	int ret = 0;
-	tpm_wait_t wait = wait_intr ? tpm->tpm_wait : tpm_wait_nointr(tpm);
+	int ret = 1;
+	tpm_wait_t wait;
 
 	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
 
+	wait = intr ? tpm->tpm_wait : tpm_wait_nointr(tpm);
 	deadline = ddi_get_lbolt() + timeout;
-	while (((status = tpm_get32(tpm, reg)) & mask) != val &&
-	    ((now = ddi_get_lbolt()) < deadline)) {
-		clock_t until = tpm_get_waittime(tpm, wait_type, now, deadline);
+	while ((now = ddi_get_lbolt()) < deadline) {
+		status = getf(tpm, reg, mask);
+		if (mask == value)
+			break;
 
+		clock_t until = tpm_get_waittime(tpm, wait, now, deadline);
 		ret = cv_timedwait(&tpm->tpm_intr_cv, &tpm->tpm_lock, until);
 	}
 
-	/* We timed out, check the status one final time */
+	/* If we timed out, check the status one final time */
 	if (ret <= 0) {
-		status = tpm_get32(tpm, reg) & mask;
-		if (status != val) {
+		status = getf(tpm, reg, mask);
+		if (status != value) {
 			goto timedout;
 		}
 	}
@@ -857,47 +884,39 @@ tpm_wait_u32(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t val,
 
 timedout:
 	/* XXX: Generate ereport? */
-	dev_err(tpm->tpm_dip, CE_WARN, "!%s: timeout (%ld usecs) waiting for "
-	    "reg 0x%lx & 0x%x == 0x%x", __func__, drv_hztousec(timeout),
-	    reg, mask, val);
+	dev_err(tpm->tpm_dip, CE_WARN,
+	    "%s: timeout (%ld usecs) waiting for reg 0x%lx & 0x%x == 0x%x\n",
+	    __func__, drv_hztousec(timeout), reg, mask, value);
 	return (ETIME);
+}
+
+static uint32_t
+tpm_wait_u32f(tpm_t *tpm, unsigned long reg, uint32_t mask)
+{
+	return (tpm_get32(tpm, reg) & mask);
+}
+
+int
+tpm_wait_u32(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t val,
+    clock_t timeout, bool intr)
+{
+	return (tpm_wait_common(tpm, reg, mask, val, timeout, intr,
+	    tpm_wait_u32f));
+}
+
+static uint32_t
+tpm_wait_u8f(tpm_t *tpm, unsigned long reg, uint32_t mask)
+{
+	uint32_t val = tpm_get8(tpm, reg) & 0xff;
+	return (val & mask);
 }
 
 int
 tpm_wait_u8(tpm_t *tpm, unsigned long reg, uint8_t mask, uint8_t val,
-    clock_t timeout, bool wait_intr)
+    clock_t timeout, bool intr)
 {
-	clock_t deadline, now;
-	int ret = 0;
-	tpm_wait_t wait = wait_intr ? tpm->tpm_wait : tpm_wait_nointr(tpm);
-	uint8_t val;
-
-	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
-
-	deadline = ddi_get_lbolt() + timeout;
-	while (((val = tpm_get8(tpm, reg)) & mask) != val &&
-	    ((now = ddi_get_lbolt()) < deadline)) {
-		clock_t until = tpm_get_waittime(tpm, wait_type, now, deadline);
-
-		ret = cv_timedwait(&tpm->tpm_intr_cv, &tpm->tpm_lock, until);
-	}
-
-	/* We timed out, check the status one final time */
-	if (ret <= 0) {
-		val = tpm_get8(tpm, reg) & mask;
-		if (status != val) {
-			goto timedout;
-		}
-	}
-
-	return (0);
-
-timedout:
-	/* XXX: Generate ereport? */
-	dev_err(tpm->tpm_dip, CE_WARN, "!%2: timeout (%ld usecs) waiting for "
-	    "reg 0x%lx & 0x%x == 0x%x", __func__, dev_hztousec(timeout),
-	    reg, mask, val);
-	return (ETIME);
+	return (tpm_wait_common(tpm, reg, mask, val, timeout, intr,
+	    tpm_wait_u8f));
 }
 
 /*
@@ -936,7 +955,7 @@ tpm_wait_for_u32(tpm_t *tpm, uint32_t reg, uint32_t mask, uint32_t val,
 			return (ETIME);
 		}
 
-		delay(tpm->timeout_poll);
+		delay(tpm->tpm_timeout_poll);
 	}
 
 	return (0);
@@ -949,6 +968,7 @@ tpm_wait_for_u32(tpm_t *tpm, uint32_t reg, uint32_t mask, uint32_t val,
 static int
 tpm_resume(tpm_t *tpm)
 {
+#if 0
 	mutex_enter(&tpm->pm_mutex);
 	if (!tpm->suspended) {
 		mutex_exit(&tpm->pm_mutex);
@@ -957,17 +977,18 @@ tpm_resume(tpm_t *tpm)
 	tpm->suspended = 0;
 	cv_broadcast(&tpm->suspend_cv);
 	mutex_exit(&tpm->pm_mutex);
-
+#endif
 	return (DDI_SUCCESS);
 }
 
-#ifdef amd64
+#ifdef __amd64
 static bool
 tpm_attach_regs(tpm_t *tpm)
 {
 	uint_t idx;
 	int nregs;
 	int ret;
+	off_t regsize = 0;
 
 	ret = ddi_dev_nregs(tpm->tpm_dip, &nregs);
 	if (ret != DDI_SUCCESS) {
@@ -990,9 +1011,7 @@ tpm_attach_regs(tpm_t *tpm)
 	 * For TPM 2.0 devices, we'll always end up using the
 	 * first register set.
 	 */
-	for (idx = 0; idx < nregs; i++) {
-		off_t regsize;
-
+	for (idx = 0; idx < nregs; idx++) {
 		ret = ddi_dev_regsize(tpm->tpm_dip, idx, &regsize);
 		if (ret != DDI_SUCCESS) {
 			dev_err(tpm->tpm_dip, CE_WARN,
@@ -1073,7 +1092,7 @@ tpm_attach_dev_init(tpm_t *tpm)
 
 		return (tpm_crb_init(tpm));
 	default:
-		cmn_err(CE_NOTE, "!%s: unknown TPM interface type 0x%x",
+		cmn_err(CE_NOTE, "!%s: unknown TPM interface type 0x%lx",
 		    __func__, TPM_INTF_IFTYPE(id));
 		return (false);
 	}
@@ -1109,6 +1128,13 @@ tpm_attach_intr_alloc(tpm_t *tpm)
 		return (false);
 	}
 
+	if (ddi_intr_get_navail(tpm->tpm_dip, DDI_INTR_TYPE_FIXED,
+	    &navail) != DDI_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "could not determine available interrupts");
+		return (false);
+	}
+
 	if (ddi_intr_get_nintrs(tpm->tpm_dip, DDI_INTR_TYPE_FIXED,
 	    &nintrs) != DDI_SUCCESS) {
 		dev_err(tpm->tpm_dip, CE_WARN,
@@ -1129,8 +1155,10 @@ tpm_attach_intr_alloc(tpm_t *tpm)
 		nintrs = 1;
 	}
 
-	ret = ddi_intr_alloc(tpm->tpm_dip, tpm->tpm_harray, DDI_INTR_TYPE_FIXED,
-	    0, 1, &tpm->tpm_nintr, DDI_INTR_ALLOC_STRICT);
+	tpm->tpm_harray = kmem_zalloc(navail* sizeof (ddi_intr_handle_t),
+	    KM_SLEEP);
+	ret = ddi_intr_alloc(tpm->tpm_dip, tpm->tpm_harray,
+	    DDI_INTR_TYPE_FIXED, 0, 1, &tpm->tpm_nintr, DDI_INTR_ALLOC_STRICT);
 	if (ret != DDI_SUCCESS) {
 		dev_err(tpm->tpm_dip, CE_WARN,
 		    "interrupt allocation failure %d", ret);
@@ -1147,13 +1175,16 @@ tpm_cleanup_intr_alloc(tpm_t *tpm)
 		return;
 	}
 
-	VERIFY3S(ddi_intr_free(tpm->tpm_harray), ==, DDI_SUCCESS);
+	for (uint_t i = 0; i < tpm->tpm_nintr; i++) {
+		VERIFY3S(ddi_intr_free(tpm->tpm_harray[i]), ==, DDI_SUCCESS);
+	}
+	kmem_free(tpm->tpm_harray, tpm->tpm_nintr * sizeof (ddi_intr_handle_t));
 }
 
 static bool
 tpm_attach_intr_hdlrs(tpm_t *tpm)
 {
-	ddi_intr_handle_t isr;
+	ddi_intr_handler_t *isr = NULL;
 	uint_t i;
 	int ret;
 
@@ -1235,7 +1266,7 @@ tpm_attach_thread(tpm_t *tpm)
 {
 	list_create(&tpm->tpm_pending, sizeof (tpm_client_t),
 	    offsetof(tpm_client_t, tpmc_node));
-	tpm->tpm_thread_id = thread_create(NULL, 0, tpm_exec_thread, tpm, 0,
+	tpm->tpm_thread = thread_create(NULL, 0, tpm_exec_thread, tpm, 0,
 	    &p0, TS_RUN, minclsyspri);
 	return (true);
 }
@@ -1243,11 +1274,14 @@ tpm_attach_thread(tpm_t *tpm)
 static void
 tpm_cleanup_thread(tpm_t *tpm)
 {
-	if (tpm->tpm_thread_id != 0) {
+	if (tpm->tpm_thread != NULL) {
+		kt_did_t tid = tpm->tpm_thread->t_did;
+
 		tpm->tpm_thr_quit = true;
 		membar_producer();
 		cv_signal(&tpm->tpm_thr_cv);
-		thread_join(tpm->tpm_thread_id);
+		thread_join(tid);
+		tpm->tpm_thread = NULL;
 	}
 	list_destroy(&tpm->tpm_pending);
 }
@@ -1314,7 +1348,7 @@ tpm_cleanup_rng(tpm_t *tpm)
 }
 
 static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
-#ifdef amd64
+#ifdef __amd64
 	[TPM_ATTACH_REGS] = {
 		.tad_seq = TPM_ATTACH_REGS,
 		.tad_name = "registers",
@@ -1330,7 +1364,7 @@ static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
 		.tad_cleanup = tpm_cleanup_hsvc,
 	},
 #endif
-#ifdef amd64
+#ifdef __amd64
 	[TPM_ATTACH_DEV_INIT] = {
 		.tad_seq = TPM_ATTACH_DEV_INIT,
 		.tad_name = "device initialization",
@@ -1346,8 +1380,8 @@ static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
 	[TPM_ATTACH_INTR_HDLRS] = {
 		.tad_seq = TPM_ATTACH_INTR_HDLRS,
 		.tad_name = "interrupt handlers",
-		.tad_attach = tpm_attach_intr_hdlr,
-		.tad_cleanup = tpm_cleanup_intr_hdlr,
+		.tad_attach = tpm_attach_intr_hdlrs,
+		.tad_cleanup = tpm_cleanup_intr_hdlrs,
 	},
 #endif
 	[TPM_ATTACH_SYNC] = {
@@ -1379,23 +1413,23 @@ static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
 static void
 tpm_cleanup(tpm_t *tpm)
 {
-	if (tpm == NULL || tpm->tpm_attach_seq == 0) {
+	if (tpm == NULL || tpm->tpm_seq == 0) {
 		return;
 	}
 
-	VERIFY3U(tpm->tpm_attach_seq, <, TPM_ATTACH_NUM_ENTRIES);
+	VERIFY3U(tpm->tpm_seq, <, TPM_ATTACH_NUM_ENTRIES);
 
-	while (tpm->tpm_attach_seq > 0) {
-		tpm_attach_seq_t seq = --tpm->tpm_attach_seq;
-		tpm_attach_desc_t desc = &tpm_attach_tbl[seq];
+	while (tpm->tpm_seq > 0) {
+		tpm_attach_seq_t seq = --tpm->tpm_seq;
+		tpm_attach_desc_t *desc = &tpm_attach_tbl[seq];
 
-		tpm_dbg(tpm, "running cleanup sequence %s (%d)",
+		tpm_dbg(tpm, CE_CONT, "running cleanup sequence %s (%d)\n",
 		    desc->tad_name, seq);
 
 		desc->tad_cleanup(tpm);
 	}
 
-	ASSERT3U(tpm->tpm_attach_seq, ==, 0);
+	ASSERT3U(tpm->tpm_seq, ==, 0);
 }
 
 static int
@@ -1450,19 +1484,19 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	for (uint_t i = 0; i < ARRAY_SIZE(tpm_attach_tbl); i++) {
 		tpm_attach_desc_t *desc = &tpm_attach_tbl[i];
 
-		tpm_dbg(tpm, "running attach sequence %s (%d)", desc->tad_name,
-		    desc->tad_seq);
+		tpm_dbg(tpm, CE_CONT, "!running attach sequence %s (%d)\n",
+		    desc->tad_name, desc->tad_seq);
 
 		if (!desc->tad_attach(tpm)) {
 			dev_err(tpm->tpm_dip, CE_WARN,
-			    "attach sequence failed %s (%d)", desc->tad_desc,
+			    "attach sequence failed %s (%d)", desc->tad_name,
 			    desc->tad_seq);
 			tpm_cleanup(tpm);
 			return (DDI_FAILURE);
 		}
 
-		tpm_dbg(tpm, "attach sequence completed: %s (%d)",
-		    desc->tad-name, desc->tad_seq);
+		tpm_dbg(tpm, CE_CONT, "!attach sequence completed: %s (%d)\n",
+		    desc->tad_name, desc->tad_seq);
 		tpm->tpm_seq = desc->tad_seq;
 	}
 
@@ -1485,10 +1519,10 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		switch (tpm->tpm_iftype) {
 		case TPM_IF_TIS:
 		case TPM_IF_FIFO:
-			tpm_tis_intr_mgmt(tpm, enable);
+			tpm_tis_intr_mgmt(tpm, true);
 			break;
 		case TPM_IF_CRB:
-			tpm_crb_intr_mgmt(tpm, enable);
+			tpm_crb_intr_mgmt(tpm, true);
 			break;
 		}
 	}
@@ -1502,6 +1536,7 @@ tpm_suspend(tpm_t *tpm)
 	if (tpm == NULL)
 		return (DDI_FAILURE);
 
+#if 0
 	mutex_enter(&tpm->pm_mutex);
 	if (tpm->suspended) {
 		mutex_exit(&tpm->pm_mutex);
@@ -1509,6 +1544,7 @@ tpm_suspend(tpm_t *tpm)
 	}
 	tpm->suspended = 1;
 	mutex_exit(&tpm->pm_mutex);
+#endif
 
 	return (DDI_SUCCESS);
 }
@@ -1525,9 +1561,9 @@ tpm_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	if (instance < 0)
 		return (DDI_FAILURE);
 
-	if ((tpm = ddi_get_soft_state(statep, instance)) == NULL) {
-		cmn_err(CE_WARN, "failed to retreive instance %d soft state",
-		    instance);
+	if ((tpm = ddi_get_soft_state(tpm_statep, instance)) == NULL) {
+		dev_err(dip, CE_WARN, 
+		    "failed to retreive instance %d soft state", instance);
 		return (ENXIO);
 	}
 
@@ -1552,7 +1588,7 @@ tpm_getinfo(dev_info_t *dip __unused, ddi_info_cmd_t cmd, void *arg __unused,
 	tpm_t *tpm;
 
 	/* We only support a single TPM instance */
-	if ((tpm = ddi_get_soft_state(statep, 0)) == NULL) {
+	if ((tpm = ddi_get_soft_state(tpm_statep, 0)) == NULL) {
 		cmn_err(CE_WARN, "!%s: stored pointer to tpm state is NULL",
 		    __func__);
 		return (DDI_FAILURE);
@@ -1578,7 +1614,7 @@ tpm_getinfo(dev_info_t *dip __unused, ddi_info_cmd_t cmd, void *arg __unused,
 clock_t
 tpm_get_ordinal_duration(tpm_t *tpm, uint8_t ordinal)
 {
-	
+	return (0);
 }
 
 /*
@@ -1631,12 +1667,12 @@ tpm_put8_loc(tpm_t *tpm __unused, unsigned long offset, uint8_t loc,
 	(void) hcall_tpm_put(loc, offfset, sizeof (uint8_t), value);
 }
 
-#elif defined(amd64)
+#elif defined(__amd64)
 
 static inline uintptr_t
 tpm_locality_offset(uint8_t locality)
 {
-	VERIFY(locality, <=, TPM_LOCALITY_MAX);
+	VERIFY3U(locality, <=, TPM_LOCALITY_MAX);
 
 	/*
 	 * Each locality (0-4) is a block of 0x1000 start at the base address.
@@ -1715,7 +1751,7 @@ static struct cb_ops tpm_cb_ops = {
 	.cb_mmap =		nodev,
 	.cb_segmap =		nodev,
 	.cb_chpoll =		tpm_chpoll,
-	.cb_propop =		ddi_prop_op,
+	.cb_prop_op =		ddi_prop_op,
 	.cb_str =		NULL,
 	.cb_aread =		nodev,
 	.cb_awrite =		nodev,
