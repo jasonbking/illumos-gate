@@ -24,6 +24,7 @@ struct tpm;
 
 /*
  * From 6.5.1.4, Table 18 (all in milliseconds)
+ * Unlike TPM1.2, these are fixed values.
  */
 #define	TPM20_TIMEOUT_A	750
 #define	TPM20_TIMEOUT_B	2000
@@ -53,7 +54,9 @@ struct tpm;
 #define	TPM_CC_GetCapability		0x0000017a
 #define	TPM_CC_NV_Read			0x0000014e
 
-int tpm20_init(struct tpm *);
+bool tpm20_init(struct tpm *);
+int tpm20_seed_random(tpm_t *, uchar_t *, size_t);
+int tpm20_generate_random(tpm_t *, uchar_t *, size_t);
 clock_t tpm20_get_timeout(uint32_t);
 
 #ifdef __cplusplus
