@@ -95,6 +95,14 @@ typedef enum tpm_tis_xfer_size {
 	TPM_TIS_XFER_64,
 } tpm_tis_xfer_size_t;
 
+typedef enum tpm_duration {
+	TPM_SHORT,
+	TPM_MEDIUM,
+	TPM_LONG,
+	TPM_UNDEFINED,
+	TPM_DURATION_MAX	/* Must be last */
+} tpm_duration_t;
+
 /* TIS/FIFO specific data */
 typedef struct tpm_tis {
 	tpm_tis_state_t		ttis_state;		/* RW */
@@ -102,6 +110,7 @@ typedef struct tpm_tis {
 	uint32_t		ttis_intr;
 	bool			ttis_has_sts_valid_int;	/* WO */
 	bool			ttis_has_cmd_ready_int;	/* WO */
+	clock_t			ttis_duration[TPM_DURATION_MAX]; /* WO */
 } tpm_tis_t;
 
 /*
@@ -176,13 +185,13 @@ typedef enum tpm_wait {
 } tpm_wait_t;
 
 typedef enum tpm_attach_seq {
-#ifdef amd64
+#ifdef __amd64
 	TPM_ATTACH_REGS =	1,
 #endif
 #ifdef sun4v
 	TPM_ATTACH_HSVC =	1,
 #endif
-#ifdef amd64
+#ifdef __amd64
 	TPM_ATTACH_DEV_INIT,
 	TPM_ATTACH_INTR_ALLOC,
 	TPM_ATTACH_INTR_HDLRS,
@@ -193,7 +202,7 @@ typedef enum tpm_attach_seq {
 	TPM_ATTACH_RAND,
 	TPM_ATTACH_END			/* should always be last */
 } tpm_attach_seq_t;
-#define	TPM_ATTACH_NUM_ENTRIES	(TPM_ATTACH_END - 1)
+#define	TPM_ATTACH_NUM_ENTRIES	(TPM_ATTACH_END)
 
 typedef struct tpm tpm_t;
 typedef struct tpm_client tpm_client_t;
@@ -212,13 +221,13 @@ struct tpm {
 	bool			tpm_exclusive;		/* WO */
 
 	ddi_intr_handle_t	*tpm_harray;		/* WO */
-	uint_t			tpm_nintr;		/* WO */
+	int			tpm_nintr;		/* WO */
 	uint_t			tpm_intr_pri;		/* WO */
 	tpm_wait_t		tpm_wait;		/* WO */
 	bool			tpm_use_interrupts;	/* WO */
 	kcondvar_t		tpm_intr_cv;		
 
-	kt_did_t		tpm_thread_id;		/* WO */
+	kthread_t		*tpm_thread;		/* WO */
 	kcondvar_t		tpm_thr_cv;
 	bool			tpm_thr_quit;		/* RW */
 	bool			tpm_thr_cancelreq;	/* RW */
@@ -337,19 +346,14 @@ void tpm_put32(tpm_t *, unsigned long, uint32_t);
 int tpm_wait_u8(tpm_t *, unsigned long, uint8_t, uint8_t, clock_t, bool);
 int tpm_wait_u32(tpm_t *, unsigned long, uint32_t, uint32_t, clock_t, bool);
 
-void tpm_dbg(tpm_t *, int, const char *, ...);
+void tpm_dbg(const tpm_t *, int, const char *, ...);
 
 clock_t tpm_get_timeout(tpm_t *, uint32_t);
 
 int tpm12_seed_random(tpm_t *, uchar_t *, size_t);
 int tpm12_generate_random(tpm_t *, uchar_t *, size_t);
-int tpm12_init(tpm_t *);
+bool tpm12_init(tpm_t *);
 clock_t tpm12_get_ordinal_duration(tpm_t *, uint32_t);
-
-int tpm20_init(tpm_t *);
-int tpm20_seed_random(tpm_t *, uchar_t *, size_t);
-int tpm20_generate_random(tpm_t *, uchar_t *, size_t);
-clock_t tpm20_get_timeout(uint32_t);
 
 void tpm_client_refrele(tpm_client_t *);
 void tpm_client_reset(tpm_client_t *);
@@ -358,12 +362,12 @@ bool tpm_tis_init(tpm_t *);
 int tpm_tis_exec_cmd(tpm_client_t *);
 int tpm_tis_cancel_cmd(tpm_client_t *);
 void tpm_tis_intr_mgmt(tpm_t *, bool);
-uint_t tpm_crb_intr(caddr_t, caddr_t);
+uint_t tpm_tis_intr(caddr_t, caddr_t);
 
 bool tpm_crb_init(tpm_t *);
 int tpm_crb_exec_cmd(tpm_client_t *);
 int tpm_crb_cancel_cmd(tpm_client_t *);
-void tpm_tis_intr_mgmt(tpm_t *, bool);
-uint_t tpm_tis_intr(caddr_t, caddr_t);
+void tpm_crb_intr_mgmt(tpm_t *, bool);
+uint_t tpm_crb_intr(caddr_t, caddr_t);
 
 #endif	/* _TPM_DDI_H */

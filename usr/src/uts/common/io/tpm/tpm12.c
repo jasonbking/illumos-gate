@@ -27,6 +27,7 @@
  */
 
 #include <sys/byteorder.h>
+#include <sys/crypto/api.h>
 
 #include "tpm_ddi.h"
 #include "tpm_tis.h"
@@ -95,7 +96,7 @@ typedef enum {
 #define	TPM_CAP_VERSION_INFO_SIZE	15
 
 /* TSC Ordinals */
-static const TPM_DURATION_T tpm12_ords_duration[TPM_ORDINAL_MAX] = {
+static const tpm_duration_t tpm12_ords_duration[TPM_ORDINAL_MAX] = {
 	TPM_UNDEFINED,		/* 0 */
 	TPM_UNDEFINED,
 	TPM_UNDEFINED,
@@ -342,7 +343,7 @@ static const TPM_DURATION_T tpm12_ords_duration[TPM_ORDINAL_MAX] = {
 };
 
 /* TPM connection ordinals */
-static const uint8_t tsc12_ords_duration[TSC_ORDINAL_MAX] = {
+static const tpm_duration_t tsc12_ords_duration[TSC_ORDINAL_MAX] = {
 	TPM_UNDEFINED,		/* 0 */
 	TPM_UNDEFINED,
 	TPM_UNDEFINED,
@@ -363,7 +364,7 @@ static const uint8_t tsc12_ords_duration[TSC_ORDINAL_MAX] = {
  * TPM_GetCapability (TPM Main Part 3 Rev. 94, pg.38)
  */
 static int
-tpm12_get_timeouts(tpm_state_t *tpm)
+tpm12_get_timeouts(tpm_t *tpm)
 {
 	int ret;
 	uint32_t timeout;   /* in milliseconds */
@@ -451,7 +452,7 @@ tpm12_get_timeouts(tpm_state_t *tpm)
  * TPM_GetCapability (TPM Main Part 3 Rev. 94, pg.38)
  */
 static int
-tpm12_get_duration(tpm_state_t *tpm)
+tpm12_get_duration(tpm_t *tpm)
 {
 	int ret;
 	uint32_t duration;
@@ -523,7 +524,7 @@ tpm12_get_duration(tpm_state_t *tpm)
 }
 
 static int
-tpm12_get_version(tpm_state_t *tpm)
+tpm12_get_version(tpm_t *tpm)
 {
 	int ret;
 	uint32_t len;
@@ -640,7 +641,7 @@ tpm12_get_ordinal_duration(tpm_t *tpm, uint32_t ordinal)
  * For details see Section 4.2 of TPM Main Part 3 Command Specification
  */
 static int
-tpm12_continue_selftest(tpm_state_t *tpm)
+tpm12_continue_selftest(tpm_t *tpm)
 {
 	int ret;
 	uint8_t buf[10] = {
@@ -668,7 +669,7 @@ tpm12_continue_selftest(tpm_state_t *tpm)
 #define	SEED_BUF_LEN (TPM_HEADER_SIZE + sizeof (uint32_t) + TPM12_SEED_MAX)
 
 int
-tpm12_seed_random(tpm_state_t *tpm, uchar_t *buf, size_t buflen)
+tpm12_seed_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 {
 	if (buflen == 0 || buflen > TPM12_SEED_MAX || buf == NULL)
 		return (CRYPTO_ARGUMENTS_BAD);
@@ -709,7 +710,7 @@ tpm12_seed_random(tpm_state_t *tpm, uchar_t *buf, size_t buflen)
 #define	RNDHDR_SIZE	(TPM_HEADER_SIZE + sizeof (uint32_t))
 
 int
-tpm12_generate_random(tpm_state_t *tpm, uchar_t *buf, size_t buflen)
+tpm12_generate_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 {
 	if (buflen == 0 || buf == NULL)
 		return (CRYPTO_ARGUMENTS_BAD);
@@ -751,9 +752,10 @@ tpm12_generate_random(tpm_state_t *tpm, uchar_t *buf, size_t buflen)
  * interrupts for TPMS, in which case we set up polling)
  * 3. Determine timeouts and commands duration
  */
-int
+bool
 tpm12_init(tpm_t *tpm)
 {
+	tpm_tis_t *tis = &tpm->tpm_u.tpmu_tis;
 	char *str = NULL;
 	uint32_t intf_caps;
 	uint8_t family;
@@ -765,19 +767,19 @@ tpm12_init(tpm_t *tpm)
 	 * you need TIMEOUTs defined...chicken and egg problem here.
 	 * TPM timeouts: Convert the milliseconds to clock cycles
 	 */
-	tpm->timeout_a = drv_usectohz(TIS_TIMEOUT_A);
-	tpm->timeout_b = drv_usectohz(TIS_TIMEOUT_B);
-	tpm->timeout_c = drv_usectohz(TIS_TIMEOUT_C);
-	tpm->timeout_d = drv_usectohz(TIS_TIMEOUT_D);
+	tpm->tpm_timeout_a = drv_usectohz(TIS_TIMEOUT_A);
+	tpm->tpm_timeout_b = drv_usectohz(TIS_TIMEOUT_B);
+	tpm->tpm_timeout_c = drv_usectohz(TIS_TIMEOUT_C);
+	tpm->tpm_timeout_d = drv_usectohz(TIS_TIMEOUT_D);
 	/*
 	 * Do the same with the duration (real duration will be filled out
 	 * when we call TPM_GetCapability to get the duration values from
 	 * the TPM itself).
 	 */
-	tpm->duration[TPM_SHORT] = drv_usectohz(TPM_DEFAULT_DURATION);
-	tpm->duration[TPM_MEDIUM] = drv_usectohz(TPM_DEFAULT_DURATION);
-	tpm->duration[TPM_LONG] = drv_usectohz(TPM_DEFAULT_DURATION);
-	tpm->duration[TPM_UNDEFINED] = drv_usectohz(TPM_DEFAULT_DURATION);
+	tis->ttis_duration[TPM_SHORT] = drv_usectohz(TPM_DEFAULT_DURATION);
+	tis->ttis_duration[TPM_MEDIUM] = drv_usectohz(TPM_DEFAULT_DURATION);
+	tis->ttis_duration[TPM_LONG] = drv_usectohz(TPM_DEFAULT_DURATION);
+	tis->ttis_duration[TPM_UNDEFINED] = drv_usectohz(TPM_DEFAULT_DURATION);
 
 	/* Find out supported capabilities */
 	intf_caps = tpm_get32(tpm, TPM_INTF_CAP);
@@ -785,7 +787,7 @@ tpm12_init(tpm_t *tpm)
 	if ((intf_caps & ~(TPM_INTF_MASK)) != 0) {
 		cmn_err(CE_WARN, "!%s: bad intf_caps value 0x%0x",
 		    __func__, intf_caps);
-		return (DDI_FAILURE);
+		return (bool);
 	}
 
 	/* These two interrupts are mandatory */
@@ -793,12 +795,12 @@ tpm12_init(tpm_t *tpm)
 		cmn_err(CE_WARN,
 		    "!%s: Mandatory capability Locality Change Int "
 		    "not supported", __func__);
-		return (DDI_FAILURE);
+		return (bool);
 	}
 	if (!(intf_caps & TPM_INTF_INT_DATA_AVAIL_INT)) {
 		cmn_err(CE_WARN, "!%s: Mandatory capability Data Available Int "
 		    "not supported.", __func__);
-		return (DDI_FAILURE);
+		return (bool);
 	}
 
 	/*
