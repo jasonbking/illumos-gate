@@ -58,10 +58,10 @@ main(int argc, char * const *argv)
 	}
 
 	switch (version) {
-	case TPM_FAMILY_1_2:
+	case TPMDEV_VERSION_1_2:
 		(void) printf("1.2\n");
 		break;
-	case TPM_FAMILY_2_0:
+	case TPMDEV_VERSION_2_0:
 		(void) printf("2.0\n");
 		break;
 	default:

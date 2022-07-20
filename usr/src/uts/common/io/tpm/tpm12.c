@@ -102,6 +102,25 @@ typedef enum {
 #define	TPM_CAP_VERSION_INFO_OFFSET	14
 #define	TPM_CAP_VERSION_INFO_SIZE	15
 
+typedef struct {
+	uint16_t	tpmcap_tag;
+	uint8_t		tpmcap_major;
+	uint8_t		tpmcap_minor;
+	uint8_t		tpmcap_rev_major;
+	uint8_t		tpmcap_rev_minor;
+	uint16_t	tpmcap_spec_level;
+	uint8_t		tpmcap_errata_level;
+	uint8_t		tpmcap_vendorid[5];
+} __packed tpm12_vers_info_t;
+
+#define	TPM_CAP_VERSION_INFO_MAJOR	(TPM_CAP_VERSION_INFO_OFFSET + 2)
+#define	TPM_CAP_VERSION_INFO_MINOR	(TPM_CAP_VERSION_INFO_OFFSET + 3)
+#define	TPM_CAP_VERSION_INFO_REVMAJOR	(TPM_CAP_VERSION_INFO_OFFSET + 4)
+#define	TPM_CAP_VERSION_INFO_REVMINOR	(TPM_CAP_VERSION_INFO_OFFSET + 5)
+#define	TPM_CAP_VERSION_INFO_SPEC	(TPM_CAP_VERSION_INFO_OFFSET + 6)
+#define	TPM_CAP_VERSION_INFO_ERRATA	(TPM_CAP_VERSION_INFO_OFFSET + 8)
+#define	TPM_CAP_VERSION_INFO_VENDORID	(TPM_CAP_VERSION_INFO_OFFSET + 9)
+
 /* TSC Ordinals */
 static const tpm_duration_t tpm12_ords_duration[TPM_ORDINAL_MAX] = {
 	TPM_UNDEFINED,		/* 0 */
@@ -522,11 +541,11 @@ tpm12_get_duration(tpm_t *tpm)
 }
 
 static int
-tpm12_get_version(tpm_t *tpm)
+tpm12_get_version(tpm_t *tpm, tpm12_vers_info_t *vp)
 {
 	int ret;
 	uint32_t len;
-	char vendorId[5];
+
 	/* If this buf is too small, the "vendor specific" data won't fit */
 	uint8_t buf[64] = {
 		0, 193,		/* TPM_TAG_RQU_COMMAND */
@@ -554,44 +573,22 @@ tpm12_get_version(tpm_t *tpm)
 		return (EIO);
 	}
 
-	bcopy(buf + TPM_CAP_VERSION_INFO_OFFSET, &tpm->vers_info,
-	    TPM_CAP_VERSION_INFO_SIZE);
+	bcopy(buf + TPM_CAP_VERSION_INFO_OFFSET, vp, TPM_CAP_VERSION_INFO_SIZE);
+	vp->tpmcap_vendorid[4] = '\0';
 
-	bcopy(tpm->vers_info.tpmVendorID, vendorId,
-	    sizeof (tpm->vers_info.tpmVendorID));
-	vendorId[4] = '\0';
+	dev_err(tpm->tpm_dip, CE_NOTE,
+	    "!TPM Version %d.%d Revision %d.%d SpecLevel %d, Errata Rev %d "
+	    "VendorId '%s'", vp->tpmcap_major, vp->tpmcap_minor,
+	    vp->tpmcap_rev_major, vp->tpmcap_rev_minor, vp->tpmcap_spec_level,
+	    vp->tpmcap_errata_level, vp->tpmcap_vendorid);
 
-	cmn_err(CE_NOTE, "!TPM found: Ver %d.%d, Rev %d.%d, "
-	    "SpecLevel %d, errataRev %d, VendorId '%s'",
-	    tpm->vers_info.version.major,	/* Version */
-	    tpm->vers_info.version.minor,
-	    tpm->vers_info.version.revMajor,	/* Revision */
-	    tpm->vers_info.version.revMinor,
-	    (int)ntohs(tpm->vers_info.specLevel),
-	    tpm->vers_info.errataRev,
-	    vendorId);
-
-	/*
-	 * This driver only supports TPM Version 1.2
-	 */
-	if (tpm->vers_info.version.major != 1 &&
-	    tpm->vers_info.version.minor != 2) {
-		cmn_err(CE_WARN, "!%s: Unsupported TPM version (%d.%d)",
-		    __func__,
-		    tpm->vers_info.version.major,		/* Version */
-		    tpm->vers_info.version.minor);
-		return (DDI_FAILURE);
-	}
-
-	return (DDI_SUCCESS);
+	return (0);
 }
 
 clock_t
 tpm12_get_ordinal_duration(tpm_t *tpm, uint32_t ordinal)
 {
 	uint8_t index;
-
-	ASSERT(tpm != NULL);
 
 	/* Default and failure case for IFX */
 	/* Is it a TSC_ORDINAL? */
@@ -624,7 +621,7 @@ tpm12_get_ordinal_duration(tpm_t *tpm, uint32_t ordinal)
 #endif
 		return (0);
 	}
-	return (tpm->duration[index]);
+	return (tpm->tpm_u.tpmu_tis.ttis_duration[index]);
 }
 
 /*
@@ -749,9 +746,8 @@ bool
 tpm12_init(tpm_t *tpm)
 {
 	tpm_tis_t *tis = &tpm->tpm_u.tpmu_tis;
-	char *str = NULL;
+	tpm12_vers_info_t vers_info = { 0 };
 	uint32_t intf_caps;
-	uint8_t family;
 	int ret;
 
 	/*
@@ -812,7 +808,7 @@ tpm12_init(tpm_t *tpm)
 	}
 
 	/* This gets the TPM version information */
-	ret = tpm12_get_version(tpm);
+	ret = tpm12_get_version(tpm, &vers_info);
 	if (ret != DDI_SUCCESS) {
 		return (false);
 	}
@@ -822,30 +818,27 @@ tpm12_init(tpm_t *tpm)
 	char buf[32];
 
 	(void) snprintf(buf, sizeof (buf), "%d.%d",
-	    tpm->vers_info.version.major,
-	    tpm->vers_info.version.minor);
-	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
+	    vers_info.tpmcap_major,
+	    vers_info.tpmcap_minor);
+	(void) ddi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
 	    "tpm-version", buf);
 
 	(void) snprintf(buf, sizeof (buf), "%d.%d",
-	    tpm->vers_info.version.revMajor,
-	    tpm->vers_info.version.revMinor);
-	(void) ddi_prop_update_string(DDI_DEV_T_NONE, dip,
+	    vers_info.tpmcap_rev_major,
+	    vers_info.tpmcap_rev_minor);
+	(void) ddi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
 	    "tpm-revision", buf);
 
-	(void) ddi_prop_update_int(DDI_DEV_T_NONE, dip, "tpm-speclevel",
-	    ntohs(tpm->vers_info.specLevel));
-	(void) ddi_prop_update_int(DDI_DEV_T_NONE, dip, "tpm-errata-revision",
-	    tpm->vers_info.errataRev);
+	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "tpm-speclevel", ntohs(vers_info.tpmcap_spec_level));
+	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "tpm-errata-revision", vers_info.tpmcap_errata_level);
 
 	/*
 	 * Unless the TPM completes the test of its commands,
 	 * it can return an error when the untested commands are called
 	 */
 	ret = tpm12_continue_selftest(tpm);
-	if (ret != DDI_SUCCESS) {
-		cmn_err(CE_WARN, "!%s: tpm_continue_selftest error", __func__);
-		return (DDI_FAILURE);
-	}
-	return (DDI_SUCCESS);
+
+	return ((ret == 0) ? true : false);
 }
