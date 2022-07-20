@@ -30,6 +30,7 @@
 # Copyright 2019 Peter Tribble.
 # Copyright 2015, Joyent, Inc. All rights reserved.
 # Copyright 2023 Oxide Computer Company
+# Copyright 2022 Jason King
 #
 
 include $(SRC)/uts/Makefile.uts
@@ -691,9 +692,13 @@ CHKHDRS=			\
 	xti_xtiopt.h		\
 	zmod.h
 
+TPMHDRS=		\
+	tpm.h
+
 HDRS=				\
 	$(GENHDRS)		\
-	$(CHKHDRS)
+	$(CHKHDRS)		\
+	$(TPMHDRS)
 
 AUDIOHDRS=			\
 	ac97.h			\
@@ -1204,7 +1209,8 @@ CHECKHDRS=						\
 	$(RSMHDRS:%.h=rsm/%.check)			\
 	$(TSOLHDRS:%.h=tsol/%.check)			\
 	$(NXGEHDRS:%.h=nxge/%.check)			\
-	$(PLATHDRS:%.h=plat/%.check)
+	$(PLATHDRS:%.h=plat/%.check)			\
+	$(TPMHDRS:%.h=%.check)
 
 
 .KEEP_STATE:
