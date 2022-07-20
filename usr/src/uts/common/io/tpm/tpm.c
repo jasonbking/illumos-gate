@@ -74,18 +74,8 @@ typedef struct tpm_attach_desc {
 	tpm_cleanup_fn_t	tad_cleanup;
 } tpm_attach_desc_t;
 
-/*
- * In order to test the 'millisecond bug', we test if DURATIONS and TIMEOUTS
- * are unreasonably low...such as 10 milliseconds (TPM isn't that fast).
- * and 400 milliseconds for long duration
- */
-#define	TEN_MILLISECONDS		10000	/* 10 milliseconds */
-#define	FOUR_HUNDRED_MILLISECONDS	400000	/* 4 hundred milliseconds */
-
 /* We assume a system will only have a single TPM device. */
 #define	TPM_CTL_MINOR		0
-
-#define	DEFAULT_LOCALITY	0
 
 #define	TPM_INTF_IFTYPE(x)	((x) & 0xf)
 #define	TPM_INTF_IFTYPE_FIFO	(0x0)
@@ -450,7 +440,7 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	size_t amt_copied = 0;
 	size_t amt_avail = tpm_uio_size(uiop);
-	size_t amt_needed = c->tpmc_buflen - c->tpmc_bufused;
+	size_t amt_needed = 0;
 	size_t to_copy = 0;
 	int ret = 0;
 
@@ -513,7 +503,7 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 * the amount of additional data needed in the request.
 	 */
 	ASSERT3U(c->tpmc_bufused, >=, TPM_HEADER_SIZE);
-	amt_needed = BE_IN32(c->tpmc_buf + TPM_PARAMSIZE_OFFSET);
+	amt_needed = tpm_cmdlen(c->tpmc_buf);
 
 	if (amt_needed > c->tpmc_buflen) {
 		/*
@@ -524,7 +514,20 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 		 */
 		ret = EIO;
 		goto done;
+	} else if (amt_needed < TPM_HEADER_SIZE) {
+		/*
+		 * Request is too small.
+		 * XXX: Better error value?
+		 */
+		ret = EIO;
+		goto done;
 	}
+
+	/*
+	 * The length parameter is the total length of the command, including
+	 * the fixed sized header. Reduce the amount needed by the amount
+	 * read in so far.
+	 */
 	amt_needed -= c->tpmc_bufused;
 
 	to_copy = MIN(amt_needed, amt_avail);
@@ -759,6 +762,60 @@ tpm_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 	return (0);
 }
 
+int
+tpm_exec_internal(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
+{
+	int ret = 0;
+
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+	VERIFY3U(buflen, >=, TPM_HEADER_SIZE);
+
+	switch (tpm->tpm_iftype) {
+	case TPM_IF_TIS:
+	case TPM_IF_FIFO:
+		ret = tis_exec_cmd(tpm, loc, buf, buflen);
+		break;
+	case TPM_IF_CRB:
+		ret = crb_exec_cmd(tpm, loc, buf, buflen);
+		break;
+	default:
+		dev_err(tpm->tpm_dip, CE_PANIC, "%s: invalid iftype %d",
+		    __func__, tpm->tpm_iftype);
+	}
+
+	return (ret);
+}
+
+static int
+tpm_exec_client(tpm_client_t *c)
+{
+	tpm_t *tpm = c->tpmc_tpm;
+	int ret = 0;
+
+	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+
+	/* We should have the full command, and should be a valid size. */
+	VERIFY3U(c->tpmc_bufused, >=, TPM_HEADER_SIZE);
+	VERIFY3U(c->tpmc_bufused, ==, tpm_cmdlen(c->tpmc_buf));
+
+	c->tpmc_state = TPM_CLIENT_CMD_EXECUTION;
+
+	mutex_enter(&tpm->tpm_lock);
+	mutex_exit(&c->tpmc_lock);
+
+	ret = tpm_exec_internal(tpm, c->tpmc_locality, c->tpmc_buf,
+	    c->tpmc_buflen);
+	if (ret == 0) {
+		c->tpmc_bufread = 0;
+	}
+
+	mutex_enter(&c->tpmc_lock);
+	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
+
+	/* Return with tpmc_lock held */
+	return (ret);
+}
+
 static void
 tpm_exec_thread(void *arg)
 {
@@ -799,18 +856,10 @@ tpm_exec_thread(void *arg)
 			continue;
 		}
 
-		c->tpmc_state = TPM_CLIENT_CMD_EXECUTION;
-		switch (tpm->tpm_iftype) {
-		case TPM_IF_TIS:
-		case TPM_IF_FIFO:
-			ret = tpm_tis_exec_cmd(c);
-			break;
-		case TPM_IF_CRB:
-			ret = tpm_crb_exec_cmd(c);
-			break;
-		}
-
+		ret = tpm_exec_client(c);
+		/* tpm_exec_cmd() should return with tpmc_lock held */
 		VERIFY(MUTEX_HELD(&c->tpmc_lock));
+
 		c->tpmc_cmdresult = ret;
 		cv_signal(&c->tpmc_cv);
 		pollwakeup(&c->tpmc_pollhead, POLLIN);
@@ -918,18 +967,6 @@ tpm_wait_u8(tpm_t *tpm, unsigned long reg, uint8_t mask, uint8_t val,
 	return (tpm_wait_common(tpm, reg, mask, val, timeout, intr,
 	    tpm_wait_u8f));
 }
-
-/*
- * Inline code to get exclusive lock on the TPM device and to make sure
- * the device is not suspended.  This grabs the primary TPM mutex (pm_mutex)
- * and then checks the suspend status.  If suspended, it will wait until
- * the device is "resumed" before releasing the pm_mutex and continuing.
- */
-#define	TPM_EXCLUSIVE_LOCK(tpm)  { \
-	mutex_enter(&tpm->pm_mutex); \
-	while (tpm->suspended) \
-		cv_wait(&tpm->suspend_cv, &tpm->pm_mutex); \
-	mutex_exit(&tpm->pm_mutex); }
 
 /*
  * TPM commands to get the TPM's properties, e.g.,timeout

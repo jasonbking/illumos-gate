@@ -48,7 +48,6 @@
  * This should be at minimum 765
  */
 #define	TPM_IO_BUF_SIZE		4096
-
 #define	TPM_IO_TIMEOUT		10000000
 
 /*
@@ -61,6 +60,8 @@
 #define	TPM_PARAMSIZE_OFFSET		2
 #define	TPM_RETURN_OFFSET		6
 #define	TPM_COMMAND_CODE_OFFSET		6
+
+#define	DEFAULT_LOCALITY	0
 
 /*
  * TPM interface methods. TPM_IF_TIS and TPM_IF_FIFO are effectively
@@ -243,9 +244,6 @@ struct tpm {
 
 	uint8_t			tpm_locality;	/* locality during cmd exec */
 
-	uint32_t flags;		/* flags to keep track of what is allocated */
-	clock_t duration[4];	/* short,medium,long,undefined */
-
 	clock_t			tpm_timeout_a;		/* WO */
 	clock_t			tpm_timeout_b;		/* WO */
 	clock_t			tpm_timeout_c;		/* WO */
@@ -320,9 +318,21 @@ tpm_is_cancelled(tpm_t *tpm)
 #define	TPM_OFFSET_MAX		0x0fff
 
 static inline uint32_t
-tpm_getbuf32(uchar_t *ptr, uint32_t offset)
+tpm_getbuf32(const uint8_t *ptr, uint32_t offset)
 {
 	return (BE_IN32(ptr + offset));
+}
+
+static inline uint32_t
+tpm_cmd(const uint8_t *ptr)
+{
+	return (BE_IN32(ptr + TPM_COMMAND_CODE_OFFSET));
+}
+
+static inline uint32_t
+tpm_cmdlen(const uint8_t *ptr)
+{
+	return (tpm_getbuf32(ptr, TPM_PARAMSIZE_OFFSET));
 }
 
 /*
@@ -359,15 +369,17 @@ void tpm_client_refrele(tpm_client_t *);
 void tpm_client_reset(tpm_client_t *);
 
 bool tpm_tis_init(tpm_t *);
-int tpm_tis_exec_cmd(tpm_client_t *);
+int tis_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
 int tpm_tis_cancel_cmd(tpm_client_t *);
 void tpm_tis_intr_mgmt(tpm_t *, bool);
 uint_t tpm_tis_intr(caddr_t, caddr_t);
 
 bool tpm_crb_init(tpm_t *);
-int tpm_crb_exec_cmd(tpm_client_t *);
+int crb_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
 int tpm_crb_cancel_cmd(tpm_client_t *);
 void tpm_crb_intr_mgmt(tpm_t *, bool);
 uint_t tpm_crb_intr(caddr_t, caddr_t);
+
+int tpm_exec_internal(tpm_t *, uint8_t, uint8_t *, size_t);
 
 #endif	/* _TPM_DDI_H */

@@ -272,11 +272,13 @@ tpm_crb_intr(caddr_t arg0, caddr_t arg1 __unused)
 }
 
 static int
-tpm_crb_send_data(tpm_client_t *c, uint8_t *buf, size_t buflen)
+tpm_crb_send_data(tpm_t *tpm, const uint8_t *buf, size_t amt)
 {
-	tpm_t *tpm = c->tpmc_tpm;
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 	int ret;
+
+	VERIFY3U(amt, >=, TPM_HEADER_SIZE);
+	VERIFY3U(tpm_cmdlen(buf), ==, amt);
 
 	ret = tpm_crb_go_idle(tpm);
 	if (ret != 0) {
@@ -296,7 +298,7 @@ tpm_crb_send_data(tpm_client_t *c, uint8_t *buf, size_t buflen)
 	tpm_crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
 
 	/* XXX: should this be replaced with a 64-bit copy loop? */
-	bcopy(buf, tpm->tpm_addr + crb->tcrb_cmd_off, buflen);
+	bcopy(buf, tpm->tpm_addr + crb->tcrb_cmd_off, amt);
 
 	tpm_put32(tpm, TPM_CRB_CTRL_START, 1);
 	tpm_crb_set_state(tpm, TCRB_ST_CMD_EXECUTION);
@@ -305,14 +307,9 @@ tpm_crb_send_data(tpm_client_t *c, uint8_t *buf, size_t buflen)
 }
 
 static int
-tpm_crb_recv_data(tpm_client_t *c, uint8_t *buf, size_t buflen, size_t *rlenp,
-    clock_t to)
+tpm_crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen, clock_t to)
 {
-	tpm_t *tpm = c->tpmc_tpm;
 	int ret;
-
-	/* We should be given a buffer large enough to hold any response */
-	VERIFY3U(buflen, >=, TPM_IO_BUF_SIZE);
 
 	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_START, 1, 0, to, false);
 	if (ret != 0) {
@@ -325,24 +322,22 @@ tpm_crb_recv_data(tpm_client_t *c, uint8_t *buf, size_t buflen, size_t *rlenp,
 	bcopy(tpm->tpm_addr, buf, TPM_HEADER_SIZE);
 
 	/* Check for sanity. */
-	size_t resp_len = BE_IN32(buf + TPM_PARAMSIZE_OFFSET);
+	uint32_t resp_len = tpm_cmdlen(buf);
 
 	if (resp_len > buflen) {
-		/* XXX: fm report? */
 		dev_err(tpm->tpm_dip, CE_WARN,
-		    "received and excessively large (%lu) sized response",
+		    "received excessively large (%lu) sized response",
 		    (unsigned long)resp_len);
 
 		/* Try to recover by going idle */
 		(void) tpm_crb_go_idle(tpm);
-		return (ret);
+		/* XXX: Better error? */
+		return (ENOSPC);
 	}
 
 	/* Read in rest of the response */
 	bcopy(tpm->tpm_addr + TPM_HEADER_SIZE, buf + TPM_HEADER_SIZE,
 	    resp_len - TPM_HEADER_SIZE);
-	*rlenp = resp_len;
-
 	return (0);
 }
 
@@ -420,50 +415,45 @@ tpm_crb_release_locality(tpm_t *tpm, uint8_t locality)
 }
 
 int
-tpm_crb_exec_cmd(tpm_client_t *c)
+crb_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 {
-	tpm_t *tpm = c->tpmc_tpm;
 	clock_t to;
+	uint32_t cmd, cmdlen;
 	int ret, ret2;
-	uint32_t cmd;
 
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
 	VERIFY3S(tpm->tpm_iftype, ==, TPM_IF_CRB);
+	VERIFY3U(buflen, >=, TPM_HEADER_SIZE);
 
-	VERIFY(MUTEX_HELD(&c->tpmc_lock));
-	VERIFY3S(c->tpmc_state, ==, TPM_CLIENT_CMD_EXECUTION);
+	cmdlen = tpm_cmdlen(buf);
+	VERIFY3U(cmdlen, >=, TPM_HEADER_SIZE);
+	VERIFY3U(cmdlen, <=, buflen);
 
-	mutex_enter(&tpm->tpm_lock);
-	mutex_exit(&c->tpmc_lock);
-
-	ret = tpm_crb_request_locality(tpm, c->tpmc_locality);
+	ret = tpm_crb_request_locality(tpm, loc);
 	if (ret != 0) {
-		mutex_exit(&tpm->tpm_lock);
 		return (ret);
 	}
 
-	ret = tpm_crb_send_data(c, c->tpmc_buf, c->tpmc_bufused);
+	ret = tpm_crb_send_data(tpm, buf, cmdlen);
 	if (ret != 0) {
 		goto done;
 	}
 
-	VERIFY3U(c->tpmc_buflen, >=, TPM_HEADER_SIZE);
-	cmd = BE_IN32(c->tpmc_buf + TPM_COMMAND_CODE_OFFSET);
-	to = tpm20_get_timeout(cmd);
+	cmd = tpm_cmd(buf);
 
-	c->tpmc_bufread = 0;
-	ret = tpm_crb_recv_data(c, c->tpmc_buf, c->tpmc_buflen,
-	     &c->tpmc_bufused, to);
+	/*
+	 * Since CRB only supports TPM2.0, we just need the TPM2.0
+	 * timeouts.
+	 */
+	to = tpm20_get_timeout(cmd);
+	ret = tpm_crb_recv_data(tpm, buf, buflen, to);
 
 done:
 	/*
 	 * Release the locality after completion to allow a lower value
 	 * locality to use the TPM.
 	 */
-	ret2 = tpm_crb_release_locality(tpm, c->tpmc_locality);
-	mutex_exit(&tpm->tpm_lock);
-
-	mutex_enter(&c->tpmc_lock);
-	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
+	ret2 = tpm_crb_release_locality(tpm, loc);
 	return ((ret != 0) ? ret : ret2);
 }
 

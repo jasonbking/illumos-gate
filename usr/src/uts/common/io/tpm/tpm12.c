@@ -33,11 +33,18 @@
 #include "tpm_tis.h"
 
 /*
+ * In order to test the 'millisecond bug', we test if DURATIONS and TIMEOUTS
+ * are unreasonably low...such as 10 milliseconds (TPM isn't that fast).
+ * and 400 milliseconds for long duration
+ */
+#define	TEN_MILLISECONDS		10000	/* 10 milliseconds */
+#define	FOUR_HUNDRED_MILLISECONDS	400000	/* 4 hundred milliseconds */
+
+/*
  * Historically, only one connection has been allowed to TPM1.2 devices,
  * with tssd (or equivalent) arbitrating access between multiple clients.
  */
 #define	TPM12_CLIENT_MAX	1
-
 
 #define	TPM_TAG_RQU_COMMAND		((uint16_t)0x00c1)
 
@@ -380,14 +387,12 @@ tpm12_get_timeouts(tpm_t *tpm)
 		0, 0, 1, 21	/* TPM_CAP_PROP_TIS_TIMEOUT(0x115) */
 	};
 
-	ASSERT(tpm != NULL);
-
-	ret = itpm_command(tpm, buf, sizeof (buf));
-	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: itpm_command failed", __func__);
-#endif
-		return (DDI_FAILURE);
+	ret = tpm_exec_internal(tpm, DEFAULT_LOCALITY, buf, sizeof (buf));
+	if (ret != 0) {
+		/* XXX: ereport? */
+		dev_err(tpm->tpm_dip, CE_WARN, "%s: command failed: %d",
+		    __func__, ret);
+		return (ret);
 	}
 
 	/*
@@ -398,12 +403,10 @@ tpm12_get_timeouts(tpm_t *tpm)
 	 */
 	len = tpm_getbuf32(buf, TPM_CAP_RESPSIZE_OFFSET);
 	if (len != 4 * sizeof (uint32_t)) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: capability response size should be %d"
-		    "instead len = %d",
-		    __func__, (int)(4 * sizeof (uint32_t)), (int)len);
-#endif
-		return (DDI_FAILURE);
+		dev_err(tpm->tpm_dip, CE_WARN, "%s: incorrect capability "
+		    "response size: expected %d received %u", __func__,
+		     (int)(4 * sizeof (uint32_t)), len);
+		return (EIO);
 	}
 
 	/* Get the four timeout's: a,b,c,d (they are 4 bytes long each) */
@@ -414,7 +417,7 @@ tpm12_get_timeouts(tpm_t *tpm)
 		/* timeout is in millisecond range (should be microseconds) */
 		timeout *= 1000;
 	}
-	tpm->timeout_a = drv_usectohz(timeout);
+	tpm->tpm_timeout_a = drv_usectohz(timeout);
 
 	timeout = tpm_getbuf32(buf, TPM_CAP_TIMEOUT_B_OFFSET);
 	if (timeout == 0) {
@@ -423,7 +426,7 @@ tpm12_get_timeouts(tpm_t *tpm)
 		/* timeout is in millisecond range (should be microseconds) */
 		timeout *= 1000;
 	}
-	tpm->timeout_b = drv_usectohz(timeout);
+	tpm->tpm_timeout_b = drv_usectohz(timeout);
 
 	timeout = tpm_getbuf32(buf, TPM_CAP_TIMEOUT_C_OFFSET);
 	if (timeout == 0) {
@@ -432,7 +435,7 @@ tpm12_get_timeouts(tpm_t *tpm)
 		/* timeout is in millisecond range (should be microseconds) */
 		timeout *= 1000;
 	}
-	tpm->timeout_c = drv_usectohz(timeout);
+	tpm->tpm_timeout_c = drv_usectohz(timeout);
 
 	timeout = tpm_getbuf32(buf, TPM_CAP_TIMEOUT_D_OFFSET);
 	if (timeout == 0) {
@@ -441,9 +444,9 @@ tpm12_get_timeouts(tpm_t *tpm)
 		/* timeout is in millisecond range (should be microseconds) */
 		timeout *= 1000;
 	}
-	tpm->timeout_d = drv_usectohz(timeout);
+	tpm->tpm_timeout_d = drv_usectohz(timeout);
 
-	return (DDI_SUCCESS);
+	return (0);
 }
 
 /*
@@ -454,6 +457,7 @@ tpm12_get_timeouts(tpm_t *tpm)
 static int
 tpm12_get_duration(tpm_t *tpm)
 {
+	tpm_tis_t *tis = &tpm->tpm_u.tpmu_tis;
 	int ret;
 	uint32_t duration;
 	uint32_t len;
@@ -466,15 +470,11 @@ tpm12_get_duration(tpm_t *tpm)
 		0, 0, 1, 32	/* TPM_CAP_PROP_TIS_DURATION(0x120) */
 	};
 
-	ASSERT(tpm != NULL);
-
-	ret = itpm_command(tpm, buf, sizeof (buf));
-	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: itpm_command failed with ret code: 0x%x",
+	ret = tpm_exec_internal(tpm, DEFAULT_LOCALITY, buf, sizeof (buf));
+	if (ret != 0) {
+		dev_err(tpm->tpm_dip, CE_WARN, "%s: command failed: %d",
 		    __func__, ret);
-#endif
-		return (DDI_FAILURE);
+		return (EIO);
 	}
 
 	/*
@@ -485,12 +485,10 @@ tpm12_get_duration(tpm_t *tpm)
 	 */
 	len = tpm_getbuf32(buf, TPM_CAP_RESPSIZE_OFFSET);
 	if (len != 3 * sizeof (uint32_t)) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: capability response should be %d, "
-		    "instead, it's %d",
-		    __func__, (int)(3 * sizeof (uint32_t)), (int)len);
-#endif
-		return (DDI_FAILURE);
+		dev_err(tpm->tpm_dip, CE_WARN, "%s: incorrect capability "
+		    "response size: expected %d received %u", __func__,
+		     (int)(3 * sizeof (uint32_t)), len);
+		return (EIO);
 	}
 
 	duration = tpm_getbuf32(buf, TPM_CAP_DUR_SHORT_OFFSET);
@@ -499,7 +497,7 @@ tpm12_get_duration(tpm_t *tpm)
 	} else if (duration < TEN_MILLISECONDS) {
 		duration *= 1000;
 	}
-	tpm->duration[TPM_SHORT] = drv_usectohz(duration);
+	tis->ttis_duration[TPM_SHORT] = drv_usectohz(duration);
 
 	duration = tpm_getbuf32(buf, TPM_CAP_DUR_MEDIUM_OFFSET);
 	if (duration == 0) {
@@ -507,7 +505,7 @@ tpm12_get_duration(tpm_t *tpm)
 	} else if (duration < TEN_MILLISECONDS) {
 		duration *= 1000;
 	}
-	tpm->duration[TPM_MEDIUM] = drv_usectohz(duration);
+	tis->ttis_duration[TPM_MEDIUM] = drv_usectohz(duration);
 
 	duration = tpm_getbuf32(buf, TPM_CAP_DUR_LONG_OFFSET);
 	if (duration == 0) {
@@ -515,12 +513,12 @@ tpm12_get_duration(tpm_t *tpm)
 	} else if (duration < FOUR_HUNDRED_MILLISECONDS) {
 		duration *= 1000;
 	}
-	tpm->duration[TPM_LONG] = drv_usectohz(duration);
+	tis->ttis_duration[TPM_LONG] = drv_usectohz(duration);
 
 	/* Just make the undefined duration be the same as the LONG */
-	tpm->duration[TPM_UNDEFINED] = tpm->duration[TPM_LONG];
+	tis->ttis_duration[TPM_UNDEFINED] = tis->ttis_duration[TPM_LONG];
 
-	return (DDI_SUCCESS);
+	return (0);
 }
 
 static int
@@ -538,15 +536,11 @@ tpm12_get_version(tpm_t *tpm)
 		0, 0, 0, 0,	/* SUB_CAP size in bytes */
 	};
 
-	ASSERT(tpm != NULL);
-
-	ret = itpm_command(tpm, buf, sizeof (buf));
+	ret = tpm_exec_internal(tpm, DEFAULT_LOCALITY, buf, sizeof (buf));
 	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: itpm_command failed with ret code: 0x%x",
+		dev_err(tpm->tpm_dip, CE_WARN, "%s: command failed: %d",
 		    __func__, ret);
-#endif
-		return (DDI_FAILURE);
+		return (ret);
 	}
 
 	/*
@@ -554,12 +548,10 @@ tpm12_get_version(tpm_t *tpm)
 	 */
 	len = tpm_getbuf32(buf, TPM_CAP_RESPSIZE_OFFSET);
 	if (len < TPM_CAP_VERSION_INFO_SIZE) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: capability response should be greater"
-		    " than %d, instead, it's %d",
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "%s: unexpected response length; expected %d actual %d",
 		    __func__, TPM_CAP_VERSION_INFO_SIZE, len);
-#endif
-		return (DDI_FAILURE);
+		return (EIO);
 	}
 
 	bcopy(buf + TPM_CAP_VERSION_INFO_OFFSET, &tpm->vers_info,
@@ -651,17 +643,17 @@ tpm12_continue_selftest(tpm_t *tpm)
 	};
 
 	/* Need a longer timeout */
-	ret = itpm_command(tpm, buf, sizeof (buf));
+	ret = tpm_exec_internal(tpm, DEFAULT_LOCALITY, buf, sizeof (buf));
 	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: itpm_command failed", __func__);
-#endif
-		return (DDI_FAILURE);
+		dev_err(tpm->tpm_dip, CE_WARN, "%s: command timed out",
+		    __func__);
+		return (ret);
 	}
 
 	return (DDI_SUCCESS);
 }
 
+#if 0
 /*
  * Header + length of seed data (as BE32 int) + max amount of seed a TPM12
  * can accept in a single command.
@@ -744,6 +736,7 @@ tpm12_generate_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 
 	return (CRYPTO_SUCCESS);
 }
+#endif
 
 /*
  * Initialize TPM1.2 device
@@ -785,56 +778,43 @@ tpm12_init(tpm_t *tpm)
 	intf_caps = tpm_get32(tpm, TPM_INTF_CAP);
 
 	if ((intf_caps & ~(TPM_INTF_MASK)) != 0) {
-		cmn_err(CE_WARN, "!%s: bad intf_caps value 0x%0x",
+		dev_err(tpm->tpm_dip, CE_WARN, "%s: bad intf_caps value 0x%0x",
 		    __func__, intf_caps);
-		return (bool);
+		return (false);
 	}
 
 	/* These two interrupts are mandatory */
 	if (!(intf_caps & TPM_INTF_INT_LOCALITY_CHANGE_INT)) {
-		cmn_err(CE_WARN,
-		    "!%s: Mandatory capability Locality Change Int "
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "%s: mandatory capability locality change interrupt "
 		    "not supported", __func__);
-		return (bool);
+		return (false);
 	}
 	if (!(intf_caps & TPM_INTF_INT_DATA_AVAIL_INT)) {
-		cmn_err(CE_WARN, "!%s: Mandatory capability Data Available Int "
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "%s: mandatory capability data available interrupt "
 		    "not supported.", __func__);
-		return (bool);
+		return (false);
 	}
 
-	/*
-	 * Before we start writing anything to TPM's registers,
-	 * make sure we are in locality 0
-	 */
-	ret = tis_request_locality(tpm, DEFAULT_LOCALITY);
-	if (ret != DDI_SUCCESS) {
-		cmn_err(CE_WARN, "!%s: Unable to request locality %d", __func__,
-		    DEFAULT_LOCALITY);
-		return (DDI_FAILURE);
-	} /* Now we can refer to the locality as tpm->locality */
-
-	tpm->timeout_poll = drv_usectohz(TPM_POLLING_TIMEOUT);
-	tpm->intr_enabled = 0;
+	tpm->tpm_timeout_poll = drv_usectohz(TPM_POLLING_TIMEOUT);
+	tpm->tpm_use_interrupts = false;
 
 	/* Get the real timeouts from the TPM */
 	ret = tpm12_get_timeouts(tpm);
 	if (ret != DDI_SUCCESS) {
-		cmn_err(CE_WARN, "!%s: tpm_get_timeouts error", __func__);
-		return (DDI_FAILURE);
+		return (false);
 	}
 
 	ret = tpm12_get_duration(tpm);
 	if (ret != DDI_SUCCESS) {
-		cmn_err(CE_WARN, "!%s: tpm_get_duration error", __func__);
-		return (DDI_FAILURE);
+		return (false);
 	}
 
 	/* This gets the TPM version information */
 	ret = tpm12_get_version(tpm);
 	if (ret != DDI_SUCCESS) {
-		cmn_err(CE_WARN, "!%s: tpm_get_version error", __func__);
-		return (DDI_FAILURE);
+		return (false);
 	}
 
 
