@@ -28,6 +28,9 @@
 
 #include "tpm_ddi.h"
 #include "tpm_tis.h"
+#include "tpm20.h"
+
+static void tis_release_locality(tpm_t *, uint8_t, bool);
 
 static uint8_t
 tpm_tis_get_status(tpm_t *tpm)
@@ -43,12 +46,9 @@ tpm_tis_set_ready(tpm_t *tpm)
 
 static int
 tpm_tis_wait_for_stat(tpm_t *tpm, uint8_t mask, clock_t timeout,
-    bool wait_intr)
+    bool intr)
 {
-	int ret;
-
-	ret = tpm_wait_u32(tpm, TPM_STS, mask, mask, timeout, wait_intr);
-	return ((ret == 0) ? DDI_SUCCESS : DDI_FAILURE);
+	return (tpm_wait_u32(tpm, TPM_STS, mask, mask, timeout, intr));
 }
 
 /*
@@ -56,7 +56,7 @@ tpm_tis_wait_for_stat(tpm_t *tpm, uint8_t mask, clock_t timeout,
  * to figure out the burstcount.  This is the amount of bytes it can write
  * before having to wait for the long LPC bus cycle
  *
- * Returns: 0 if error, burst count if sucess
+ * Returns: 0 if error, burst count if success
  */
 static uint16_t
 tpm_tis_get_burstcount(tpm_t *tpm)
@@ -105,14 +105,10 @@ tis_fifo_make_ready(tpm_t *tpm)
 	tpm_tis_set_ready(tpm);
 	ret = tpm_tis_wait_for_stat(tpm, TPM_STS_CMD_READY, tpm->tpm_timeout_b,
 	    use_intr);
-	if (ret != DDI_SUCCESS) {
+	if (ret != 0) {
 		/* XXX: ereport? */
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: could not put the TPM "
-		    "in the command ready state:"
-		    "tpm_wait_for_state returned error",
-		    __func__);
-#endif
+		dev_err(tpm->tpm_dip, CE_WARN, "%s: failed to put TPM into "
+		    "ready state", __func__);
 		return (false);
 	}
 
@@ -120,7 +116,7 @@ tis_fifo_make_ready(tpm_t *tpm)
 }
 
 static int
-tis_fifo_send_data(tpm_t *tpm, uint8_t *buf, size_t bufsize)
+tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 {
 	clock_t to;
 	size_t count = 0;
@@ -130,12 +126,7 @@ tis_fifo_send_data(tpm_t *tpm, uint8_t *buf, size_t bufsize)
 	uint8_t status;
 	bool use_intr = tpm->tpm_u.tpmu_tis.ttis_has_sts_valid_int;
 
-	if (bufsize == 0) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: bufsiz arg is zero", __func__);
-#endif
-		return (EINVAL);
-	}
+	VERIFY3U(amt, >, 0);
 
 	if (!tis_fifo_make_ready(tpm))
 		return (ETIME);
@@ -146,18 +137,16 @@ tis_fifo_send_data(tpm_t *tpm, uint8_t *buf, size_t bufsize)
 	 * Burstcount is dynamic if INTF_CAPABILITY for static burstcount is
 	 * not set.
 	 */
-	while (count < bufsize - 1) {
+	while (count < amt - 1) {
 		burstcnt = tpm_tis_get_burstcount(tpm);
 		if (burstcnt == 0) {
-#ifdef DEBUG
-			cmn_err(CE_WARN, "!%s: tpm_get_burstcnt returned error",
-			    __func__);
-#endif
+			dev_err(tpm->tpm_dip, CE_WARN,
+			    "%s: timed out getting burst count", __func__);
 			ret = EIO;
 			goto fail;
 		}
 
-		for (; burstcnt > 0 && count < bufsize - 1; burstcnt--) {
+		for (; burstcnt > 0 && count < amt - 1; burstcnt--) {
 			tpm_put8(tpm, TPM_DATA_FIFO, buf[count]);
 			count++;
 		}
@@ -166,14 +155,13 @@ tis_fifo_send_data(tpm_t *tpm, uint8_t *buf, size_t bufsize)
 		    (TPM_STS_VALID | TPM_STS_DATA_EXPECT), tpm->tpm_timeout_c,
 		    false);
 		if (ret != 0) {
-#ifdef DEBUG
-			cmn_err(CE_WARN, "!%s: TPM didn't enter STS_VALID "
-			    "state", __func__);
-#endif
+			dev_err(tpm->tpm_dip, CE_WARN,
+			    "%s: timeout waiting to enter STS_VALID state "
+			    "while writing command", __func__);
 			goto fail;
 		}
 	}
-	/* We can't exit the loop above unless we wrote bufsiz-1 bytes */
+	/* We can't exit the loop above unless we wrote amt-1 bytes */
 
 	/* Write last byte */
 	tpm_put8(tpm, TPM_DATA_FIFO, buf[count]);
@@ -183,20 +171,22 @@ tis_fifo_send_data(tpm_t *tpm, uint8_t *buf, size_t bufsize)
 	ret = tpm_tis_wait_for_stat(tpm, TPM_STS_VALID, tpm->tpm_timeout_c,
 	    use_intr);
 	if (ret != 0) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: tpm didn't enter STS_VALID state",
-		    __func__);
-#endif
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "%s: timeout waiting to enter STS_VALID state", __func__);
 		goto fail;
 	}
 
 	status = tpm_tis_get_status(tpm);
-	/* The TPM should NOT be expecing more data at this point */
+
+	/*
+	 * The TPM should NOT be expecing more data at this point. This
+	 * could be user error, so we only display in verbose mode, otherwise
+	 * we just return the error.
+	 */
 	if ((status & TPM_STS_DATA_EXPECT) != 0) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: DATA_EXPECT should not be set after "
-		    "writing the last byte: status=0x%08X", __func__, status);
-#endif
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "!%s: TPM still expecting data after writing last byte",
+		    __func__);
 		ret = EIO;
 		goto fail;
 	}
@@ -208,7 +198,7 @@ tis_fifo_send_data(tpm_t *tpm, uint8_t *buf, size_t bufsize)
 	tpm_put8(tpm, TPM_STS, TPM_STS_GO);
 
 	/* Ordinal/Command_code is located in buf[6..9] */
-	ordinal = BE_IN32(buf + TPM_COMMAND_CODE_OFFSET);
+	ordinal = tpm_cmd(buf);
 	to = tpm_get_timeout(tpm, ordinal);
 
 	ret = tpm_tis_wait_for_stat(tpm, TPM_STS_DATA_AVAIL | TPM_STS_VALID,
@@ -233,7 +223,7 @@ tis_fifo_send_data(tpm_t *tpm, uint8_t *buf, size_t bufsize)
 
 fail:
 	tpm_tis_set_ready(tpm);
-	tis_fifo_release_locality(tpm, tpm->tpm_locality, 0);
+	tis_release_locality(tpm, tpm->tpm_locality, false);
 	return (ret);
 }
 
@@ -247,7 +237,6 @@ receive_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
 	/* A number of consecutive bytes that can be written to TPM */
 	uint16_t burstcnt;
 
-	ASSERT(tpm != NULL && buf != NULL);
 retry:
 	while (size < bufsiz && (tpm_tis_wait_for_stat(tpm,
 	    (TPM_STS_DATA_AVAIL|TPM_STS_VALID),
@@ -278,24 +267,12 @@ retry:
 
 /* Receive the data from the TPM */
 static int
-tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
+tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz, clock_t to)
 {
 	int ret;
 	int size = 0;
 	uint32_t expected, status;
 	uint32_t cmdresult;
-
-	ASSERT(tpm != NULL && buf != NULL);
-
-	if (bufsiz < TPM_HEADER_SIZE) {
-		/* There should be at least tag, paramsize, return code */
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: received data should contain at least "
-		    "the header which is %d bytes long",
-		    __func__, TPM_HEADER_SIZE);
-#endif
-		goto OUT;
-	}
 
 	/* Read tag(2 bytes), paramsize(4), and result(4) */
 	size = receive_data(tpm, buf, TPM_HEADER_SIZE);
@@ -357,11 +334,11 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
 	 * Release the control of the TPM after we are done with it
 	 * it...so others can also get a chance to send data
 	 */
-	tpm_tis_release_locality(tpm, tpm->tpm_locality, 0);
+	tis_release_locality(tpm, tpm->tpm_locality, 0);
 
 OUT:
 	tpm_tis_set_ready(tpm);
-	tpm_tis_release_locality(tpm, tpm->tpm_locality, 0);
+	tis_release_locality(tpm, tpm->tpm_locality, 0);
 	return (size);
 }
 
@@ -370,7 +347,7 @@ OUT:
  * Use TPM_ACCESS register and the masks TPM_ACCESS_VALID,TPM_ACTIVE_LOCALITY
  */
 static bool
-tpm_tis_locality_active(tpm_t *tpm, uint8_t locality)
+tis_locality_active(tpm_t *tpm, uint8_t locality)
 {
 	uint8_t access_bits;
 	uint8_t current_locality;
@@ -393,8 +370,8 @@ tpm_tis_locality_active(tpm_t *tpm, uint8_t locality)
 	}
 }
 
-bool
-tpm_tis_request_locality(tpm_t *tpm, uint8_t locality)
+static bool
+tis_request_locality(tpm_t *tpm, uint8_t locality)
 {
 	int ret;
 	uint8_t old_locality = tpm->tpm_locality;
@@ -403,7 +380,7 @@ tpm_tis_request_locality(tpm_t *tpm, uint8_t locality)
 	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
 	VERIFY3U(locality, <=, TPM_LOCALITY_MAX);
 
-	if (tpm_tis_locality_active(tpm, locality)) {
+	if (tis_locality_active(tpm, locality)) {
 		tpm->tpm_locality = locality;
 		return (true);
 	}
@@ -429,26 +406,26 @@ tpm_tis_request_locality(tpm_t *tpm, uint8_t locality)
 	return ((ret == 0) ? true : false);
 }
 
-#if 0
-void
-tpm_tis_relinquish_locality(tpm_t *tpm, uint8_t locality, bool force)
+static void
+tis_release_locality(tpm_t *tpm, uint8_t locality, bool force)
 {
-	uint8_t 
+	uint8_t orig_loc = tpm->tpm_locality;
+
 	VERIFY3U(locality, <=, TPM_LOCALITY_MAX);
 
+	tpm->tpm_locality = locality;
 	if (force ||
-	    (tpm_get8_loc(tpm, locality, TPM_ACCESS) &
+	    (tpm_get8(tpm, TPM_ACCESS) &
 	    (TPM_ACCESS_REQUEST_PENDING | TPM_ACCESS_VALID)) ==
 	    (TPM_ACCESS_REQUEST_PENDING | TPM_ACCESS_VALID)) {
 		/*
 		 * Writing 1 to active locality bit in TPM_ACCESS
 		 * register reliquishes the control of the locality
 		 */
-		tpm_put8_loc(tpm, locality, TPM_ACCESS,
-		    TPM_ACCESS_ACTIVE_LOCALITY);
+		tpm_put8(tpm, TPM_ACCESS, TPM_ACCESS_ACTIVE_LOCALITY);
 	}
+	tpm->tpm_locality = orig_loc;
 }
-#endif
 
 uint_t
 tpm_tis_intr(caddr_t arg0, caddr_t arg1 __unused)
@@ -548,9 +525,40 @@ tpm_tis_init(tpm_t *tpm)
 }
 
 int
-tpm_tis_exec_cmd(tpm_client_t *c)
+tis_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 {
-	return (0);
+	clock_t to;
+	uint32_t cmd, cmdlen;
+	int ret;
+
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+	VERIFY3S(tpm->tpm_iftype, ==, TPM_IF_CRB);
+	VERIFY3U(buflen, >=, TPM_HEADER_SIZE);
+
+	cmdlen = tpm_cmdlen(buf);
+	VERIFY3U(cmdlen, >=, TPM_HEADER_SIZE);
+	VERIFY3U(cmdlen, <=, buflen);
+
+	if (!tis_request_locality(tpm, loc)) {
+		return (ETIME);
+	}
+
+	ret = tis_send_data(tpm, buf, cmdlen);
+	if (ret != 0) {
+		goto done;
+	}
+
+	cmd = tpm_cmd(buf);
+	to = tpm_get_timeout(tpm, cmd);
+	ret = tis_recv_data(tpm, buf, buflen, to);
+
+done:
+	/*
+	 * Release the locality after completion to allow a lower value
+	 * locality to use the TPM.
+	 */
+	tis_release_locality(tpm, loc, false);
+	return (ret);
 }
 
 int
