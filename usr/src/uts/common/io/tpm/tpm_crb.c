@@ -13,6 +13,7 @@
  * Copyright 2022 Jason King
  */
 
+#include <sys/sysmacros.h>
 #include "tpm_ddi.h"
 #include "tpm_tis.h"
 #include "tpm20.h"
@@ -36,6 +37,11 @@
 
 #define	TPM_LOC_STS		0x0c
 #define	TPM_CRB_INTF_ID		0x30
+#define	TPM_CRB_INTF_XFER(x)	\
+    ((tpm_crb_xfer_size_t)(BE_16(((x) >> 11) & 0x3)))
+#define	TPM_CRB_INTF_RID(x)	(((x) >> 24) & 0xff)
+#define	TPM_CRB_INTF_VID(x)	(((x) >> 32) & 0xffff)
+#define	TPM_CRB_INTF_DID(x)	(((x) >> 48) & 0xffff)
 #define	TPM_CRB_CTRL_EXT	0x38
 
 #define	TPM_CRB_CTRL_REQ	0x40
@@ -98,7 +104,7 @@ state_allowed(tpm_crb_state_t curr, tpm_crb_state_t next)
 }
 
 static void
-tpm_crb_set_state(tpm_t *tpm, tpm_crb_state_t next_state)
+crb_set_state(tpm_t *tpm, tpm_crb_state_t next_state)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 
@@ -174,12 +180,12 @@ tpm_crb_go_idle(tpm_t *tpm)
 		return (EIO);
 	}
 
-	tpm_crb_set_state(tpm, TCRB_ST_IDLE);
+	crb_set_state(tpm, TCRB_ST_IDLE);
 	return (0);
 }
 
 static int
-tpm_crb_go_ready(tpm_t *tpm)
+crb_go_ready(tpm_t *tpm)
 {
 	int ret;
 
@@ -194,7 +200,7 @@ tpm_crb_go_ready(tpm_t *tpm)
 	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_REQ,
 	    TPM_CRB_CTRL_REQ_CMD_READY, 0, tpm->tpm_timeout_c, true);
 	if (ret == 0) {
-		tpm_crb_set_state(tpm, TCRB_ST_READY);
+		crb_set_state(tpm, TCRB_ST_READY);
 		return (0);
 	}
 
@@ -204,10 +210,16 @@ tpm_crb_go_ready(tpm_t *tpm)
 }
 
 bool
-tpm_crb_init(tpm_t *tpm)
+crb_init(tpm_t *tpm)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
+	uint64_t id;
 
+	id = tpm_get64(tpm, TPM_CRB_INTF_ID);
+	tpm->tpm_did = TPM_CRB_INTF_DID(id);
+	tpm->tpm_vid = TPM_CRB_INTF_VID(id);
+	tpm->tpm_rid = TPM_CRB_INTF_RID(id);
+	crb->tcrb_xfer_size = TPM_CRB_INTF_XFER(id);
 	crb->tcrb_state = TCRB_ST_IDLE;
 
 	/*
@@ -242,7 +254,7 @@ tpm_crb_init(tpm_t *tpm)
 }
 
 uint_t
-tpm_crb_intr(caddr_t arg0, caddr_t arg1 __unused)
+crb_intr(caddr_t arg0, caddr_t arg1 __unused)
 {
 	const uint32_t intr_mask = TPM_CRB_INT_LOC_CHANGED|
 	    TPM_CRB_INT_EST_CLEAR|TPM_CRB_INT_CMD_READY|TPM_CRB_INT_START;
@@ -272,9 +284,11 @@ tpm_crb_intr(caddr_t arg0, caddr_t arg1 __unused)
 }
 
 static int
-tpm_crb_send_data(tpm_t *tpm, const uint8_t *buf, size_t amt)
+crb_send_data(tpm_t *tpm, const uint8_t *buf, size_t amt)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
+	uint8_t *destp;
+	size_t xfer_chunk = 1;
 	int ret;
 
 	VERIFY3U(amt, >=, TPM_HEADER_SIZE);
@@ -285,7 +299,7 @@ tpm_crb_send_data(tpm_t *tpm, const uint8_t *buf, size_t amt)
 		return (ret);
 	}
 
-	ret = tpm_crb_go_ready(tpm);
+	ret = crb_go_ready(tpm);
 	if (ret != 0) {
 		return (ret);
 	}
@@ -295,19 +309,46 @@ tpm_crb_send_data(tpm_t *tpm, const uint8_t *buf, size_t amt)
 	 * state until the first byte is written, but nothing should get
 	 * inbetween us doing this, so we update the state first.
 	 */
-	tpm_crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
+	crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
 
-	/* XXX: should this be replaced with a 64-bit copy loop? */
-	bcopy(buf, tpm->tpm_addr + crb->tcrb_cmd_off, amt);
+	switch (crb->tcrb_xfer_size) {
+	case TPM_CRB_XFER_4:
+		xfer_chunk = 4;
+		break;
+	case TPM_CRB_XFER_8:
+		xfer_chunk = 8;
+		break;
+	case TPM_CRB_XFER_32:
+		xfer_chunk = 32;
+		break;
+	case TPM_CRB_XFER_64:
+		xfer_chunk = 64;
+		break;
+	}
+
+	destp = tpm->tpm_addr + crb->tcrb_cmd_off;
+	while (amt > 0) {
+		/* Copy in xfer_amt chunks. */
+		size_t xfer_amt = MIN(xfer_chunk, amt);
+
+		if (xfer_amt < 4) {
+			xfer_amt = 1;
+		}
+
+		bcopy(buf, destp, xfer_amt);
+		buf += xfer_amt;
+		destp += xfer_amt;
+		amt -= xfer_amt;	
+	}
 
 	tpm_put32(tpm, TPM_CRB_CTRL_START, 1);
-	tpm_crb_set_state(tpm, TCRB_ST_CMD_EXECUTION);
+	crb_set_state(tpm, TCRB_ST_CMD_EXECUTION);
 
 	return (ret);
 }
 
 static int
-tpm_crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen, clock_t to)
+crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen, clock_t to)
 {
 	int ret;
 
@@ -316,7 +357,7 @@ tpm_crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen, clock_t to)
 		return (ret);
 	}
 
-	tpm_crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
+	crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
 
 	/* First, read in the header */
 	bcopy(tpm->tpm_addr, buf, TPM_HEADER_SIZE);
@@ -342,7 +383,7 @@ tpm_crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen, clock_t to)
 }
 
 static int
-tpm_crb_request_locality(tpm_t *tpm, uint8_t locality)
+crb_request_locality(tpm_t *tpm, uint8_t locality)
 {
 	uint32_t status;
 	uint32_t mask;
@@ -403,7 +444,7 @@ tpm_crb_request_locality(tpm_t *tpm, uint8_t locality)
 }
 
 static int
-tpm_crb_release_locality(tpm_t *tpm, uint8_t locality)
+crb_release_locality(tpm_t *tpm, uint8_t locality)
 {
 	/*
 	 * The TPM_LOC_CTRL_REQUEST register is write only. Bits written as
@@ -429,12 +470,12 @@ crb_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 	VERIFY3U(cmdlen, >=, TPM_HEADER_SIZE);
 	VERIFY3U(cmdlen, <=, buflen);
 
-	ret = tpm_crb_request_locality(tpm, loc);
+	ret = crb_request_locality(tpm, loc);
 	if (ret != 0) {
 		return (ret);
 	}
 
-	ret = tpm_crb_send_data(tpm, buf, cmdlen);
+	ret = crb_send_data(tpm, buf, cmdlen);
 	if (ret != 0) {
 		goto done;
 	}
@@ -446,19 +487,19 @@ crb_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 	 * timeouts.
 	 */
 	to = tpm20_get_timeout(cmd);
-	ret = tpm_crb_recv_data(tpm, buf, buflen, to);
+	ret = crb_recv_data(tpm, buf, buflen, to);
 
 done:
 	/*
 	 * Release the locality after completion to allow a lower value
 	 * locality to use the TPM.
 	 */
-	ret2 = tpm_crb_release_locality(tpm, loc);
+	ret2 = crb_release_locality(tpm, loc);
 	return ((ret != 0) ? ret : ret2);
 }
 
 int
-tpm_crb_cancel_cmd(tpm_client_t *c)
+crb_cancel_cmd(tpm_client_t *c)
 {
 	tpm_t *tpm = c->tpmc_tpm;
 
@@ -498,7 +539,7 @@ tpm_crb_cancel_cmd(tpm_client_t *c)
 }
 
 void
-tpm_crb_intr_mgmt(tpm_t *tpm, bool enable)
+crb_intr_mgmt(tpm_t *tpm, bool enable)
 {
 	VERIFY(tpm->tpm_use_interrupts);
 

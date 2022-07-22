@@ -750,6 +750,9 @@ tpm12_init(tpm_t *tpm)
 	uint32_t intf_caps;
 	int ret;
 
+	/* For legacy TPM1.2 devices, we only support a single client */
+	tpm->tpm_client_max = 1;
+
 	/*
 	 * Temporarily set up timeouts before we get the real timeouts
 	 * by issuing TPM_CAP commands (but to issue TPM_CAP commands,
