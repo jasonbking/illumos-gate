@@ -20,6 +20,9 @@
 bool
 tpm20_init(tpm_t *tpm)
 {
+	/* Until TAB support is implemented, only support a single client */
+	tpm->tpm_client_max = 1;
+
 	/*
 	 * TPM2.0 defines explicit timeouts (unlike TPM1.2 where there are
 	 * default timeouts, but the TPM can advertise it's own timeout
