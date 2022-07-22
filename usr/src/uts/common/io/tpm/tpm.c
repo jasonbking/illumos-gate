@@ -81,9 +81,6 @@ typedef struct tpm_attach_desc {
 #define	TPM_INTF_IFTYPE_FIFO	(0x0)
 #define	TPM_INTF_IFTYPE_CRB	(0x1)
 #define	TPM_INTF_IFTYPE_TIS	(0xf)
-#define	TPM_INTF_DID(x)		((x) >> 48)
-#define	TPM_INTF_VID(x)		(BE_16(((x) >> 32 & 0xffff)))
-#define	TPM_INTF_RID(x)		((x) >> 24 & 0xff)
 
 /*
  * Explicitly not static as it is a tunable. Set to true to enable
@@ -215,7 +212,7 @@ tpm_cancel(tpm_client_t *c)
 			(void) tpm_tis_cancel_cmd(c);
 			break;
 		case TPM_IF_CRB:
-			(void) tpm_crb_cancel_cmd(c);
+			(void) crb_cancel_cmd(c);
 			break;
 		}
 		break;
@@ -857,6 +854,7 @@ tpm_exec_thread(void *arg)
 		}
 
 		ret = tpm_exec_client(c);
+
 		/* tpm_exec_cmd() should return with tpmc_lock held */
 		VERIFY(MUTEX_HELD(&c->tpmc_lock));
 
@@ -1086,14 +1084,14 @@ tpm_cleanup_regs(tpm_t *tpm)
 static bool
 tpm_attach_dev_init(tpm_t *tpm)
 {
-	uint64_t id;
+	uint32_t id;
 
 	/*
-	 * The TPM_INTERFACE_ID_x register is purposely identical between
-	 * TIS/FIFO and CRB access methods. It also allows us to determine
-	 * if this is a TPM1.2 or TPM2.0 module.
+	 * The lower 32 bits of the interface id register are identical
+	 * between the FIFO and CRB interfaces to facilitate distinguishing
+	 * between interface types.
 	 */
-	id = tpm_get64(tpm, TPM_INTERFACE_ID);
+	id = tpm_get32(tpm, TPM_INTERFACE_ID);
 
 	switch (TPM_INTF_IFTYPE(id)) {
 	case TPM_INTF_IFTYPE_TIS:
@@ -1119,20 +1117,17 @@ tpm_attach_dev_init(tpm_t *tpm)
 	case TPM_INTF_IFTYPE_CRB:
 		tpm->tpm_iftype = TPM_IF_CRB;
 		tpm->tpm_family = TPM_FAMILY_2_0;
-
-		(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
-		    "tpm-deviceid", TPM_INTF_DID(id));
-		(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
-		    "tpm-vendorid", TPM_INTF_VID(id));
-		(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
-		    "tpm-revision", TPM_INTF_RID(id));
-
-		return (tpm_crb_init(tpm));
-	default:
-		cmn_err(CE_NOTE, "!%s: unknown TPM interface type 0x%lx",
-		    __func__, TPM_INTF_IFTYPE(id));
-		return (false);
+		return (crb_init(tpm));
 	}
+
+	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "tpm-deviceid", tpm->tpm_did);
+	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "tpm-vendorid", tpm->tpm_vid);
+	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "tpm-revision", tpm->tpm_rid);
+
+	return (true);
 }
 
 static void
@@ -1235,7 +1230,7 @@ tpm_attach_intr_hdlrs(tpm_t *tpm)
 		isr = tpm_tis_intr;
 		break;
 	case TPM_IF_CRB:
-		isr = tpm_crb_intr;
+		isr = crb_intr;
 		break;
 	}
 	
@@ -1559,7 +1554,7 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 			tpm_tis_intr_mgmt(tpm, true);
 			break;
 		case TPM_IF_CRB:
-			tpm_crb_intr_mgmt(tpm, true);
+			crb_intr_mgmt(tpm, true);
 			break;
 		}
 	}

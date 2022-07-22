@@ -130,15 +130,23 @@ typedef enum tpm_crb_state {
 	TCRB_ST_MAX			/* Must be last */
 } tpm_crb_state_t;
 
-/* CRB Interface specific data */
-typedef struct tpm_crb {
-	tpm_crb_state_t	tcrb_state;		/* RW */
+typedef enum tpm_crb_xfer_size {
+	TPM_CRB_XFER_4,
+	TPM_CRB_XFER_8,
+	TPM_CRB_XFER_32,
+	TPM_CRB_XFER_64,
+} tpm_crb_xfer_size_t;
 
-	uint64_t	tcrb_cmd_off;		/* WO */
-	size_t		tcrb_cmd_size;		/* WO */
-	uint64_t	tcrb_resp_off;		/* WO */
-	size_t		tcrb_resp_size;		/* WO */
-	bool		tcrb_idle_bypass;	/* WO */
+/* CRB Interface specific data, protected by tpm_t.tpm_lock */
+typedef struct tpm_crb {
+	tpm_crb_state_t		tcrb_state;		/* RW */
+
+	uint64_t		tcrb_cmd_off;		/* WO */
+	size_t			tcrb_cmd_size;		/* WO */
+	uint64_t		tcrb_resp_off;		/* WO */
+	size_t			tcrb_resp_size;		/* WO */
+	tpm_crb_xfer_size_t	tcrb_xfer_size;		/* WO */
+	bool			tcrb_idle_bypass;	/* WO */
 } tpm_crb_t;
 
 /*
@@ -241,6 +249,9 @@ struct tpm {
 		tpm_tis_t	tpmu_tis;
 		tpm_crb_t	tpmu_crb;
 	} tpm_u;
+	uint16_t		tpm_vid;		/* WO */
+	uint16_t		tpm_did;		/* WO */
+	uint8_t			tpm_rid;		/* WO */
 
 	uint8_t			tpm_locality;	/* locality during cmd exec */
 
@@ -374,11 +385,11 @@ int tpm_tis_cancel_cmd(tpm_client_t *);
 void tpm_tis_intr_mgmt(tpm_t *, bool);
 uint_t tpm_tis_intr(caddr_t, caddr_t);
 
-bool tpm_crb_init(tpm_t *);
+bool crb_init(tpm_t *);
 int crb_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
-int tpm_crb_cancel_cmd(tpm_client_t *);
-void tpm_crb_intr_mgmt(tpm_t *, bool);
-uint_t tpm_crb_intr(caddr_t, caddr_t);
+int crb_cancel_cmd(tpm_client_t *);
+void crb_intr_mgmt(tpm_t *, bool);
+uint_t crb_intr(caddr_t, caddr_t);
 
 int tpm_exec_internal(tpm_t *, uint8_t, uint8_t *, size_t);
 
