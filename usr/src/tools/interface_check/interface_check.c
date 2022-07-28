@@ -19,6 +19,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+typedef enum category_type {
+	CT_NUMBERED,
+	CT_PLAIN,
+	CT_SONAME,
+	CT_PRIVATE,
+	CT_UNKNOWN,
+} category_type_t;
+
+typedef struct category {
+	category_type_t	c_type;
+	/* These are only used with CT_NUMBERED */
+	uint_t		c_num;
+	uint_t		c_ver[5];
+} category_t;
+
 typedef struct exception {
 	char	*e_verb;
 	regex_t	*e_regexes;
@@ -32,10 +47,27 @@ typedef struct exceptions {
 	uint_t		es_size;
 } exceptions_t;
 
+static void parse_category(const char *, const char *, category_t *);
 static void load_exceptions(const char *, exceptions_t *);
 static void print_header(FILE *);
 
+static void init_re(void);
+static void *xcalloc(size_t, size_t);
+static void xregcomp(regex_t *, const char *, int);
+
 static const char *mach_restr = "MACH\(([^)]+)\)";
+static const char *cat_version_restr =
+    "^((?:SUNW|ILLUMOS)_)(\d+)\.(\d+)(\.(\d+))?";
+static const char *cat_plain_restr[] = {
+    "^SYSVABI_1.[23]$", "^SISCD_2.3[ab]*$"
+};
+static const char *cat_private_restr = "^(SUNW|ILLUMOS)private(_[0-9.]+)?$";
+
+static regex_t mach_re;
+static regex_t cat_version_re;
+static regex_t cat_plain_re[2];
+static regex_t cat_private_re;
+
 static exceptions_t exceptions;
 static bool do_header;
 static FILE *errf = stdout;
@@ -56,7 +88,8 @@ usage(const char *name)
 	    "\t[-I]\t\tExpand inheritance in -i output (debugging)\n"
 	    "\t[-i intffile]\tcreate interface description output file\n"
 	    "\t[-o]\t\tproduce one-liner output (prefixed with pathname)\n"
-	    "\t[-w outdir]\tinterpret all files relative to given directory\n");
+	    "\t[-w outdir]\tinterpret all files relative to given directory\n",
+	    name);
 
 	exit(EXIT_FAILURE);
 }
@@ -65,12 +98,15 @@ int
 main(int argc, char **argv)
 {
 	const char *intfile = NULL;
+	const char *errfile = NULL;
 	int c;
 
 	while ((c = getopt(argc, argv, "c:E:e:f:hIi:ow:")) != -1) {
 		switch (c) {
 		case 'c':
 		case 'E':
+			errfile = optarg;
+			break;
 		case 'e':
 		case 'f':
 		case 'h':
@@ -88,6 +124,8 @@ main(int argc, char **argv)
 			usage(argv[0]);
 		}
 	}
+
+	init_re();
 
 	intfile = fopen(optarg, "w");
 	if (intfile == NULL)
@@ -187,10 +225,7 @@ add_ex_regex(exception_t *e, const char *re_str)
 		regex_t *new_e;
 		size_t newamt = e->e_sz + EXCEPTION_CHUNK;
 
-		new_e = calloc(newamt, sizeof (regex_t));
-		if (new_e == NULL)
-			err(EXIT_FAILURE, "failed to grow exception array");
-
+		new_e = xcalloc(newamt, sizeof (regex_t));
 		(void) memcpy(new_e, e->e_regexes, (e->e_n * sizeof (regex_t)));
 		free(e->e_regexes);
 
@@ -199,20 +234,12 @@ add_ex_regex(exception_t *e, const char *re_str)
 	}
 
 	re = &e->regexes[e->e_n++];
-	ret = regcomp(re, re_str, REG_EXTENDED);
-	if (ret != 0) {
-		char errbuf[256] = { 0 };
-
-		(void) regerror(ret, re, errbuf, sizeof (errbuf));
-		errx(EXIT_FAILURE, "failed to compile regex '%s': %s",
-		    re_str, errbuf);
-	}
+	xregcomp(re, re_str, REG_EXTENDED);
 }
 
 static void
 load_exceptions(const char *name, exceptions_t *es)
 {
-	regex_t mach_re = { 0 };
 	FILE *f = NULL;
 	char *tryname = NULL;
 	char *line = NULL;
@@ -235,14 +262,6 @@ load_exceptions(const char *name, exceptions_t *es)
 	f = fopen(tryname, "r");
 	if (f == NULL)
 		err(EXIT_FAILURE, "unable to open exceptions file %s", tryname);
-
-	ret = regcomp(&mach_re, mach_restr, REG_EXTENDED);
-	if (ret != 0) {
-		char errbuf[256] = { 0 };
-
-		(void) regerror(ret, &mach_re, errbuf, sizeof (errbuf));
-		errx(EXIT_FAILURE, "regcomp(%s) failed: %s", mach_re, errbuf);
-	}
 
 	while ((n = getline(&line, &linesz, f)) > 0) {
 		char *p = line;
@@ -283,7 +302,6 @@ load_exceptions(const char *name, exceptions_t *es)
 		add_ex_regex(e, re);
 	}
 
-	regfree(&mach_re);
 	VERIFY0(fclose(f));
 	free(tryname);
 	free(line);
@@ -292,4 +310,73 @@ load_exceptions(const char *name, exceptions_t *es)
 static void
 print_header(FILE *out)
 {
+}
+
+static void
+parse_category(const char *vstr, const char *soname, category_t *c)
+{
+	regmatch_t pmatch[5] = { 0 };
+	int ret;
+
+	(void) memset(c, '\0', sizeof (*c));
+	if (regexec(&cat_version_re, vstr, 5, pmatch, 0) == 0) {
+		c->c_type = CT_NUMBERED;
+		/* TODO */
+	}
+
+	if (regexec(&cat_plain_re, vstr, 0, NULL, 0) == 0) {
+		c->c_type = CT_PLAIN;
+		return;
+	}
+
+	if (soname != NULL && strcmp(vstr, soname) == 0) {
+		c->c_type = CT_SONAME;
+		return;
+	}
+
+	if (regexec(&cat_private_re, vstr, 0, NULL, 0) == 0) {
+		c->c_type = CT_PRIVATE;
+		return;
+	}
+
+	c->c_type = CT_UNKNOWN;
+}
+
+
+static void
+init_re(void)
+{
+	xregcomp(&mach_re, mach_restr, REG_EXTENDED);
+	xregcomp(&cat_version_re, cat_version_restr, REG_EXTENDED);
+	xregcomp(&cat_plain_re[0], cat_plain_restr[0], REG_EXTENDED);
+	xregcomp(&cat_plain_re[1], cat_plain_restr[1], REG_EXTENDED);
+	xregcomp(&cat_private_re, cat_private_restr, REG_EXTENDED);
+}
+
+static void
+xregcomp(regex_t *restrict preg, const char *restrict pat, int cflags)
+{
+	int ret;
+
+	ret = regcomp(preg, pat, cflags);
+	if (ret == 0)
+		return;
+
+	size_t errlen = regerror(ret, preg, NULL, 0):
+	char *errbuf = xcalloc(1, errbuf + 1);
+
+	(void) regerror(ret, preg, errbuf, errlen);
+	errx(EXIT_FAILURE, "failed to compile regex '%s': %s", pat, errbuf);
+}
+
+static void *
+xcalloc(size_t n, size_t sz)
+{
+	void *p = calloc(n, sz);
+
+	if (p != NULL)
+		return (p);
+
+	(void) fprintf(stderr, "Out of memory\n");
+	abort();
 }
