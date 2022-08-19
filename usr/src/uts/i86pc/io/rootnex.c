@@ -27,6 +27,7 @@
  * Copyright 2012 Garrett D'Amore <garrett@damore.org>.  All rights reserved.
  * Copyright 2017 Joyent, Inc.
  * Copyright 2020 Ryan Zezeski
+ * Copyright 2022 Racktop Systems, Inc.
  */
 
 /*
@@ -598,6 +599,9 @@ rootnex_add_props(dev_info_t *dip)
 		(void) e_ddi_prop_update_int(DDI_DEV_T_NONE, dip,
 		    rpp[i].prop_name, rpp[i].prop_value);
 	}
+
+	(void) e_ddi_prop_update_string(DDI_DEV_T_NONE, dip, OBP_DEVICETYPE,
+	    "rootnex");
 }
 
 

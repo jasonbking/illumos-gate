@@ -24,6 +24,8 @@
  *
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2022 Racktop Systems, Inc.
  */
 
 /*
@@ -47,6 +49,7 @@
 #include <sys/pci.h>
 #include <sys/framebuffer.h>
 #include <sys/boot_console.h>
+#include <sys/x86_archext.h>
 #if defined(__xpv)
 #include <sys/hypervisor.h>
 #endif
@@ -190,6 +193,23 @@ plat_devpath(char *name, char *path)
 	return (path);
 }
 
+static char *
+hyperv_kbdpath(char *buf)
+{
+	dev_info_t *isa_dip;
+
+	if (get_hwenv() != HW_MICROSOFT)
+		return (NULL);
+
+	if ((isa_dip = ddi_find_devinfo("isa", -1, 0)) == NULL)
+		return (NULL);
+
+	if (ddi_get_parent(isa_dip) != ddi_root_node())
+		return (NULL);
+
+	return (plat_devpath("hv_kbd", buf));
+}
+
 /*
  * Return generic path to keyboard device from the alias.
  */
@@ -204,6 +224,9 @@ plat_kbdpath(void)
 	 */
 	if (pseudo_isa)
 		return ("/isa/i8042@1,60/keyboard@0");
+
+	if (hyperv_kbdpath(kbpath) != NULL)
+		return (kbpath);
 
 	if (plat_devpath("kb8042", kbpath) == NULL)
 		return (NULL);
@@ -328,7 +351,8 @@ find_fb_dev(dev_info_t *dip, void *param)
 	    "device_type", &parent_type) != DDI_SUCCESS)
 		return (DDI_WALK_PRUNECHILD);
 
-	if ((strcmp(parent_type, "isa") == 0) ||
+	if ((pdip == ddi_root_node()) ||
+	    (strcmp(parent_type, "isa") == 0) ||
 	    (strcmp(parent_type, "eisa") == 0)) {
 		p->found_dip = dip;
 		ddi_prop_free(parent_type);

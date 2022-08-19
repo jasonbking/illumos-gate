@@ -39,6 +39,7 @@
 
 /*
  * Copyright (c) 2017 by Delphix. All rights reserved.
+ * Copyright 2022 Racktop Systems, Inc.
  */
 
 #include <sys/debug.h>
