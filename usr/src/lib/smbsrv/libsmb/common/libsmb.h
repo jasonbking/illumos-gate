@@ -23,6 +23,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2020 Tintri by DDN, Inc. All rights reserved.
  * Copyright 2022 RackTop Systems, Inc.
+ * Copyright 2022 Jason King
  */
 
 #ifndef	_LIBSMB_H
@@ -164,6 +165,8 @@ typedef enum {
 	SMB_CI_ENCRYPT_CIPHER,
 	SMB_CI_NETLOGON_FLAGS,
 	SMB_CI_SHORT_NAMES,
+
+	SMB_CI_MDNS,
 
 	SMB_CI_MAX
 } smb_cfg_id_t;

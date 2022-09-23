@@ -23,6 +23,7 @@
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2018 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2016 by Delphix. All rights reserved.
+ * Copyright 2022 Jason King
  */
 
 #ifndef _SMB_SHARE_H
@@ -105,6 +106,8 @@ extern "C" {
 #define	SHOPT_FSO		"fso"	/* Force Shared Oplocks */
 #define	SHOPT_ENCRYPT		"encrypt"
 #define	SHOPT_AUTOHOME		"Autohome"
+#define	SHOPT_ADISK		"adisk"
+#define	SHOPT_TM		"tm"
 
 #define	SMB_DEFAULT_SHARE_GROUP	"smb"
 #define	SMB_PROTOCOL_NAME	"smb"
@@ -167,26 +170,29 @@ extern "C" {
 /*
  * Property flags
  */
-#define	SMB_SHRF_DFSROOT	0x0001
-#define	SMB_SHRF_CATIA		0x0002
-#define	SMB_SHRF_GUEST_OK	0x0004
-#define	SMB_SHRF_ABE		0x0008
+#define	SMB_SHRF_DFSROOT	0x00001
+#define	SMB_SHRF_CATIA		0x00002
+#define	SMB_SHRF_GUEST_OK	0x00004
+#define	SMB_SHRF_ABE		0x00008
 
-#define	SMB_SHRF_CSC_DISABLED	0x0010
-#define	SMB_SHRF_CSC_MANUAL	0x0020
-#define	SMB_SHRF_CSC_AUTO	0x0040
-#define	SMB_SHRF_CSC_VDO	0x0080
-#define	SMB_SHRF_CSC_MASK	0x00F0
+#define	SMB_SHRF_CSC_DISABLED	0x00010
+#define	SMB_SHRF_CSC_MANUAL	0x00020
+#define	SMB_SHRF_CSC_AUTO	0x00040
+#define	SMB_SHRF_CSC_VDO	0x00080
+#define	SMB_SHRF_CSC_MASK	0x000F0
 
-#define	SMB_SHRF_ACC_OPEN	0x0000
-#define	SMB_SHRF_ACC_NONE	0x0100
-#define	SMB_SHRF_ACC_RO		0x0200
-#define	SMB_SHRF_ACC_RW		0x0400
-#define	SMB_SHRF_ACC_ALL	0x0F00
+#define	SMB_SHRF_ACC_OPEN	0x00000
+#define	SMB_SHRF_ACC_NONE	0x00100
+#define	SMB_SHRF_ACC_RO		0x00200
+#define	SMB_SHRF_ACC_RW		0x00400
+#define	SMB_SHRF_ACC_ALL	0x00F00
 
-#define	SMB_SHRF_QUOTAS		0x1000	/* Enable SMB Quotas */
-#define	SMB_SHRF_FSO		0x2000	/* Force Shared Oplocks */
-#define	SMB_SHRF_CA		0x4000	/* Continuous Availability */
+#define	SMB_SHRF_QUOTAS		0x01000	/* Enable SMB Quotas */
+#define	SMB_SHRF_FSO		0x02000	/* Force Shared Oplocks */
+#define	SMB_SHRF_CA		0x04000	/* Continuous Availability */
+
+#define	SMB_SHRF_ADISK		0x08000	/* Advertise share as adisk over mDNS */
+#define	SMB_SHRF_TM		0x10000	/* Advertise as Time Machine capable */
 
 /*
  * Runtime flags
@@ -260,6 +266,8 @@ typedef struct smb_shr_execinfo {
  */
 int smb_shr_start(void);
 void smb_shr_stop(void);
+int smb_mdns_start(void);
+void smb_mdns_stop(void);
 void *smb_shr_load(void *);
 void smb_shr_load_execinfo(void);
 void smb_shr_unload(void);

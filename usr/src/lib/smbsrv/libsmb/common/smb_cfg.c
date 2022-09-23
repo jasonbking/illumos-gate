@@ -22,6 +22,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2022 Tintri by DDN, Inc. All rights reserved.
  * Copyright 2022 RackTop Systems, Inc.
+ * Copyright 2022 Jason King
  */
 
 /*
@@ -162,6 +163,7 @@ static smb_cfg_param_t smb_cfg_table[] =
 	{SMB_CI_NETLOGON_FLAGS, "netlogon_flags", SCF_TYPE_INTEGER, 0},
 	{SMB_CI_SHORT_NAMES, "short_names", SCF_TYPE_BOOLEAN, 0},
 
+	{SMB_CI_MDNS, "mdns", SCF_TYPE_BOOLEAN, 0},
 	/* SMB_CI_MAX */
 };
 

@@ -23,6 +23,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2017 Nexenta Systems, Inc.  All rights reserved.
  * Copyright 2022 RackTop Systems.
+ * Copyright 2022 Jason King
  */
 
 /*
@@ -184,6 +185,8 @@ struct option_defs optdefs[] = {
 	{ SHOPT_FSO,		OPT_TYPE_BOOLEAN },
 	{ SHOPT_QUOTAS,		OPT_TYPE_BOOLEAN },
 	{ SHOPT_ENCRYPT,	OPT_TYPE_STRING },
+	{ SHOPT_ADISK,		OPT_TYPE_BOOLEAN },
+	{ SHOPT_TM,		OPT_TYPE_BOOLEAN },
 	{ NULL, 0 }
 };
 

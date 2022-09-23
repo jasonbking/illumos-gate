@@ -88,7 +88,7 @@ INCS += -I$(SRC)/uts/common/smbsrv/ndl
 LDLIBS +=	$(MACH_LDLIBS)
 LDLIBS += -lmlrpc -lsmb -lsmbns -lshare -lsmbfs -lnsl -lpkcs11 -lmd	 \
 	-lscf -lcmdutils -lsec -lavl -lnvpair -luutil -luuid -lgen -lzfs \
-	-lresolv -lc
+	-lresolv -ldns_sd -lc
 
 CPPFLAGS += $(INCS) -D_REENTRANT
 CPPFLAGS += -Dsyslog=smb_syslog
