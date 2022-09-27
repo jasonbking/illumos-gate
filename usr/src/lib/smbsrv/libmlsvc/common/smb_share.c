@@ -2900,12 +2900,16 @@ smb_mdns_do_update(const char *hostname)
 	if (smb_mdns.smbm_mdns_ref != NULL)
 		DNSServiceRefDeallocate(smb_mdns.smbm_mdns_ref);
 
+	if (i == 0)
+		goto done;
+
 	error = DNSServiceRegister(&smb_mdns.smbm_mdns_ref, 0, 0, hostname,
 	    "_adisk._tcp", "", NULL, htons(IPPORT_SMB),
 	    TXTRecordGetLength(&txt), TXTRecordGetBytesPtr(&txt), NULL, NULL);
 	syslog(LOG_INFO, "share: failed to update mDNS adisk record: %d",
 	    error);
 
+done:
 	TXTRecordDeallocate(&txt);
 	return (0);
 }
