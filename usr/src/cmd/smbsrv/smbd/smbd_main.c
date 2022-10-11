@@ -995,6 +995,7 @@ smbd_mdns_start(void)
 	DNSServiceErrorType error;
 	char hostname[MAXHOSTNAMELEN];
 	char fqdn[MAXHOSTNAMELEN];
+	int rc;
 
 	smbd.s_mdns_svc_ref = NULL;
 
@@ -1037,7 +1038,9 @@ smbd_mdns_start(void)
 	}
 
 	/* Now start mDNS for shares */
-	smb_mdns_start();
+	rc = smb_mdns_start();
+	if (rc != 0)
+		smbd_report("failed to start mDNS update thread: %d", rc);
 }
 
 static void

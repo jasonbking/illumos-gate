@@ -502,7 +502,7 @@ smb_shr_add(smb_share_t *si)
 			if ((si->shr_flags & SMB_SHRF_DFSROOT) != 0)
 				dfs_namespace_load(si->shr_name);
 
-			if ((si->shr_flags & SMB_SHRF_ADISK) != 0)
+			if ((si->shr_flags & SMB_SHRF_TM) != 0)
 				smb_mdns_update();
 
 			return (NERR_Success);
@@ -618,7 +618,7 @@ smb_shr_remove(char *sharename)
 
 	smb_shr_unpublish(sharename, container);
 
-	if ((si->shr_flags & SMB_SHRF_ADISK) != 0)
+	if ((si->shr_flags & SMB_SHRF_TM) != 0)
 		smb_mdns_update();
 
 	/* call kernel to release the hold on the shared file system */
@@ -715,7 +715,7 @@ smb_shr_rename(char *from_name, char *to_name)
 	smb_shr_unpublish(from_name, to_si.shr_container);
 	smb_shr_publish(to_name, to_si.shr_container);
 
-	if ((to_si.shr_flags & SMB_SHRF_ADISK) != 0)
+	if ((to_si.shr_flags & SMB_SHRF_TM) != 0)
 		smb_mdns_update();
 
 	return (NERR_Success);
@@ -1922,13 +1922,6 @@ smb_shr_sa_get(sa_share_t share, sa_resource_t resource, smb_share_t *si)
 		si->shr_flags |= SMB_SHRF_ACC_RW;
 	}
 
-	val = smb_shr_sa_getprop(opts, SHOPT_ADISK);
-	if (val != NULL) {
-		/* Turn the flag on or off */
-		smb_shr_sa_setflag(val, si, SMB_SHRF_ADISK);
-		free(val);
-	}
-
 	val = smb_shr_sa_getprop(opts, SHOPT_TM);
 	if (val != NULL) {
 		/* Turn the flag on or off */
@@ -2758,18 +2751,17 @@ smb_mdns_create_sys(TXTRecordRef *tp)
 	return (0);
 }
 
+/*
+ * Create the dk key used by Time Machine.
+ */
 static int
-smb_mdns_create_dk(TXTRecordRef *tp, uint_t idx, const char *name,
-    boolean_t tm)
+smb_mdns_create_dk(TXTRecordRef *tp, uint_t idx, const char *name)
 {
 	char			key[16];
 	char			val[128];
 	DNSServiceErrorType	error __unused;
 	int			ret;
-	uint16_t		flags = SMB_ADVF_SMB;
-
-	if (tm)
-		flags |= SMB_ADVF_TM;
+	uint16_t		flags = SMB_ADVF_SMB|SMB_ADVF_TM;
 
 	(void) snprintf(key, sizeof (key), "dk%u", idx);
 	ret = snprintf(val, sizeof (val), "adVF=0x%" PRIx16 ",adVN=%s",
@@ -2785,7 +2777,7 @@ smb_mdns_create_dk(TXTRecordRef *tp, uint_t idx, const char *name,
 	return (0);
 }
 
-/* Wait until the adisk share list settles to a steady state */
+/* Wait until the share list settles to a steady state */
 static void
 smb_mdns_settle(void)
 {
@@ -2857,6 +2849,19 @@ done:
 	return (NULL);
 }
 
+/*
+ * Update the _adisk TXT record to advertise Time Machine volumes.
+ * Due to the way mDNS works, we can't do a differential update. Instead,
+ * whenever the list of Time Machine volumes changes, we must generate
+ * a brand new TXT record with all the keys (volumes) and publish it.
+ *
+ * We are also limited in the total size of the TXT record which is based
+ * on the length of the volume names. Unfortunately, there isn't a good way
+ * to flag too many entries to the user when setting the tm option, so
+ * we just log when this happens (and advertise what we can). Since the
+ * expectation is that the number of Time Machine volumes should be low
+ * (often one), this hopefully isn't a condition that's common.
+ */
 static int
 smb_mdns_do_update(const char *hostname)
 {
@@ -2879,15 +2884,10 @@ smb_mdns_do_update(const char *hostname)
 
 	i = 0;
 	while ((si = smb_shr_iterate(&shi)) != NULL) {
-		boolean_t tm = B_FALSE;
-
-		if ((si->shr_flags & SMB_SHRF_ADISK) == 0)
+		if ((si->shr_flags & SMB_SHRF_TM) == 0)
 			continue;
 
-		if ((si->shr_flags & SMB_SHRF_TM) != 0)
-			tm = B_TRUE;
-
-		ret = smb_mdns_create_dk(&txt, i++, si->shr_name, tm);
+		ret = smb_mdns_create_dk(&txt, i++, si->shr_name);
 		if (ret != 0) {
 			syslog(LOG_INFO,
 			    "share: mDNS record for %s exceeds limits",

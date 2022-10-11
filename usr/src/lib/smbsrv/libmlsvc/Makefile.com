@@ -23,6 +23,7 @@
 # Copyright 2020 Tintri by DDN, Inc. All rights reserved.
 #
 # Copyright (c) 2018, Joyent, Inc.
+# Copyright 2022 Jason King
 
 LIBRARY =	libmlsvc.a
 VERS =		.1
