@@ -974,8 +974,10 @@ mac_sw_lso(mblk_t *omp, mac_emul_t emul, mblk_t **head, mblk_t **tail,
 	 */
 	ASSERT3S(DB_TYPE(omp), ==, M_DATA);
 	ocsum_flags = DB_CKSUMFLAGS(omp);
+#if 0
 	ASSERT3U(ocsum_flags & HCK_IPV4_HDRCKSUM, !=, 0);
 	ASSERT3U(ocsum_flags & (HCK_PARTIALCKSUM | HCK_FULLCKSUM), !=, 0);
+#endif
 
 	/*
 	 * If hardware only provides partial checksum then software

@@ -3673,7 +3673,7 @@ mac_tx(mac_client_handle_t mch, mblk_t *mp_chain, uintptr_t hint,
 				if (needed & (HCK_PARTIALCKSUM | HCK_FULLCKSUM))
 					emul |= MAC_HWCKSUM_EMUL;
 				if (needed & HW_LSO)
-					emul = MAC_LSO_EMUL;
+					emul |= MAC_LSO_EMUL;
 
 				mac_hw_emul(&mp, &tail, NULL, emul);
 
