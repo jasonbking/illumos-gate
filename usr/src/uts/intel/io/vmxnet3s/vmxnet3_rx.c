@@ -23,6 +23,7 @@
 static void vmxnet3_put_rxbuf(vmxnet3_rxbuf_t *);
 static int vmxnet3_rx_populate(vmxnet3_softc_t *, vmxnet3_rxqueue_t *, uint16_t,
     boolean_t, boolean_t);
+static mblk_t *vmxnet3_rx_one(vmxnet3_rxqueue_t *);
 
 int
 vmxnet3_rx_start(mac_ring_driver_t rh, uint64_t gen_num)
@@ -105,18 +106,106 @@ vmxnet3_rx_stop(mac_ring_driver_t rh)
 	mutex_exit(&rxq->rxLock);
 }
 
-#ifdef notyet
-mblk_t *
-vmxnet3_rx_poll(mac_ring_driver_t rh, int poll_bytes)
+/*
+ * Determine the length of the next available packet (including all fragments).
+ * This skips 0 byte packets.
+ *
+ * If no packet is available, or no complete packet is available, 0 is
+ * returned. Otherwise the size of the next packet is returned.
+ */
+static int
+vmxnet3_rx_next_len(vmxnet3_rxqueue_t *rxq)
 {
-	vmxnet3_rxqueue_t	*rxq = (vmxnet3_rxqueue_t *)rh;
-	mblk_t			*mp;
+	vmxnet3_compring_t	*compRing = &rxq->compRing;
+	Vmxnet3_RxCompDesc	*rxcd;
+	uint_t			gen;
+	int			len;
+	uint16_t		idx;
 
-	mp = vmxnet3_rx(rxq->sc, rxq, poll_bytes);
+	gen = compRing->gen;
+	idx = compRing->next2comp;
+	rxcd = &VMXNET3_GET_DESC(compRing, idx)->rcd;
 
-	return (mp);
+again:
+	membar_consumer();
+
+	if (rxcd->gen != gen)
+		return (0);
+	if (!rxcd->sop)
+		return (0);
+
+	len = rxcd->len;
+	while (!rxcd->eop) {
+		/*
+		 * Since we're 'peeking' at the available descriptors in
+		 * the ring and not actually processing them, we don't
+		 * want to use VMXNET3_INC_RING_IDX() since that may
+		 * flip compDesc->gen if we roll over which would break
+		 * the actual processing.
+		 */
+		idx++;
+		rxcd++;
+		if (idx == compRing->size) {
+			idx = 0;
+			gen ^= 1;
+			rxcd = &VMXNET3_GET_DESC(compRing, idx)->rcd;
+		}
+		membar_consumer();
+
+		if (rxcd->gen != gen)
+			break;
+		len += rxcd->len;
+	}
+
+	/* Only return the length of a full packet */
+	if (!rxcd->eop)
+		return (0);
+
+	/*
+	 * The FreeBSD and Linux sources suggest it's possible to encounter
+	 * a 0 byte packets which should just be skipped as long as there's
+	 * more descriptors available to check.
+	 */
+	if (len == 0 && rxcd->gen == gen)
+		goto again;
+
+	return (len);
 }
-#endif
+
+mblk_t *
+vmxnet3_rx_poll(void *driver, int poll_bytes)
+{
+	vmxnet3_rxqueue_t	*rxq = driver;
+	mblk_t			*mp_chain = NULL;
+	mblk_t			*mp_tail = NULL;
+
+	while (poll_bytes > 0) {
+		mblk_t *mp = NULL;
+		int next_len;
+
+		next_len = vmxnet3_rx_next_len(rxq);
+		if (next_len >= poll_bytes || next_len == 0)
+			break;
+
+		mp = vmxnet3_rx_one(rxq);
+		/*
+		 * If we received an empty or bad packet,
+		 * vmxnet3_rx_one() will return NULL.
+		 */
+		if (mp == NULL)
+			continue;
+
+		if (mp_tail != NULL) {
+			mp_tail->b_next = mp;
+			mp_tail = mp;
+		} else {
+			mp_chain = mp_tail = mp;
+		}
+		poll_bytes -= next_len;
+	}
+
+	return (mp_chain);
+}
 
 int
 vmxnet3_rx_stat(mac_ring_driver_t rh, uint_t stat, uint64_t *valp)
@@ -172,7 +261,7 @@ vmxnet3_rx_intr(caddr_t arg1, caddr_t arg2)
 		(void) vmxnet3_rx_intr_disable((mac_intr_handle_t)rxq);
 
 	mutex_enter(&rxq->rxLock);
-	mp = vmxnet3_rx(dp, rxq, 0);
+	mp = vmxnet3_rx(dp, rxq);
 	gen_num = rxq->gen_num;
 	mutex_exit(&rxq->rxLock);
 
@@ -219,7 +308,7 @@ vmxnet3_alloc_rxbuf(vmxnet3_softc_t *dp, boolean_t canSleep)
 	int err;
 
 	rxBuf = kmem_zalloc(sizeof (vmxnet3_rxbuf_t), flag);
-	if (!rxBuf) {
+	if (rxBuf == NULL) {
 		atomic_inc_32(&dp->rx_alloc_failed);
 		return (NULL);
 	}
@@ -276,15 +365,19 @@ vmxnet3_put_rxpool_buf(vmxnet3_softc_t *dp, vmxnet3_rxbuf_t *rxBuf,
 	boolean_t returned = B_FALSE;
 
 	mutex_enter(&dp->rxPoolLock);
-	ASSERT(rxPool->nBufs <= rxPool->nBufsLimit);
+
+	ASSERT3U(rxPool->nBufs, <=, rxPool->nBufsLimit);
+
 	if ((dp->devEnabled || init) && rxPool->nBufs < rxPool->nBufsLimit) {
-		ASSERT((rxPool->listHead == NULL && rxPool->nBufs == 0) ||
-		    (rxPool->listHead != NULL && rxPool->nBufs != 0));
+		EQUIV(rxPool->listHead == NULL, rxPool->nBufs == 0);
+		EQUIV(rxPool->listHead != NULL, rxPool->nBufs != 0);
+
 		rxBuf->next = rxPool->listHead;
 		rxPool->listHead = rxBuf;
 		rxPool->nBufs++;
 		returned = B_TRUE;
 	}
+
 	mutex_exit(&dp->rxPoolLock);
 	return (returned);
 }
@@ -318,8 +411,9 @@ vmxnet3_get_rxpool_buf(vmxnet3_softc_t *dp)
 		rxBuf = rxPool->listHead;
 		rxPool->listHead = rxBuf->next;
 		rxPool->nBufs--;
-		ASSERT((rxPool->listHead == NULL && rxPool->nBufs == 0) ||
-		    (rxPool->listHead != NULL && rxPool->nBufs != 0));
+
+		EQUIV(rxPool->listHead == NULL, rxPool->nBufs == 0);
+		EQUIV(rxPool->listHead != NULL, rxPool->nBufs != 0);
 	}
 	mutex_exit(&dp->rxPoolLock);
 	return (rxBuf);
@@ -340,7 +434,7 @@ vmxnet3_rxpool_init(vmxnet3_softc_t *dp)
 	ASSERT(MUTEX_HELD(&dp->genLock));
 	ASSERT(!dp->devEnabled);
 
-	ASSERT(dp->rxPool.nBufsLimit > 0);
+	ASSERT3U(dp->rxPool.nBufsLimit, >, 0);
 	while (dp->rxPool.nBufs < dp->rxPool.nBufsLimit) {
 		if ((rxBuf = vmxnet3_alloc_rxbuf(dp, B_FALSE)) == NULL) {
 			err = ENOMEM;
@@ -488,23 +582,110 @@ vmxnet3_rxqueue_fini(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq)
  */
 static void
 vmxnet3_rx_hwcksum(vmxnet3_softc_t *dp, mblk_t *mp,
-    Vmxnet3_GenericDesc *compDesc)
+    Vmxnet3_RxCompDesc *compDesc)
 {
 	uint32_t flags = 0;
 
-	if (!compDesc->rcd.cnc) {
-		if (compDesc->rcd.v4 && compDesc->rcd.ipc) {
-			flags |= HCK_IPV4_HDRCKSUM;
-			if ((compDesc->rcd.tcp || compDesc->rcd.udp) &&
-			    compDesc->rcd.tuc) {
-				flags |= HCK_FULLCKSUM | HCK_FULLCKSUM_OK;
-			}
+	if (compDesc->cnc)
+		return;
+	if (!compDesc->v4 || compDesc->ipc)
+		return;
+
+	flags |= HCK_IPV4_HDRCKSUM;
+	if ((compDesc->tcp || compDesc->udp) && compDesc->tuc) {
+		flags |= HCK_FULLCKSUM | HCK_FULLCKSUM_OK;
+	}
+
+	VMXNET3_DEBUG(dp, 3, "rx cksum flags = 0x%x\n", flags);
+
+	mac_hcksum_set(mp, 0, 0, 0, 0, flags);
+}
+
+static mblk_t *
+vmxnet3_rx_one(vmxnet3_rxqueue_t *rxq)
+{
+	vmxnet3_compring_t	*compRing = &rxq->compRing;
+	vmxnet3_cmdring_t	*cmdRing = &rxq->cmdRing;
+	Vmxnet3_RxCompDesc	*rxcd;
+	Vmxnet3_RxDesc		*rxd;
+	mblk_t			*mp_head, *mp_tail;
+	uint_t			len;
+	boolean_t		eop;
+	boolean_t		discard = B_FALSE;
+
+	len = 0;
+	mp_head = mp_tail = NULL;
+	rxcd = &VMXNET3_GET_DESC(compRing, compRing->next2comp)->rcd;
+
+	if (rxcd->gen != compRing->gen)
+		return (NULL);
+
+	if (!rxcd->sop)
+		return (NULL);
+
+	do {
+		vmxnet3_rxbuf_t *rxBuf;
+		mblk_t		*mp;
+		uint16_t	rxIdx;
+
+		rxIdx = rxcd->rxdIdx;
+		rxBuf = rxq->bufRing[rxIdx].rxBuf;
+		mp = rxBuf->mblk;
+
+		/*
+		 * If the hypervisor is in the middle of generating the
+		 * entry, wait until the bit is flipped.
+		 */
+		while (rxcd->gen != compRing->gen)
+			membar_consumer();
+
+		ASSERT3U(rxcd->gen, ==, compRing->gen);
+		ASSERT3P(rxBuf, !=, NULL);
+		ASSERT3P(mp, !=, NULL);
+
+		/* Some RX descriptors may have been skipped */
+		while (cmdRing->next2fill != rxIdx) {
+			rxd = &VMXNET3_GET_DESC(cmdRing,
+			    cmdRing->next2fill)->rxd;
+			rxd->gen = cmdRing->gen;
+			VMXNET3_INC_RING_IDX(cmdRing, cmdRing->next2fill);
 		}
 
-		VMXNET3_DEBUG(dp, 3, "rx cksum flags = 0x%x\n", flags);
+		eop = rxcd->eop;
 
-		mac_hcksum_set(mp, 0, 0, 0, 0, flags);
+		if (vmxnet3_rx_populate(rxq->sc, rxq, rxIdx, B_FALSE,
+		    B_TRUE) == 0) {
+			mp->b_wptr += rxcd->len;
+			len += rxcd->len;
+
+			if (mp_head == NULL) {
+				mp_head = mp_tail = mp;
+			} else {
+				mp_tail->b_cont = mp;
+				mp_tail = mp;
+			}
+		} else {
+			rxd = &VMXNET3_GET_DESC(cmdRing, rxIdx)->rxd;
+			rxd->gen = cmdRing->gen;
+			discard = B_TRUE;
+		}
+
+		VMXNET3_INC_RING_IDX(compRing, compRing->next2comp);
+		VMXNET3_INC_RING_IDX(cmdRing, cmdRing->next2fill);
+		rxcd = &VMXNET3_GET_DESC(compRing, compRing->next2comp)->rcd;
+	} while (!eop);
+
+	if (rxcd->err || discard || len == 0) {
+		freemsg(mp_head);
+		return (NULL);
 	}
+
+	/*
+	 * Set any header checksum flags done by the hypervisor. These
+	 * are always in the last completion descriptor of a packet.
+	 */
+	vmxnet3_rx_hwcksum(rxq->sc, mp_head, rxcd);
+	return (mp_head);
 }
 
 /*
@@ -515,122 +696,50 @@ vmxnet3_rx_hwcksum(vmxnet3_softc_t *dp, mblk_t *mp,
  *	A list of messages to pass to the MAC subystem.
  */
 mblk_t *
-vmxnet3_rx(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq, int bytes __unused)
+vmxnet3_rx(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq)
 {
-	vmxnet3_compring_t *compRing = &rxq->compRing;
-	vmxnet3_cmdring_t *cmdRing = &rxq->cmdRing;
-	Vmxnet3_RxQueueCtrl *rxqCtrl = rxq->sharedCtrl;
-	Vmxnet3_GenericDesc *compDesc;
-	mblk_t *mplist = NULL, **mplistTail = &mplist;
+	vmxnet3_compring_t	*compRing = &rxq->compRing;
+	Vmxnet3_RxQueueCtrl	*rxqCtrl = rxq->sharedCtrl;
+	Vmxnet3_GenericDesc	*compDesc;
+	mblk_t			*mp_chain, *mp_tail;
 
-	compDesc = VMXNET3_GET_DESC(compRing, compRing->next2comp);
-	while (compDesc->rcd.gen == compRing->gen) {
-		mblk_t *mp = NULL, **mpTail = &mp;
-		boolean_t mpValid = B_TRUE;
-		boolean_t eop;
+	mp_chain = mp_tail = NULL;
+	for (;;) {
+		mblk_t *mp;
 
-		ASSERT(compDesc->rcd.sop);
+		compDesc = VMXNET3_GET_DESC(compRing, compRing->next2comp);
+		if (compDesc->rcd.gen != compRing->gen)
+			break;
 
-		do {
-			uint16_t rxdIdx = compDesc->rcd.rxdIdx;
-			vmxnet3_rxbuf_t *rxBuf = rxq->bufRing[rxdIdx].rxBuf;
-			mblk_t *mblk = rxBuf->mblk;
-			Vmxnet3_GenericDesc *rxDesc;
+		mp = vmxnet3_rx_one(rxq);
+		if (mp == NULL)
+			continue;
 
-			while (compDesc->rcd.gen != compRing->gen) {
-				/*
-				 * H/W may be still be in the middle of
-				 * generating this entry, so hold on until
-				 * the gen bit is flipped.
-				 */
-				membar_consumer();
-			}
-			ASSERT(compDesc->rcd.gen == compRing->gen);
-			ASSERT(rxBuf);
-			ASSERT(mblk);
-
-			/* Some Rx descriptors may have been skipped */
-			while (cmdRing->next2fill != rxdIdx) {
-				rxDesc = VMXNET3_GET_DESC(cmdRing,
-				    cmdRing->next2fill);
-				rxDesc->rxd.gen = cmdRing->gen;
-				VMXNET3_INC_RING_IDX(cmdRing,
-				    cmdRing->next2fill);
-			}
-
-			eop = compDesc->rcd.eop;
-
-			/*
-			 * Now we have a piece of the packet in the rxdIdx
-			 * descriptor. Grab it only if we achieve to replace
-			 * it with a fresh buffer.
-			 */
-			if (vmxnet3_rx_populate(dp, rxq, rxdIdx, B_FALSE,
-			    B_TRUE) == 0) {
-				/* Success, we can chain the mblk with the mp */
-				mblk->b_wptr = mblk->b_rptr + compDesc->rcd.len;
-				*mpTail = mblk;
-				mpTail = &mblk->b_cont;
-				ASSERT(*mpTail == NULL);
-
-				VMXNET3_DEBUG(dp, 3, "rx 0x%p on [%u]\n",
-				    (void *)mblk, rxdIdx);
-
-				if (eop) {
-					if (!compDesc->rcd.err) {
-						/*
-						 * Tag the mp if it was
-						 * checksummed by the H/W
-						 */
-						vmxnet3_rx_hwcksum(dp, mp,
-						    compDesc);
-					} else {
-						mpValid = B_FALSE;
-					}
-				}
-			} else {
-				/*
-				 * Keep the same buffer, we still need
-				 * to flip the gen bit
-				 */
-				rxDesc = VMXNET3_GET_DESC(cmdRing, rxdIdx);
-				rxDesc->rxd.gen = cmdRing->gen;
-				mpValid = B_FALSE;
-			}
-
-			VMXNET3_INC_RING_IDX(compRing, compRing->next2comp);
-			VMXNET3_INC_RING_IDX(cmdRing, cmdRing->next2fill);
-			compDesc = VMXNET3_GET_DESC(compRing,
-			    compRing->next2comp);
-		} while (!eop);
-
-		if (mp) {
-			if (mpValid) {
-				*mplistTail = mp;
-				mplistTail = &mp->b_next;
-				ASSERT(*mplistTail == NULL);
-			} else {
-				/* This message got holes, drop it */
-				freemsg(mp);
-			}
+		if (mp_tail == NULL) {
+			mp_chain = mp_tail = mp;
+		} else {
+			mp_tail->b_next = mp;
+			mp_tail = mp;
 		}
 	}
 
 	if (rxqCtrl->updateRxProd) {
-		uint_t idx = (uint_t)(rxq - dp->rxQueue);
-		uint32_t rxprod;
+		vmxnet3_cmdring_t	*cmdRing = &rxq->cmdRing;
+		uint_t			idx = (uint_t)(rxq - dp->rxQueue);
+		uint32_t		rxprod;
 
 		/*
 		 * All buffers are actually available, but we can't tell that to
 		 * the device because it may interpret that as an empty ring.
 		 * So skip one buffer.
 		 */
-		if (cmdRing->next2fill) {
+		if (cmdRing->next2fill != 0) {
 			rxprod = cmdRing->next2fill - 1;
 		} else {
 			rxprod = cmdRing->size - 1;
 		}
-		VMXNET3_BAR0_PUT32(dp, VMXNET3_REG_RXPROD(idx), rxprod);
+		VMXNET3_BAR0_PUT32(rxq->sc, VMXNET3_REG_RXPROD(idx), rxprod);
 	}
-	return (mplist);
+
+	return (mp_chain);
 }

@@ -251,7 +251,7 @@ void	vmxnet3_txqueue_fini(vmxnet3_softc_t *dp, vmxnet3_txqueue_t *txq);
 
 int	vmxnet3_rx_start(mac_ring_driver_t, uint64_t);
 void	vmxnet3_rx_stop(mac_ring_driver_t);
-mblk_t	*vmxnet3_rx_poll(mac_ring_driver_t, int);
+mblk_t	*vmxnet3_rx_poll(void *, int);
 int	vmxnet3_rx_stat(mac_ring_driver_t, uint_t, uint64_t *);
 uint_t	vmxnet3_rx_intr(caddr_t, caddr_t);
 int	vmxnet3_rx_intr_enable(mac_intr_handle_t);
@@ -261,7 +261,7 @@ int	vmxnet3_rxpool_init(vmxnet3_softc_t *);
 void	vmxnet3_rxpool_fini(vmxnet3_softc_t *);
 
 int	vmxnet3_rxqueue_init(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq);
-mblk_t	*vmxnet3_rx(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq, int);
+mblk_t	*vmxnet3_rx(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq);
 void	vmxnet3_rxqueue_fini(vmxnet3_softc_t *dp, vmxnet3_rxqueue_t *rxq);
 void	vmxnet3_log(int level, vmxnet3_softc_t *dp, char *fmt, ...);
 

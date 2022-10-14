@@ -141,7 +141,6 @@ typedef enum {
 /* Adaptive Ring Info Flags */
 #define	VMXNET3_DISABLE_ADAPTIVE_RING 1
 
-#pragma pack(1)
 typedef struct Vmxnet3_TxDesc {
 	uint64_t	addr;
 	uint32_t	len:14;
@@ -157,8 +156,7 @@ typedef struct Vmxnet3_TxDesc {
 	uint32_t	ext2:1;
 	uint32_t	ti:1;		/* VLAN Tag Insertion */
 	uint32_t	tci:16;		/* Tag to Insert */
-} Vmxnet3_TxDesc;
-#pragma pack()
+} __packed Vmxnet3_TxDesc;
 
 /* TxDesc.OM values */
 #define	VMXNET3_OM_NONE		0
@@ -181,11 +179,9 @@ typedef struct Vmxnet3_TxDesc {
 
 #define	VMXNET3_HDR_COPY_SIZE	128
 
-#pragma pack(1)
 typedef struct Vmxnet3_TxDataDesc {
 	uint8_t		data[VMXNET3_HDR_COPY_SIZE];
-} Vmxnet3_TxDataDesc;
-#pragma pack()
+} __packed Vmxnet3_TxDataDesc;
 
 #define	VMXNET3_TCD_GEN_SHIFT		31
 #define	VMXNET3_TCD_GEN_SIZE		1
@@ -352,23 +348,19 @@ typedef union Vmxnet3_GenericDesc {
 
 /* All structures in DriverShared are padded to multiples of 8 bytes */
 
-#pragma pack(1)
 typedef struct Vmxnet3_GOSInfo {
 	uint32_t	gosBits: 2;	/* 32-bit or 64-bit? */
 	uint32_t	gosType: 4;	/* which guest */
 	uint32_t	gosVer: 16;	/* gos version */
 	uint32_t	gosMisc: 10;	/* other info about gos */
-} Vmxnet3_GOSInfo;
-#pragma pack()
+} __packed Vmxnet3_GOSInfo;
 
-#pragma pack(1)
 typedef struct Vmxnet3_DriverInfo {
 	uint32_t	version;	/* driver version */
 	Vmxnet3_GOSInfo	gos;
 	uint32_t	vmxnet3RevSpt;	/* vmxnet3 revision supported */
 	uint32_t	uptVerSpt;	/* upt version supported */
-} Vmxnet3_DriverInfo;
-#pragma pack()
+} __packed Vmxnet3_DriverInfo;
 
 #define	VMXNET3_REV1_MAGIC	0xbabefee1
 
@@ -380,7 +372,6 @@ typedef struct Vmxnet3_DriverInfo {
  */
 #define	VMXNET3_QUEUE_DESC_ALIGN	128
 
-#pragma pack(1)
 typedef struct Vmxnet3_MiscConf {
 	Vmxnet3_DriverInfo driverInfo;
 	uint64_t	uptFeatures;
@@ -393,10 +384,8 @@ typedef struct Vmxnet3_MiscConf {
 	uint8_t		numTxQueues;
 	uint8_t		numRxQueues;
 	uint32_t	reserved[4];
-} Vmxnet3_MiscConf;
-#pragma pack()
+} __packed Vmxnet3_MiscConf;
 
-#pragma pack(1)
 typedef struct Vmxnet3_TxQueueConf {
 	uint64_t	txRingBasePA;
 	uint64_t	dataRingBasePA;
@@ -409,10 +398,8 @@ typedef struct Vmxnet3_TxQueueConf {
 	uint32_t	ddLen;		/* size of driver data */
 	uint8_t		intrIdx;
 	uint8_t		_pad[7];
-} Vmxnet3_TxQueueConf;
-#pragma pack()
+} __packed Vmxnet3_TxQueueConf;
 
-#pragma pack(1)
 typedef struct Vmxnet3_RxQueueConf {
 	uint64_t	rxRingBasePA[2];
 	uint64_t	compRingBasePA;
@@ -423,8 +410,7 @@ typedef struct Vmxnet3_RxQueueConf {
 	uint32_t	ddLen;		/* size of driver data */
 	uint8_t		intrIdx;
 	uint8_t		_pad[7];
-} Vmxnet3_RxQueueConf;
-#pragma pack()
+} __packed Vmxnet3_RxQueueConf;
 
 enum vmxnet3_intr_mask_mode {
 	VMXNET3_IMM_AUTO =	0,
@@ -447,7 +433,6 @@ enum vmxnet3_intr_type {
 /* value of intrCtrl */
 #define	VMXNET3_IC_DISABLE_ALL	0x1	/* bit 0 */
 
-#pragma pack(1)
 typedef struct Vmxnet3_IntrConf {
 	char		autoMask;
 	uint8_t		numIntrs;	/* # of interrupts */
@@ -456,35 +441,28 @@ typedef struct Vmxnet3_IntrConf {
 							/* for each intr */
 	uint32_t	intrCtrl;
 	uint32_t	reserved[2];
-} Vmxnet3_IntrConf;
-#pragma pack()
+} __packed Vmxnet3_IntrConf;
 
 /* one bit per VLAN ID, the size is in the units of uint32_t */
 #define	VMXNET3_VFT_SIZE (4096 / (sizeof (uint32_t) * 8))
 
-#pragma pack(1)
 typedef struct Vmxnet3_QueueStatus {
 	char		stopped;
 	uint8_t		_pad[3];
 	uint32_t	error;
-} Vmxnet3_QueueStatus;
-#pragma pack()
+} __packed Vmxnet3_QueueStatus;
 
-#pragma pack(1)
 typedef struct Vmxnet3_TxQueueCtrl {
 	uint32_t	txNumDeferred;
 	uint32_t	txThreshold;
 	uint64_t	reserved;
-} Vmxnet3_TxQueueCtrl;
-#pragma pack()
+} __packed Vmxnet3_TxQueueCtrl;
 
-#pragma pack(1)
 typedef struct Vmxnet3_RxQueueCtrl {
 	char		updateRxProd;
 	uint8_t		_pad[7];
 	uint64_t	reserved;
-} Vmxnet3_RxQueueCtrl;
-#pragma pack()
+} __packed Vmxnet3_RxQueueCtrl;
 
 #define	VMXNET3_RXM_UCAST	0x01	/* unicast only */
 #define	VMXNET3_RXM_MCAST	0x02	/* multicast passing the filters */
@@ -492,15 +470,13 @@ typedef struct Vmxnet3_RxQueueCtrl {
 #define	VMXNET3_RXM_ALL_MULTI	0x08	/* all multicast */
 #define	VMXNET3_RXM_PROMISC	0x10	/* promiscuous */
 
-#pragma pack(1)
 typedef struct Vmxnet3_RxFilterConf {
 	uint32_t	rxMode;		/* VMXNET3_RXM_xxx */
 	uint16_t	mfTableLen;	/* size of the multicast filter table */
 	uint16_t	_pad1;
 	uint64_t	mfTablePA;	/* PA of the multicast filters table */
 	uint32_t	vfTable[VMXNET3_VFT_SIZE]; /* vlan filter */
-} Vmxnet3_RxFilterConf;
-#pragma pack()
+} __packed Vmxnet3_RxFilterConf;
 
 #define	VMXNET3_PM_MAX_FILTERS		6
 #define	VMXNET3_PM_MAX_PATTERN_SIZE	128
@@ -510,34 +486,27 @@ typedef struct Vmxnet3_RxFilterConf {
 #define	VMXNET3_PM_WAKEUP_FILTER	0x02	/* wake up on pkts matching */
 						/* filters */
 
-#pragma pack(1)
 typedef struct Vmxnet3_PM_PktFilter {
 	uint8_t		maskSize;
 	uint8_t		patternSize;
 	uint8_t		mask[VMXNET3_PM_MAX_MASK_SIZE];
 	uint8_t		pattern[VMXNET3_PM_MAX_PATTERN_SIZE];
 	uint8_t		pad[6];
-} Vmxnet3_PM_PktFilter;
-#pragma pack()
+} __packed Vmxnet3_PM_PktFilter;
 
-#pragma pack(1)
 typedef struct Vmxnet3_PMConf {
 	uint16_t	wakeUpEvents;	/* VMXNET3_PM_WAKEUP_xxx */
 	uint8_t		numFilters;
 	uint8_t		pad[5];
 	Vmxnet3_PM_PktFilter filters[VMXNET3_PM_MAX_FILTERS];
-} Vmxnet3_PMConf;
-#pragma pack()
+} __packed Vmxnet3_PMConf;
 
-#pragma pack(1)
 typedef struct Vmxnet3_VariableLenConfDesc {
 	uint32_t	confVer;
 	uint32_t	confLen;
 	uint64_t	confPA;
-} Vmxnet3_VariableLenConfDesc;
-#pragma pack()
+} __packed Vmxnet3_VariableLenConfDesc;
 
-#pragma pack(1)
 typedef struct Vmxnet3_DSDevRead {
 	/* read-only region for device, read by dev in response to a SET cmd */
 	Vmxnet3_MiscConf misc;
@@ -546,8 +515,7 @@ typedef struct Vmxnet3_DSDevRead {
 	Vmxnet3_VariableLenConfDesc rssConfDesc;
 	Vmxnet3_VariableLenConfDesc pmConfDesc;
 	Vmxnet3_VariableLenConfDesc pluginConfDesc;
-} Vmxnet3_DSDevRead;
-#pragma pack()
+} __packed Vmxnet3_DSDevRead;
 
 typedef struct Vmxnet3_TxQueueDesc {
 	Vmxnet3_TxQueueCtrl ctrl;

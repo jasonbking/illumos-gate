@@ -1259,7 +1259,7 @@ vmxnet3_fill_ring_info(void *driver, mac_ring_type_t rtype,
 		infop->mri_driver = (mac_ring_driver_t)rxq;
 		infop->mri_start = vmxnet3_rx_start;
 		infop->mri_stop = vmxnet3_rx_stop;
-		infop->mri_poll = NULL;
+		infop->mri_poll = vmxnet3_rx_poll;
 		infop->mri_stat = vmxnet3_rx_stat;
 		infop->mri_intr.mi_handle = (mac_intr_handle_t)rxq;
 		infop->mri_intr.mi_enable = vmxnet3_rx_intr_enable;
@@ -1483,7 +1483,7 @@ vmxnet3_intr(caddr_t arg1, caddr_t arg2 __unused)
 	mustUpdateTx = vmxnet3_tx_complete(dp, &dp->txQueue[0]);
 
 	mutex_enter(&dp->rxQueue[0].rxLock);
-	mps = vmxnet3_rx(dp, &dp->rxQueue[0], 0);
+	mps = vmxnet3_rx(dp, &dp->rxQueue[0]);
 	mutex_exit(&dp->rxQueue[0].rxLock);
 
 	vmxnet3_intr_enable(dp, 0);
