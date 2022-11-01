@@ -15,7 +15,7 @@
 # Copyright 2016, OmniTI Computer Consulting, Inc. All rights reserved.
 # Copyright 2020 Joyent, Inc.
 # Copyright (c) 2018 Datto Inc.
-# Copyright 2021 Jason King
+# Copyright 2022 Jason King
 #
 
 set name=pkg.fmri value=pkg:/system/test/zfstest@$(PKGVERS)
@@ -585,6 +585,9 @@ file path=opt/zfs-tests/tests/functional/cli_root/zdb/zdb_002_pos mode=0555
 file path=opt/zfs-tests/tests/functional/cli_root/zdb/zdb_003_pos mode=0555
 file path=opt/zfs-tests/tests/functional/cli_root/zdb/zdb_004_pos mode=0555
 file path=opt/zfs-tests/tests/functional/cli_root/zdb/zdb_005_pos mode=0555
+file path=opt/zfs-tests/tests/functional/cli_root/zdb/zdb_objset_id mode=0555
+file path=opt/zfs-tests/tests/functional/cli_root/zdb/zdb_recover mode=0555
+file path=opt/zfs-tests/tests/functional/cli_root/zdb/zdb_recover_2 mode=0555
 dir  path=opt/zfs-tests/tests/functional/cli_root/zfs
 file path=opt/zfs-tests/tests/functional/cli_root/zfs/cleanup mode=0555
 file path=opt/zfs-tests/tests/functional/cli_root/zfs/setup mode=0555
