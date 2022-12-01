@@ -1477,9 +1477,7 @@ vmxnet3_intr(caddr_t arg1, caddr_t arg2 __unused)
 		vmxnet3_intr_disable(dp, 0);
 	}
 
-	mutex_enter(&dp->eventLock);
 	linkStateChanged = vmxnet3_intr_events(dp);
-	mutex_exit(&dp->eventLock);
 
 	mustUpdateTx = vmxnet3_tx_complete(dp, &dp->txQueue[0]);
 
@@ -1508,9 +1506,7 @@ vmxnet3_event_intr(caddr_t arg1, caddr_t arg2 __unused)
 	vmxnet3_softc_t	*dp = (vmxnet3_softc_t *)arg1;
 	boolean_t	linkStateChanged;
 
-	mutex_enter(&dp->eventLock);
 	linkStateChanged = vmxnet3_intr_events(dp);
-	mutex_exit(&dp->eventLock);
 
 	if (linkStateChanged)
 		mac_link_update(dp->mac, dp->linkState);
