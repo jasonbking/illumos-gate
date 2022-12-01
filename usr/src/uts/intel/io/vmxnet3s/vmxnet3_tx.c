@@ -35,7 +35,7 @@ typedef struct vmxnet3_offload_t {
 } vmxnet3_offload_t;
 
 /* Tx DMA engine description */
-ddi_dma_attr_t vmxnet3_dma_attrs_tx = {
+static ddi_dma_attr_t vmxnet3_dma_attrs_tx = {
 	.dma_attr_version =	DMA_ATTR_V0,
 	.dma_attr_addr_lo =	0x0000000000000000ull,
 	.dma_attr_addr_hi =	0xFFFFFFFFFFFFFFFFull,
@@ -53,11 +53,20 @@ ddi_dma_attr_t vmxnet3_dma_attrs_tx = {
 int
 vmxnet3_tx_start(mac_ring_driver_t rh, uint64_t gen_num)
 {
-	vmxnet3_txqueue_t *txq = (vmxnet3_txqueue_t *)rh;
+	vmxnet3_txqueue_t	*txq = (vmxnet3_txqueue_t *)rh;
+	vmxnet3_softc_t		*dp = txq->sc;
+	int			rc;
 
 	VMXNET3_DEBUG(txq->sc, 2, "%s: enter", __func__);
 
 	mutex_enter(&txq->txLock);
+
+	rc = ddi_dma_alloc_handle(dp->dip, &vmxnet3_dma_attrs_tx,
+	    DDI_DMA_SLEEP, NULL, &txq->tx_dma_handle);
+	if (rc != DDI_SUCCESS) {
+		mutex_exit(&txq->txLock);
+		return (DDI_FAILURE);
+	}
 
 	txq->gen_num = gen_num;
 
@@ -79,8 +88,12 @@ vmxnet3_tx_stop(mac_ring_driver_t rh)
 	VMXNET3_DEBUG(dp, 2, "%s: enter", __func__);
 
 	mutex_enter(&txq->txLock);
+
 	vmxnet3_tx_flush(txq);
 	vmxnet3_txqueue_fini(dp, txq);
+	VERIFY0(ddi_dma_unbind_handle(txq->tx_dma_handle));
+	txq->tx_dma_handle = NULL;
+
 	mutex_exit(&txq->txLock);
 }
 
@@ -259,30 +272,29 @@ vmxnet3_tx_one(void *arg, vmxnet3_offload_t *ol, mblk_t *mp)
 	curGen = !cmdRing->gen;
 
 	for (mblk = mp; mblk != NULL; mblk = mblk->b_cont) {
+		const ddi_dma_cookie_t *cookie = NULL;
 		unsigned int len = MBLKL(mblk);
-		ddi_dma_cookie_t cookie;
-		uint_t cookieCount;
 
-		if (len) {
+		if (len > 0) {
 			totLen += len;
 		} else {
 			continue;
 		}
 
-		if (ddi_dma_addr_bind_handle(dp->txDmaHandle, NULL,
+		if (ddi_dma_addr_bind_handle(txq->tx_dma_handle, NULL,
 		    (caddr_t)mblk->b_rptr, len,
 		    DDI_DMA_RDWR | DDI_DMA_STREAMING, DDI_DMA_DONTWAIT, NULL,
-		    &cookie, &cookieCount) != DDI_DMA_MAPPED) {
+		    NULL, NULL) != DDI_DMA_MAPPED) {
 			VMXNET3_WARN(dp, "ddi_dma_addr_bind_handle() failed\n");
 			ret = VMXNET3_TX_FAILURE;
 			goto error;
 		}
 
-		ASSERT(cookieCount);
-
-		do {
-			uint64_t addr = cookie.dmac_laddress;
-			size_t len = cookie.dmac_size;
+		for (cookie = ddi_dma_cookie_iter(txq->tx_dma_handle, NULL);
+		    cookie != NULL;
+		    cookie = ddi_dma_cookie_iter(txq->tx_dma_handle, cookie)) {
+			uint64_t addr = cookie->dmac_laddress;
+			size_t len = cookie->dmac_size;
 
 			do {
 				uint32_t dw2, dw3;
@@ -297,24 +309,19 @@ vmxnet3_tx_one(void *arg, vmxnet3_offload_t *ol, mblk_t *mp)
 					VMXNET3_DEBUG(dp, 2,
 					    "overfragmented mp (%u)\n", frags);
 					(void) ddi_dma_unbind_handle(
-					    dp->txDmaHandle);
+					    txq->tx_dma_handle);
 					ret = VMXNET3_TX_PULLUP;
 					goto error;
 				}
 				if (cmdRing->avail - frags <= 1) {
 					txq->reschedule = B_TRUE;
 					(void) ddi_dma_unbind_handle(
-					    dp->txDmaHandle);
+					    txq->tx_dma_handle);
 					ret = VMXNET3_TX_RINGFULL;
 					goto error;
 				}
 
-				if (len > VMXNET3_MAX_TX_BUF_SIZE) {
-					chunkLen = VMXNET3_MAX_TX_BUF_SIZE;
-				} else {
-					chunkLen = len;
-				}
-
+				chunkLen = MIN(len, VMXNET3_MAX_TX_BUF_SIZE);
 				frags++;
 				eopIdx = cmdRing->next2fill;
 
@@ -340,14 +347,10 @@ vmxnet3_tx_one(void *arg, vmxnet3_offload_t *ol, mblk_t *mp)
 
 				addr += chunkLen;
 				len -= chunkLen;
-			} while (len);
+			} while (len > 0);
+		}
 
-			if (--cookieCount) {
-				ddi_dma_nextcookie(dp->txDmaHandle, &cookie);
-			}
-		} while (cookieCount);
-
-		(void) ddi_dma_unbind_handle(dp->txDmaHandle);
+		(void) ddi_dma_unbind_handle(txq->tx_dma_handle);
 	}
 
 	/* Update the EOP descriptor */
@@ -382,7 +385,7 @@ vmxnet3_tx_one(void *arg, vmxnet3_offload_t *ol, mblk_t *mp)
 	VMXNET3_DEBUG(dp, 3, "tx 0x%p on [%u;%u]\n", (void *)mp, sopIdx,
 	    eopIdx);
 
-	goto done;
+	return (ret);
 
 error:
 	/* Reverse the generation bits */
@@ -392,7 +395,6 @@ error:
 		txDesc->txd.gen = !cmdRing->gen;
 	}
 
-done:
 	return (ret);
 }
 

@@ -74,6 +74,7 @@ static void vmxnet3_prop_info(void *, const char *, mac_prop_id_t,
     mac_prop_info_handle_t);
 
 static void vmxnet3_destroy_drivershared(vmxnet3_softc_t *);
+static const char *vmxnet3_err_str(uint32_t);
 
 #ifdef DEBUG
 int vmxnet3s_debug = 2;
@@ -685,13 +686,6 @@ vmxnet3_start(void *data)
 	VMXNET3_DEBUG(dp, 1, "start()\n");
 
 	mutex_enter(&dp->genLock);
-	err = ddi_dma_alloc_handle(dp->dip, &vmxnet3_dma_attrs_tx,
-	    DDI_DMA_SLEEP, NULL, &dp->txDmaHandle);
-	if (err != DDI_SUCCESS) {
-		mutex_exit(&dp->genLock);
-		return (vmxnet3_dmaerr2errno(err));
-	}
-
 
 	/*
 	 * Initialize vmxnet3's shared data and advertise its PA
@@ -743,7 +737,6 @@ vmxnet3_start(void *data)
 error_activate:
 	vmxnet3_rxpool_fini(dp);
 error_shared:
-	VERIFY3S(ddi_dma_unbind_handle(dp->txDmaHandle), ==, DDI_SUCCESS);
 	mutex_exit(&dp->genLock);
 	return (err);
 }
@@ -774,8 +767,6 @@ vmxnet3_stop(void *data)
 
 	VMXNET3_BAR1_PUT32(dp, VMXNET3_REG_DSAL, 0);
 	VMXNET3_BAR1_PUT32(dp, VMXNET3_REG_DSAH, 0);
-
-	VERIFY3S(ddi_dma_unbind_handle(dp->txDmaHandle), ==, DDI_SUCCESS);
 
 	mutex_exit(&dp->genLock);
 }
@@ -1419,8 +1410,9 @@ vmxnet3_intr_events(vmxnet3_softc_t *dp)
 			    VMXNET3_TQDESC(&dp->txQueue[i]);
 
 			if (tqdesc->status.stopped) {
-				VMXNET3_WARN(dp, "tq %u error 0x%x\n", i,
-				    tqdesc->status.error);
+				VMXNET3_WARN(dp, "tq %u error 0x%x (%s)", i,
+				    tqdesc->status.error,
+				    vmxnet3_err_str(tqdesc->status.error));
 			}
 		}
 
@@ -1429,16 +1421,17 @@ vmxnet3_intr_events(vmxnet3_softc_t *dp)
 			    VMXNET3_RQDESC(&dp->rxQueue[i]);
 
 			if (rqdesc->status.stopped) {
-				VMXNET3_WARN(dp, "rq %u error 0x%x\n", i,
-				    rqdesc->status.error);
+				VMXNET3_WARN(dp, "rq %u error 0x%x (%s)", i,
+				    rqdesc->status.error,
+				    vmxnet3_err_str(rqdesc->status.error));
 			}
 		}
 
 		if (ddi_taskq_dispatch(dp->resetTask, vmxnet3_reset,
 		    dp, DDI_NOSLEEP) == DDI_SUCCESS) {
-			VMXNET3_WARN(dp, "reset scheduled\n");
+			VMXNET3_WARN(dp, "reset scheduled");
 		} else {
-			VMXNET3_WARN(dp, "ddi_taskq_dispatch() failed\n");
+			VMXNET3_WARN(dp, "ddi_taskq_dispatch() failed");
 		}
 	}
 	if (events & VMXNET3_ECR_LINK) {
@@ -2327,6 +2320,31 @@ vmxnet3_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 
 	kmem_free(dp, sizeof (vmxnet3_softc_t));
 	return (DDI_SUCCESS);
+}
+
+static const char *
+vmxnet3_err_str(uint32_t eval)
+{
+	switch (eval) {
+	case 0x80000000:
+		return ("cannot find the end of packet descriptor");
+	case 0x80000001:
+		return ("tx descriptor reused before tx complete");
+	case 0x80000002:
+		return ("too many tx descriptors for a packet");
+	case 0x80000003:
+		return ("descriptor type not supported");
+	case 0x80000004:
+		return ("type 0 buffer too small");
+	case 0x80000005:
+		return ("stress option firing in hypervisor");
+	case 0x80000006:
+		return ("mode switch failure");
+	case 0x80000007:
+		return ("invalid tx descriptor");
+	default:
+		return ("unknown");
+	}
 }
 
 /*

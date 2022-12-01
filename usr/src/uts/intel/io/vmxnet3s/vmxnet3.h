@@ -95,6 +95,8 @@ typedef struct vmxnet3_txqueue {
 
 	struct vmxnet3_softc	*sc;
 
+	ddi_dma_handle_t	tx_dma_handle;
+
 	size_t			nalloc;
 	size_t			nent;
 	uint64_t		gen_num;
@@ -181,7 +183,6 @@ typedef struct vmxnet3_softc {
 	size_t		intrHandleSz;
 	ddi_taskq_t	*resetTask;
 
-	ddi_dma_handle_t txDmaHandle;
 	uint32_t	txBufSize;
 	uint32_t	txCopyThresh;
 	uint32_t	txRingSize;
@@ -267,7 +268,6 @@ void	vmxnet3_log(int level, vmxnet3_softc_t *dp, char *fmt, ...);
 void	vmxnet3_get_stats(vmxnet3_softc_t *);
 
 extern ddi_device_acc_attr_t vmxnet3_dev_attr;
-extern ddi_dma_attr_t vmxnet3_dma_attrs_tx;
 
 extern int vmxnet3s_debug;
 
