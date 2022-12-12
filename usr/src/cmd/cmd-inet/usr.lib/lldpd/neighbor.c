@@ -115,6 +115,13 @@ neighbor_cmp_msap_uu(const void *a, const void *b, void *private __unused)
 	return (neighbor_cmp_msap(a, b));
 }
 
+bool
+neighbor_cmp(const neighbor_t *l, const neighbor_t *r)
+{
+	/* TODO */
+	return (true);
+}
+
 void
 neighbor_init(void)
 {
