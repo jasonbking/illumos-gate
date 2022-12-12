@@ -17,7 +17,7 @@
 .\" fields enclosed by brackets "[]" replaced with your own identifying
 .\" information: Portions Copyright [yyyy] [name of copyright owner]
 .\"
-.Dd October 10, 2022
+.Dd December 12, 2022
 .Dt SHAREMGR 8
 .Os
 .Sh NAME
@@ -1050,6 +1050,26 @@ authentication
 .Pp
 For a client that is allowed root access, map the root UID to the specified
 user id.
+.It Cm tm Ns = Ns Ar boolean
+Avertise this share via multicast DNS (mDNS) as an available disk for
+Time Machine backups.
+While any SMB share on an illumos system can be used as a disk for
+Time Machine backups, shares advertised as a Time Machine backup disk via
+mDNS will be listed as a available disk on macOS systems.
+Shares not advertised as an available Time Machine do not show up as an
+available disk in the Time Machine configuration, but can still by used by
+explicitly providing the host/IP and name of the share.
+.Pp
+The mDNS service
+.Pq Ql svc:/network/dns/multicast:default
+as well as the
+.Ql mdns
+.Xr smbd 8
+configuration option must be enabled for this option to have any effect.
+.Pp
+Note: due to size limitations on mDNS advertisements, not all shares may
+be available for selection in the Time Machine configuration when this setting
+is enabled on a large number of shares on a single system.
 .It Cm window Ns = Ns Ar value
 .Pp
 When sharing with
