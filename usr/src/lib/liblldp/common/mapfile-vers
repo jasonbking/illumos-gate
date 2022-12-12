@@ -33,6 +33,7 @@ SYMBOL_VERSION ILLUMOSprivate {
     global:
 	lldp_cap_str;
 	lldp_caps_str;
+	lldp_chassis_str;
 	lldp_chassis_typestr;
 	lldp_port_str;
 	lldp_port_typestr;
