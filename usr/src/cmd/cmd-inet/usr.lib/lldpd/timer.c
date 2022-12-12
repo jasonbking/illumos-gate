@@ -25,6 +25,13 @@
 #include "timer.h"
 #include "util.h"
 
+/*
+ * Each agent (port) gets it's own clock (lldp_clock_t). The work of the
+ * clock is broken up into two pieces -- lldp_clock_tick() which determines
+ * the absolute time when the clock fires, and lldp_clock_tock() which is
+ * called when the clock fires (to decrement each timer associated with
+ * this clock).
+ */
 static uu_list_pool_t *clock_pool;
 
 void
@@ -118,6 +125,11 @@ lldp_clock_tick(lldp_clock_t *clk, timestruc_t *tick)
 
 	VERIFY0(gettimeofday(&now, NULL));
 
+	/*
+	 * As recommended by 802.1ab, when there's more than one neighbor
+	 * for an agent, we introduce some deliberate jitter into the clock
+	 * to minimize sychronization.
+	 */
 	if (uu_list_numnodes(clk->lc_agent->a_neighbors) > 1) {
 		msec -= 200 + arc4random_uniform(401);
 	}
@@ -140,12 +152,24 @@ lldp_clock_tock(lldp_clock_t *clk)
 
 	for (lldp_timer_t *t = uu_list_first(clk->lc_timers); t != NULL;
 	    t = uu_list_next(clk->lc_timers, t)) {
+		/*
+		 * A timer already at 0 has already fired, skip it.
+		 */
 		if (t->lt_val == 0)
 			continue;
 
+		/*
+		 * If we decrement the timer, and still have time remaining,
+		 * nothing is needed. Continue to the next timer.
+		 */
 		if (--t->lt_val != 0)
 			continue;
 
+		/*
+		 * If we get here, t has transitioned from 1 -> 0, and
+		 * we should fire the timer (i.e. set the flag corresponding
+		 * to this timer).
+		 */
 		log_debug(t->lt_log, "timer fired", LOG_T_END);
 		if (t->lt_flagp != NULL) {
 			*t->lt_flagp = true;

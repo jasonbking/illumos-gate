@@ -54,19 +54,19 @@ static void delete_objects(agent_t *);
 static void tx_add_credit(agent_t *);
 static void something_changed_remote(agent_t *);
 
-static void tx_init(agent_t *, tx_t *);
+static void tx_init(agent_t *);
 static void tx_fini(tx_t *);
-static bool tx_machine(tx_t *);
+static bool tx_machine(agent_t *);
 static bool tx_next_state(tx_t *);
 
-static void rx_init(agent_t *, rx_t *);
+static void rx_init(agent_t *);
 static void rx_fini(rx_t *);
-static bool rx_machine(rx_t *);
-static bool rx_next_state(rx_t *);
+static bool rx_machine(agent_t *);
+static bool rx_next_state(agent_t *);
 
-static void ttr_init(agent_t *, ttr_t *);
+static void ttr_init(agent_t *);
 static void ttr_fini(ttr_t *);
-static bool ttr_machine(ttr_t *);
+static bool ttr_machine(agent_t *);
 static bool ttr_next_state(ttr_t *);
 
 static const char *tx_statestr(tx_state_t);
@@ -80,6 +80,8 @@ static const uint_t	lldp_sap = 0x88cc;
 static const uint8_t	lldp_addr[ETHERADDRL] = {
 	0x01, 0x80, 0xc2, 0x00, 0x00, 0x0e
 };
+
+#define	CALLER_NOT_AGENT(a) ((a)->a_tid != thr_self())
 
 static inline bool
 dec(uint16_t *vp)
@@ -122,9 +124,9 @@ agent_create(const char *name)
 	    LOG_T_STRING, "agent", a->a_name,
 	    LOG_T_END);
 
-	tx_init(a, &a->a_tx);
-	rx_init(a, &a->a_rx);
-	ttr_init(a, &a->a_ttr);
+	tx_init(a);
+	rx_init(a);
+	ttr_init(a);
 
 	a->a_neighbors = neighbor_list_new(a);
 	a->a_cfg.ac_tx_fast_msg = DEFAULT_MSG_FAST_TX;
@@ -174,7 +176,7 @@ agent_destroy(agent_t *a)
 bool
 agent_enable(agent_t *a)
 {
-	VERIFY3U(a->a_tid, !=, thr_self());
+	VERIFY(CALLER_NOT_AGENT(a));
 
 	mutex_enter(&a->a_lock);
 	a->a_port_enabled = true;
@@ -185,7 +187,7 @@ agent_enable(agent_t *a)
 void
 agent_disable(agent_t *a)
 {
-	VERIFY3U(a->a_tid, !=, thr_self());
+	VERIFY(CALLER_NOT_AGENT(a));
 
 	mutex_enter(&a->a_lock);
 	a->a_port_enabled = false;
@@ -196,7 +198,7 @@ agent_disable(agent_t *a)
 void
 agent_set_status(agent_t *a, lldp_admin_status_t status)
 {
-	VERIFY3U(a->a_tid, !=, thr_self());
+	VERIFY(CALLER_NOT_AGENT(a));
 
 	switch (status) {
 	case LLDP_LINK_DISABLED:
@@ -217,7 +219,7 @@ agent_set_status(agent_t *a, lldp_admin_status_t status)
 lldp_admin_status_t
 agent_get_status(agent_t *a)
 {
-	VERIFY3U(a->a_tid, !=, thr_self());
+	VERIFY(CALLER_NOT_AGENT(a));
 
 	lldp_admin_status_t status;
 
@@ -231,7 +233,7 @@ agent_get_status(agent_t *a)
 void
 agent_local_change(agent_t *a)
 {
-	VERIFY3U(a->a_tid, !=, thr_self());
+	VERIFY(CALLER_NOT_AGENT(a));
 
 	mutex_enter(&a->a_lock);
 	a->a_local_changes = true;
@@ -244,7 +246,7 @@ agent_num_neighbors(agent_t *a)
 {
 	size_t n;
 
-	VERIFY3U(a->a_tid, !=, thr_self());
+	VERIFY(CALLER_NOT_AGENT(a));
 
 	mutex_enter(&a->a_lock);
 	n = uu_list_numnodes(a->a_neighbors);
@@ -266,9 +268,9 @@ agent_thread(void *arg)
 
 	VERIFY0(pthread_setname_np(pthread_self(), a->a_name));
 
-	run_tx = tx_machine(&a->a_tx);
-	run_rx = rx_machine(&a->a_rx);
-	run_ttr = ttr_machine(&a->a_ttr);
+	run_tx = tx_machine(a);
+	run_rx = rx_machine(a);
+	run_ttr = ttr_machine(a);
 
 	lldp_clock_tick(&a->a_clk, &tick);
 	while (!a->a_exit) {
@@ -298,11 +300,11 @@ agent_thread(void *arg)
 		 */
 		do {
 			if (run_tx)
-				run_tx = tx_machine(&a->a_tx);
+				run_tx = tx_machine(a);
 			if (run_rx)
-				run_rx = rx_machine(&a->a_rx);
+				run_rx = rx_machine(a);
 			if (run_ttr)
-				run_ttr = ttr_machine(&a->a_ttr);
+				run_ttr = ttr_machine(a);
 		} while (run_tx || run_rx || run_ttr);
 
 		/*
@@ -322,7 +324,7 @@ agent_thread(void *arg)
 			}
 
 			run_tx = tx_next_state(&a->a_tx);
-			run_rx = rx_next_state(&a->a_rx);
+			run_rx = rx_next_state(a);
 			run_ttr = ttr_next_state(&a->a_ttr);
 		}
 	}
@@ -339,8 +341,12 @@ tx_ttl(const agent_t *a)
 }
 
 static void
-tx_init(agent_t *a, tx_t *tx)
+tx_init(agent_t *a)
 {
+	tx_t *tx = &a->a_tx;
+
+	TRACE_ENTER(a->a_log);
+
 	(void) log_child(a->a_log, &tx->tx_log,
 	    LOG_T_STRING, "state_machine", "tx",
 	    LOG_T_END);
@@ -349,6 +355,8 @@ tx_init(agent_t *a, tx_t *tx)
 	    tx->tx_log, NULL, NULL);
 	buf_init(&tx->tx_buf, LLDP_PDU_MAX);
 	tx->tx_state = TX_BEGIN;
+
+	TRACE_RETURN(a->a_log);
 }
 
 static void
@@ -360,9 +368,11 @@ tx_fini(tx_t *tx)
 }
 
 static bool
-tx_machine(tx_t *tx)
+tx_machine(agent_t *a)
 {
-	agent_t *a = __containerof(tx, agent_t, a_tx);
+	tx_t *tx = &a->a_tx;
+
+	TRACE_ENTER(tx->tx_log);
 
 	log_debug(tx->tx_log, "state machine running",
 	    LOG_T_STRING, "state", tx_statestr(tx->tx_state),
@@ -398,7 +408,10 @@ tx_machine(tx_t *tx)
 		break;
 	}
 
-	return (tx_next_state(tx));
+	bool next = tx_next_state(tx);
+
+	TRACE_RETURN(tx->tx_log);
+	return (next);
 }
 
 static bool
@@ -406,6 +419,8 @@ tx_next_state(tx_t *tx)
 {
 	agent_t *a = __containerof(tx, agent_t, a_tx);
 	tx_state_t next;
+
+	TRACE_ENTER(tx->tx_log);
 
 	if (!a->a_port_enabled) {
 		next = TX_LLDP_INITIALIZE;
@@ -419,6 +434,7 @@ tx_next_state(tx_t *tx)
 			next = TX_IDLE;
 			break;
 		}
+		TRACE_RETURN(tx->tx_log);
 		return (false);
 	case TX_IDLE:
 		if (admin_status(a) == LLDP_LINK_DISABLED ||
@@ -431,12 +447,14 @@ tx_next_state(tx_t *tx)
 			next = TX_INFO_FRAME;
 			break;
 		}
+		TRACE_RETURN(tx->tx_log);
 		return (false);
 	case TX_SHUTDOWN_FRAME:
 		if (lldp_timer_val(&tx->tx_shutdown) == 0) {
 			next = TX_LLDP_INITIALIZE;
 			break;
 		}
+		TRACE_RETURN(tx->tx_log);
 		return (false);
 	case TX_INFO_FRAME:
 		next = TX_IDLE;
@@ -452,12 +470,16 @@ done:
 	    LOG_T_END);
 
 	tx->tx_state = next;
+
+	TRACE_RETURN(tx->tx_log);
 	return (true);
 }
 
 static void
-rx_init(agent_t *a, rx_t *rx)
+rx_init(agent_t *a)
 {
+	rx_t *rx = &a->a_rx;
+
 	(void) memset(rx, '\0', sizeof (*rx));
 
 	(void) log_child(a->a_log, &rx->rx_log,
@@ -480,10 +502,10 @@ rx_fini(rx_t *rx)
 }
 
 static bool
-rx_next_state(rx_t *rx)
+rx_next_state(agent_t *a)
 {
-	agent_t *a = __containerof(rx, agent_t, a_rx);
-	rx_state_t next;
+	rx_t		*rx = &a->a_rx;
+	rx_state_t	next;
 
 	if (!rx->rx_info_age && !a->a_port_enabled) {
 		next = LLDP_WAIT_PORT_OPERATIONAL;
@@ -567,9 +589,11 @@ done:
 }
 
 static bool
-rx_machine(rx_t *rx)
+rx_machine(agent_t *a)
 {
-	agent_t *a = __containerof(rx, agent_t, a_rx);
+	rx_t *rx = &a->a_rx;
+
+	TRACE_ENTER(rx->rx_log);
 
 	log_debug(rx->rx_log, "state machine running",
 	    LOG_T_STRING, "state", rx_statestr(rx->rx_state),
@@ -606,12 +630,17 @@ rx_machine(rx_t *rx)
 		break;
 	}
 
-	return (rx_next_state(rx));
+	bool next = rx_next_state(a);
+
+	TRACE_RETURN(rx->rx_log);
+	return (next);
 }
 
 static void
-ttr_init(agent_t *a, ttr_t *ttr)
+ttr_init(agent_t *a)
 {
+	ttr_t *ttr = &a->a_ttr;
+
 	(void) log_child(a->a_log, &ttr->ttr_log,
 	    LOG_T_STRING, "state_machine", "ttr",
 	    LOG_T_END);
@@ -696,9 +725,9 @@ done:
 }
 
 static bool
-ttr_machine(ttr_t *ttr)
+ttr_machine(agent_t *a)
 {
-	agent_t *a = __containerof(ttr, agent_t, a_ttr);
+	ttr_t *ttr = &a->a_ttr;
 
 	log_debug(ttr->ttr_log, "state machine running",
 	    LOG_T_STRING, "state", ttr_statestr(ttr->ttr_state),
