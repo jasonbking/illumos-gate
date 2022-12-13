@@ -826,7 +826,6 @@ delete_objects(agent_t *a)
 	if (wk == NULL) {
 		log_fatal(l, "cannot iterate through neighbors",
 		    LOG_T_END);
-		return;
 	}
 
 	count = 0;
