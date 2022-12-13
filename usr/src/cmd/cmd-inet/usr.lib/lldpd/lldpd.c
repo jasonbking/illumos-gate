@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <paths.h>
+#include <pthread.h>
 #include <port.h>
 #include <priv_utils.h>
 #include <signal.h>
@@ -50,6 +51,11 @@ static int lldp_daemonize(void);
 static int lldp_umem_nomem_cb(void);
 static int sigfd_create(void);
 static void lldp_main(void);
+static void lldp_handle_sig(int, void *);
+
+static fd_cb_t sig_cb = {
+	.fc_fn = lldp_handle_sig,
+};
 
 static void __NORETURN
 usage(void)
@@ -145,6 +151,96 @@ main(int argc, char **argv)
 static void
 lldp_main(void)
 {
+	int ret;
+
+	ret = pthread_setname_np(pthread_self(), "main");
+	if (ret < 0) {
+		log_syserr(log, "failed to set thread name on main thread",
+		    ret);
+		exit(EXIT_FAILURE);
+	}
+
+	VERIFY(schedule_fd(sigfd, &sig_cb));
+
+	for (;;) {
+		port_event_t pe = { 0 };
+		fd_cb_t *cb;
+
+		ret = port_get(evport, &pe, NULL);
+		if (ret < 1) {
+			int e = errno;
+			switch (e) {
+			case EINTR:
+				continue;
+			case EBADF:
+			case EBADFD:
+				log_fatal(log, "event port fd error",
+				    LOG_T_INT32, "fd", evport,
+				    LOG_T_INT32, "errno", e,
+				    LOG_T_STRING, "errmsg", strerror(e),
+				    LOG_T_END);
+			default:
+				log_syserr(log, "port_get failed", e);
+				break;
+			}
+		}
+
+		switch (pe.portev_source) {
+		case PORT_SOURCE_FD:
+			cb = pe.portev_user;
+			cb->fc_fn((int)pe.portev_object, cb->fc_arg);
+			break;
+		default:
+			log_error(log, "unexpected port event",
+			    LOG_T_UINT32, "source", pe.portev_source,
+			    LOG_T_XINT32, "events", pe.portev_events,
+			    LOG_T_POINTER, "obj", pe.portev_object,
+			    LOG_T_POINTER, "user", pe.portev_user,
+			    LOG_T_END);
+			break;
+		}
+	}
+}
+
+static void
+lldp_handle_sig(int fd, void *arg __unused)
+{
+	signalfd_siginfo_t si = { 0 };
+	ssize_t n;
+
+	VERIFY3S(fd, ==, sigfd);
+	n = read(fd, &si, sizeof (si));
+	if (n < 0) {
+		int e = errno;
+
+		log_syserr(log, "failed to read signal info", e);
+	} else if (n != sizeof (si)) {
+		log_error(log, "short read of signal fd",
+		    LOG_T_INT32, "fd", fd,
+		    LOG_T_INT32, "n", n,
+		    LOG_T_END);
+	} else {
+		log_debug(log, "received signal",
+		    LOG_T_UINT32, "signo", si.ssi_signo,
+		    LOG_T_UINT32, "pid", si.ssi_pid,
+		    LOG_T_UINT32, "uid", si.ssi_uid,
+		    LOG_T_END);
+
+		switch (si.ssi_signo) {
+		case SIGHUP:
+		case SIGKILL:
+			/* TODO: handle signal */
+			break;
+		default:
+			log_info(log, "ignoring signal",
+			    LOG_T_UINT32, "pid", si.ssi_pid,
+			    LOG_T_UINT32, "uid", si.ssi_uid,
+			    LOG_T_END);
+			break;
+		}
+	}
+
+	VERIFY(schedule_fd(fd, &sig_cb));
 }
 
 static int
