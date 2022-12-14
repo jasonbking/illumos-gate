@@ -973,11 +973,6 @@ vmxnet3_change_mtu(vmxnet3_softc_t *dp, uint32_t new_mtu)
 		    VMXNET3_MIN_MTU, VMXNET3_MAX_MTU);
 		mutex_exit(&dp->genLock);
 		return (EINVAL);
-	} else if (new_mtu > ETHERMTU && !dp->allow_jumbo) {
-		VMXNET3_WARN(dp, "MTU cannot be greater than %d because "
-		    "accept-jumbo is not enabled.\n", ETHERMTU);
-		mutex_exit(&dp->genLock);
-		return (EINVAL);
 	}
 
 	dp->cur_mtu = new_mtu;
@@ -2223,7 +2218,6 @@ vmxnet3_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	dp->dip = dip;
 	dp->instance = ddi_get_instance(dip);
 	dp->cur_mtu = ETHERMTU;
-	dp->allow_jumbo = B_TRUE;
 	dp->alloc_ok = VMXNET3_ALLOC_OK(dp);
 
 	dp->txCopyThresh = VMXNET3_DEF_TX_COPY_THRESH;

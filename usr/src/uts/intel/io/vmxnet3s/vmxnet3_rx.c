@@ -304,6 +304,7 @@ static vmxnet3_rxbuf_t *
 vmxnet3_alloc_rxbuf(vmxnet3_softc_t *dp, boolean_t canSleep)
 {
 	vmxnet3_rxbuf_t *rxBuf;
+	size_t sz;
 	int flag = canSleep ? KM_SLEEP : KM_NOSLEEP;
 	int err;
 
@@ -313,7 +314,19 @@ vmxnet3_alloc_rxbuf(vmxnet3_softc_t *dp, boolean_t canSleep)
 		return (NULL);
 	}
 
-	if ((err = vmxnet3_alloc_dma_mem_1(dp, &rxBuf->dma, (dp->cur_mtu + 18),
+	/*
+	 * Since we have to pass physically contiguous buffers to the device,
+	 * we avoid allocating more than PAGESIZE bytes in a contiguous
+	 * chunk to avoid long block allocations due to VM memory
+	 * fragmentation. This does mean larger packets will spawn multiple
+	 * descriptors and multiple mblk_ts, but the system should be able
+	 * to handle that without too much work.
+	 */
+	sz = dp->cur_mtu + sizeof (struct ether_vlan_header);
+	if (sz > PAGESIZE)
+		sz = PAGESIZE;
+
+	if ((err = vmxnet3_alloc_dma_mem_1(dp, &rxBuf->dma, sz,
 	    canSleep)) != 0) {
 		VMXNET3_DEBUG(dp, 0, "Failed to allocate %d bytes for rx buf, "
 		    "err:%d\n", (dp->cur_mtu + 18), err);
