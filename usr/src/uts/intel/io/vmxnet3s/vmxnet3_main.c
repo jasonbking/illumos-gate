@@ -1757,6 +1757,13 @@ vmxnet3_alloc_intr_handles(vmxnet3_softc_t *dp, int type)
 		    req, avail);
 	}
 
+	if (avail > req) {
+		VMXNET3_DEBUG(dp, 2,
+		    "%s: more interrupts available (%d) than needed, "
+		    "capping at %d", __func__, avail, req);
+		avail = req;
+	}
+
 	dp->intrCount = 0;
 	dp->intrHandleSz = avail * sizeof (ddi_intr_handle_t);
 	dp->intrHandles = kmem_alloc(dp->intrHandleSz, KM_SLEEP);
