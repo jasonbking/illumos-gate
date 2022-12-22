@@ -48,6 +48,7 @@
 
 #include <sys/byteorder.h>	/* for ntohs, ntohl, htons, htonl */
 #include <sys/sysmacros.h>
+#include <sys/sdt.h>
 
 #include <sys/tpm.h>
 
@@ -267,21 +268,21 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 	int minor;
 
 	if (otype != OTYP_CHR) {
-		return (EINVAL);
+		return (SET_ERROR(EINVAL));
 	}
 
 	if (drv_priv(credp) != 0) {
-		return (EPERM);
+		return (SET_ERROR(EPERM));
 	}
 
 	if (getminor(*devp) != TPM_CTL_MINOR) {
-		return (ENXIO);
+		return (SET_ERROR(ENXIO));
 	}
 
 	/* Opening the TPM O_WRONLY makes no sense */
 	if ((flag & FREAD) != FREAD) {
 		/* XXX: Better value? */
-		return (EINVAL);
+		return (SET_ERROR(EINVAL));
 	}
 
 	tpm = ddi_get_soft_state(tpm_statep, TPM_CTL_MINOR);
@@ -293,7 +294,7 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 	    tpm->tpm_exclusive ||
 	    tpm->tpm_client_count > 0 && ((flag & FEXCL) == FEXCL)) {
 		mutex_exit(&tpm->tpm_lock);
-		return (EBUSY);
+		return (SET_ERROR(EBUSY));
 	}
 	tpm->tpm_client_count++;
 	if ((flag & FEXCL) == FEXCL) {
@@ -303,12 +304,12 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 
 	minor = id_alloc_nosleep(tpm_minors);
 	if (minor == -1) {
-		return (EBUSY);
+		return (SET_ERROR(EBUSY));
 	}
 
 	if (ddi_soft_state_zalloc(tpm_statep, minor) != DDI_SUCCESS) {
 		id_free(tpm_minors, minor);
-		return (ENOMEM);
+		return (SET_ERROR(ENOMEM));
 	}
 	c = ddi_get_soft_state(tpm_statep, minor);
 
@@ -365,12 +366,12 @@ tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 	tpm_client_t *c;
 
 	if (otyp != OTYP_CHR) {
-		return (EINVAL);
+		return (SET_ERROR(EINVAL));
 	}
 
 	c = tpm_client_get(dev);
 	if (c == NULL) {
-		return (ENXIO);
+		return (SET_ERROR(ENXIO));
 	}
 
 	c->tpmc_closing = true;
@@ -386,7 +387,7 @@ tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 
 		if (ret <= 0) {
 			mutex_exit(&c->tpmc_lock);
-			return (EAGAIN);
+			return (SET_ERROR(EAGAIN));
 		}
 	}
 
@@ -430,7 +431,7 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	c = tpm_client_get(dev);
 	if (c == NULL) {
-		return (ENXIO);
+		return (SET_ERROR(ENXIO));
 	}
 
 	VERIFY(MUTEX_HELD(&c->tpmc_lock));
@@ -443,13 +444,13 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	if ((c->tpmc_mode & TPM_MODE_WRITE) != 0) {
 		/* XXX better return value? */
-		ret = EIO;
+		ret = SET_ERROR(EIO);
 		goto done;
 	}
 
 	if (!tpmc_is_writemode(c)) {
 		if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
-			ret = EAGAIN;
+			ret = SET_ERROR(EAGAIN);
 			goto done;
 		}
 
@@ -462,7 +463,7 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 		while (c->tpmc_state != TPM_CLIENT_IDLE) {
 			ret = cv_wait_sig(&c->tpmc_cv, &c->tpmc_lock);
 			if (ret == 0) {
-				ret = EINTR;
+				ret = SET_ERROR(EINTR);
 				goto done;
 			}
 		}
@@ -509,14 +510,14 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 		 * hold any valid command, so if we were passed an oversized
 		 * request, it's obviously invalid.
 		 */
-		ret = EIO;
+		ret = SET_ERROR(EIO);
 		goto done;
 	} else if (amt_needed < TPM_HEADER_SIZE) {
 		/*
 		 * Request is too small.
 		 * XXX: Better error value?
 		 */
-		ret = EIO;
+		ret = SET_ERROR(EIO);
 		goto done;
 	}
 
@@ -579,7 +580,7 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	c = tpm_client_get(dev);
 	if (c == NULL) {
-		return (ENXIO);
+		return (SET_ERROR(ENXIO));
 	}
 
 	VERIFY(MUTEX_HELD(&c->tpmc_lock));
@@ -592,7 +593,7 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 		if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
 			mutex_exit(&c->tpmc_lock);
 			tpm_client_refrele(c);
-			return (EAGAIN);
+			return (SET_ERROR(EAGAIN));
 		}
 
 		while (c->tpmc_state != TPM_CLIENT_CMD_COMPLETION) {
@@ -600,7 +601,7 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 			if (ret == 0) {
 				mutex_exit(&c->tpmc_lock);
 				tpm_client_refrele(c);
-				return (EINTR);
+				return (SET_ERROR(EINTR));
 			}
 		}
 		break;
@@ -646,7 +647,7 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 
 	c = tpm_client_get(dev);
 	if (c == NULL) {
-		return (ENXIO);
+		return (SET_ERROR(ENXIO));
 	}
 
 	VERIFY(MUTEX_HELD(&c->tpmc_lock));
@@ -666,23 +667,23 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		}
 
 		if (ddi_copyout(&val, (void *)data, sizeof (val), md) != 0) {
-			ret = EFAULT;
+			ret = SET_ERROR(EFAULT);
 		}
 		break;
 	case TPMIOC_SETLOCALITY:
 		if ((c->tpmc_mode & TPM_MODE_WRITE) != 0) {
 			/* XXX: better value? didn't open for write */
-			ret = ENXIO;
+			ret = SET_ERROR(ENXIO);
 			break;
 		}
 
 		if (ddi_copyin((void *)data, &val, sizeof (val), md) != 0) {
-			ret = EFAULT;
+			ret = SET_ERROR(EFAULT);
 			break;
 		}
 
 		if (val < 0 || val > TPM_LOCALITY_MAX) {
-			ret = EINVAL;
+			ret = SET_ERROR(EINVAL);
 			break;
 		}
 
@@ -690,20 +691,20 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		 * XXX: For now we only allow access to locality 0.
 		 */
 		if (val != 0) {
-			ret = EPERM;
+			ret = SET_ERROR(EPERM);
 			break;
 		}
 
 		/* Only change locality while the client is idle. */
 		if (c->tpmc_state != TPM_CLIENT_IDLE) {
 			if ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0) {
-				ret = EAGAIN;
+				ret = SET_ERROR(EAGAIN);
 				goto done;
 			}
 			while (c->tpmc_state != TPM_CLIENT_IDLE) {
 				ret = cv_wait_sig(&c->tpmc_cv, &c->tpmc_lock);
 				if (ret == 0) {
-					ret = EINTR;
+					ret = SET_ERROR(EINTR);
 					goto done;
 				}
 			}
@@ -715,10 +716,10 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		break;
 	case TPMIOC_MAKESTICKY:
 		/* XXX: TODO */
-		ret = ENOTSUP;
+		ret = SET_ERROR(ENOTSUP);
 		break;
 	default:
-		ret = ENOTTY;
+		ret = SET_ERROR(ENOTTY);
 	}
 
 done:
@@ -735,7 +736,7 @@ tpm_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 
 	c = tpm_client_get(dev);
 	if (c == NULL) {
-		return (ENXIO);
+		return (SET_ERROR(ENXIO));
 	}
 
 	VERIFY(MUTEX_HELD(&c->tpmc_lock));
@@ -881,7 +882,9 @@ tpm_get_waittime(tpm_t *tpm, tpm_wait_t wait_type, clock_t now,
 		until = now + tpm->tpm_timeout_poll;
 		return ((until < deadline) ? until : deadline);
 	}
+
 	cmn_err(CE_PANIC, "invalid wait_type %d", wait_type);
+
 	/*NOTREACHED*/
 	return (0);
 }
@@ -890,7 +893,7 @@ tpm_get_waittime(tpm_t *tpm, tpm_wait_t wait_type, clock_t now,
  * Wait for a register to return a (possibly masked) value.
  *
  * If intr is set, wait the full timeout value and expect an interrupt
- * should wake us when the condition we're checking has been satisified.
+ * will likely wake us sooner when the condition we're checking has been satisified.
  *
  * If intr is not set, check every tpm->tpm_timeout_poll cycles.
  *
@@ -1470,6 +1473,7 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	tpm_t *tpm = NULL;
 	int ret;
 	int instance;
+	int use_intr, wait;
 
 	instance = ddi_get_instance(dip);
 	if (instance < 0) {
@@ -1511,7 +1515,9 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	 */
 	tpm->tpm_wait = TPM_WAIT_POLL;
 
-	/* XXX: set tpm_use_interrupts */
+	use_intr = ddi_prop_get_int(DDI_DEV_T_ANY, dip, DDI_PROP_DONTPASS,
+	    "use-interrupts", 1);
+	tpm->tpm_use_interrupts = (use_intr != 0) ? true : false;
 
 	for (uint_t i = 0; i < ARRAY_SIZE(tpm_attach_tbl); i++) {
 		tpm_attach_desc_t *desc = &tpm_attach_tbl[i];
@@ -1545,7 +1551,28 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		break;
 	}
 
-	/* XXX: Check for tpm_wait override */
+	wait = ddi_prop_get_int(DDI_DEV_T_ANY, dip, DDI_PROP_DONTPASS, "wait",
+	    1);
+	switch (wait) {
+	case 0:
+		tpm->tpm_wait = TPM_WAIT_POLL;
+		break;
+	case 1:
+		if (!tpm->tpm_use_interrupts) {
+			dev_err(tpm->tpm_dip, CE_NOTE,
+			    "interrupts disabled. TPM will poll");
+			tpm->tpm_wait = TPM_WAIT_POLL;
+			break;
+		}
+		tpm->tpm_wait = TPM_WAIT_INTR;
+		break;
+	case 2:
+		tpm->tpm_wait = TPM_WAIT_POLLONCE;
+		break;
+	default:
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "invalid value of 'wait' property '%d'", wait);
+	}
 
 	if (tpm->tpm_use_interrupts) {
 		switch (tpm->tpm_iftype) {
