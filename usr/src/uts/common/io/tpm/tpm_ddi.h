@@ -178,7 +178,7 @@ typedef struct tpm_crb {
  * privilege level). As such, the default for TPM2.0 devices is TPM_WAIT_INTR.
  *
  * However, it is currently unknown how vulnerable TPM devices are to
- * timing attacks. At the same, it is also possible that a given TPM
+ * timing attacks. At the same time, it is also possible that a given TPM
  * implementation may legitimately be able to process commands faster than
  * the maximum timeouts allowed by the spec without being vulnerable to
  * timing attacks.
