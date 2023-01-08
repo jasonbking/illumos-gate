@@ -22,6 +22,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2018 Nexenta Systems, Inc.  All rights reserved.
  * Copyright 2022 RackTop Systems, Inc.
+ * Copyright 2022 Jason King
  */
 
 #include <sys/types.h>
@@ -50,6 +51,7 @@
 #include <libgen.h>
 #include <pwd.h>
 #include <grp.h>
+#include <dns_sd.h>
 
 #include <smbsrv/smb_door.h>
 #include <smbsrv/smb_ioctl.h>
@@ -89,6 +91,9 @@ static void *smbd_share_loader(void *);
 static void smbd_refresh_handler(void);
 
 static int smbd_kernel_start(void);
+
+static void smbd_mdns_start(void);
+static void smbd_mdns_stop(void);
 
 smbd_t smbd;
 
@@ -551,6 +556,8 @@ smbd_service_init(void)
 	smbd_load_printers();
 	smbd_spool_start();
 
+	smbd_mdns_start();
+
 	smbd.s_initialized = B_TRUE;
 	smbd_report("service initialized");
 
@@ -568,6 +575,8 @@ smbd_service_fini(void)
 
 	smbd.s_shutting_down = B_TRUE;
 	smbd_report("service shutting down");
+
+	smbd_mdns_stop();
 
 	smb_kmod_stop();
 	smb_logon_abort();
@@ -635,6 +644,8 @@ smbd_refresh_handler()
 
 	/* On refresh load share properties only, not the shares themselves */
 	smb_shr_load_execinfo();
+
+	smbd_mdns_start();
 
 	smbd_load_printers();
 	smbd_spool_start();
@@ -977,6 +988,72 @@ smbd_setup_options(int argc, char *argv[])
 	}
 
 	return (0);
+}
+
+static void
+smbd_mdns_start(void)
+{
+	DNSServiceErrorType error;
+	char hostname[MAXHOSTNAMELEN];
+	char fqdn[MAXHOSTNAMELEN];
+	int rc;
+
+	smbd.s_mdns_svc_ref = NULL;
+
+	if (!smb_config_getbool(SMB_CI_MDNS))
+		return;
+
+	smbd_mdns_stop();
+
+	if (smb_gethostname(hostname, sizeof (hostname) - 1,
+	    SMB_CASE_PRESERVE) != 0) {
+		smbd_report("failed to get hostname");
+		return;
+	}
+
+	(void) strlcpy(fqdn, hostname, sizeof (fqdn));
+	if (strlcat(fqdn, ".local",
+	    sizeof (fqdn)) >= sizeof (fqdn)) {
+		smbd_report("hostname is too long");
+		return;
+	}
+
+	/*
+	 * For now, we register on all interfaces. A future enhancement
+	 * might be to allow advertising only on specific interfaces.
+	 */
+	error = DNSServiceRegister(&smbd.s_mdns_svc_ref, 0, 0, hostname,
+	    "_smb._tcp", NULL, fqdn, htons(IPPORT_SMB), 0, NULL, NULL,
+	    NULL);
+
+	switch (error) {
+	case kDNSServiceErr_NoError:
+		break;
+	case kDNSServiceErr_ServiceNotRunning:
+		smbd_report("svc:/network/dns/multicast:default service does "
+		    "not appear to be running");
+		break;
+	default:
+		smbd_report("mdns registration failed: %d", error);
+		break;
+	}
+
+	/* Now start mDNS for shares */
+	rc = smb_mdns_start();
+	if (rc != 0)
+		smbd_report("failed to start mDNS update thread: %d", rc);
+}
+
+static void
+smbd_mdns_stop(void)
+{
+	if (smbd.s_mdns_svc_ref == NULL)
+		return;
+
+	smb_mdns_stop();
+
+	DNSServiceRefDeallocate(smbd.s_mdns_svc_ref);
+	smbd.s_mdns_svc_ref = NULL;
 }
 
 static void

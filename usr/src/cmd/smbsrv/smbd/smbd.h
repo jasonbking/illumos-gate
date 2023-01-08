@@ -23,6 +23,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2022 Tintri by DDN, Inc.  All rights reserved.
  * Copyright 2022-2023 RackTop Systems, Inc.
+ * Copyright 2022 Jason King
  */
 
 #ifndef _SMBD_H
@@ -35,6 +36,7 @@ extern "C" {
 #include <sys/types.h>
 #include <thread.h>
 #include <synch.h>
+#include <dns_sd.h>
 #include <smbsrv/smb_ioctl.h>
 #include <smbsrv/smb_token.h>
 #include <smbsrv/libsmb.h>
@@ -102,6 +104,7 @@ typedef struct smbd {
 	pthread_t	s_nbt_listener_id;
 	pthread_t	s_tcp_listener_id;
 	boolean_t	s_fatal_error;
+	DNSServiceRef	s_mdns_svc_ref;
 } smbd_t;
 
 extern smbd_t smbd;

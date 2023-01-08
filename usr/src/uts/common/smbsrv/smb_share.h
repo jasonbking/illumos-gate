@@ -23,6 +23,7 @@
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2018 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2016 by Delphix. All rights reserved.
+ * Copyright 2022 Jason King
  */
 
 #ifndef _SMB_SHARE_H
@@ -105,6 +106,7 @@ extern "C" {
 #define	SHOPT_FSO		"fso"	/* Force Shared Oplocks */
 #define	SHOPT_ENCRYPT		"encrypt"
 #define	SHOPT_AUTOHOME		"Autohome"
+#define	SHOPT_TM		"tm"
 
 #define	SMB_DEFAULT_SHARE_GROUP	"smb"
 #define	SMB_PROTOCOL_NAME	"smb"
@@ -188,6 +190,8 @@ extern "C" {
 #define	SMB_SHRF_FSO		0x2000	/* Force Shared Oplocks */
 #define	SMB_SHRF_CA		0x4000	/* Continuous Availability */
 
+#define	SMB_SHRF_TM		0x8000	/* Advertise as Time Machine capable */
+
 /*
  * Runtime flags
  */
@@ -260,6 +264,8 @@ typedef struct smb_shr_execinfo {
  */
 int smb_shr_start(void);
 void smb_shr_stop(void);
+int smb_mdns_start(void);
+void smb_mdns_stop(void);
 void *smb_shr_load(void *);
 void smb_shr_load_execinfo(void);
 void smb_shr_unload(void);

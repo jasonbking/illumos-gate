@@ -21,6 +21,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2018 Nexenta Systems, Inc. All rights reserved.
  * Copyright 2019 RackTop Systems.
+ * Copyright 2023 Jason King
  */
 
 /*
@@ -35,16 +36,19 @@
 #include <thread.h>
 #include <pthread.h>
 #include <assert.h>
+#include <sys/debug.h>
 #include <libshare.h>
 #include <libzfs.h>
 #include <priv_utils.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <pwd.h>
 #include <signal.h>
 #include <dirent.h>
 #include <dlfcn.h>
+#include <dns_sd.h>
 
 #include <smbsrv/libsmb.h>
 #include <smbsrv/libsmbns.h>
@@ -135,6 +139,32 @@ static void smb_shr_cache_freent(HT_ITEM *);
 
 static boolean_t smb_shr_is_empty(const char *);
 static boolean_t smb_shr_is_dot_or_dotdot(const char *);
+
+/*
+ * multicast DNS
+ */
+#define	SMB_MDNS_SETTLE_INTERVAL	2
+
+/* known adVF flag values */
+#define	SMB_ADVF_LOGIN		0x0100
+#define	SMB_ADVF_SMB		0x0002
+#define	SMB_ADVF_TM		0x0080
+
+typedef struct smb_mdns {
+	mutex_t		smbm_lock;
+	cond_t		smbm_cv;
+	hrtime_t	smbm_lastmod;
+	DNSServiceRef	smbm_mdns_ref;
+	boolean_t	smbm_exit;
+} smb_mdns_t;
+
+static smb_mdns_t smb_mdns = {
+	.smbm_lock = ERRORCHECKMUTEX,
+	.smbm_cv = DEFAULTCV,
+};
+
+static void smb_mdns_update(void);
+static int smb_mdns_do_update(const char *);
 
 /*
  * sharemgr functions
@@ -472,6 +502,9 @@ smb_shr_add(smb_share_t *si)
 			if ((si->shr_flags & SMB_SHRF_DFSROOT) != 0)
 				dfs_namespace_load(si->shr_name);
 
+			if ((si->shr_flags & SMB_SHRF_TM) != 0)
+				smb_mdns_update();
+
 			return (NERR_Success);
 		}
 	}
@@ -585,6 +618,9 @@ smb_shr_remove(char *sharename)
 
 	smb_shr_unpublish(sharename, container);
 
+	if ((si->shr_flags & SMB_SHRF_TM) != 0)
+		smb_mdns_update();
+
 	/* call kernel to release the hold on the shared file system */
 	if (shrlist != NULL) {
 		(void) smb_kmod_unshare(shrlist);
@@ -679,6 +715,9 @@ smb_shr_rename(char *from_name, char *to_name)
 	smb_shr_unpublish(from_name, to_si.shr_container);
 	smb_shr_publish(to_name, to_si.shr_container);
 
+	if ((to_si.shr_flags & SMB_SHRF_TM) != 0)
+		smb_mdns_update();
+
 	return (NERR_Success);
 }
 
@@ -721,6 +760,7 @@ smb_shr_modify(smb_share_t *new_si)
 	smb_share_t *si;
 	boolean_t adc_changed = B_FALSE;
 	boolean_t quota_flag_changed = B_FALSE;
+	boolean_t tm_flag_changed = B_FALSE;
 	uint32_t access, flag;
 	nvlist_t *shrlist;
 
@@ -793,6 +833,12 @@ smb_shr_modify(smb_share_t *new_si)
 	si->shr_flags &= ~SMB_SHRF_ACC_ALL;
 	si->shr_flags |= access;
 
+	flag = (new_si->shr_flags & SMB_SHRF_TM);
+	si->shr_flags &= ~SMB_SHRF_TM;
+	si->shr_flags |= flag;
+	if ((old_si.shr_flags ^ si->shr_flags) & SMB_SHRF_TM)
+		tm_flag_changed = B_TRUE;
+
 	si->shr_encrypt = new_si->shr_encrypt;
 
 	if (access & SMB_SHRF_ACC_NONE)
@@ -844,6 +890,9 @@ smb_shr_modify(smb_share_t *new_si)
 
 		smb_proc_givesem();
 	}
+
+	if (tm_flag_changed)
+		smb_mdns_update();
 
 	return (NERR_Success);
 }
@@ -1888,6 +1937,13 @@ smb_shr_sa_get(sa_share_t share, sa_resource_t resource, smb_share_t *si)
 		si->shr_flags |= SMB_SHRF_ACC_RW;
 	}
 
+	val = smb_shr_sa_getprop(opts, SHOPT_TM);
+	if (val != NULL) {
+		/* Turn the flag on or off */
+		smb_shr_sa_setflag(val, si, SMB_SHRF_TM);
+		free(val);
+	}
+
 	sa_free_derived_optionset(opts);
 	return (NERR_Success);
 }
@@ -2668,4 +2724,235 @@ smb_shr_encode(smb_share_t *si, nvlist_t **nvlist)
 		*nvlist = list;
 
 	return (rc);
+}
+
+static void
+smb_mdns_update(void)
+{
+	mutex_enter(&smb_mdns.smbm_lock);
+	smb_mdns.smbm_lastmod = gethrtime();
+	VERIFY0(cond_signal(&smb_mdns.smbm_cv));
+	mutex_exit(&smb_mdns.smbm_lock);
+}
+
+static int
+smb_mdns_create_sys(TXTRecordRef *tp)
+{
+	char			buf[128];
+	DNSServiceErrorType	error;
+	int			ret;
+	uint16_t		flags = 0;
+
+	/*
+	 * In workgroup mode, advertise that a login and password is
+	 * required.
+	 */
+	if (smb_config_get_secmode() != SMB_SECMODE_DOMAIN)
+		flags |= SMB_ADVF_LOGIN;
+
+	ret = snprintf(buf, sizeof (buf), "waMa=0,adVF=0x%" PRIx16, flags);
+	if (ret > UINT8_MAX)
+		return (EOVERFLOW);
+
+	error = TXTRecordSetValue(tp, "sys", (uint8_t)ret, buf);
+	/*
+	 * libdns_ds isn't documented too well, but the only failure
+	 * TXTRecordSetValue() can have is due to key and/or values being
+	 * too large.
+	 */
+	if (error != kDNSServiceErr_NoError)
+		return (EOVERFLOW);
+
+	return (0);
+}
+
+/*
+ * Create the dk key used by Time Machine.
+ */
+static int
+smb_mdns_create_dk(TXTRecordRef *tp, uint_t idx, const char *name)
+{
+	char			key[16];
+	char			val[128];
+	DNSServiceErrorType	error __unused;
+	int			ret;
+	uint16_t		flags = SMB_ADVF_SMB|SMB_ADVF_TM;
+
+	(void) snprintf(key, sizeof (key), "dk%u", idx);
+	ret = snprintf(val, sizeof (val), "adVF=0x%" PRIx16 ",adVN=%s",
+	    flags, name);
+	if (ret > UINT8_MAX)
+		return (EOVERFLOW);
+
+	error = TXTRecordSetValue(tp, key, (uint8_t)ret, val);
+	/* See smb_mdns_create_sys() why this is the only failure mode */
+	if (error != kDNSServiceErr_NoError)
+		return (EOVERFLOW);
+
+	return (0);
+}
+
+/* Wait until the share list settles to a steady state */
+static void
+smb_mdns_settle(void)
+{
+	ASSERT(MUTEX_HELD(&smb_mdns.smbm_lock));
+
+	while (gethrtime() - smb_mdns.smbm_lastmod <
+	    SEC2NSEC(SMB_MDNS_SETTLE_INTERVAL)) {
+		int ret;
+		timestruc_t ts = {
+			.tv_sec = SMB_MDNS_SETTLE_INTERVAL,
+		};
+
+		ret = cond_timedwait(&smb_mdns.smbm_cv, &smb_mdns.smbm_lock,
+		    &ts);
+		if (smb_mdns.smbm_exit)
+			return;
+
+		switch (ret) {
+		case 0:
+		case EINTR:
+			continue;
+		case ETIME:
+			return;
+		default:
+			/* Shouldn't happen */
+			abort();
+		}
+	}
+}
+
+static void *
+smb_shr_mdns(void *arg __unused)
+{
+	char			host[MAXHOSTNAMELEN];
+	int			rc;
+
+	VERIFY0(gethostname(host, sizeof (host) - 1));
+	for (char *p = host; *p != '\0'; p++) {
+		if (*p == '.') {
+			*p = '\0';
+			break;
+		}
+	}
+
+	mutex_enter(&smb_mdns.smbm_lock);
+
+	for (;;) {
+		rc = cond_wait(&smb_mdns.smbm_cv, &smb_mdns.smbm_lock);
+		if (rc != 0) {
+			VERIFY3S(rc, ==, EINTR);
+			continue;
+		}
+
+		if (smb_mdns.smbm_exit)
+			goto done;
+
+		smb_mdns_settle();
+		if (smb_mdns.smbm_exit)
+			goto done;
+
+		rc = smb_mdns_do_update(host);
+	}
+
+done:
+	if (smb_mdns.smbm_mdns_ref != NULL)
+		DNSServiceRefDeallocate(smb_mdns.smbm_mdns_ref);
+	smb_mdns.smbm_mdns_ref = NULL;
+	mutex_exit(&smb_mdns.smbm_lock);
+	return (NULL);
+}
+
+/*
+ * Update the _adisk TXT record to advertise Time Machine volumes.
+ * Due to the way mDNS works, we can't do a differential update. Instead,
+ * whenever the list of Time Machine volumes changes, we must generate
+ * a brand new TXT record with all the keys (volumes) and publish it.
+ *
+ * We are also limited in the total size of the TXT record which is based
+ * on the length of the volume names. Unfortunately, there isn't a good way
+ * to flag too many entries to the user when setting the tm option, so
+ * we just log when this happens (and advertise what we can). Since the
+ * expectation is that the number of Time Machine volumes should be low
+ * (often one), this hopefully isn't a condition that's common.
+ */
+static int
+smb_mdns_do_update(const char *hostname)
+{
+	smb_shriter_t		shi;
+	smb_share_t		*si;
+	TXTRecordRef		txt;
+	DNSServiceErrorType	error;
+	int			ret;
+	uint_t			i;
+
+	TXTRecordCreate(&txt, 0, NULL);
+	smb_shr_iterinit(&shi);
+
+	ret = smb_mdns_create_sys(&txt);
+	if (ret != 0) {
+		syslog(LOG_INFO, "share: mDNS record is too large");
+		TXTRecordDeallocate(&txt);
+		return (ret);
+	}
+
+	i = 0;
+	while ((si = smb_shr_iterate(&shi)) != NULL) {
+		if ((si->shr_flags & SMB_SHRF_TM) == 0)
+			continue;
+
+		ret = smb_mdns_create_dk(&txt, i++, si->shr_name);
+		if (ret != 0) {
+			syslog(LOG_INFO,
+			    "share: mDNS record for %s exceeds limits",
+			    si->shr_name);
+			TXTRecordDeallocate(&txt);
+			return (ret);
+		}
+	}
+
+	if (smb_mdns.smbm_mdns_ref != NULL)
+		DNSServiceRefDeallocate(smb_mdns.smbm_mdns_ref);
+
+	if (i == 0)
+		goto done;
+
+	error = DNSServiceRegister(&smb_mdns.smbm_mdns_ref, 0, 0, hostname,
+	    "_adisk._tcp", "", NULL, htons(IPPORT_SMB),
+	    TXTRecordGetLength(&txt), TXTRecordGetBytesPtr(&txt), NULL, NULL);
+	syslog(LOG_INFO, "share: failed to update mDNS adisk record: %d",
+	    error);
+
+done:
+	TXTRecordDeallocate(&txt);
+	return (0);
+}
+
+int
+smb_mdns_start(void)
+{
+	pthread_t mdns_thr;
+	pthread_attr_t tattr;
+	int rc;
+
+	mutex_enter(&smb_mdns.smbm_lock);
+
+	VERIFY0(pthread_attr_init(&tattr));
+	VERIFY0(pthread_attr_setdetachstate(&tattr, PTHREAD_CREATE_DETACHED));
+	rc = pthread_create(&mdns_thr, &tattr, smb_shr_mdns, 0);
+	VERIFY0(pthread_setname_np(mdns_thr, "mdns"));
+	VERIFY0(pthread_attr_destroy(&tattr));
+
+	mutex_exit(&smb_mdns.smbm_lock);
+	return (rc);
+}
+
+void
+smb_mdns_stop(void)
+{
+	mutex_enter(&smb_mdns.smbm_lock);
+	smb_mdns.smbm_exit = B_TRUE;
+	VERIFY0(cond_signal(&smb_mdns.smbm_cv));
+	mutex_exit(&smb_mdns.smbm_lock);
 }

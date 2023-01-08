@@ -21,6 +21,7 @@
 #
 # Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright 2020 Tintri by DDN, Inc. All rights reserved.
+# Copyright 2022 Jason King
 #
 
 #
@@ -65,6 +66,8 @@ SYMBOL_VERSION SUNWprivate {
 	smb_locate_dc;
 	smb_logon;
 	smb_logon_abort;
+	smb_mdns_start;
+	smb_mdns_stop;
 	smb_quota_free;
 	smb_quota_query;
 	smb_quota_set;
