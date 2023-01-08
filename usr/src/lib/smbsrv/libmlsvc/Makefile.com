@@ -23,6 +23,7 @@
 # Copyright 2020 Tintri by DDN, Inc. All rights reserved.
 #
 # Copyright (c) 2018, Joyent, Inc.
+# Copyright 2022 Jason King
 
 LIBRARY =	libmlsvc.a
 VERS =		.1
@@ -88,7 +89,7 @@ INCS += -I$(SRC)/uts/common/smbsrv/ndl
 LDLIBS +=	$(MACH_LDLIBS)
 LDLIBS += -lmlrpc -lsmb -lsmbns -lshare -lsmbfs -lnsl -lpkcs11 -lmd	 \
 	-lscf -lcmdutils -lsec -lavl -lnvpair -luutil -luuid -lgen -lzfs \
-	-lresolv -lc
+	-lresolv -ldns_sd -lc
 
 CPPFLAGS += $(INCS) -D_REENTRANT
 CPPFLAGS += -Dsyslog=smb_syslog

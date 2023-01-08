@@ -26,6 +26,7 @@ Copyright 2018 Nexenta Systems, Inc.  All rights reserved.
 Copyright 2016 Hans Rosenfeld <rosenfeld@grumpf.hope-2000.org>
 Copyright 2020 Tintri by DDN, Inc. All rights reserved.
 Copyright 2022 RackTop Systems, Inc.
+Copyright 2022 Jason King
 
 NOTE:  This service manifest is not editable; its contents will
 be overwritten by package or patch operations, including
@@ -79,6 +80,14 @@ file.
 	    restart_on='none'
 	    type='service'>
 		<service_fmri value='svc:/network/smb/client:default'/>
+	</dependency>
+
+	<!-- If mDNS is enabled, we want it to start before smbd -->
+	<dependency name='mdns-client'
+	    grouping='optional_all'
+	    restart_on='none'
+	    type='service'>
+		<service_fmri value='svc:/network/dns/multicast:default'/>
 	</dependency>
 
 	<!--
@@ -247,6 +256,8 @@ file.
 			value='0' override='true'/>
 		<propval name='max_opens' type='integer'
 			value='0' override='true'/>
+		<propval name='mdns' type='boolean'
+			value='true' override='true'/>
 	</property_group>
 
 	<!-- SMB service-specific shares exec configuration defaults -->

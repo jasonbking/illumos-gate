@@ -23,6 +23,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2017 Nexenta Systems, Inc.  All rights reserved.
  * Copyright 2022 RackTop Systems.
+ * Copyright 2022 Jason King
  */
 
 /*
@@ -185,6 +186,7 @@ struct option_defs optdefs[] = {
 	{ SHOPT_FSO,		OPT_TYPE_BOOLEAN },
 	{ SHOPT_QUOTAS,		OPT_TYPE_BOOLEAN },
 	{ SHOPT_ENCRYPT,	OPT_TYPE_STRING },
+	{ SHOPT_TM,		OPT_TYPE_BOOLEAN },
 	{ NULL, 0 }
 };
 
@@ -2197,6 +2199,9 @@ smb_build_shareinfo(sa_share_t share, sa_resource_t resource, smb_share_t *si)
 	if (smb_saprop_getstr(opts, SHOPT_NONE, si->shr_access_none,
 	    sizeof (si->shr_access_none)))
 		si->shr_flags |= SMB_SHRF_ACC_NONE;
+
+	if (smb_saprop_getbool(opts, SHOPT_TM, B_FALSE))
+		si->shr_flags |= SMB_SHRF_TM;
 
 	sa_free_derived_optionset(opts);
 	return (SA_OK);
