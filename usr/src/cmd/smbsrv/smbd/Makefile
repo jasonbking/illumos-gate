@@ -22,6 +22,7 @@
 # Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright 2014 Nexenta Systems, Inc.  All rights reserved.
 # Copyright (c) 2018, Joyent, Inc.
+# Copyright 2022 Jason King
 #
 
 
@@ -78,6 +79,7 @@ LDLIBS += -L$(ROOT)/usr/lib/smbsrv
 # prefer to keep libs ordered by dependence
 LDLIBS += -lmlsvc -lmlrpc -lsmbns -lsmb -lsmbfs -lgss
 LDLIBS += -lzfs -lbsm -lscf -lcmdutils -lsocket -lnsl -lumem
+LDLIBS += -ldns_sd
 $(PROG) := LDLIBS += -lkrb5
 
 $(ENABLE_SMB_PRINTING) CPPFLAGS += -DHAVE_CUPS
