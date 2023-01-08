@@ -309,6 +309,16 @@ as
 .Ql 1024 ,
 is
 .Ql 1088 .
+.It Sy mdns
+.Pp
+Specify if the SMB server should multicast dns (mDNS) advertisements.
+The multicast DNS (mDNS) service
+.Pq Ql svc:/network/dns/multicast:default
+must be enabled in conjunction with
+.Sy mdns
+set to
+.Ql true
+to generate mDNS advertisements.
 .It Sy netbios_scope
 .Pp
 Specifies the NetBIOS scope identifier, which identifies logical NetBIOS
@@ -445,6 +455,7 @@ Uncommitted
 .Sh SEE ALSO
 .Xr attributes 7 ,
 .Xr smf 7 ,
+.Xr mdnsd 8 ,
 .Xr sharectl 8 ,
 .Xr smbadm 8 ,
 .Xr smbd 8 ,
