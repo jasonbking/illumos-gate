@@ -10,16 +10,18 @@
 #
 
 #
-# Copyright 2022 Jason King
+# Copyright 2023 Jason King
 #
 
 PROG =		lldpd
 MANIFEST =	lldpd.xml
 
 OBJS =		agent.o		\
+		buf.o		\
 		lldpd.o		\
 		log.o		\
 		neighbor.o	\
+		pdu.o		\
 		timer.o		\
 		util.o
 
