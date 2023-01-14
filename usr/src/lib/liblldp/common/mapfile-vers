@@ -10,7 +10,7 @@
 #
 
 #
-# Copyright 2022 Jason King
+# Copyright 2023 Jason King
 #
 
 #
@@ -37,6 +37,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_chassis_typestr;
 	lldp_port_str;
 	lldp_port_typestr;
+	lldp_tlv_type_str;
     local:
 	*;
 };

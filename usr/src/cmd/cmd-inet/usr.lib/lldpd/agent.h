@@ -42,10 +42,14 @@ typedef enum tx_state {
 } tx_state_t;
 #define	TX_BEGIN		TX_LLDP_INITIALIZE
 
+/* XXX: There's probably a better place for this */
+#define	LLDP_PDU_MAX	512
+
 typedef struct tx {
 	tx_state_t	tx_state;
 	struct log	*tx_log;
 
+	uint8_t		tx_frame[LLDP_PDU_MAX];
 	buf_t		tx_buf;
 
 	lldp_timer_t	tx_shutdown;
@@ -88,6 +92,7 @@ typedef struct rx {
 	rx_state_t		rx_state;
 	struct log		*rx_log;
 
+	uint8_t			rx_frame[LLDP_PDU_MAX];
 	buf_t			rx_buf;
 	struct neighbor		*rx_neighbor;
 	struct neighbor		*rx_curr_neighbor;
@@ -145,6 +150,8 @@ typedef struct agent {
 
 	lldp_agent_stats_t	a_stats;
 } agent_t;
+
+#define	IS_AGENT_THREAD(a)	((a)->a_tid == thr_self())
 
 agent_t	*agent_create(const char *);
 void	agent_destroy(agent_t *);
