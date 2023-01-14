@@ -23,30 +23,33 @@
 extern "C" {
 #endif
 
-typedef enum buf_flag {
-	BUF_F_NONE =	0,
-	BUF_F_READ =	1,
-	BUF_F_WRITE =	2,
-	BUF_F_ERROR =	1 << 31,
-} buf_flags_t;
-
 typedef struct buf {
-	uint8_t		*b_data;
-	uint16_t	b_idx;
-	uint16_t	b_size;
-	buf_flags_t	b_flags;
+	uint8_t		*b_ptr;
+	uint16_t	b_len;
 } buf_t;
 
-void buf_init(buf_t *, size_t);
-void buf_fini(buf_t *);
-void buf_reader(buf_t *, buf_t *);
-void buf_writer(buf_t *, buf_t *);
+void buf_init(buf_t *, uint8_t *, uint16_t);
+bool buf_get8(buf_t *, uint8_t *);
+bool buf_get16(buf_t *, uint16_t *);
+bool buf_take(buf_t *restrict, uint16_t, buf_t *restrict);
+bool buf_truncate(buf_t *, uint16_t);
 
-uint8_t buf_get8(buf_t *);
-uint16_t buf_get16(buf_t *);
-uint32_t buf_get32(buf_t *);
-bool buf_copy(buf_t *, size_t);
+bool buf_put8(buf_t *, uint8_t);
+bool buf_put16(buf_t *, uint16_t);
+bool buf_ptrstr(buf_t *, const char *);
+bool buf_putbytes(buf_t *, void *, uint16_t);
 
+static inline uint8_t *
+buf_ptr(buf_t *b)
+{
+	return (b->b_ptr);
+}
+
+static inline uint16_t
+buf_len(const buf_t *b)
+{
+	return (b->b_len);
+}
 
 #ifdef __cplusplus
 }

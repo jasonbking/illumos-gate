@@ -129,3 +129,32 @@ lldp_caps_str(lldp_cap_t caps, char *buf, size_t buflen)
 {
 	return (0);
 }
+
+const char *
+lldp_tlv_type_str(lldp_tlv_type_t type)
+{
+	switch (type) {
+	case LLDP_TLV_END:
+		return ("End");
+	case LLDP_TLV_CHASSIS_ID:
+		return ("Chassis Id");
+	case LLDP_TLV_PORT_ID:
+		return ("Port Id");
+	case LLDP_TLV_TTL:
+		return ("ttl");
+	case LLDP_TLV_PORT_DESC:
+		return ("Port Description");
+	case LLDP_TLV_SYS_NAME:
+		return ("System Name");
+	case LLDP_TLV_SYS_DESC:
+		return ("System description");
+	case LLDP_TLV_SYS_CAP:
+		return ("System capabilities");
+	case LLDP_TLV_MGMT_ADDR:
+		return ("Management addresses");
+	case LLDP_TLV_ORG_SPEC:
+		return ("Organization specific");
+	default:
+		return ("Unknown");
+	}
+}

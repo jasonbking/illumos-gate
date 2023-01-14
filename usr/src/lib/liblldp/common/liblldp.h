@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #ifndef _LIBLLDP_H
@@ -19,6 +19,20 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef enum lldp_tlv_type {
+	LLDP_TLV_END =		0,
+	LLDP_TLV_CHASSIS_ID =	1,
+	LLDP_TLV_PORT_ID =	2,
+	LLDP_TLV_TTL =		3,
+	LLDP_TLV_PORT_DESC =	4,
+	LLDP_TLV_SYS_NAME =	5,
+	LLDP_TLV_SYS_DESC = 	6,
+	LLDP_TLV_SYS_CAP =	7,
+	LLDP_TLV_MGMT_ADDR =	8,
+	LLDP_TLV_ORG_SPEC =	127,
+} lldp_tlv_type_t;
+#define	LLDP_TLV_MAX		LLDP_TLV_ORG_SPEC
 
 typedef enum lldp_admin_status {
 	LLDP_LINK_DISABLED =	0,
@@ -138,6 +152,7 @@ typedef struct lldp_agent_stats {
 	uint64_t	las_length_errs;
 } lldp_agent_stats_t;
 
+const char *lldp_tlv_type_str(lldp_tlv_type_t);
 const char *lldp_admin_status_str(lldp_admin_status_t);
 const char *lldp_chassis_typestr(lldp_chassis_type_t);
 const char *lldp_port_typestr(lldp_port_type_t);

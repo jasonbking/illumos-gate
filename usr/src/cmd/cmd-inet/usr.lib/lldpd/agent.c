@@ -41,8 +41,6 @@
 #define	DEFAULT_TX_CREDIT_MAX	5
 #define	DEFAULT_TX_FAST_INIT	4
 
-#define	LLDP_PDU_MAX		512
-
 static void *agent_thread(void *);
 static bool open_port(agent_t *);
 static void recv_frame(int, void *);
@@ -80,8 +78,6 @@ static const uint_t	lldp_sap = 0x88cc;
 static const uint8_t	lldp_addr[ETHERADDRL] = {
 	0x01, 0x80, 0xc2, 0x00, 0x00, 0x0e
 };
-
-#define	CALLER_NOT_AGENT(a) ((a)->a_tid != thr_self())
 
 static inline bool
 dec(uint16_t *vp)
@@ -176,7 +172,7 @@ agent_destroy(agent_t *a)
 bool
 agent_enable(agent_t *a)
 {
-	VERIFY(CALLER_NOT_AGENT(a));
+	VERIFY(!IS_AGENT_THREAD(a));
 
 	mutex_enter(&a->a_lock);
 	a->a_port_enabled = true;
@@ -187,7 +183,7 @@ agent_enable(agent_t *a)
 void
 agent_disable(agent_t *a)
 {
-	VERIFY(CALLER_NOT_AGENT(a));
+	VERIFY(!IS_AGENT_THREAD(a));
 
 	mutex_enter(&a->a_lock);
 	a->a_port_enabled = false;
@@ -198,7 +194,7 @@ agent_disable(agent_t *a)
 void
 agent_set_status(agent_t *a, lldp_admin_status_t status)
 {
-	VERIFY(CALLER_NOT_AGENT(a));
+	VERIFY(!IS_AGENT_THREAD(a));
 
 	switch (status) {
 	case LLDP_LINK_DISABLED:
@@ -219,7 +215,7 @@ agent_set_status(agent_t *a, lldp_admin_status_t status)
 lldp_admin_status_t
 agent_get_status(agent_t *a)
 {
-	VERIFY(CALLER_NOT_AGENT(a));
+	VERIFY(!IS_AGENT_THREAD(a));
 
 	lldp_admin_status_t status;
 
@@ -233,7 +229,7 @@ agent_get_status(agent_t *a)
 void
 agent_local_change(agent_t *a)
 {
-	VERIFY(CALLER_NOT_AGENT(a));
+	VERIFY(!IS_AGENT_THREAD(a));
 
 	mutex_enter(&a->a_lock);
 	a->a_local_changes = true;
@@ -246,7 +242,7 @@ agent_num_neighbors(agent_t *a)
 {
 	size_t n;
 
-	VERIFY(CALLER_NOT_AGENT(a));
+	VERIFY(!IS_AGENT_THREAD(a));
 
 	mutex_enter(&a->a_lock);
 	n = uu_list_numnodes(a->a_neighbors);
@@ -353,7 +349,7 @@ tx_init(agent_t *a)
 
 	lldp_timer_init(&a->a_clk, &tx->tx_shutdown, "txShutdownWhile", tx,
 	    tx->tx_log, NULL, NULL);
-	buf_init(&tx->tx_buf, LLDP_PDU_MAX);
+	buf_init(&tx->tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
 	tx->tx_state = TX_BEGIN;
 
 	TRACE_RETURN(a->a_log);
@@ -362,7 +358,6 @@ tx_init(agent_t *a)
 static void
 tx_fini(tx_t *tx)
 {
-	buf_fini(&tx->tx_buf);
 	lldp_timer_fini(&tx->tx_shutdown);
 	log_fini(tx->tx_log);
 }
@@ -371,7 +366,6 @@ static bool
 tx_machine(agent_t *a)
 {
 	tx_t *tx = &a->a_tx;
-
 	TRACE_ENTER(tx->tx_log);
 
 	log_debug(tx->tx_log, "state machine running",
@@ -392,11 +386,13 @@ tx_machine(agent_t *a)
 	case TX_SHUTDOWN_FRAME:
 		make_shutdown_pdu(a, &tx->tx_buf);
 		tx_frame(a->a_dlh, &tx->tx_buf, tx->tx_log);
+		buf_init(&tx->tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
 		lldp_timer_set(&tx->tx_shutdown, a->a_cfg.ac_reinit_delay);
 		break;
 	case TX_INFO_FRAME:
 		make_pdu(a, &tx->tx_buf);
 		tx_frame(a->a_dlh, &tx->tx_buf, tx->tx_log);
+		buf_init(&tx->tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
 		if (dec(&a->a_ttr.ttr_tx_credit)) {
 			uint32_t credit = a->a_ttr.ttr_tx_credit;
 
@@ -489,14 +485,13 @@ rx_init(agent_t *a)
 	lldp_timer_init(&a->a_clk, &rx->rx_too_many_neighbors_timer,
 	    "tooManyNeighborsTimer", rx, rx->rx_log, "tooManyNeighbors",
 	    &rx->rx_too_many_neighbors);
-	buf_init(&rx->rx_buf, LLDP_PDU_MAX);
+	buf_init(&rx->rx_buf, rx->rx_frame, sizeof (rx->rx_frame));
 	rx->rx_state = RX_BEGIN;
 }
 
 static void
 rx_fini(rx_t *rx)
 {
-	buf_fini(&rx->rx_buf);
 	lldp_timer_fini(&rx->rx_too_many_neighbors_timer);
 	log_fini(rx->rx_log);
 }
@@ -865,15 +860,14 @@ tx_frame(dlpi_handle_t dlh, buf_t *b, log_t *l)
 {
 	int ret;
 
-	VERIFY3U(b->b_idx, >, 0);
+	VERIFY3U(buf_len(b), >, 0);
 
-	ret = dlpi_send(dlh, lldp_addr, sizeof (lldp_addr), b->b_data,
-	    b->b_idx, NULL);
+	ret = dlpi_send(dlh, lldp_addr, sizeof (lldp_addr), buf_ptr(b),
+	    buf_len(b), NULL);
 	if (ret != DLPI_SUCCESS)
 		log_dlerr(l, "failed to send PDU", ret);
 
-	b->b_idx = 0;
-	(void) memset(b->b_data, '\0', b->b_size);
+	(void) memset(buf_ptr(b), '\0', buf_len(b));
 }
 
 static void
@@ -889,11 +883,11 @@ recv_frame(int fd __unused, void *arg)
 {
 	agent_t		*a = arg;
 	rx_t		*rx = &a->a_rx;
-	buf_t		*b = &rx->rx_buf;
+	buf_t		*b = NULL;
 	uint8_t		src[DLPI_PHYSADDR_MAX] = { 0 };
 	dlpi_recvinfo_t	di = { 0 };
 	size_t		srclen = 0;
-	size_t		blen = b->b_size;
+	size_t		blen = buf_len(b);
 	int		ret;
 
 	/* We should be running outside the agent's thread */
@@ -901,14 +895,18 @@ recv_frame(int fd __unused, void *arg)
 
 	mutex_enter(&a->a_lock);
 
-	ret = dlpi_recv(a->a_dlh, &src, &srclen, b->b_data, &blen, 0, &di);
+	buf_init(&rx->rx_buf, rx->rx_frame, sizeof (rx->rx_frame));
+	b = &rx->rx_buf;
+	(void) memset(buf_ptr(b), '\0', buf_len(b));
+
+	ret = dlpi_recv(a->a_dlh, &src, &srclen, buf_ptr(b), &blen, 0, &di);
 	if (ret != DLPI_SUCCESS) {
 		log_dlerr(rx->rx_log, "receive error", ret);
 		rx->rx_bad_frame = true;
 		goto done;
 	}
 
-	if (di.dri_totmsglen > b->b_size) {
+	if (di.dri_totmsglen > buf_len(b)) {
 		log_info(rx->rx_log, "oversize message",
 		    LOG_T_MAC, "src", src,
 		    LOG_T_UINT32, "len", (uint32_t)blen,
@@ -927,7 +925,7 @@ recv_frame(int fd __unused, void *arg)
 	    LOG_T_UINT32, "len", (uint32_t)blen,
 	    LOG_T_END);
 
-	b->b_idx = blen;
+	VERIFY(buf_truncate(b, blen));
 	rx->rx_recv_frame = true;
 
 done:
