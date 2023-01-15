@@ -199,7 +199,7 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 
 	/* Ordinal/Command_code is located in buf[6..9] */
 	ordinal = tpm_cmd(buf);
-	to = tpm_get_timeout(tpm, ordinal);
+	to = tpm_get_ordinal_duration(tpm, ordinal);
 
 	ret = tpm_tis_wait_for_stat(tpm, TPM_STS_DATA_AVAIL | TPM_STS_VALID,
 	    to, true);
@@ -549,7 +549,7 @@ tis_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 	}
 
 	cmd = tpm_cmd(buf);
-	to = tpm_get_timeout(tpm, cmd);
+	to = tpm_get_ordinal_duration(tpm, cmd);
 	ret = tis_recv_data(tpm, buf, buflen, to);
 
 done:

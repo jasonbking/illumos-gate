@@ -1671,7 +1671,7 @@ tpm_getinfo(dev_info_t *dip __unused, ddi_info_cmd_t cmd, void *arg __unused,
 }
 
 clock_t
-tpm_get_ordinal_duration(tpm_t *tpm, uint8_t ordinal)
+tpm_get_ordinal_duration(tpm_t *tpm, uint32_t ordinal)
 {
 	return (0);
 }
@@ -1724,6 +1724,12 @@ tpm_put8_loc(tpm_t *tpm __unused, unsigned long offset, uint8_t loc,
     uint8_t value)
 {
 	(void) hcall_tpm_put(loc, offfset, sizeof (uint8_t), value);
+}
+
+void
+tpm_put32(tpm_t *tpm __unused, unsigned long offset, uint32_t value)
+{
+	(void) hcall_tpm_put(tpm->locality, offset, sizeof (uint32_t), value);
 }
 
 #elif defined(__amd64)
@@ -1792,6 +1798,13 @@ tpm_put8_loc(tpm_t *tpm, uint8_t locality, unsigned long offset, uint8_t value)
 	VERIFY3U(offset, <=, TPM_OFFSET_MAX);
 	ddi_put8(tpm->tpm_handle, tpm->tpm_addr + eff_off, value);
 }
+
+void
+tpm_put32(tpm_t *tpm, unsigned long offset, uint32_t value)
+{
+	ddi_put32(tpm->tpm_handle, tpm_reg_addr(tpm, offset), value);
+}
+
 #else
 #error TPM Accessor functions not defined for platform
 #endif

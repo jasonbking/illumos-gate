@@ -376,6 +376,8 @@ int tpm12_generate_random(tpm_t *, uchar_t *, size_t);
 bool tpm12_init(tpm_t *);
 clock_t tpm12_get_ordinal_duration(tpm_t *, uint32_t);
 
+clock_t tpm_get_ordinal_duration(tpm_t *, uint32_t);
+
 void tpm_client_refrele(tpm_client_t *);
 void tpm_client_reset(tpm_client_t *);
 
