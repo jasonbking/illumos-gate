@@ -808,8 +808,6 @@ update_objects(agent_t *a)
 static void
 delete_objects(agent_t *a)
 {
-	char		chassis[256];
-	char		port[256];
 	neighbor_t	*nb;
 	uu_list_walk_t	*wk;
 	log_t		*l = a->a_rx.rx_log;
@@ -828,13 +826,9 @@ delete_objects(agent_t *a)
 		if (lldp_timer_val(&nb->nb_timer) > 0)
 			continue;
 
-		(void) lldp_chassis_str(&nb->nb_chassis, chassis,
-		    sizeof (chassis));
-		(void) lldp_port_str(&nb->nb_port, port, sizeof (port));
-
 		log_info(l, "ageing out neighbor",
-		    LOG_T_STRING, "chassis", chassis,
-		    LOG_T_STRING, "port", port,
+		    LOG_T_CHASSIS, "chassis", tlv_list_get(&nb->nb_tlvs, 0),
+		    LOG_T_PORT, "port", tlv_list_get(&nb->nb_tlvs, 1),
 		    LOG_T_END);
 
 		uu_list_remove(a->a_neighbors, nb);
@@ -843,7 +837,7 @@ delete_objects(agent_t *a)
 	}
 
 	log_info(l, "ageing out complete",
-	    LOG_T_UINT32, "numaged", count,
+	    LOG_T_UINT32, "num_aged", count,
 	    LOG_T_END);
 
 	uu_list_walk_end(wk);
@@ -956,7 +950,7 @@ rx_process_frame(agent_t *a)
 	rx->rx_ttl = rx->rx_neighbor->nb_ttl;
 	rx->rx_curr_neighbor = uu_list_find(a->a_neighbors, rx->rx_neighbor,
 	    NULL, &rx->rx_curr_idx);
-	rx->rx_changes = neighbor_cmp(rx->rx_curr_neighbor, rx->rx_neighbor);
+	rx->rx_changes = !neighbor_same(rx->rx_curr_neighbor, rx->rx_neighbor);
 
 	if (!rx->rx_changes) {
 		/* If no changes, just update the TTL and free the new pkt */

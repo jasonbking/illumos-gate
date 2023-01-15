@@ -110,6 +110,10 @@ typedef struct rx {
 typedef struct agent_cfg {
 	lldp_port_t		ac_port;
 	lldp_admin_status_t	ac_status;
+	lldp_tx_core_tlv_t	ac_tx_tlvs;
+	lldp_tx_8021_tlv_t	ac_tx_8021_tlvs;
+	lldp_tx_8023_tlv_t	ac_tx_8023_tlvs;
+	char			*ac_desc;
 	uint16_t		ac_tx_hold;
 	uint16_t		ac_tx_interval;
 	uint16_t		ac_reinit_delay;

@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #ifndef _NEIGHBOR_H
@@ -22,7 +22,9 @@
 #include <libuutil.h>
 #include <time.h>
 
+#include "buf.h"
 #include "timer.h"
+#include "tlv.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,14 +45,12 @@ typedef struct neighbor {
 	uint8_t			nb_dst[DLPI_PHYSADDR_MAX];
 	size_t			nb_dstlen;
 
-	lldp_chassis_t		nb_chassis;
-	lldp_port_t		nb_port;
+	uint8_t			nb_pdu[LLDP_PDU_MAX];
+	size_t			nb_pdu_len;
 
-	char			*nb_sysname;
-	char			*nb_sysdesc;
-	char			*nb_portdesc;
-	lldp_cap_t		nb_cap;
-	lldp_cap_t		nb_encap;
+	tlv_list_t		nb_tlvs;
+	tlv_list_t		nb_org_tlvs;
+	tlv_list_t		nb_unknown_tlvs;
 } neighbor_t;
 
 void		neighbor_init(void);
@@ -62,7 +62,7 @@ uu_list_t	*neighbor_list_new(struct agent *);
 neighbor_t	*neighbor_get(const lldp_chassis_t *, const lldp_port_t *);
 
 int		neighbor_cmp_msap(const neighbor_t *, const neighbor_t *);
-bool		neighbor_cmp(const neighbor_t *, const neighbor_t *);
+bool		neighbor_same(const neighbor_t *, const neighbor_t *);
 
 #ifdef __cplusplus
 }
