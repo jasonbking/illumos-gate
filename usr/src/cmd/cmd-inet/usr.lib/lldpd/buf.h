@@ -33,6 +33,7 @@ bool buf_get8(buf_t *, uint8_t *);
 bool buf_get16(buf_t *, uint16_t *);
 bool buf_take(buf_t *restrict, uint16_t, buf_t *restrict);
 bool buf_truncate(buf_t *, uint16_t);
+bool buf_skip(buf_t *, uint16_t);
 
 bool buf_put8(buf_t *, uint8_t);
 bool buf_put16(buf_t *, uint16_t);

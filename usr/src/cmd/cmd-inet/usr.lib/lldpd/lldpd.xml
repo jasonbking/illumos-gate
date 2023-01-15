@@ -14,7 +14,7 @@
 
     CDDL HEADER END
 
-    Copyright 2022 Jason King.  All rights reserved.
+    Copyright 2023 Jason King.  All rights reserved.
     Use is subject to license terms.
 
 -->
@@ -29,6 +29,11 @@
 	<create_default_instance enabled='false' />
 
 	<single_instance />
+
+	<!-- We currently send (if configured) the hosts management addresses as
+	     IP addresses, so we need the IP interfaces configured before we
+	     start
+	-->
 
 	<dependency
 		name='ipmgmt'
@@ -67,15 +72,15 @@
 	</property_group>
 
 	<property_group name='daemon' type='application'>
-		<propval name='verbose' type='boolean' value='false'
+		<propval name='log_level' type='count' value='30'
 		  override='true'/>
 		<propval name='value_authorization' type='astring'
 		  value='illumos.smf.manage.lldp' />
 	</property_group>
 
 	<property_group name='config' type='application'>
-		<propval name='test' type='integer' value='5'
-		  override='true'/>
+		<propval name='value_authorization' type='astring'
+		  value='illumos.smf.manage.lldp' />
 	</property_group>
 
 	<property_group name='lldp' type='application'>
@@ -101,6 +106,28 @@
 				Link layer discovery protocol service
 			</loctext>
 		</common_name>
+		<pg_pattern name='daemon' type='application' target='this'
+		   required='false'>
+			<common_name>
+				<loctext xml:lang='C'>
+					lldp daemon startup options
+				</loctext>
+			</common_name>
+			<prop_pattern name='log_level' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						The log level
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The minimum log level of events that are logged.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+			</prop_pattern>
+		</pg_pattern>
 	</template>
 </service>
 </service_bundle>

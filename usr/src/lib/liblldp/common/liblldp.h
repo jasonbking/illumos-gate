@@ -75,9 +75,13 @@ typedef struct lldp_port {
 	uint8_t			llp_len;
 } lldp_port_t;
 
+/*
+ * These reflect the sizes on the wire, which do not include any terminating
+ * NULs (which are not sent over the wire).
+ */
 #define	LLDP_PORT_DESC_MAX	255
-#define	LLDP_SYSNAME_MAX	255
-#define	LLDP_SYSDESC_MAX	255
+#define	LLDP_SYS_NAME_MAX	255
+#define	LLDP_SYS_DESC_MAX	255
 #define	LLDP_MGMR_ADDR_MAX	31
 
 typedef enum lldp_cap {
@@ -140,6 +144,29 @@ typedef enum lldp_tx_8023_tlv {
 	LLDP_TX_X3_AGGR =		(1 << 2),
 	LLDP_TX_X3_MTU =		(1 << 3),
 } lldp_tx_8023_tlv_t;
+
+typedef struct lldp_config {
+	lldp_chassis_t	lcfg_chassis;
+	char		*lcfg_sysname;
+	char		*lcfg_sysdesc;
+	uint16_t	lcfg_syscap;
+	uint16_t	lcfg_encap;
+	/*
+	 * For the management addresses, we currently only support sending
+	 * IPv4/IPv6 addresses. We keep a NULL terminated list of IP interface
+	 * names that we use to obtain the management address to send.
+	 */
+	char		**lcfg_mgmt_if;
+} lldp_config_t;
+
+typedef struct lldp_agent_config {
+	lldp_admin_status_t	lac_status;
+	lldp_port_t		lac_port;
+	char			*lac_portdesc;
+	lldp_tx_core_tlv_t	lac_core_tlvs;
+	lldp_tx_8021_tlv_t	lac_8021_tlvs;
+	lldp_tx_8023_tlv_t	lac_8023_tlvs;
+} lldp_agent_config_t;
 
 typedef struct lldp_agent_stats {
 	uint64_t	las_ageouts;
