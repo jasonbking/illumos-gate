@@ -21,7 +21,7 @@
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2018 Nexenta Systems, Inc. All rights reserved.
  * Copyright 2019 RackTop Systems.
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 /*
@@ -760,6 +760,7 @@ smb_shr_modify(smb_share_t *new_si)
 	smb_share_t *si;
 	boolean_t adc_changed = B_FALSE;
 	boolean_t quota_flag_changed = B_FALSE;
+	boolean_t tm_flag_changed = B_FALSE;
 	uint32_t access, flag;
 	nvlist_t *shrlist;
 
@@ -832,6 +833,12 @@ smb_shr_modify(smb_share_t *new_si)
 	si->shr_flags &= ~SMB_SHRF_ACC_ALL;
 	si->shr_flags |= access;
 
+	flag = (new_si->shr_flags & SMB_SHRF_TM);
+	si->shr_flags &= ~SMB_SHRF_TM;
+	si->shr_flags |= flag;
+	if ((old_si.shr_flags ^ si->shr_flags) & SMB_SHRF_TM)
+		tm_flag_changed = B_TRUE;
+
 	si->shr_encrypt = new_si->shr_encrypt;
 
 	if (access & SMB_SHRF_ACC_NONE)
@@ -883,6 +890,9 @@ smb_shr_modify(smb_share_t *new_si)
 
 		smb_proc_givesem();
 	}
+
+	if (tm_flag_changed)
+		smb_mdns_update();
 
 	return (NERR_Success);
 }
