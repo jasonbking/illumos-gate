@@ -10,32 +10,37 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
-#ifndef _LLDPD_H
-#define	_LLDPD_H
+#ifndef _TLV_H
+#define	_TLV_H
 
-#include <synch.h>
 #include <liblldp.h>
+#include "buf.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern lldp_config_t lldp_config;
-extern mutex_t lldp_config_lock;
+typedef struct tlv {
+	lldp_tlv_type_t	tlv_type;
+	buf_t		tlv_buf;
+} tlv_t;
 
-typedef struct fd_cb {
-	void	(*fc_fn)(int, void *);
-	void	*fc_arg;
-} fd_cb_t;
+typedef struct tlv_list {
+	tlv_t		*tlvl_list;
+	uint_t		tlvl_n;
+	uint_t		tlvl_size;
+} tlv_list_t;
 
-bool schedule_fd(int, fd_cb_t *);
-void cancel_fd(int);
+tlv_list_t *tlv_list_new(void);
+void tlv_list_free(tlv_list_t *);
+tlv_t *tlv_list_get(tlv_list_t *, uint_t);
+bool tlv_list_add(tlv_list_t *, tlv_t *);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* _LLDPD_H */
+#endif /* _TLV_H */

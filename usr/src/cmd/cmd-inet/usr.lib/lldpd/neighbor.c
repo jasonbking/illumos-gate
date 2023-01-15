@@ -10,9 +10,10 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
+#include <sys/debug.h>
 #include <sys/sysmacros.h>
 #include <stddef.h>
 #include <string.h>
@@ -55,58 +56,93 @@ neighbor_list_new(agent_t *a)
 }
 
 static int
-chassis_cmp(const lldp_chassis_t *l, const lldp_chassis_t *r)
+chassis_cmp(const tlv_t *l, const tlv_t *r)
 {
+	buf_t lb = l->tlv_buf;
+	buf_t rb = r->tlv_buf;
+	uint8_t l_stype, r_stype;
 	int ret;
 
-	if (l->llc_type < r->llc_type)
+	/*
+	 * We should never instantiate a neighbor_t (especially off the wire)
+	 * with an invalid PDU, so these should always succeed.
+	 */
+	VERIFY3U(l->tlv_type, ==, LLDP_TLV_CHASSIS_ID);
+	VERIFY3U(r->tlv_type, ==, LLDP_TLV_CHASSIS_ID);
+
+	VERIFY(buf_get8(&lb, &l_stype));
+	VERIFY(buf_get8(&rb, &r_stype));
+
+	if (l_stype < r_stype)
 		return (-1);
-	if (l->llc_type > r->llc_type)
+	if (l_stype > r_stype)
 		return (1);
 
-	ret = memcmp(l->llc_id, r->llc_id, MIN(l->llc_len, r->llc_len));
+	ret = memcmp(lb.b_ptr, rb.b_ptr, MIN(buf_len(&lb), buf_len(&rb)));
 	if (ret < 0)
 		return (-1);
 	if (ret > 0)
 		return (1);
-	if (l->llc_len < r->llc_len)
+	if (buf_len(&lb) < buf_len(&rb))
 		return (-1);
-	if (l->llc_len > r->llc_len)
+	if (buf_len(&lb) > buf_len(&rb))
 		return (1);
 	return (0);
 }
 
 static int
-port_cmp(const lldp_port_t *l, const lldp_port_t *r)
+port_cmp(const tlv_t *l, const tlv_t *r)
 {
+	buf_t lb = l->tlv_buf;
+	buf_t rb = r->tlv_buf;
+	uint8_t l_stype, r_stype;
 	int ret;
 
-	if (l->llp_type < r->llp_type)
+	/*
+	 * We should never instantiate a neighbor_t (especially off the wire)
+	 * with an invalid PDU, so these should always succeed.
+	 */
+	VERIFY3U(l->tlv_type, ==, LLDP_TLV_PORT_ID);
+	VERIFY3U(r->tlv_type, ==, LLDP_TLV_PORT_ID);
+
+	VERIFY(buf_get8(&lb, &l_stype));
+	VERIFY(buf_get8(&rb, &r_stype));
+
+	if (l_stype < r_stype)
 		return (-1);
-	if (l->llp_type > r->llp_type)
+	if (l_stype > r_stype)
 		return (1);
 
-	ret = memcmp(l->llp_id, r->llp_id, MIN(l->llp_len, r->llp_len));
+	ret = memcmp(lb.b_ptr, rb.b_ptr, MIN(buf_len(&lb), buf_len(&rb)));
 	if (ret < 0)
 		return (-1);
 	if (ret > 0)
 		return (1);
-	if (l->llp_len < r->llp_len)
+	if (buf_len(&lb) < buf_len(&rb))
 		return (-1);
-	if (l->llp_len > r->llp_len)
+	if (buf_len(&lb) > buf_len(&rb))
 		return (1);
+
 	return (0);
 }
 
 int
 neighbor_cmp_msap(const neighbor_t *l, const neighbor_t *r)
 {
+	tlv_t *l_tlv, *r_tlv;
 	int ret;
 
-	ret = chassis_cmp(&l->nb_chassis, &r->nb_chassis);
+	/* Chassis ID */
+	l_tlv = tlv_list_get((tlv_list_t *)&l->nb_tlvs, 0);
+	r_tlv = tlv_list_get((tlv_list_t *)&r->nb_tlvs, 0);
+	ret = chassis_cmp(l_tlv, r_tlv);
 	if (ret != 0)
 		return (ret);
-	return (port_cmp(&l->nb_port, &r->nb_port));
+
+	/* Port ID */
+	l_tlv = tlv_list_get((tlv_list_t *)&l->nb_tlvs, 1);
+	r_tlv = tlv_list_get((tlv_list_t *)&r->nb_tlvs, 1);
+	return (port_cmp(l_tlv, r_tlv));
 }
 
 static int
@@ -116,10 +152,15 @@ neighbor_cmp_msap_uu(const void *a, const void *b, void *private __unused)
 }
 
 bool
-neighbor_cmp(const neighbor_t *l, const neighbor_t *r)
+neighbor_same(const neighbor_t *l, const neighbor_t *r)
 {
-	/* TODO */
-	return (true);
+	int ret;
+
+	if (l->nb_pdu_len != r->nb_pdu_len)
+		return (false);
+
+	ret = memcmp(l->nb_pdu, r->nb_pdu, l->nb_pdu_len);
+	return ((ret == 0) ? true : false);
 }
 
 void

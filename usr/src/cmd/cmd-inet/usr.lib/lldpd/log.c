@@ -326,6 +326,8 @@ log_key_create(const char *name, log_type_t type, const void *arg)
 		k->lk_data = (void *)(uintptr_t)sizeof (in6_addr_t);
 		return (k);
 	case LOG_T_OBJ:
+	case LOG_T_CHASSIS:
+	case LOG_T_PORT:
 		break;
 	}
 
@@ -413,6 +415,8 @@ log_key_vadd(log_t *l, va_list *ap)
 		case LOG_T_IPV4:
 		case LOG_T_IPV6:
 		case LOG_T_OBJ:
+		case LOG_T_CHASSIS:
+		case LOG_T_PORT:
 			break;
 		}
 

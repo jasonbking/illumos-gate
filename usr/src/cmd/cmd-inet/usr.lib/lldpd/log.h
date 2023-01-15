@@ -11,7 +11,7 @@
 
 /*
  * Copyright (c) 2014, Joyent, Inc.
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #ifndef _LOG_H
@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 /*
- * This is very much based off the bunyan logger in SmartOS.
+ * This is _very_ much based off the bunyan logger in SmartOS.
  */
 typedef struct log log_t;
 typedef struct logobj logobj_t;
@@ -40,9 +40,9 @@ typedef enum log_level {
 
 /*
  * This looks a bit odd, but by defining LOG_T_END as NULL, we can use
- * gcc's __sentinel attribute to flag a final LOG_T_END (gcc explicitly wants
- * a pointer type with value 0 to terminate a list, so merely passing 0
- * won't work.
+ * gcc's __sentinel attribute (which requires the sentinel value to be NULL)
+ * to ensure a final LOG_T_END terminates the vararg list of
+ * (type, desc, val)* passed to the various log_xxx() * functions.
  */
 #define	LOG_T_END	NULL
 typedef enum log_type {
@@ -59,6 +59,8 @@ typedef enum log_type {
 	LOG_T_MAC,
 	LOG_T_IPV4,
 	LOG_T_IPV6,
+	LOG_T_CHASSIS,
+	LOG_T_PORT,
 	LOG_T_OBJ,
 } log_type_t;
 
