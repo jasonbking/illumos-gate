@@ -278,7 +278,25 @@ static struct efi_uuid_mapping {
         { .efi_guid_name = "Active EDID",
 	    .efi_guid = EFI_EDID_ACTIVE_PROTOCOL_GUID },
         { .efi_guid_name = "Discovered EDID",
-	    .efi_guid = EFI_EDID_DISCOVERED_PROTOCOL_GUID }
+	    .efi_guid = EFI_EDID_DISCOVERED_PROTOCOL_GUID },
+	{ .efi_guid_name = "ATA pass thru",
+	    .efi_guid = EFI_ATA_PASS_THRU_PROTOCOL_GUID },
+	{ .efi_guid_name = "NVMe pass thru",
+	    .efi_guid = EFI_NVM_EXPRESS_PASS_THRU_PROTOCOL_GUID },
+	{ .efi_guid_name = "storage security command",
+	    .efi_guid = EFI_STORAGE_SECURITY_COMMAND_PROTOCOL_GUID },
+	{ .efi_guid_name = "key management service",
+	    .efi_guid = EFI_KMS_PROTOCOL_GUID },
+	{ .efi_guid_name = "smart card reader",
+	    .efi_guid = EFI_SMART_CARD_READER_PROTOCOL_GUID },
+	{ .efi_guid_name = "rng source",
+	    .efi_guid = EFI_RNG_PROTOCOL_GUID },
+	{ .efi_guid_name = "IPsec config",
+	    .efi_guid = EFI_IPSEC_CONFIG_PROTOCOL_GUID },
+	{ .efi_guid_name = "IPsec",
+	    .efi_guid = EFI_IPSEC_PROTOCOL_GUID },
+	{ .efi_guid_name = "IPsec2",
+	    .efi_guid = EFI_IPSEC2_PROTOCOL_GUID },
 };
 
 bool
