@@ -22,7 +22,7 @@
 # Use is subject to license terms.
 #
 # Copyright (c) 2018, Joyent, Inc.
-# Copyright 2021 Jason King
+# Copyright 2023 Jason King
 
 UTSBASE	=	../..
 
@@ -32,6 +32,9 @@ UTSBASE	=	../..
 MODULE		= tpm
 OBJECTS		= $(TPM_OBJS:%=$(OBJS_DIR)/%)
 ROOTMODULE	= $(ROOT_DRV_DIR)/$(MODULE)
+CONF_SRCDIR	= $(UTSBASE)/common/io/tpm
+
+MAPFILE		= $(CONF_SRCDIR)/$(MODULE).mapfile
 
 #
 #	Include common rules.
@@ -55,6 +58,10 @@ CPPFLAGS	+= -I$(ADJUNCT_PROTO)/usr/include
 
 CERRWARN	+= -_gcc=-Wno-parentheses
 
+MAPFILES	+= ddi
+
+LDFLAGS		+= -M $(MAPFILE)
+
 #
 #	Default build targets.
 #
@@ -70,6 +77,7 @@ clobber:	$(CLOBBER_DEPS)
 
 install:	$(INSTALL_DEPS)
 
+include $(UTSBASE)/Makefile.mapfile
 include $(UTSBASE)/intel/Makefile.targ
 
 $(OBJECTS): $(OBJS_DIR)
