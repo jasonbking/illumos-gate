@@ -41,6 +41,9 @@
 #include "timer.h"
 #include "util.h"
 
+lldp_config_t	lldp_config;
+mutex_t		lldp_config_lock = ERRORCHECKMUTEX;
+
 static const char *doorpath = "/var/run/lldpd";
 
 static bool debug;
