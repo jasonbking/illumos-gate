@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #include <ctype.h>
@@ -134,6 +134,7 @@ main(int argc, char **argv)
 {
 	const char *intfile = NULL;
 	const char *errfile = NULL;
+	const char *elffile = NULL;
 	int c;
 
 	while ((c = getopt(argc, argv, "c:E:e:f:hIi:ow:")) != -1) {
@@ -144,6 +145,8 @@ main(int argc, char **argv)
 			break;
 		case 'e':
 		case 'f':
+			elffile = optarg;
+			break;
 		case 'h':
 			do_header = true;
 			break;
@@ -153,11 +156,27 @@ main(int argc, char **argv)
 			break;
 		case 'o':
 		case 'w':
+			if (chdir(optarg) < 0)
+				err(EXIT_FAILURE, "chdir(%s) failed", optarg);
 			break;
 		case '?':
 			(void) fprintf(stderr, "Unknown option -%c\n", optopt);
 			usage(argv[0]);
 		}
+	}
+
+	if (argc <= optind && elffile == NULL)
+		usage(argv[0]);
+
+	if (errfile != NULL) {
+		int errfd;
+
+		errfd = open(errfile, O_RDWR|O_CREAT, 0444);
+		if (errfd < 0)
+			err(EXIT_FAILURE, "Failed to open %s", errfile);
+
+		if (dup(errfd, STDOUT_FILENO) < 0)
+			err(EXIT_FAILURE, "dup() failed");
 	}
 
 	init_re();
@@ -169,9 +188,41 @@ main(int argc, char **argv)
 	if (do_header)
 		print_header(intfile);
 
+	if (elffile != NULL) {
+		FILE *f;
+
+		f = fopen(elffile, "r");
+		if (f == NULL)
+			err(EXIT_FAILURE, "Unable to open %s", elffile);
+
+		process_find_elf(f, elffile);
+	} else {
+		argv += optind;
+		while (*argv != NULL) {
+			FILE *f;
+			struct stat sb = { 0 };
+			char cmd[MAXPATHNAME] = { 0 };
+			bool is_dir = false;
+
+			if (stat(*argv, &sb) < 0)
+				err(EXIT_FAILURE, "Unable to stat %s", *argv);
+
+			if (S_ISDIR(sb.st_mode))
+				is_dir = true;
+
+			(void) snprintf(cmd, sizeof (cmd), "find_elf -frs%s %s",
+			    is_dir ? " -a" : " ", *argv);
+
+			f = popen(cmd, "r");
+			if (f == NULL)
+				err(EXIT_FAILURE, "Failed running '%s'", cmd);
+
+			process_find_elf(f, *argv++);
+		}
+	}
+
 	return (EXIT_SUCCESS);
 }
-
 
 static char *
 get_exception_name(const char *name)
