@@ -15,6 +15,7 @@
  * Copyright 2019 Western Digital Corporation
  * Copyright 2025 Oxide Computer Company
  * Copyright 2022 OmniOS Community Edition (OmniOSce) Association.
+ * Copyright 2023 RackTop Systems, Inc.
  */
 
 #ifndef _SYS_NVME_H
@@ -61,7 +62,9 @@ extern "C" {
 #define	NVME_IOC_CTRL_DETACH		(NVME_IOC | 14)
 #define	NVME_IOC_NS_CREATE		(NVME_IOC | 15)
 #define	NVME_IOC_NS_DELETE		(NVME_IOC | 16)
-#define	NVME_IOC_MAX			NVME_IOC_NS_DELETE
+#define	NVME_IOC_SECURITY_SEND		(NVME_IOC | 17)
+#define	NVME_IOC_SECURITY_RECV		(NVME_IOC | 18)
+#define	NVME_IOC_MAX			NVME_IOC_SECURITY_RECV
 
 #define	IS_NVME_IOC(x)			((x) > NVME_IOC && (x) <= NVME_IOC_MAX)
 #define	NVME_IOC_CMD(x)			((x) & 0xff)
@@ -725,6 +728,15 @@ typedef struct {
 	nvme_lock_ent_t niu_ent;
 } nvme_ioctl_unlock_t;
 
+typedef struct {
+	nvme_ioctl_common_t nis_common;
+	uint8_t nis_proto;
+	uint8_t nis_nvme_specific;
+	uint16_t nis_proto_specific;
+	uint32_t nis_datalen;
+	uintptr_t nis_data;
+} nvme_ioctl_sec_send_recv_t;
+
 /*
  * Namespace Management related structures and constants. Note, namespace
  * controller attach, controller detach, and namespace delete all use the common
@@ -833,6 +845,15 @@ typedef struct {
 	uint64_t fwl_len;
 	uint64_t fwl_off;
 } nvme_ioctl_fw_load32_t;
+
+typedef struct {
+	nvme_ioctl_common_t nis_common;
+	uint8_t nis_proto;
+	uint8_t nis_nvme_specific;
+	uint16_t nis_proto_specific;
+	uint32_t nis_datalen;
+	uintptr32_t nis_data;
+} nvme_ioctl_sec_send_recv32_t;
 #pragma pack()	/* pack(4) */
 #endif	/* _KERNEL && _SYSCALL32 */
 

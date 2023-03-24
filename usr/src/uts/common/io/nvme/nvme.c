@@ -13,7 +13,7 @@
  * Copyright (c) 2016 The MathWorks, Inc.  All rights reserved.
  * Copyright 2019 Unix Software Ltd.
  * Copyright 2020 Joyent, Inc.
- * Copyright 2020 Racktop Systems.
+ * Copyright 2023 RackTop Systems, Inc.
  * Copyright 2025 Oxide Computer Company.
  * Copyright 2022 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2022 Tintri by DDN, Inc. All rights reserved.
@@ -8059,8 +8059,152 @@ copyout:
 }
 
 static int
+nvme_ioctl_sec_copyin(uintptr_t arg, int mode, nvme_ioctl_sec_send_recv_t *srp)
+{
+	void *argp = (void *)arg;
+#ifdef _MULTI_DATAMODEL
+	nvme_ioctl_sec_send_recv32_t sr32;
+#endif
+
+	bzero(srp, sizeof (*srp));
+
+	switch (ddi_model_convert_from(mode & FMODELS)) {
+#ifdef _MULTI_DATAMODEL
+	case DDI_MODEL_ILP32:
+		if (ddi_copyin(argp, &sr32, sizeof (sr32), mode & FKIOCTL) != 0)
+			return (EFAULT);
+
+		srp->nis_common.nioc_nsid = sr32.nis_common.nioc_nsid;
+		srp->nis_proto = sr32.nis_proto;
+		srp->nis_nvme_specific = sr32.nis_nvme_specific;
+		srp->nis_proto_specific = sr32.nis_proto_specific;
+		srp->nis_datalen = sr32.nis_datalen;
+		srp->nis_data = sr32.nis_data;
+		break;
+#endif /* _MULTI_DATAMODEL */
+	case DDI_MODEL_NONE:
+		if (ddi_copyin(argp, srp, sizeof (*srp), mode & FKIOCTL) != 0)
+			return (EFAULT);
+		break;
+	default:
+		return (ENOTSUP);
+	}
+
+	return (0);
+}
+
+/* Assemble command dword 10 for security send and security recv command*/
+static uint32_t
+nvme_sec_send_recv_cmd(const nvme_ioctl_sec_send_recv_t *sr)
+{
+	uint32_t val;
+	uint8_t *p = (uint8_t *)&val;
+
+	/*
+	 * From 5.25 of NVMe Base Specification 2.0d:
+	 *
+	 * 31:24	Security Protocol
+	 * 23:16	Bits 15:8 of the security protocol specific parameter
+	 * 15:8		Bits 7:0 of the security protocol specific parameter
+	 * 7:0		NMVe security specific field.
+	 */
+	p[0] = sr->nis_proto;
+	p[1] = (sr->nis_proto_specific >> 8) & 0xff;
+	p[2] = sr->nis_proto_specific & 0xff;
+	p[3] = sr->nis_nvme_specific;
+
+	return (val);
+}
+
+static int
+nvme_ioctl_security_send(nvme_minor_t *minor, intptr_t arg, int mode,
+    cred_t *cred_p)
+{
+	nvme_t *const nvme = minor->nm_ctrl;
+	int ret;
+	nvme_ioctl_sec_send_recv_t sr;
+
+	if ((mode & FWRITE) == 0)
+		return (EBADF);
+
+	if (secpolicy_sys_config(cred_p, B_FALSE) != 0)
+		return (EPERM);
+
+	if (!nvme->n_idctl->id_oacs.oa_security)
+		return (ENOTSUP);
+
+	ret = nvme_ioctl_sec_copyin((uintptr_t)arg, mode, &sr);
+	if (ret != 0)
+		return (ret);
+
+	nvme_sqe_t sqe = {
+		.sqe_opc	= NVME_OPC_NVM_SEC_SEND,
+		.sqe_nsid	= sr.nis_common.nioc_nsid,
+		.sqe_cdw10	= nvme_sec_send_recv_cmd(&sr),
+		.sqe_cdw11	= sr.nis_datalen,
+	};
+	nvme_ioc_cmd_args_t args = {
+		.ica_sqe = &sqe,
+		.ica_data = (void *)sr.nis_data,
+		.ica_data_len = sr.nis_datalen,
+		.ica_copy_flags = mode,
+		.ica_timeout = nvme_admin_cmd_timeout,
+		.ica_dma_flags = DDI_DMA_WRITE,
+	};
+
+	ret = nvme_ioc_cmd(nvme, &sr.nis_common, &args);
+
+	// TODO: error checking/handling
+	nvme_ioctl_success(&sr.nis_common);
+	return (ret);
+}
+
+static int
+nvme_ioctl_security_recv(nvme_minor_t *minor, intptr_t arg, int mode,
+    cred_t *cred_p)
+{
+	nvme_t *const nvme = minor->nm_ctrl;
+	int ret;
+	nvme_ioctl_sec_send_recv_t sr;
+
+	if ((mode & FREAD) == 0)
+		return (EBADF);
+
+	if (secpolicy_sys_config(cred_p, B_FALSE) != 0)
+		return (EPERM);
+
+	if (!nvme->n_idctl->id_oacs.oa_security)
+		return (ENOTSUP);
+
+	ret = nvme_ioctl_sec_copyin((uintptr_t)arg, mode, &sr);
+	if (ret != 0)
+		return (ret);
+
+	nvme_sqe_t sqe = {
+		.sqe_opc	= NVME_OPC_NVM_SEC_RECV,
+		.sqe_nsid	= sr.nis_common.nioc_nsid,
+		.sqe_cdw10	= nvme_sec_send_recv_cmd(&sr),
+		.sqe_cdw11	= sr.nis_datalen,
+	};
+	nvme_ioc_cmd_args_t args = {
+		.ica_sqe = &sqe,
+		.ica_data = (void *)sr.nis_data,
+		.ica_data_len = sr.nis_datalen,
+		.ica_copy_flags = mode,
+		.ica_timeout = nvme_admin_cmd_timeout,
+		.ica_dma_flags = DDI_DMA_READ,
+	};
+
+	ret = nvme_ioc_cmd(nvme, &sr.nis_common, &args);
+
+	// TODO: error checking/handling
+	nvme_ioctl_success(&sr.nis_common);
+	return (ret);
+}
+
+static int
 nvme_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *cred_p,
-    int *rval_p)
+    int *rval_p __unused)
 {
 #ifndef __lock_lint
 	_NOTE(ARGUNUSED(rval_p));
@@ -8145,6 +8289,12 @@ nvme_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *cred_p,
 		break;
 	case NVME_IOC_NS_DELETE:
 		ret = nvme_ioctl_ns_delete(minor, arg, mode, cred_p);
+		break;
+	case NVME_IOC_SECURITY_SEND:
+		ret = nvme_ioctl_security_send(minor, arg, mode, cred_p);
+		break;
+	case NVME_IOC_SECURITY_RECV:
+		ret = nvme_ioctl_security_recv(minor, arg, mode, cred_p);
 		break;
 	default:
 		ret = ENOTTY;
