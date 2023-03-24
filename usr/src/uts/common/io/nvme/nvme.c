@@ -13,7 +13,7 @@
  * Copyright (c) 2016 The MathWorks, Inc.  All rights reserved.
  * Copyright 2019 Unix Software Ltd.
  * Copyright 2020 Joyent, Inc.
- * Copyright 2020 Racktop Systems.
+ * Copyright 2023 RackTop Systems, Inc.
  * Copyright 2024 Oxide Computer Company.
  * Copyright 2022 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2022 Tintri by DDN, Inc. All rights reserved.
@@ -7375,8 +7375,52 @@ copyout:
 }
 
 static int
+nvme_ioctl_security_send(nvme_t *nvme, int nsid, nvme_ioctl_t *nioc, int mode,
+    cred_t *cred_p)
+{
+	nvme_sqe_t sqe = {
+		.sqe_opc	= NVME_OPC_NVM_SEC_SEND,
+		.sqe_nsid	= nsid,
+		.sqe_cdw10	= nioc->n_arg,
+		.sqe_cdw11	= nioc->n_len,
+	};
+	nvme_cqe_t cqe = { 0 };
+
+	if (!nvme->n_idctl->id_oacs.oa_security)
+		return (ENOTSUP);
+
+	if ((mode & FWRITE) == 0 || secpolicy_sys_config(cred_p, B_FALSE) != 0)
+		return (EPERM);
+
+	return (nvme_ioc_cmd(nvme, &sqe, B_TRUE, (void *)nioc->n_buf,
+	    nioc->n_len, FWRITE, &cqe, nvme_admin_cmd_timeout));
+}
+
+static int
+nvme_ioctl_security_recv(nvme_t *nvme, int nsid, nvme_ioctl_t *nioc, int mode,
+    cred_t *cred_p)
+{
+	nvme_sqe_t sqe = {
+		.sqe_opc	= NVME_OPC_NVM_SEC_RECV,
+		.sqe_nsid	= nsid,
+		.sqe_cdw10	= nioc->n_arg,
+		.sqe_cdw11	= nioc->n_len,
+	};
+	nvme_cqe_t cqe = { 0 };
+
+	if (!nvme->n_idctl->id_oacs.oa_security)
+		return (ENOTSUP);
+
+	if ((mode & FREAD) == 0 || secpolicy_sys_config(cred_p, B_FALSE) != 0)
+		return (EPERM);
+
+	return (nvme_ioc_cmd(nvme, &sqe, B_TRUE, (void *)nioc->n_buf,
+	    nioc->n_len, FREAD, &cqe, nvme_admin_cmd_timeout));
+}
+
+static int
 nvme_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *cred_p,
-    int *rval_p)
+    int *rval_p __unused)
 {
 #ifndef __lock_lint
 	_NOTE(ARGUNUSED(rval_p));
@@ -7438,6 +7482,10 @@ nvme_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *cred_p,
 		return (nvme_ioctl_lock(minor, arg, mode, cred_p));
 	case NVME_IOC_UNLOCK:
 		return (nvme_ioctl_unlock(minor, arg, mode, cred_p));
+	case NVME_IOC_SECURITY_SEND:
+		return (nvme_ioctl_security_send(minor, arg, mode, cred_p));
+	case NMVE_IOC_SECURITY_RECV:
+		return (nvme_ioctl_security_recv(minor, arg, mode, cred_p));
 	default:
 		return (ENOTTY);
 	}
