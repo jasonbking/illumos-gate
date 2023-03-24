@@ -39,7 +39,7 @@
 
 #include "nvme_ioctl_util.h"
 
-#if NVME_IOC_MAX != NVME_IOC_NS_DELETE
+#if NVME_IOC_MAX != NVME_IOC_SECURITY_RECV
 #error	"NVME_IOC_MAX has grown, update this test!"
 #endif
 
@@ -66,7 +66,9 @@ static ioctl_test_t ioctl_tests[NVME_IOC_MAX - NVME_IOC + 1] = {
 	{ NVME_IOC_CTRL_ATTACH, true, true },
 	{ NVME_IOC_CTRL_DETACH, true, true },
 	{ NVME_IOC_NS_CREATE, true, true },
-	{ NVME_IOC_NS_DELETE, true, true }
+	{ NVME_IOC_NS_DELETE, true, true },
+	{ NVME_IOC_SECURITY_SEND, true, true },
+	{ NVME_IOC_SECURITY_RECV, true, true },
 };
 
 static bool
