@@ -15,6 +15,7 @@
  * Copyright 2019 Western Digital Corporation
  * Copyright 2024 Oxide Computer Company
  * Copyright 2022 OmniOS Community Edition (OmniOSce) Association.
+ * Copyright 2023 RackTop Systems, Inc.
  */
 
 #ifndef _SYS_NVME_H
@@ -57,7 +58,9 @@ extern "C" {
 #define	NVME_IOC_NS_INFO		(NVME_IOC | 10)
 #define	NVME_IOC_LOCK			(NVME_IOC | 11)
 #define	NVME_IOC_UNLOCK			(NVME_IOC | 12)
-#define	NVME_IOC_MAX			NVME_IOC_NS_INFO
+#define	NVME_IOC_SECURITY_SEND		(NVME_IOC | 13)
+#define	NVME_IOC_SECURITY_RECV		(NVME_IOC | 14)
+#define	NVME_IOC_MAX			NVME_IOC_SECURITY_RECV
 
 #define	IS_NVME_IOC(x)			((x) > NVME_IOC && (x) <= NVME_IOC_MAX)
 #define	NVME_IOC_CMD(x)			((x) & 0xff)
@@ -1958,6 +1961,19 @@ typedef enum {
 	NVME_CSI_KV,
 	NVME_CSI_ZNS
 } nvme_csi_t;
+
+/*
+ * arg value for NVME_IOC_SECURITY_{SEND,RECV}:
+ * _proto is the 8-bit security protocol
+ * _pspecific is the 16-bit protocol specific value
+ * _nvmespecific is the 8-bit NVMe security specific field
+ *
+ * The resulting value should basically be the value of dword10
+ */
+#define	NVME_SECURITY_ARG(_proto, _pspecific, _nvmespecific)	\
+	((((uint32_t)(_proto) & 0xff) << 24) |			\
+	(((uint32_t)(_pspecific) & 0xffff) << 8) |		\
+	((uint32_t)(_nvmespecific) & 0xff))
 
 #ifdef __cplusplus
 }
