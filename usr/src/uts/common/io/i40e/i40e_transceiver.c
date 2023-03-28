@@ -2282,7 +2282,7 @@ i40e_non_lso_chain(i40e_trqpair_t *itrq, mblk_t *mp, uint_t *ndesc)
 
 			/* We have consumed the current mp. */
 			if (cpoff == nmp_len) {
-				nmp = mp->b_cont;
+				nmp = nmp->b_cont;
 				cpoff = 0;
 			}
 
@@ -2331,6 +2331,10 @@ i40e_non_lso_chain(i40e_trqpair_t *itrq, mblk_t *mp, uint_t *ndesc)
 
 			needed_desc += tcb->tcb_bind_ncookies;
 			tcb_list_append(&tcbhead, &tcbtail, tcb);
+
+			/* Advance to the next fragment */
+			nmp = nmp->b_cont;
+			cpoff = 0;
 		}
 
 		/*
@@ -2362,13 +2366,10 @@ i40e_non_lso_chain(i40e_trqpair_t *itrq, mblk_t *mp, uint_t *ndesc)
 
 			cpoff = 0;
 			nmp = mp;
-			tcbhead = tcbtail = NULL;
+			tcb = tcbhead = tcbtail = NULL;
 			needed_desc = 0;
 			continue;
 		}
-
-		nmp = nmp->b_cont;
-		cpoff = 0;
 	}
 
 	ASSERT3P(nmp, ==, NULL);
