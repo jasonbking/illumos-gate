@@ -116,6 +116,128 @@ static dladm_aggr_port_state_t port_states[] = {
 #define	NPORT_STATES	\
 	(sizeof (port_states) / sizeof (dladm_aggr_port_state_t))
 
+typedef struct dladm_aggr_port {
+	char		dap_name[MAXLINKNAMELEN + 1];
+	datalink_id_t	dap_id;
+} dladm_aggr_port_t;
+
+typedef struct dladm_aggr_ports {
+	uint32_t		daps_nports;
+	dladm_aggr_port_t	*daps_ports[AGGR_MAX_PORTS];
+} dladm_aggr_ports_t;
+
+static void
+free_ports(dladm_aggr_ports_t *ports)
+{
+	if (ports == NULL)
+		return;
+
+	for (uint32_t i = 0; i < ports->nports; i++)
+		free(ports->daps_ports[i]);
+	free(ports);
+}
+
+static dladm_status_t
+get_conf_ports(dladm_handle_t handle, dladm_conf_t conf,
+    dladm_aggr_ports_t **portsp)
+{
+	dladm_aggr_ports_t	*ports = NULL;
+	char			*portstr = NULL;
+	char			*next = NULL *s = NULL;
+	uint64_t		nport = 0;
+	dladm_status_t		status;
+
+	status = dladm_get_conf_field(handle, conf, FNPORTS, &nport,
+	    sizeof (nport));
+	if (status != DLADM_STATUS_OK)
+		return (status);
+	if (nport > UINT32_MAX)
+		return (DLADM_STATUS_REPOSITORYINVAL);
+
+	portstr = calloc(1, nport * (MAXLINKNAMELEN + 1) + 1);
+	if (portstr == NULL)
+		return (dladm_errno2status(errno));
+
+	ports = calloc(1, sizeof (*ports));
+	if (ports == NULL) {
+		free(portstr);
+		return (dladm_errno2status(errno));
+	}
+
+	for (next = strtok(portstr, PORT_DELIMITER); next != NULL;
+	    next = strtok(NULL, PORT_DELIMITER)) {
+		dladm_aggr_port_t *p;
+
+		if (ports->dap_nports >= nport) {
+			free(portstr);
+			free_ports(ports);
+			return (DLADM_STATUS_REPOSITORYINVAL);
+		}
+
+		p = calloc(1, sizeof (*p));
+		if (p == NULL) {
+			free(portstr);
+			free_ports(ports);
+			return (dladm_errno2status(errno));
+		}
+
+		(void) strlcpy(p->dap_name, next, sizeof (p->dap_name));
+
+		status = dladm_name2info(handle, next, &p->dap_id);
+		if (status != DLADM_STATUS_OK) {
+			free(portstr);
+			free_ports(ports);
+			return (status);
+		}
+
+		ports->dap_ports[ports->dap_nports++] = p;
+	}
+
+	*portsp = ports;
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+put_conf_ports(dladm_handle_t handle, dladm_conf_t conf,
+    const dladm_aggr_ports_t *ports)
+{
+	char		*portstr = NULL;
+	size_t		portstr_len = 0;
+	dladm_status_t	status;
+	uint64_t	u64;
+
+	for (uint32_t i = 0; i < ports->daps_nports; i++) {
+		/* Each entry always has a delimiter with it */
+		portstrlen += strlen(ports->daps_ports[i]->dap_name) + 1;
+	}
+
+	portstr = calloc(1, portstr_len + 1);
+	if (portstr == NULL)
+		return (dladm_errno2status(errno));
+
+	for (uint32_t i = 0; i < ports->daps_nports; i++) {
+		(void) strlcat(portstr, PORT_DELIMITER, portstr_len);
+		(void) strlcat(portstr, ports->daps_ports[i]->dap_name,
+		    portstr_len);
+	}
+
+	u64 = ports->daps_nports;
+	status = dladm_set_conf_field(handle, conf, FNPORTS, DLADM_TYPE_UINT64,
+	    &u64);
+	if (status != DLADM_STATUS_OK) {
+		free(portstr);
+		return (dladm_errno2status(errno));
+	}
+
+	status = dladm_set_conf_field(handle, conf, FPORTS, DLADM_TYPE_STR,
+	    portstr);
+	free(portstr);
+	if (status != DLADM_STATUS_OK)
+		return (dladm_errno2status(errno));
+
+	return (status);
+}
+
 static dladm_status_t
 write_port(dladm_handle_t handle, char *portstr, datalink_id_t portid,
     size_t portstrsize)
@@ -379,10 +501,12 @@ i_dladm_aggr_add_rmv(dladm_handle_t handle, datalink_id_t linkid,
     uint32_t nports, dladm_aggr_port_attr_db_t *ports, uint32_t flags, int cmd)
 {
 	char *orig_portstr = NULL, *portstr = NULL;
+	char *orig_ports[MAXLINKNAMELEN + 1] = NULL;
 	laioc_add_rem_t *iocp = NULL;
 	laioc_port_t *ioc_ports;
 	uint32_t orig_nports = 0, result_nports, len, i, j;
-	dladm_conf_t conf;
+	dladm_conf_t conf = { 0 };
+	dladm_conf_t snapshot = { 0 };
 	datalink_class_t class;
 	dladm_status_t status = DLADM_STATUS_OK;
 	int size;
@@ -412,9 +536,18 @@ i_dladm_aggr_add_rmv(dladm_handle_t handle, datalink_id_t linkid,
 	 * PORT_DELIMITER (':').
 	 */
 	if (flags & DLADM_OPT_PERSIST) {
+		char *next = NULL;
+		datalink_id_t portid;
+
 		status = dladm_open_conf(handle, linkid, &conf);
 		if (status != DLADM_STATUS_OK)
 			return (status);
+
+		status = dladm_getsnap_conf(handle, linkid, &conf);
+		if (status != DLADM_STATUS_OK) {
+			dladm_destroy_conf(handle, conf);
+			return (status);
+		}
 
 		/*
 		 * Get the original configuration of FNPORTS and FPORTS.
@@ -444,6 +577,22 @@ i_dladm_aggr_add_rmv(dladm_handle_t handle, datalink_id_t linkid,
 		if (status != DLADM_STATUS_OK)
 			goto destroyconf;
 
+		orig_ports = calloc(orig_nports + 1, MAXLINKNAMELEN + 1);
+		if (orig_ports == NULL) {
+			status = dladm_errno2status(errno);
+			goto destroyconf;
+		}
+
+		next = orig_portstr;
+		for (i = 0; i < orig_nports; i++) {
+			status = read_port(handle, &next, &portid);
+			if (status != DLADM_STATUS_OK) {
+				free(portstr);
+				free(orig_ports);
+				goto destroyconf;
+			}
+
+			orig_ports[i] = 
 		result_nports = (cmd == LAIOC_ADD) ? orig_nports + nports :
 		    orig_nports;
 
@@ -458,6 +607,28 @@ i_dladm_aggr_add_rmv(dladm_handle_t handle, datalink_id_t linkid,
 		 * portstr.
 		 */
 		if (cmd == LAIOC_ADD) {
+			/* Copy existing links to portstr */
+			(void) strlcpy(portstr, orig_portstr, size);
+
+			for (i = 0; i < nports; i++) {
+				next = orig_port
+			for (j = 0; i < orig_nports; j++) {
+				boolean_t add = B_TRUE;
+
+				status = read_port(handle, &next, &portid);
+				if (status != DLADM_STATUS_OK) {
+					free(portstr);
+					goto destroyconf;
+				}
+
+				for (i = 0; i < nports; i++) {
+					if (ports[i].lp_linkid == portid) {
+						add = B_FALSE;
+						break;
+					}
+				}
+			}
+
 			(void) strlcpy(portstr, orig_portstr, size);
 			for (i = 0; i < nports; i++) {
 				status = write_port(handle, portstr,
@@ -468,8 +639,6 @@ i_dladm_aggr_add_rmv(dladm_handle_t handle, datalink_id_t linkid,
 				}
 			}
 		} else {
-			char *next;
-			datalink_id_t portid;
 			uint32_t remove = 0;
 
 			for (next = orig_portstr, j = 0; j < orig_nports; j++) {
