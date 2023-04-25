@@ -1135,7 +1135,7 @@ vmxnet3_set_prop(void *data, const char *prop_name, mac_prop_id_t prop_id,
 			mutex_exit(&dp->rxPoolLock);
 		} else if (strcmp(prop_name, VMXNET3_MACPROP_RXBUFPOOL) == 0) {
 			mutex_enter(&dp->rxPoolLock);
-			if (result < VMXNET3_RXPOOL_MAXF * dp->rxRingSize) {
+			if (result > VMXNET3_RXPOOL_MAXF * dp->rxRingSize) {
 				mutex_exit(&dp->rxPoolLock);
 				mutex_exit(&dp->genLock);
 				return (EINVAL);
