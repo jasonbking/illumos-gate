@@ -1148,7 +1148,8 @@ vmxnet3_set_prop(void *data, const char *prop_name, mac_prop_id_t prop_id,
 			mutex_exit(&dp->genLock);
 			return (ENOTSUP);
 		}
-		break;
+		mutex_exit(&dp->genLock);
+		return (0);
 	default:
 		break;
 	}
