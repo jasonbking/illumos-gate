@@ -26,6 +26,7 @@
 # Copyright (c) 2013 Andrew Stormont.  All rights reserved.
 # Copyright 2016 Hans Rosenfeld <rosenfeld@grumpf.hope-2000.org>
 # Copyright 2019 Joyent, Inc.
+# Copyright 2023 Jason King
 #
 
 #
@@ -46,6 +47,12 @@ DTEXTDOM =
 #
 #	Keep references to $(SRC)/common relative.
 COMMONBASE=	$(UTSBASE)/../common
+
+UTS_cmd=	$(SRCPATH) $(UTSBASE)
+COMMON_cmd=	$(SRCPATH) $(COMMONBASE)
+
+UTS_DIR=	$(UTS_cmd:sh)
+COMMON_DIR=	$(COMMON_cmd:sh)
 
 #
 #	Setup build-specific vars
@@ -212,6 +219,8 @@ CFLAGS_uts		+= $(CSOURCEDEBUGFLAGS)
 CFLAGS_uts		+= $(CUSERFLAGS)
 CFLAGS_uts		+= $(CFLAGS_uts_$(MACH))
 CFLAGS_uts		+= -_gcc=-fno-asynchronous-unwind-tables
+CFLAGS_uts		+= -_gcc10=-ffile-prefix-map=$(UTSBASE)=$(UTS_DIR)
+CFLAGS_uts		+= -_gcc10=-ffile-prefix-map=$(COMMONBASE)=$(COMMON_DIR)
 
 ASFLAGS_uts=		$(CFLAGS_uts)
 
