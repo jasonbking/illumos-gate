@@ -22,10 +22,13 @@
 /*
  * Copyright 2006 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2023 Jason King
  */
 
 #include <mdb/mdb_param.h>
 #include <mdb/mdb_modapi.h>
+#include <mdb/mdb_gcore.h>
 
 #include <sys/fs/ufs_inode.h>
 #include <sys/kmem_impl.h>
@@ -277,10 +280,10 @@ leaky_modctl(uintptr_t addr, const struct modctl *m, int *ignored)
 }
 
 static int
-leaky_thread(uintptr_t addr, const kthread_t *t, unsigned long *pagesize)
+leaky_thread(uintptr_t addr, const mdb_kthread_t *t, unsigned long *pagesize)
 {
-	uintptr_t size, base = (uintptr_t)t->t_stkbase;
-	uintptr_t stk = (uintptr_t)t->t_stk;
+	uintptr_t size, base = t->t_stkbase;
+	uintptr_t stk = t->t_stk;
 
 	/*
 	 * If this thread isn't in memory, we can't look at its stack.  This

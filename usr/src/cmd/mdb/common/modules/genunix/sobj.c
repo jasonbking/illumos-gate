@@ -21,9 +21,12 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2023 Jason King
  */
 
 #include <mdb/mdb_modapi.h>
+#include <mdb/mdb_gcore.h> /* for mdb_kthread_t */
 #include <sys/types.h>
 #include <sys/mutex.h>
 #include <sys/thread.h>
@@ -378,12 +381,12 @@ blocked_walk_init(mdb_walk_state_t *wsp)
 int
 blocked_walk_step(mdb_walk_state_t *wsp)
 {
-	uintptr_t addr = (uintptr_t)((const kthread_t *)wsp->walk_layer)->t_ts;
+	const mdb_kthread_t *t = (const mdb_kthread_t *)wsp->walk_layer;
 	uintptr_t taddr = wsp->walk_addr;
 	turnstile_t ts;
 
-	if (mdb_vread(&ts, sizeof (ts), addr) == -1) {
-		mdb_warn("couldn't read %p's turnstile at %p", taddr, addr);
+	if (mdb_vread(&ts, sizeof (ts), t->t_ts) == -1) {
+		mdb_warn("couldn't read %p's turnstile at %p", taddr, t->t_ts);
 		return (WALK_ERR);
 	}
 

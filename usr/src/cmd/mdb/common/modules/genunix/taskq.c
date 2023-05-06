@@ -23,11 +23,13 @@
  * Use is subject to license terms.
  *
  * Copyright 2023-2024 RackTop Systems, Inc.
+ * Copyright 2023 Jason King
  */
 
 #include <mdb/mdb_param.h>
 #include <mdb/mdb_modapi.h>
 #include <mdb/mdb_ks.h>
+#include <mdb/mdb_ctf.h>
 #include <sys/taskq.h>
 #include <sys/taskq_impl.h>
 
@@ -448,13 +450,17 @@ taskq_ent_walk_step(mdb_walk_state_t *wsp)
  * Walker: "taskq_thread"; taskq_thread_walk_{init,step,fini}
  * given a taskq_t, list all of its threads
  */
+typedef struct mdb_taskq_kthread_t {
+	uintptr_t	t_taskq;
+} mdb_taskq_kthread_t;
+
 typedef struct taskq_thread_info {
 	uintptr_t	tti_addr;
 	uintptr_t	*tti_tlist;
 	size_t		tti_nthreads;
 	size_t		tti_idx;
 
-	kthread_t	tti_thread;
+	mdb_taskq_kthread_t	tti_thread;
 } taskq_thread_info_t;
 
 int
@@ -503,8 +509,7 @@ taskq_thread_walk_step(mdb_walk_state_t *wsp)
 {
 	taskq_thread_info_t	*tti = wsp->walk_data;
 
-	const kthread_t *kt = wsp->walk_layer;
-	taskq_t *tq = (taskq_t *)tti->tti_addr;
+	const mdb_taskq_kthread_t *kt = wsp->walk_layer;
 
 	if (kt == NULL) {
 		uintptr_t addr;
@@ -518,8 +523,8 @@ taskq_thread_walk_step(mdb_walk_state_t *wsp)
 		if (addr == 0)
 			return (WALK_NEXT);
 
-		if (mdb_vread(&tti->tti_thread, sizeof (kthread_t),
-		    addr) == -1) {
+		if (mdb_ctf_vread(&tti->tti_thread, "kthread_t",
+		    "mdb_taskq_kthread_t", addr, 0) == -1) {
 			mdb_warn("unable to read kthread_t at %p", addr);
 			return (WALK_ERR);
 		}
@@ -527,10 +532,10 @@ taskq_thread_walk_step(mdb_walk_state_t *wsp)
 		    wsp->walk_cbdata));
 	}
 
-	if (kt->t_taskq == NULL)
+	if (kt->t_taskq == 0)
 		return (WALK_NEXT);
 
-	if (tq != NULL && kt->t_taskq != tq)
+	if (tti->tti_addr != 0 && kt->t_taskq != tti->tti_addr)
 		return (WALK_NEXT);
 
 	return (wsp->walk_callback(wsp->walk_addr, kt, wsp->walk_cbdata));

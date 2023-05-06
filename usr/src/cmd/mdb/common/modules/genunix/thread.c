@@ -26,12 +26,14 @@
  * Copyright 2013 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2018, Joyent, Inc.
  * Copyright 2025 Oxide Computer Company
+ * Copyright 2023 Jason King
  */
 
 
 #include <mdb/mdb_modapi.h>
 #include <mdb/mdb_ks.h>
 #include <mdb/mdb_ctf.h>
+#include <mdb/mdb_gcore.h> /* for mdb_kthread_t */
 #include <sys/types.h>
 #include <sys/thread.h>
 #include <sys/lwp.h>
@@ -48,7 +50,7 @@
 #endif
 
 typedef struct thread_walk {
-	kthread_t *tw_thread;
+	mdb_kthread_t *tw_thread;
 	uintptr_t tw_last;
 	uint_t tw_inproc;
 	uint_t tw_step;
@@ -81,7 +83,7 @@ thread_walk_init(mdb_walk_state_t *wsp)
 		twp->tw_inproc = TRUE;
 	}
 
-	twp->tw_thread = mdb_alloc(sizeof (kthread_t), UM_SLEEP);
+	twp->tw_thread = mdb_zalloc(sizeof (mdb_kthread_t), UM_SLEEP);
 	twp->tw_last = wsp->walk_addr;
 	twp->tw_step = FALSE;
 
@@ -101,8 +103,8 @@ thread_walk_step(mdb_walk_state_t *wsp)
 	if (twp->tw_step && wsp->walk_addr == twp->tw_last)
 		return (WALK_DONE); /* We've wrapped around */
 
-	if (mdb_vread(twp->tw_thread, sizeof (kthread_t),
-	    wsp->walk_addr) == -1) {
+	if (mdb_ctf_vread(twp->tw_thread, "kthread_t", "mdb_kthread_t",
+	    wsp->walk_addr, 0) == -1) {
 		mdb_warn("failed to read thread at %p", wsp->walk_addr);
 		return (WALK_DONE);
 	}
@@ -111,9 +113,9 @@ thread_walk_step(mdb_walk_state_t *wsp)
 	    wsp->walk_cbdata);
 
 	if (twp->tw_inproc)
-		wsp->walk_addr = (uintptr_t)twp->tw_thread->t_forw;
+		wsp->walk_addr = twp->tw_thread->t_forw;
 	else
-		wsp->walk_addr = (uintptr_t)twp->tw_thread->t_next;
+		wsp->walk_addr = twp->tw_thread->t_next;
 
 	twp->tw_step = TRUE;
 	return (status);
@@ -124,7 +126,7 @@ thread_walk_fini(mdb_walk_state_t *wsp)
 {
 	thread_walk_t *twp = (thread_walk_t *)wsp->walk_data;
 
-	mdb_free(twp->tw_thread, sizeof (kthread_t));
+	mdb_free(twp->tw_thread, sizeof (mdb_kthread_t));
 	mdb_free(twp, sizeof (thread_walk_t));
 }
 
@@ -147,18 +149,18 @@ deathrow_walk_init(mdb_walk_state_t *wsp)
 int
 deathrow_walk_step(mdb_walk_state_t *wsp)
 {
-	kthread_t t;
+	mdb_kthread_t t = { 0 };
 	uintptr_t addr = wsp->walk_addr;
 
 	if (addr == 0)
 		return (WALK_DONE);
 
-	if (mdb_vread(&t, sizeof (t), addr) == -1) {
+	if (mdb_ctf_vread(&t, "kthread_t", "mdb_kthread_t", addr, 0) == -1) {
 		mdb_warn("couldn't read deathrow thread at %p", addr);
 		return (WALK_ERR);
 	}
 
-	wsp->walk_addr = (uintptr_t)t.t_forw;
+	wsp->walk_addr = t.t_forw;
 
 	return (wsp->walk_callback(addr, &t, wsp->walk_cbdata));
 }
@@ -277,7 +279,7 @@ dispq_walk_step(mdb_walk_state_t *wsp)
 	uintptr_t addr = wsp->walk_addr;
 	dispq_walk_t *dw = wsp->walk_data;
 	dispq_t dispq;
-	kthread_t t;
+	mdb_kthread_t t;
 
 	while (addr == 0) {
 		if (--dw->dw_npri == 0)
@@ -294,7 +296,7 @@ dispq_walk_step(mdb_walk_state_t *wsp)
 		addr = (uintptr_t)dispq.dq_first;
 	}
 
-	if (mdb_vread(&t, sizeof (kthread_t), addr) == -1) {
+	if (mdb_ctf_vread(&t, "kthread_t", "mdb_kthread_t", addr, 0) == -1) {
 		mdb_warn("failed to read kthread_t at %p", addr);
 		return (WALK_ERR);
 	}
@@ -391,7 +393,7 @@ thread_walk_states(void (*cbfunc)(uint_t, const char *, void *), void *cbarg)
 int
 thread(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 {
-	kthread_t	t;
+	mdb_kthread_t	t;
 	uint_t		oflags = 0;
 	uint_t		fflag = FALSE;
 	int		first;
@@ -480,7 +482,7 @@ thread(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		mdb_printf("\n");
 	}
 
-	if (mdb_vread(&t, sizeof (kthread_t), addr) == -1) {
+	if (mdb_ctf_vread(&t, "kthread_t", "mdb_kthread_t", addr, 0) == -1) {
 		mdb_warn("can't read kthread_t at %#lx", addr);
 		return (DCMD_ERR);
 	}
@@ -501,7 +503,7 @@ thread(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	if (oflags & TF_INTR) {
 		SPACER();
 		thread_state_to_text(t.t_state, stbuf, sizeof (stbuf));
-		if (t.t_intr == NULL) {
+		if (t.t_intr == 0) {
 			mdb_printf(" %-8s %4x %4x %4x %5d %5d %3d %?s",
 			    stbuf, t.t_flag, t.t_proc_flag, t.t_schedflag,
 			    t.t_pri, t.t_epri, t.t_pil, "n/a");
@@ -576,12 +578,12 @@ thread_getdesc(uintptr_t addr, boolean_t include_comm,
     char *buf, size_t bufsize)
 {
 	char name[THREAD_NAME_MAX] = "";
-	kthread_t t;
+	mdb_kthread_t t;
 	proc_t p;
 
 	bzero(buf, bufsize);
 
-	if (mdb_vread(&t, sizeof (kthread_t), addr) == -1) {
+	if (mdb_ctf_vread(&t, "kthread_t", "mdb_kthread_t", addr, 0) == -1) {
 		mdb_warn("failed to read kthread_t at %p", addr);
 		return (-1);
 	}
@@ -593,9 +595,8 @@ thread_getdesc(uintptr_t addr, boolean_t include_comm,
 		    (uintptr_t)t.t_taskq) == -1)
 			tq.tq_name[0] = '\0';
 
-		if (t.t_name != NULL) {
-			if (mdb_readstr(buf, bufsize,
-			    (uintptr_t)t.t_name) == -1) {
+		if (t.t_name != 0) {
+			if (mdb_readstr(buf, bufsize, t.t_name) == -1) {
 				mdb_warn("error reading thread name");
 			}
 		} else if (tq.tq_name[0] != '\0') {
@@ -607,14 +608,13 @@ thread_getdesc(uintptr_t addr, boolean_t include_comm,
 		return (buf[0] == '\0' ? -1 : 0);
 	}
 
-	if (include_comm && mdb_vread(&p, sizeof (proc_t),
-	    (uintptr_t)t.t_procp) == -1) {
+	if (include_comm && mdb_vread(&p, sizeof (proc_t), t.t_procp) == -1) {
 		mdb_warn("failed to read proc at %p", t.t_procp);
 		return (-1);
 	}
 
-	if (t.t_name != NULL) {
-		if (mdb_readstr(name, sizeof (name), (uintptr_t)t.t_name) == -1)
+	if (t.t_name != 0) {
+		if (mdb_readstr(name, sizeof (name), t.t_name) == -1)
 			mdb_warn("error reading thread name");
 
 		/*
@@ -657,7 +657,7 @@ threadlist(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	uint_t count =  0;
 	uint_t verbose = FALSE;
 	uint_t notaskq = FALSE;
-	kthread_t t;
+	mdb_kthread_t t;
 	char cmd[80];
 	mdb_arg_t cmdarg;
 
@@ -689,12 +689,12 @@ threadlist(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 			    "ADDR", "PROC", "LWP", "CMD", "LWPID");
 	}
 
-	if (mdb_vread(&t, sizeof (kthread_t), addr) == -1) {
+	if (mdb_ctf_vread(&t, "kthread_t", "mdb_kthread_t", addr, 0) == -1) {
 		mdb_warn("failed to read kthread_t at %p", addr);
 		return (DCMD_ERR);
 	}
 
-	if (notaskq && t.t_taskq != NULL)
+	if (notaskq && t.t_taskq != 0)
 		return (DCMD_OK);
 
 	if (t.t_state == TS_FREE)
@@ -740,7 +740,7 @@ threadlist_help(void)
 }
 
 static size_t
-stk_compute_percent(caddr_t t_stk, caddr_t t_stkbase, caddr_t sp)
+stk_compute_percent(uintptr_t t_stk, uintptr_t t_stkbase, uintptr_t sp)
 {
 	size_t percent;
 	size_t s;
@@ -779,10 +779,10 @@ stk_compute_percent(caddr_t t_stk, caddr_t t_stkbase, caddr_t sp)
 int
 stackinfo(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 {
-	kthread_t t;
+	mdb_kthread_t t;
 	uint64_t *ptr;  /* pattern pointer */
-	caddr_t	start;	/* kernel stack start */
-	caddr_t end;	/* kernel stack end */
+	uintptr_t start; /* kernel stack start */
+	uintptr_t end;	/* kernel stack end */
 	caddr_t ustack;	/* userland copy of kernel stack */
 	size_t usize;	/* userland copy of kernel stack size */
 	caddr_t ustart;	/* userland copy of kernel stack, aligned start */
@@ -890,7 +890,7 @@ stackinfo(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	}
 
 	/* read kthread */
-	if (mdb_vread(&t, sizeof (kthread_t), addr) == -1) {
+	if (mdb_ctf_vread(&t, "kthread_t", "mdb_kthread_t", addr, 0) == -1) {
 		mdb_warn("can't read kthread_t at %#lx\n", addr);
 		return (DCMD_ERR);
 	}
@@ -928,7 +928,7 @@ stackinfo(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 
 	/* display current stack usage */
 	percent = stk_compute_percent(t.t_stk, t.t_stkbase,
-	    (caddr_t)t.t_sp + STACK_BIAS);
+	    t.t_sp + STACK_BIAS);
 
 	mdb_printf(" %3d%%", percent);
 	percent = 0;
@@ -940,10 +940,10 @@ stackinfo(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		return (DCMD_OK);
 	}
 
-	if ((((uintptr_t)start) & 0x7) != 0) {
-		start = (caddr_t)((((uintptr_t)start) & (~0x7)) + 8);
+	if ((start & 0x7) != 0) {
+		start = ((start & (~0x7)) + 8);
 	}
-	end = (caddr_t)(((uintptr_t)end) & (~0x7));
+	end = end & (~0x7);
 	/* size to scan in userland copy of kernel stack */
 	usize = end - start; /* is a multiple of 8 bytes */
 
@@ -958,7 +958,7 @@ stackinfo(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	uend = ustart + usize;
 
 	/* read the kernel stack */
-	if (mdb_vread(ustart, usize, (uintptr_t)start) != usize) {
+	if (mdb_vread(ustart, usize, start) != usize) {
 		mdb_free((void *)ustack, usize + 8);
 		mdb_printf("\n");
 		mdb_warn("couldn't read entire stack\n");
@@ -980,8 +980,8 @@ stackinfo(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		ptr = (uint64_t *)((void *)ustart);
 		while (ptr < (uint64_t *)((void *)uend)) {
 			if (*ptr != KMEM_STKINFO_PATTERN) {
-				percent = stk_compute_percent(uend,
-				    ustart, (caddr_t)ptr);
+				percent = stk_compute_percent((uintptr_t)uend,
+				    (uintptr_t)ustart, (uintptr_t)ptr);
 				break;
 			}
 			ptr++;
@@ -992,8 +992,8 @@ stackinfo(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		ptr--;
 		while (ptr >= (uint64_t *)((void *)ustart)) {
 			if (*ptr != KMEM_STKINFO_PATTERN) {
-				percent = stk_compute_percent(ustart,
-				    uend, (caddr_t)ptr);
+				percent = stk_compute_percent((uintptr_t)ustart,
+				    (uintptr_t)uend, (uintptr_t)ptr);
 				break;
 			}
 			ptr--;

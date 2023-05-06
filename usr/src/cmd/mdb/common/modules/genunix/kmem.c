@@ -27,12 +27,14 @@
  * Copyright 2018 Joyent, Inc.  All rights reserved.
  * Copyright (c) 2012 by Delphix. All rights reserved.
  * Copyright 2025 Oxide Computer Company
+ * Copyright 2023 Jason King
  */
 
 #include <mdb/mdb_param.h>
 #include <mdb/mdb_modapi.h>
 #include <mdb/mdb_ctf.h>
 #include <mdb/mdb_whatis.h>
+#include <mdb/mdb_gcore.h> /* for mdb_kthread_t */
 #include <sys/cpuvar.h>
 #include <sys/kmem_impl.h>
 #include <sys/vmem_impl.h>
@@ -2089,7 +2091,7 @@ freedby(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
  *   have an accurate t_sp.
  */
 static const char *
-stack_active(const kthread_t *t, uintptr_t addr)
+stack_active(const mdb_kthread_t *t, uintptr_t addr)
 {
 	uintptr_t panicstk;
 	GElf_Sym sym;
@@ -2442,8 +2444,13 @@ whatis_walk_notouch(uintptr_t addr, const kmem_cache_t *c, whatis_info_t *wi)
 	return (whatis_walk_cache(addr, c, wi));
 }
 
+typedef struct whatis_thrinfo {
+	mdb_whatis_t	*wti_wi;
+	size_t		wti_ktsize;	/* size of kthread_t */
+} whatis_thrinfo_t;
+
 static int
-whatis_walk_thread(uintptr_t addr, const kthread_t *t, mdb_whatis_t *w)
+whatis_walk_thread(uintptr_t addr, const mdb_kthread_t *t, whatis_thrinfo_t *wi)
 {
 	uintptr_t cur;
 	uintptr_t saddr;
@@ -2453,14 +2460,14 @@ whatis_walk_thread(uintptr_t addr, const kthread_t *t, mdb_whatis_t *w)
 	 * Often, one calls ::whatis on an address from a thread structure.
 	 * We use this opportunity to short circuit this case...
 	 */
-	while (mdb_whatis_match(w, addr, sizeof (kthread_t), &cur))
-		mdb_whatis_report_object(w, cur, addr,
+	while (mdb_whatis_match(wi->wti_wi, addr, wi->wti_ktsize, &cur))
+		mdb_whatis_report_object(wi->wti_wi, cur, addr,
 		    "allocated as a thread structure\n");
 
 	/*
 	 * Now check the stack
 	 */
-	if (t->t_stkbase == NULL)
+	if (t->t_stkbase == 0)
 		return (WALK_NEXT);
 
 	/*
@@ -2471,13 +2478,13 @@ whatis_walk_thread(uintptr_t addr, const kthread_t *t, mdb_whatis_t *w)
 	 * t_stk in the range (the "+ 1", below), but the kernel should
 	 * really include the full stack bounds where we can find it.
 	 */
-	saddr = (uintptr_t)t->t_stkbase;
-	size = (uintptr_t)t->t_stk - saddr + 1;
-	while (mdb_whatis_match(w, saddr, size, &cur))
-		mdb_whatis_report_object(w, cur, cur,
+	saddr = t->t_stkbase;
+	size = t->t_stk - saddr + 1;
+	while (mdb_whatis_match(wi->wti_wi, saddr, size, &cur))
+		mdb_whatis_report_object(wi->wti_wi, cur, cur,
 		    "in thread %p's stack%s\n", addr, stack_active(t, cur));
 
-	return (WHATIS_WALKRET(w));
+	return (WHATIS_WALKRET(wi->wti_wi));
 }
 
 static void
@@ -2582,13 +2589,25 @@ whatis_run_modules(mdb_whatis_t *w, void *arg)
 static int
 whatis_run_threads(mdb_whatis_t *w, void *ignored)
 {
+	whatis_thrinfo_t wt;
+	ssize_t	sz;
+
+	sz = mdb_ctf_sizeof_by_name("kthread_t");
+	if (sz == -1) {
+		mdb_warn("couldn't find size of kthread_t");
+		return (1);
+	}
+
+	wt.wti_wi = w;
+	wt.wti_ktsize = sz;
+
 	/*
 	 * Now search all thread stacks.  Yes, this is a little weak; we
 	 * can save a lot of work by first checking to see if the
 	 * address is in segkp vs. segkmem.  But hey, computers are
 	 * fast.
 	 */
-	if (mdb_walk("thread", (mdb_walk_cb_t)whatis_walk_thread, w) == -1) {
+	if (mdb_walk("thread", (mdb_walk_cb_t)whatis_walk_thread, &wt) == -1) {
 		mdb_warn("couldn't find thread walker");
 		return (1);
 	}
@@ -4353,11 +4372,11 @@ typedef struct whatthread {
 } whatthread_t;
 
 static int
-whatthread_walk_thread(uintptr_t addr, const kthread_t *t, whatthread_t *w)
+whatthread_walk_thread(uintptr_t addr, const mdb_kthread_t *t, whatthread_t *w)
 {
 	uintptr_t current, data;
 
-	if (t->t_stkbase == NULL)
+	if (t->t_stkbase == 0)
 		return (WALK_NEXT);
 
 	/*
@@ -4373,7 +4392,7 @@ whatthread_walk_thread(uintptr_t addr, const kthread_t *t, whatthread_t *w)
 	 * be more efficient to follow ::kgrep's lead and read in page-sized
 	 * chunks, but this routine is already fast and simple.
 	 */
-	for (current = (uintptr_t)t->t_stkbase; current < (uintptr_t)t->t_stk;
+	for (current = t->t_stkbase; current < t->t_stk;
 	    current += sizeof (uintptr_t)) {
 		if (mdb_vread(&data, sizeof (data), current) == -1) {
 			mdb_warn("couldn't read thread %p's stack at %p",

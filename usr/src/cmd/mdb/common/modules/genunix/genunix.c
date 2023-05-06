@@ -26,10 +26,12 @@
  * Copyright 2022 Garrett D'Amore
  * Copyright 2023 RackTop Systems, Inc.
  * Copyright 2025 Oxide Computer Company
+ * Copyright 2023 Jason King
  */
 
 #include <mdb/mdb_param.h>
 #include <mdb/mdb_modapi.h>
+#include <mdb/mdb_gcore.h> /* for mdb_kthread_t */
 #include <mdb/mdb_ks.h>
 #include <mdb/mdb_ctf.h>
 
@@ -152,7 +154,7 @@ pstat2ch(uchar_t state)
 static int
 ps_threadprint(uintptr_t addr, const void *data, void *private)
 {
-	const kthread_t *t = (const kthread_t *)data;
+	const mdb_kthread_t *t = (const mdb_kthread_t *)data;
 	uint_t prt_flags = *((uint_t *)private);
 
 	static const mdb_bitmask_t t_state_bits[] = {
@@ -3113,7 +3115,8 @@ typedef struct cpuinfo_data {
 } cpuinfo_data_t;
 
 int
-cpuinfo_walk_ithread(uintptr_t addr, const kthread_t *thr, cpuinfo_data_t *cid)
+cpuinfo_walk_ithread(uintptr_t addr, const mdb_kthread_t *thr,
+    cpuinfo_data_t *cid)
 {
 	cpu_t c;
 	int id;
@@ -3122,12 +3125,12 @@ cpuinfo_walk_ithread(uintptr_t addr, const kthread_t *thr, cpuinfo_data_t *cid)
 	if (!(thr->t_flag & T_INTR_THREAD) || thr->t_state == TS_FREE)
 		return (WALK_NEXT);
 
-	if (thr->t_bound_cpu == NULL) {
+	if (thr->t_bound_cpu == 0) {
 		mdb_warn("thr %p is intr thread w/out a CPU\n", addr);
 		return (WALK_NEXT);
 	}
 
-	(void) mdb_vread(&c, sizeof (c), (uintptr_t)thr->t_bound_cpu);
+	(void) mdb_vread(&c, sizeof (c), thr->t_bound_cpu);
 
 	if ((id = c.cpu_id) >= NCPU) {
 		mdb_warn("CPU %p has id (%d) greater than NCPU (%d)\n",
@@ -3184,7 +3187,7 @@ typedef struct mdb_cpuinfo_proc {
 int
 cpuinfo_walk_cpu(uintptr_t addr, const cpu_t *cpu, cpuinfo_data_t *cid)
 {
-	kthread_t t;
+	mdb_kthread_t t;
 	disp_t disp;
 	mdb_cpuinfo_proc_t p;
 	uintptr_t pinned = 0;
@@ -3227,7 +3230,8 @@ cpuinfo_walk_cpu(uintptr_t addr, const cpu_t *cpu, cpuinfo_data_t *cid)
 	    cpu->cpu_id, CPUINFO_CPUWIDTH, addr, cpu->cpu_flags,
 	    disp.disp_nrunnable, bspl);
 
-	if (mdb_vread(&t, sizeof (t), (uintptr_t)cpu->cpu_thread) != -1) {
+	if (mdb_ctf_vread(&t, "kthread_t", "mdb_kthread_t",
+	    (uintptr_t)cpu->cpu_thread, 0) != -1) {
 		mdb_printf("%3d ", t.t_pri);
 	} else {
 		mdb_printf("%3s ", "-");
@@ -3318,7 +3322,8 @@ cpuinfo_walk_cpu(uintptr_t addr, const cpu_t *cpu, cpuinfo_data_t *cid)
 				    "", "PIL", "THREAD");
 			}
 
-			if (mdb_vread(&t, sizeof (t), iaddr) == -1) {
+			if (mdb_ctf_vread(&t, "kthread_t", "mdb_kthread_t",
+			    iaddr, 0) == -1) {
 				mdb_warn("failed to read kthread_t at %p",
 				    iaddr);
 				return (WALK_ERR);
@@ -3336,14 +3341,14 @@ cpuinfo_walk_cpu(uintptr_t addr, const cpu_t *cpu, cpuinfo_data_t *cid)
 			cid->cid_print_head = TRUE;
 			(void) strcpy(p.p_user.u_comm, "?");
 
-			if (mdb_vread(&t, sizeof (t),
-			    (uintptr_t)pinned) == -1) {
+			if (mdb_ctf_vread(&t, "kthread_t", "mdb_kthread_t",
+			    (uintptr_t)pinned, 0) == -1) {
 				mdb_warn("failed to read kthread_t at %p",
 				    pinned);
 				return (WALK_ERR);
 			}
 			if (mdb_ctf_vread(&p, "proc_t", "mdb_cpuinfo_proc_t",
-			    (uintptr_t)t.t_procp, 0) == -1) {
+			    t.t_procp, 0) == -1) {
 				mdb_warn("failed to read proc_t at %p",
 				    t.t_procp);
 				return (WALK_ERR);
@@ -3382,14 +3387,15 @@ cpuinfo_walk_cpu(uintptr_t addr, const cpu_t *cpu, cpuinfo_data_t *cid)
 			uintptr_t taddr = (uintptr_t)dq[i].dq_first;
 
 			while (taddr != 0) {
-				if (mdb_vread(&t, sizeof (t), taddr) == -1) {
+				if (mdb_ctf_vread(&t, "kthread_t",
+				    "mdb_kthread_t", taddr, 0) == -1) {
 					mdb_warn("failed to read kthread_t "
 					    "at %p", taddr);
 					return (WALK_ERR);
 				}
 				if (mdb_ctf_vread(&p, "proc_t",
 				    "mdb_cpuinfo_proc_t",
-				    (uintptr_t)t.t_procp, 0) == -1) {
+				    t.t_procp, 0) == -1) {
 					mdb_warn("failed to read proc_t at %p",
 					    t.t_procp);
 					return (WALK_ERR);
@@ -3764,14 +3770,15 @@ sysfile(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 }
 
 int
-didmatch(uintptr_t addr, const kthread_t *thr, kt_did_t *didp)
+didmatch(uintptr_t addr, const mdb_kthread_t *thr, kt_did_t *didp)
 {
 
 	if (*didp == thr->t_did) {
 		mdb_printf("%p\n", addr);
 		return (WALK_DONE);
-	} else
+	} else {
 		return (WALK_NEXT);
+	}
 }
 
 /*ARGSUSED*/
