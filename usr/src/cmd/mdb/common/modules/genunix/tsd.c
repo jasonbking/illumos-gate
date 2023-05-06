@@ -25,10 +25,16 @@
  */
 /*
  * Copyright (c) 2012 by Delphix. All rights reserved.
+ * Copyright 2023 Jason King
  */
 
+#include <mdb/mdb_ctf.h>
 #include <sys/thread.h>
 #include "tsd.h"
+
+typedef struct mdb_tsd_kthread {
+	uintptr_t	t_tsd;
+} mdb_tsd_kthread_t;
 
 /*
  * Initialize the tsd walker by either using the given starting address,
@@ -81,7 +87,7 @@ tsd_walk_fini(mdb_walk_state_t *wsp)
 int
 ttotsd(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 {
-	kthread_t thread, *t = &thread;
+	mdb_tsd_kthread_t thread, *t = &thread;
 	struct tsd_thread tsdata, *ts = &tsdata;
 	uintptr_t key = 0;
 	uintptr_t eladdr;
@@ -93,15 +99,15 @@ ttotsd(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	if (!(flags & DCMD_ADDRSPEC) || key == 0)
 		return (DCMD_USAGE);
 
-	if (mdb_vread(t, sizeof (*t), addr) == -1) {
+	if (mdb_ctf_vread(t, "kthread_t", "mdb_tsd_kthread_t", addr, 0) == -1) {
 		mdb_warn("failed to read thread at %p", addr);
 		return (DCMD_ERR);
 	}
 
-	if (t->t_tsd == NULL)
+	if (t->t_tsd == 0)
 		goto out;
 
-	if (mdb_vread(ts, sizeof (*ts), (uintptr_t)t->t_tsd) == -1) {
+	if (mdb_vread(ts, sizeof (*ts), t->t_tsd) == -1) {
 		mdb_warn("failed to read tsd at %p", t->t_tsd);
 		return (DCMD_ERR);
 	}

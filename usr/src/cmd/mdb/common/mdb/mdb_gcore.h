@@ -10,10 +10,11 @@
  */
 /*
  * Copyright (c) 2013 by Delphix. All rights reserved.
+ * Copyright 2023 Jason King
  */
 
-#ifndef	_MDB_GCORE_H
-#define	_MDB_GCORE_H
+#ifndef	_MDB_MDB_GCORE_H
+#define	_MDB_MDB_GCORE_H
 
 /*
  * The kernel has its own definition of exit which has a different signature
@@ -69,28 +70,50 @@ typedef struct mdb_proc {
 } mdb_proc_t;
 
 typedef struct mdb_kthread {
+	uintptr_t	t_link;
+	uintptr_t	t_stk;
+	uintptr_t	t_startpc;
+	uintptr_t	t_bound_cpu;
+	short		t_bind_cpu;
+	uint_t		t_flag;
 	ushort_t	t_proc_flag;
+	ushort_t	t_schedflag;
+	char		t_preempt;
 	uint_t		t_state;
+	pri_t		t_pri;
+	pri_t		t_epri;
+	label_t		t_pcb;
 	lwpchan_t	t_lwpchan;
-	ushort_t	t_whystop;
-	uint8_t		t_dtrace_stop;
+	uintptr_t	t_sobj_ops;
+	id_t		t_cid;
+	uint8_t		t_pil;
+	uintptr_t	t_intr;
+	kt_did_t	t_did;
+	id_t		t_tid;
+	uintptr_t	t_sigqueue;
+	k_sigset_t	t_sig;
+	k_sigset_t	t_hold;
 	uintptr_t	t_forw;
 	uintptr_t	t_lwp;
-	id_t		t_tid;
+	uintptr_t	t_procp;
+	uintptr_t	t_next;
+	ushort_t	t_whystop;
+	uintptr_t	t_cred;
+	hrtime_t	t_stoptime;
 	short		t_sysnum;
-	pri_t		t_pri;
+	clock_t		t_disp_time;
+	uintptr_t	t_prioinv;
+	uintptr_t	t_ts;
+	uintptr_t	t_stkbase;
 	time_t		t_start;
-	id_t		t_cid;
 	uintptr_t	t_cpu;
 	int		t_bind_pset;
-	short		t_bind_cpu;
 	uintptr_t	t_lpl;
-	ushort_t	t_schedflag;
 	ushort_t	t_whatstop;
-	k_sigset_t	t_sig;
 	uintptr_t	t_schedctl;
-	k_sigset_t	t_hold;
-	hrtime_t	t_stoptime;
+	uint8_t		t_dtrace_stop;
+	uintptr_t	t_taskq;
+	uintptr_t	t_name;
 } mdb_kthread_t;
 
 typedef struct mdb_seg {
@@ -274,4 +297,4 @@ extern int gcore_prisstep(mdb_klwp_t *);
 extern void gcore_getgregs(mdb_klwp_t *, gregset_t);
 extern int gcore_prgetrvals(mdb_klwp_t *, long *, long *);
 
-#endif	/* _MDB_GCORE_H */
+#endif	/* _MDB_MDB_GCORE_H */
