@@ -108,9 +108,9 @@ main(int argc, char **argv)
 	log_sysinit();
 	(void) log_init("lldpd", &log);
 
-	VERIFY0(log_stream_add(log, "stderr", LOG_L_ERROR, log_stream_fd,
-	    (void *)(uintptr_t)STDERR_FILENO));
-	VERIFY0(log_stream_add(log, "stdout",
+	VERIFY0(log_stream_add(log, "stderr", LFMT_BUNYAN, LOG_L_ERROR,
+	    log_stream_fd, (void *)(uintptr_t)STDERR_FILENO));
+	VERIFY0(log_stream_add(log, "stdout", LFMT_BUNYAN,
 	    debug ? LOG_L_DEBUG : LOG_L_INFO, log_stream_fd,
 	    (void *)(uintptr_t)STDOUT_FILENO));
 
