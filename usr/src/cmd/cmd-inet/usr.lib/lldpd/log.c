@@ -11,11 +11,12 @@
 
 /*
  * Copyright (c) 2014, Joyent, Inc.
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #include <errno.h>
 #include <netdb.h>
+#include <libcustr.h>
 #include <libdlpi.h>
 #include <libnvpair.h>
 #include <libuutil.h>
@@ -34,8 +35,11 @@
 #include <time.h>
 #include <unistd.h>
 #include <umem.h>
+#include <wchar.h>
 
+#include "buf.h"
 #include "log.h"
+#include "tlv.h"
 #include "util.h"
 
 struct log_key;
@@ -45,17 +49,17 @@ struct log;
 typedef struct log_stream {
 	uu_list_node_t	ls_node;
 	char		*ls_name;
+	log_fmt_type_t	ls_fmt;
 	log_level_t	ls_level;
 	log_stream_f	ls_func;
 	void		*ls_arg;
-	uint_t		ls_count;
 } log_stream_t;
 
 typedef struct log_key {
 	uu_list_node_t	lk_node;
 	char		*lk_name;
 	log_type_t	lk_type;
-	void		*lk_data;
+	uintptr_t	lk_data;
 	size_t		lk_len;
 } log_key_t;
 
@@ -65,7 +69,13 @@ struct log {
 	uu_list_t	*l_streams;
 	char		*l_name;
 	char		l_host[MAXHOSTNAMELEN + 1];
+	log_fmt_type_t	l_fmts;
+	log_level_t	l_minlevel;
+	custr_t		*l_bunyan;
+	custr_t		*l_syslog;
 };
+
+#define	ISO_TIMELEN		25
 
 #define	FD_MUTEX_HASH_SIZE	64
 static mutex_t		fd_mutex[FD_MUTEX_HASH_SIZE];
@@ -73,11 +83,13 @@ static uu_list_pool_t	*key_pool;
 static uu_list_pool_t	*stream_pool;
 static umem_cache_t	*key_cache;
 
-#ifdef notyet
-static const int log_version = 0;
-#endif
+static const int bunyan_version = 0;
 
 __thread log_t *log;
+
+static void log_make_bunyan(log_t *, const struct timeval *, log_level_t,
+    const char *, va_list *);
+static void key_tlv_copy(log_key_t *, const tlv_t *);
 
 static inline uint_t
 log_fd_hash(int fd)
@@ -102,24 +114,13 @@ log_fd_unlock(int fd)
 static void
 log_key_fini(log_key_t *k)
 {
-	if (k->lk_type == LOG_T_OBJ) {
-		uu_list_t *list = k->lk_data;
-		log_key_t *ok = NULL;
-		void *cookie = NULL;
-
-		while ((ok = uu_list_teardown(list, &cookie)) != NULL)
-			log_key_fini(ok);
-
-		uu_list_destroy(list);
-	} else {
-		if (k->lk_len > 0)
-			umem_free(k->lk_data, k->lk_len);
-	}
+	if (k->lk_len > 0)
+		umem_free((void *)k->lk_data, k->lk_len);
 
 	uu_free(k->lk_name);
 
 	k->lk_name = NULL;
-	k->lk_data = NULL;
+	k->lk_data = 0;
 	k->lk_len = 0;
 	umem_cache_free(key_cache, k);
 }
@@ -180,10 +181,17 @@ log_fini(log_t *lp)
 }
 
 int
-log_stream_fd(nvlist_t *nvl, const char *js, void *arg)
+log_child(const log_t *parent, log_t **childp, ...)
+{
+	abort();
+	return (-1);
+}
+
+void
+log_stream_fd(log_level_t lvl __unused, const char *msg, void *arg)
 {
 	uintptr_t	fd = (uintptr_t)arg;
-	size_t		jslen = strlen(js);
+	size_t		msglen = strlen(msg);
 	off_t		off = 0;
 	ssize_t		ret = 0;
 	static int	maxbuf = -1;
@@ -192,33 +200,26 @@ log_stream_fd(nvlist_t *nvl, const char *js, void *arg)
 		maxbuf = getpagesize();
 
 	log_fd_lock(fd);
-	while (off != jslen) {
+	while (off != msglen) {
 		/*
 		 * Write up to a page of data at a time. If for some reason an
 		 * individual write fails, move on and try to still write a new
 		 * line at least...
 		 */
 
-		ret = write(fd, js + off, MIN(jslen - off, maxbuf));
+		ret = write(fd, msg + off, MIN(msglen - off, maxbuf));
 		if (ret < 0)
 			break;
 
 		off += ret;
 	}
 
-	if (ret < 0) {
-		(void) write(fd, "\n", 1);
-	} else {
-		ret = write(fd, "\n", 1);
-	}
 	log_fd_unlock(fd);
-
-	return (ret < 0 ? 1 : 0);
 }
 
 int
-log_stream_add(log_t *l, const char *name, log_level_t level, log_stream_f func,
-    void *arg)
+log_stream_add(log_t *l, const char *name, log_fmt_type_t fmt,
+    log_level_t level, log_stream_f func, void *arg)
 {
 	log_stream_t *ls;
 	log_stream_t templ = {
@@ -228,12 +229,20 @@ log_stream_add(log_t *l, const char *name, log_level_t level, log_stream_f func,
 	if (name == NULL)
 		return (EINVAL);
 
+	switch (fmt) {
+	case LFMT_SYSLOG:
+	case LFMT_BUNYAN:
+		break;
+	default:
+		return (EINVAL);
+	}
+
 	ls = umem_zalloc(sizeof (*ls), UMEM_NOFAIL);
 	ls->ls_name = xstrdup(name);
 	ls->ls_level = level;
+	ls->ls_fmt = fmt;
 	ls->ls_func = func;
 	ls->ls_arg = arg;
-	ls->ls_count = 0;
 
 	mutex_enter(&l->l_lock);
 	if (uu_list_find(l->l_streams, &templ, NULL, NULL) != NULL) {
@@ -246,6 +255,7 @@ log_stream_add(log_t *l, const char *name, log_level_t level, log_stream_f func,
 	VERIFY0(uu_list_insert_after(l->l_streams, uu_list_last(l->l_streams),
 	    ls));
 
+	l->l_fmts |= fmt;
 	mutex_exit(&l->l_lock);
 	return (0);
 }
@@ -272,10 +282,10 @@ log_stream_remove(log_t *l, const char *name)
 }
 
 static log_key_t *
-log_key_create(const char *name, log_type_t type, const void *arg)
+log_key_create(const char *name, log_type_t type, uintptr_t arg)
 {
+	const void *p = (const void *)arg;
 	log_key_t *k;
-	void *cookie = NULL;
 	size_t len = 0;
 
 	VERIFY3S(type, !=, _LOG_T_END);
@@ -295,9 +305,9 @@ log_key_create(const char *name, log_type_t type, const void *arg)
 		panic("invalid type");
 		break;
 	case LOG_T_STRING:
-		k->lk_len = strlen(arg) + 1;
-		k->lk_data = umem_zalloc(k->lk_len, UMEM_NOFAIL);
-		(void) memcpy(k->lk_data, arg, k->lk_len);
+		k->lk_len = strlen(p) + 1;
+		k->lk_data = (uintptr_t)umem_zalloc(k->lk_len, UMEM_NOFAIL);
+		(void) memcpy((void *)k->lk_data, p, k->lk_len);
 		return (k);
 	case LOG_T_POINTER:
 	case LOG_T_BOOLEAN:
@@ -307,63 +317,36 @@ log_key_create(const char *name, log_type_t type, const void *arg)
 	case LOG_T_INT64:
 	case LOG_T_UINT64:
 	case LOG_T_XINT64:
-		k->lk_data = (void *)arg;
+		k->lk_data = arg;
 		k->lk_len = 0;
 		return (k);
 	case LOG_T_MAC:
 		len = ETHERADDRL;
-		k->lk_data = umem_zalloc(len, UMEM_NOFAIL);
-		(void) memcpy(k->lk_data, arg, len);
+		k->lk_data = (uintptr_t)umem_zalloc(len, UMEM_NOFAIL);
+		(void) memcpy((void *)k->lk_data, p, len);
 		k->lk_len = len;
 		return (k);
 	case LOG_T_IPV4:
-		(void) memcpy(&k->lk_data, arg, sizeof (in_addr_t));
+		k->lk_data = arg;
 		k->lk_len = 0;
 		return (k);
 	case LOG_T_IPV6:
-		k->lk_data = umem_zalloc(sizeof (in6_addr_t), UMEM_NOFAIL);
-		(void) memcpy(k->lk_data, arg, sizeof (in6_addr_t));
-		k->lk_data = (void *)(uintptr_t)sizeof (in6_addr_t);
+		k->lk_data = (uintptr_t)umem_zalloc(sizeof (in6_addr_t),
+		    UMEM_NOFAIL);
+		(void) memcpy((void *)k->lk_data, p, sizeof (in6_addr_t));
+		k->lk_len = sizeof (in6_addr_t);
 		return (k);
-	case LOG_T_OBJ:
 	case LOG_T_CHASSIS:
 	case LOG_T_PORT:
+		key_tlv_copy(k, (const tlv_t *)arg);
 		break;
 	}
 
-	uu_list_t *ol = uu_list_create(key_pool, k, UU_LIST_DEBUG);
-	uu_list_walk_t *wk;
-	log_key_t *ok;
-
-	wk = uu_list_walk_start((void *)arg, 0);
-	if (wk == NULL)
-		nomem();
-
-	while ((ok = uu_list_walk_next(wk)) != NULL) {
-		log_key_t *nk = log_key_create(ok->lk_name, ok->lk_type,
-		    ok->lk_data);
-
-		if (nk == NULL)
-			goto fail;
-
-		(void) uu_list_insert_after(ol, uu_list_last(ol), nk);
-	}
-
-	k->lk_data = ol;
-	k->lk_len = 0;
 	return (k);
-
-fail:
-	while ((ok = uu_list_teardown(ol, &cookie)) != NULL)
-		log_key_fini(ok);
-
-	uu_list_destroy(ol);
-	log_key_fini(k);
-	return (NULL);
 }
 
 static int
-log_key_add_one(log_t *l, const char *name, log_type_t type, const void *arg)
+log_key_add_one(log_t *l, const char *name, log_type_t type, uintptr_t arg)
 {
 	log_key_t	*k;
 	log_key_t	*ok;
@@ -393,7 +376,7 @@ static int
 log_key_vadd(log_t *l, va_list *ap)
 {
 	log_type_t type;
-	void *data = NULL;
+	uintptr_t data = 0;
 
 	while ((type = va_arg(*ap, int)) != _LOG_T_END) {
 		const char *name = va_arg(*ap, char *);
@@ -414,7 +397,6 @@ log_key_vadd(log_t *l, va_list *ap)
 		case LOG_T_MAC:
 		case LOG_T_IPV4:
 		case LOG_T_IPV6:
-		case LOG_T_OBJ:
 		case LOG_T_CHASSIS:
 		case LOG_T_PORT:
 			break;
@@ -441,6 +423,124 @@ log_key_add(log_t *l, ...)
 	return (ret);
 }
 
+typedef struct logcb_arg {
+	log_t		*larg_log;
+	log_level_t	larg_level;
+} logcb_arg_t;
+
+static int
+log_cb(void *e, void *argp)
+{
+	logcb_arg_t	*args = argp;
+	log_stream_t	*stream = e;
+	const char	*msg = NULL;
+
+	ASSERT(MUTEX_HELD(&args->larg_log->l_lock));
+
+	if (stream->ls_level < args->larg_level)
+		return (UU_WALK_NEXT);
+
+	switch (stream->ls_fmt) {
+	case LFMT_SYSLOG:
+		msg = custr_cstr(args->larg_log->l_syslog);
+		break;
+	case LFMT_BUNYAN:
+		msg = custr_cstr(args->larg_log->l_bunyan);
+		break;
+	}
+
+	stream->ls_func(args->larg_level, msg, stream->ls_arg);
+	return (UU_WALK_NEXT);
+}
+
+void
+log_vlvl(log_t *l, log_level_t level, const char *msg, va_list ap)
+{
+	logcb_arg_t arg = {
+		.larg_log = l,
+		.larg_level = level,
+	};
+	struct timeval tv = { 0 };
+
+	if (level < l->l_minlevel)
+		return;
+
+	mutex_enter(&l->l_lock);
+	if ((l->l_fmts & LFMT_SYSLOG) != 0) {
+		custr_reset(l->l_syslog);
+
+	}
+
+	if ((l->l_fmts & LFMT_BUNYAN) != 0) {
+		log_make_bunyan(l, &tv, level, msg, &ap);
+	}
+
+	(void) uu_list_walk(l->l_streams, log_cb, &arg, 0);
+	mutex_exit(&l->l_lock);
+}
+
+void
+log_fatal(log_t *l, const char *msg, ...)
+{
+	va_list ap;
+
+	va_start(ap, msg);
+	log_vlvl(l, LOG_L_FATAL, msg, ap);
+	va_end(ap);
+
+	panic(msg);
+}
+
+void
+log_error(log_t *l, const char *msg, ...)
+{
+	va_list ap;
+
+	va_start(ap, msg);
+	log_vlvl(l, LOG_L_ERROR, msg, ap);
+	va_end(ap);
+}
+
+void
+log_warn(log_t *l, const char *msg, ...)
+{
+	va_list ap;
+
+	va_start(ap, msg);
+	log_vlvl(l, LOG_L_WARN, msg, ap);
+	va_end(ap);
+}
+
+void
+log_info(log_t *l, const char *msg, ...)
+{
+	va_list ap;
+
+	va_start(ap, msg);
+	log_vlvl(l, LOG_L_INFO, msg, ap);
+	va_end(ap);
+}
+
+void
+log_debug(log_t *l, const char *msg, ...)
+{
+	va_list ap;
+
+	va_start(ap, msg);
+	log_vlvl(l, LOG_L_DEBUG, msg, ap);
+	va_end(ap);
+}
+
+void
+log_trace(log_t *l, const char *msg, ...)
+{
+	va_list ap;
+
+	va_start(ap, msg);
+	log_vlvl(l, LOG_L_TRACE, msg, ap);
+	va_end(ap);
+}
+
 void
 log_syserr(log_t *l, const char *msg, int eval)
 {
@@ -457,6 +557,267 @@ log_dlerr(log_t *l, const char *msg, int eval)
 	    LOG_T_INT32, "err", eval,
 	    LOG_T_STRING, "errstr", dlpi_strerror(eval),
 	    LOG_T_END);
+}
+
+void
+log_uuerr(log_t *l, const char *msg)
+{
+	log_error(l, msg,
+	    LOG_T_INT32, "err", uu_error(),
+	    LOG_T_STRING, "errstr", uu_strerror(uu_error()),
+	    LOG_T_END);
+}
+
+static bool
+bunyan_time(const struct timeval *tv, char *buf)
+{
+	struct tm tm;
+
+	if (gmtime_r(&tv->tv_sec, &tm) == NULL)
+		return (false);
+
+	VERIFY3U(strftime(buf, ISO_TIMELEN, "%FT%T", &tm), ==, 19);
+	(void) snprintf(&buf[19], 6, "%03dZ", (int)(tv->tv_usec / 1000));
+	return (true);
+}
+
+static bool
+bunyan_add_str(custr_t *cus, const char *str)
+{
+	mbstate_t	mbr;
+	wchar_t		c;
+	size_t		sz;
+
+	VERIFY0(custr_appendc(cus, '"'));
+	while ((sz = mbrtowc(&c, str, MB_CUR_MAX, &mbr)) > 0) {
+		switch (c) {
+		case '"':
+			VERIFY0(custr_append(cus, "\\\""));
+			break;
+		case '\n':
+			VERIFY0(custr_append(cus, "\\n"));
+			break;
+		case '\r':
+			VERIFY0(custr_append(cus, "\\r"));
+			break;
+		case '\\':
+			VERIFY0(custr_append(cus, "\\\\"));
+			break;
+		case '\f':
+			VERIFY0(custr_append(cus, "\\f"));
+			break;
+		case '\t':
+			VERIFY0(custr_append(cus, "\\t"));
+			break;
+		case '\b':
+			VERIFY0(custr_append(cus, "\\b"));
+			break;
+		default:
+			if ((c >= 0x00 && c <= 0x1f) ||
+			    (c > 0x7f && c <= 0xffff)) {
+				VERIFY0(custr_append_printf(cus, "\\u%04x",
+				    (int)(0xffff & c)));
+			} else if (c >= 0x20 && c <= 0x7f) {
+				VERIFY0(custr_appendc(cus, (int)(0xff & c)));
+			}
+			break;
+		}
+		str += sz;
+	}
+
+	if (sz == (size_t)-1 || sz == (size_t)-2) {
+		/* Read an invalid multibyte character, return failure */
+		return (false);
+	}
+
+	VERIFY0(custr_appendc(cus, '"'));
+	return (true);
+}
+
+static bool
+log_bunyan_key(custr_t *cus, const char *name, log_type_t type, uintptr_t data,
+    size_t len)
+{
+	const uint8_t		*p;
+	const lldp_chassis_t	*ch;
+	const lldp_port_t	*pt;
+	char			buf[LLDP_CHASSIS_MAX] = { 0 };
+
+	if (!bunyan_add_str(cus, name))
+		return (false);
+	VERIFY0(custr_append(cus, ": "));
+
+	switch (type) {
+	case LOG_T_STRING:
+		if (!bunyan_add_str(cus, (const char *)data))
+			return (false);
+		break;
+	case LOG_T_POINTER:
+		VERIFY0(custr_append_printf(cus, "0x%p", (void *)data));
+		break;
+	case LOG_T_BOOLEAN:
+		VERIFY0(custr_append_printf(cus, "%s",
+		    (bool)data ? "true" : "false"));
+		break;
+	case LOG_T_INT32:
+		VERIFY0(custr_append_printf(cus, "%" PRId32, (int32_t)data));
+		break;
+	case LOG_T_UINT32:
+		VERIFY0(custr_append_printf(cus, "%" PRIu32, (uint32_t)data));
+		break;
+	case LOG_T_XINT32:
+		/* We're outputting JSON5... */
+		VERIFY0(custr_append_printf(cus, "%" PRIx32, (uint32_t)data));
+		break;
+	case LOG_T_INT64:
+		VERIFY0(custr_append_printf(cus, "%" PRId64, (int64_t)data));
+		break;
+	case LOG_T_UINT64:
+		VERIFY0(custr_append_printf(cus, "%" PRIu64, (uint64_t)data));
+		break;
+	case LOG_T_XINT64:
+		VERIFY0(custr_append_printf(cus, "%" PRIx64, (uint64_t)data));
+		break;
+	case LOG_T_MAC:
+		p = (const uint8_t *)data;
+		VERIFY0(custr_append_printf(cus,
+		    "\"%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx\"",
+		    p[0], p[1], p[2], p[3], p[4], p[5]));
+		break;
+	case LOG_T_CHASSIS:
+		ch = (const lldp_chassis_t *)data;
+		(void) lldp_chassis_str(ch, buf, sizeof (buf));
+		VERIFY0(custr_append_printf(cus, "%s", buf));
+		break;
+	case LOG_T_PORT:
+		pt = (const lldp_port_t *)data;
+		(void) lldp_port_str(pt, buf, sizeof (buf));
+		VERIFY0(custr_append_printf(cus, "%s", buf));
+		break;
+	default:
+		panic("invalid key");
+	}
+
+	return (true);
+}
+
+static void
+log_make_bunyan(log_t *l, const struct timeval *tv, log_level_t level,
+    const char *msg, va_list *ap)
+{
+	custr_t		*cus = l->l_bunyan;
+	log_key_t	*k;
+	uu_list_walk_t	*wk = NULL;
+	char		timebuf[ISO_TIMELEN] = { 0 };
+	log_type_t	type;
+
+	if (!bunyan_time(tv, timebuf))
+		return;
+
+	custr_reset(cus);
+
+	VERIFY0(custr_append(cus, "{ "));
+
+	/* Mandatory fields */
+
+	if (!log_bunyan_key(cus, "v", LOG_T_UINT32, (uintptr_t)bunyan_version,
+	    sizeof (uintptr_t)))
+		goto fail;
+
+	if (!log_bunyan_key(cus, "level", LOG_T_UINT32, (uintptr_t)level,
+	    sizeof (uintptr_t)))
+		goto fail;
+
+	if (!log_bunyan_key(cus, "name", LOG_T_STRING, (uintptr_t)l->l_name,
+	    strlen(l->l_name) + 1))
+		goto fail;
+
+	if (!log_bunyan_key(cus, "hostname", LOG_T_STRING, (uintptr_t)l->l_host,
+	    strlen(l->l_host) + 1))
+		goto fail;
+
+	if (!log_bunyan_key(cus, "pid", LOG_T_INT32, (uintptr_t)getpid(),
+	    sizeof (uintptr_t)))
+		goto fail;
+
+	if (!log_bunyan_key(cus, "tid", LOG_T_UINT32, (uintptr_t)thr_self(),
+	    sizeof (uintptr_t)))
+		goto fail;
+
+	if (!log_bunyan_key(cus, "time", LOG_T_STRING, (uintptr_t)timebuf,
+	    strlen(timebuf) + 1))
+		goto fail;
+
+	if (!log_bunyan_key(cus, "msg", LOG_T_STRING, (uintptr_t)msg,
+	    strlen(msg) + 1))
+		goto fail;
+
+	wk = uu_list_walk_start(l->l_keys, 0);
+	if (wk == NULL)
+		nomem();
+
+	while ((k = uu_list_walk_next(wk)) != NULL) {
+		if (!log_bunyan_key(cus, k->lk_name,  k->lk_type, k->lk_data,
+		    k->lk_len))
+			goto fail;
+	}
+
+	uu_list_walk_end(wk);
+
+	while ((type = va_arg(*ap, int)) != _LOG_T_END) {
+		const char	*name = va_arg(*ap, char *);
+		uintptr_t	arg = 0;
+		size_t		arglen = 0;
+
+		switch (type) {
+		case LOG_T_STRING:
+			arg = (uintptr_t)va_arg(*ap, char *);
+			break;
+		case LOG_T_POINTER:
+			arg = (uintptr_t)va_arg(*ap, void *);
+			break;
+		case LOG_T_BOOLEAN:
+			arg = (uintptr_t)va_arg(*ap, int);
+			break;
+		case LOG_T_INT32:
+		case LOG_T_UINT32:
+		case LOG_T_XINT32:
+			arg = (uintptr_t)va_arg(*ap, uint32_t);
+			break;
+		case LOG_T_INT64:
+		case LOG_T_UINT64:
+		case LOG_T_XINT64:
+			arg = (uintptr_t)va_arg(*ap, uint64_t);
+			break;
+		case LOG_T_MAC:
+			arg = (uintptr_t)va_arg(*ap, uint8_t *);
+			arglen = ETHERADDRL;
+			break;
+		case LOG_T_IPV4:
+			arg = (uintptr_t)va_arg(*ap, in_addr_t);
+			break;
+		case LOG_T_IPV6:
+			arg = (uintptr_t)va_arg(*ap, in6_addr_t *);
+			break;
+		case LOG_T_CHASSIS:
+		case LOG_T_PORT:
+			arg = (uintptr_t)va_arg(*ap, tlv_t *);
+			arglen = sizeof (tlv_t) +
+			    buf_len(&((const tlv_t *)arg)->tlv_buf);
+			break;
+		default:
+			panic("unexpected type");
+		}
+
+		if (!log_bunyan_key(cus, name, type, arg, arglen))
+			goto fail;
+	}
+
+	VERIFY0(custr_append(cus, "}\n"));
+	return;
+
+fail:
+	custr_reset(cus);
 }
 
 static int
@@ -503,6 +864,23 @@ key_dtor(void *buf, void *cbdata __unused)
 	log_key_t *k = buf;
 
 	uu_list_node_fini(k, &k->lk_node, key_pool);
+}
+
+static void
+key_tlv_copy(log_key_t *k, const tlv_t *src)
+{
+	tlv_t	*new;
+	size_t	len;
+
+	len = sizeof (*new) + buf_len(&src->tlv_buf);
+	new = umem_zalloc(len, UMEM_NOFAIL);
+
+	new->tlv_type = src->tlv_type;
+	(void) memcpy(new + 1, buf_cptr(&src->tlv_buf), buf_len(&src->tlv_buf));
+	buf_init(&new->tlv_buf, (uint8_t *)(new + 1), buf_len(&src->tlv_buf));
+
+	k->lk_data = (uintptr_t)new;
+	k->lk_len = len;
 }
 
 void

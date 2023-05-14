@@ -23,6 +23,7 @@ OBJS =		agent.o		\
 		neighbor.o	\
 		pdu.o		\
 		timer.o		\
+		tlv.o		\
 		util.o
 
 SRCS =		$(OBJS:%.o=%.c)
@@ -49,7 +50,7 @@ install:=	TARGET= install
 clean:=		TARGET= clean
 clobber:=	TARGET= clobber
 
-LDLIBS +=	-ldlpi -lumem -luutil -llldp
+LDLIBS +=	-lcustr -ldlpi -lumem -luutil -llldp
 
 .KEEP_STATE:
 

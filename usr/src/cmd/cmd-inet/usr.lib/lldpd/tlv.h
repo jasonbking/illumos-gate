@@ -34,7 +34,7 @@ typedef struct tlv_list {
 	uint_t		tlvl_size;
 } tlv_list_t;
 
-tlv_list_t *tlv_list_new(void);
+void tlv_list_init(tlv_list_t *);
 void tlv_list_free(tlv_list_t *);
 tlv_t *tlv_list_get(tlv_list_t *, uint_t);
 bool tlv_list_add(tlv_list_t *, tlv_t *);
