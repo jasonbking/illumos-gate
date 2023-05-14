@@ -188,51 +188,56 @@ process_pdu(log_t *log, buf_t *buf, neighbor_t **np)
 	tlv_t		*port = &pdu.pp_port_id;
 	tlv_t		*ttl = &pdu.pp_ttl;
 	uint8_t		pdu_count[TLV_NUM_STANDARD] = { 0 };
+	bool		ret = true;
 
 	TRACE_ENTER(log);
+
+	tlv_list_init(&pdu.pp_core);
+	tlv_list_init(&pdu.pp_org_specific);
+	tlv_list_init(&pdu.pp_unknown);
 
 	/*
 	 * 802.1AB 8.2 -- The first three PDUs must be (in order):
 	 * chassis id, port id, and ttl.
 	 */
 	if (!get_tlv_expect(log, buf, LLDP_TLV_CHASSIS_ID, chassis)) {
-		TRACE_RETURN(log);
-		return (false);
+		ret = false;
+		goto done;
 	}
 	if (buf_len(&chassis->tlv_buf) < 2 ||
 	    buf_len(&chassis->tlv_buf) > LLDP_CHASSIS_MAX) {
 		log_warn(log, "Chassis ID PDU length is invalid",
 		    LOG_T_UINT32, "len", buf_len(&chassis->tlv_buf),
 		    LOG_T_END);
-		TRACE_RETURN(log);
-		return (false);
+		ret = false;
+		goto done;
 	}
 	pdu_count[LLDP_TLV_CHASSIS_ID]++;
 
 	if (!get_tlv_expect(log, buf, LLDP_TLV_PORT_ID, port)) {
-		TRACE_RETURN(log);
-		return (false);
+		ret = false;
+		goto done;
 	}
 	if (buf_len(&port->tlv_buf) < 2 ||
 	    buf_len(&port->tlv_buf) > LLDP_PORT_MAX) {
 		log_warn(log, "Port ID PDU length is invalid",
 		    LOG_T_UINT32, "len", buf_len(&port->tlv_buf),
 		    LOG_T_END);
-		TRACE_RETURN(log);
-		return (false);
+		ret = false;
+		goto done;
 	}
 	pdu_count[LLDP_TLV_PORT_ID]++;
 
 	if (!get_tlv_expect(log, buf, LLDP_TLV_TTL, ttl)) {
-		TRACE_RETURN(log);
-		return (false);
+		ret = false;
+		goto done;
 	}
 	if (buf_len(&ttl->tlv_buf) < 2) {
 		log_warn(log, "TTL PDU length is invalid",
 		    LOG_T_UINT32, "len", buf_len(&ttl->tlv_buf),
 		    LOG_T_END);
-		TRACE_RETURN(log);
-		return (false);
+		ret = false;
+		goto done;
 	}
 	pdu_count[LLDP_TLV_TTL]++;
 
@@ -243,7 +248,8 @@ process_pdu(log_t *log, buf_t *buf, neighbor_t **np)
 			log_warn(log, "failed to read TLV pair; "
 			    "PDU is truncated",
 			    LOG_T_END);
-			return (false);
+			ret = false;
+			goto done;
 		}
 
 		if (tlv.tlv_type == LLDP_TLV_END) {
@@ -264,8 +270,10 @@ process_pdu(log_t *log, buf_t *buf, neighbor_t **np)
 				continue;
 			}
 
-			if (!tlv_list_add(&pdu.pp_org_specific, &tlv))
-				return (false);
+			if (!tlv_list_add(&pdu.pp_org_specific, &tlv)) {
+				ret = false;
+				goto done;
+			}
 
 			pdu_count[LLDP_TLV_ORG_SPEC]++;
 		} else if (tlv.tlv_type < TLV_NUM_STANDARD) {
@@ -287,27 +295,38 @@ process_pdu(log_t *log, buf_t *buf, neighbor_t **np)
 					    LOG_T_STRING, "type_str",
 					    lldp_tlv_type_str(tlv.tlv_type),
 					    LOG_T_END);
-					return (false);
+					ret = false;
+					goto done;
 				}
 			}
 
-			if (!tlv_list_add(&pdu.pp_core, &tlv))
-				return (false);
+			if (!tlv_list_add(&pdu.pp_core, &tlv)) {
+				ret = false;
+				goto done;
+			}
 			pdu_count[tlv.tlv_type]++;
 		} else {
-			if (!tlv_list_add(&pdu.pp_unknown, &tlv))
-				return (false);
+			if (!tlv_list_add(&pdu.pp_unknown, &tlv)) {
+				ret = false;
+				goto done;
+			}
 		}
 	}
 
 	if (pdu_count[LLDP_TLV_END] == 0) {
 		log_warn(log, "PDU did not end with an END tlv; discarding",
 		    LOG_T_END);
-		return (false);
+		ret = false;
+		goto done;
 	}
 
+done:
+	tlv_list_free(&pdu.pp_core);
+	tlv_list_free(&pdu.pp_org_specific);
+	tlv_list_free(&pdu.pp_unknown);
+
 	TRACE_RETURN(log);
-	return (true);
+	return (ret);
 }
 
 static void
