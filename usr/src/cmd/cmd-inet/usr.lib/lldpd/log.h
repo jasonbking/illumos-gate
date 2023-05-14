@@ -27,8 +27,6 @@ extern "C" {
 typedef struct log log_t;
 typedef struct logobj logobj_t;
 
-struct nvlist;
-
 typedef enum log_level {
 	LOG_L_TRACE =	10,
 	LOG_L_DEBUG =	20,
@@ -61,7 +59,6 @@ typedef enum log_type {
 	LOG_T_IPV6,
 	LOG_T_CHASSIS,
 	LOG_T_PORT,
-	LOG_T_OBJ,
 } log_type_t;
 
 void log_sysinit(void);
@@ -71,11 +68,17 @@ void log_init(const char *, log_t **);
 int log_child(const log_t *, log_t **, ...) __sentinel(0);
 void log_fini(log_t *);
 
-typedef int (*log_stream_f)(struct nvlist *, const char *, void *);
-int log_stream_fd(struct nvlist *, const char *, void *);
-int log_stream_syslog(struct nvlist *, const char *, void *);
+typedef enum log_fmt_type {
+	LFMT_SYSLOG =	(1 << 1),
+	LFMT_BUNYAN =	(1 << 2),
+} log_fmt_type_t;
 
-int log_stream_add(log_t *, const char *, log_level_t, log_stream_f, void *);
+typedef void (*log_stream_f)(log_level_t, const char *, void *);
+
+void log_stream_fd(log_level_t, const char *, void *);
+
+int log_stream_add(log_t *, const char *, log_fmt_type_t, log_level_t,
+    log_stream_f, void *);
 
 int log_key_add(log_t *, ...) __sentinel(0);
 int log_key_remove(log_t *, const char *);

@@ -46,6 +46,12 @@ buf_ptr(buf_t *b)
 	return (b->b_ptr);
 }
 
+static inline const uint8_t *
+buf_cptr(const buf_t *b)
+{
+	return (b->b_ptr);
+}
+
 static inline uint16_t
 buf_len(const buf_t *b)
 {
