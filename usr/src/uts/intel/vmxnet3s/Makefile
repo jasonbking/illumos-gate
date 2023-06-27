@@ -21,6 +21,7 @@
 #
 # Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
+# Copyright 2022 RackTop Systems, Inc.
 #
 # uts/intel/vmxnet3s/Makefile
 #
@@ -43,6 +44,12 @@ OBJECTS		= $(VMXNET3S_OBJS:%=$(OBJS_DIR)/%)
 ROOTMODULE	= $(ROOT_DRV_DIR)/$(MODULE)
 CONF_SRCDIR	= $(UTSBASE)/intel/io/vmxnet3s
 
+# What symbols we export (e.g. _init(), ...)
+MAPFILE		= $(CONF_SRCDIR)/$(MODULE).mapfile
+
+# The symbols we link against
+MAPFILES	+= ddi mac
+
 #
 #	Include common rules.
 #
@@ -60,7 +67,7 @@ INSTALL_TARGET	= $(BINARY) $(ROOTMODULE) $(ROOT_CONFFILE)
 # Driver depends on MAC
 #
 LDFLAGS		+= -N misc/mac
-
+LDFLAGS		+= -M $(MAPFILE)
 
 #
 #	Default build targets.
@@ -82,4 +89,5 @@ install:	$(INSTALL_DEPS)
 #
 #	Include common targets.
 #
+include $(UTSBASE)/Makefile.mapfile
 include $(UTSBASE)/intel/Makefile.targ

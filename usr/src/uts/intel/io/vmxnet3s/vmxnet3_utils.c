@@ -14,6 +14,7 @@
  */
 /*
  * Copyright (c) 2016 by Delphix. All rights reserved.
+ * Copyright 2023 RackTop Systems, Inc.
  */
 
 #include <vmxnet3.h>
@@ -145,7 +146,8 @@ vmxnet3_alloc_dma_mem(vmxnet3_softc_t *dp, vmxnet3_dmabuf_t *dma, size_t size,
 		goto error_dma_mem;
 	}
 
-	ASSERT(cookieCount == 1);
+	ASSERT3U(cookieCount, ==, 1);
+	bzero(dma->buf, dma->bufLen);
 	dma->bufPA = cookie.dmac_laddress;
 
 	return (0);

@@ -25,6 +25,7 @@
 # Copyright 2018 Nexenta Systems, Inc.
 # Copyright 2019 Peter Tribble.
 # Copyright 2022 Oxide Computer Company
+# Copyright 2023 RackTop Systems, Inc.
 #
 
 #
@@ -321,7 +322,8 @@ INTEL_NB5000_OBJS += \
 #
 # VMware VMXNET3 virtual network device
 #
-VMXNET3S_OBJS =	vmxnet3_main.o \
+VMXNET3S_OBJS =	vmxnet3_buf.o \
+		vmxnet3_main.o \
 		vmxnet3_rx.o \
 		vmxnet3_tx.o \
 		vmxnet3_utils.o

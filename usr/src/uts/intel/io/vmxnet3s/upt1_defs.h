@@ -31,7 +31,6 @@
 
 #define	UPT1_MAX_INTRS (UPT1_MAX_TX_QUEUES + UPT1_MAX_RX_QUEUES)
 
-#pragma pack(1)
 typedef struct UPT1_TxStats {
 	uint64_t	TSOPktsTxOK;  /* TSO pkts post-segmentation */
 	uint64_t	TSOBytesTxOK;
@@ -43,10 +42,8 @@ typedef struct UPT1_TxStats {
 	uint64_t	bcastBytesTxOK;
 	uint64_t	pktsTxError;
 	uint64_t	pktsTxDiscard;
-} UPT1_TxStats;
-#pragma pack()
+} __packed UPT1_TxStats;
 
-#pragma pack(1)
 typedef struct UPT1_RxStats {
 	uint64_t	LROPktsRxOK;	/* LRO pkts */
 	uint64_t	LROBytesRxOK;	/* bytes from LRO pkts */
@@ -59,8 +56,7 @@ typedef struct UPT1_RxStats {
 	uint64_t	bcastBytesRxOK;
 	uint64_t	pktsRxOutOfBuf;
 	uint64_t	pktsRxError;
-} UPT1_RxStats;
-#pragma pack()
+} __packed UPT1_RxStats;
 
 /* interrupt moderation level */
 #define	UPT1_IML_NONE		0 /* no interrupt moderation */
@@ -80,7 +76,6 @@ typedef struct UPT1_RxStats {
 #define	UPT1_RSS_MAX_KEY_SIZE		40
 #define	UPT1_RSS_MAX_IND_TABLE_SIZE	128
 
-#pragma pack(1)
 typedef struct UPT1_RSSConf {
 	uint16_t	hashType;
 	uint16_t	hashFunc;
@@ -88,8 +83,7 @@ typedef struct UPT1_RSSConf {
 	uint16_t	indTableSize;
 	uint8_t		hashKey[UPT1_RSS_MAX_KEY_SIZE];
 	uint8_t		indTable[UPT1_RSS_MAX_IND_TABLE_SIZE];
-} UPT1_RSSConf;
-#pragma pack()
+} __packed UPT1_RSSConf;
 
 /* features */
 #define	UPT1_F_RXCSUM	0x0001	/* rx csum verification */
