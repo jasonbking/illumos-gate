@@ -17,23 +17,25 @@ PROG = tpm_version
 
 OBJS = tpm_version.o
 
+SRCS = $(OBJS:%.o=%.c)
+
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/cmd/Makefile.cmd.64
 include $(SRC)/cmd/Makefile.ctf
 
-SRCS = $(OBJS:%.o=%.c)
+CFLAGS += $(CCVERBOSE)
 
 .KEEP_STATE:
 
 all: $(PROG)
 
 $(PROG): $(OBJS)
-	$(LINK.c) -o $@ $(OBJS)
+	$(LINK.c) $(OBJS) -o $@ $(LDLIBS) $(DYNFLAGS)
 	$(POST_PROCESS)
 
 install: all $(ROOTLIBPROG)
 
 clean:
-	$(RM) $(OBJS)
+	$(RM) -f $(OBJS) $(PROG)
 
 include $(SRC)/cmd/Makefile.targ
