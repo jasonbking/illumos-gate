@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #include <sys/sysmacros.h>
@@ -149,7 +149,7 @@ tpm_crb_go_idle(tpm_t *tpm)
 	status = tpm_get32(tpm, TPM_CRB_CTRL_STS);
 	if ((status & TPM_CRB_CTRL_STS_FATAL) != 0) {
 		/* XXX: fm err? */
-		return (EIO);
+		return (SET_ERROR(EIO));
 	}
 
 	if ((status & TPM_CRB_CTRL_STS_IDLE) != 0) {
@@ -177,7 +177,7 @@ tpm_crb_go_idle(tpm_t *tpm)
 		dev_err(tpm->tpm_dip, CE_WARN,
 		    "TPM cleared goIdle bit, but did not update tpmIdle");
 		/* XXX: fm err? */
-		return (EIO);
+		return (SET_ERROR(EIO));
 	}
 
 	crb_set_state(tpm, TCRB_ST_IDLE);
@@ -373,7 +373,7 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen, clock_t to)
 		/* Try to recover by going idle */
 		(void) tpm_crb_go_idle(tpm);
 		/* XXX: Better error? */
-		return (ENOSPC);
+		return (SET_ERROR(ENOSPC));
 	}
 
 	/* Read in rest of the response */
@@ -401,7 +401,7 @@ crb_request_locality(tpm_t *tpm, uint8_t locality)
 
 	/* If we can't determine the current locality, punt. */
 	if ((status & TPM_LOC_STATE_REG_VALID) == 0) {
-		return (EIO);
+		return (SET_ERROR(EIO));
 	}
 
 	/* Locality is already active. Nothing to do. */
@@ -529,7 +529,7 @@ crb_cancel_cmd(tpm_client_t *c)
 
 		if (ret == 0) {
 			mutex_exit(&tpm->tpm_lock);
-			return (EINTR);
+			return (SET_ERROR(EINTR));
 		}
 	}
 
