@@ -129,7 +129,7 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 	VERIFY3U(amt, >, 0);
 
 	if (!tis_fifo_make_ready(tpm))
-		return (ETIME);
+		return (SET_ERROR(ETIME));
 
 	/*
 	 * Now we are ready to send command
@@ -142,7 +142,7 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 		if (burstcnt == 0) {
 			dev_err(tpm->tpm_dip, CE_WARN,
 			    "%s: timed out getting burst count", __func__);
-			ret = EIO;
+			ret = SET_ERROR(EIO);
 			goto fail;
 		}
 
@@ -187,7 +187,7 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 		dev_err(tpm->tpm_dip, CE_WARN,
 		    "!%s: TPM still expecting data after writing last byte",
 		    __func__);
-		ret = EIO;
+		ret = SET_ERROR(EIO);
 		goto fail;
 	}
 
@@ -208,11 +208,13 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 		status = tpm_tis_get_status(tpm);
 		if (!(status & TPM_STS_DATA_AVAIL) ||
 		    !(status & TPM_STS_VALID)) {
-			cmn_err(CE_WARN, "!%s: TPM not ready or valid "
+			dev_err(tpm->tpm_dip, CE_WARN,
+			    "!%s: TPM not ready or valid "
 			    "(ordinal = %d timeout = %ld status = 0x%0x)",
 			    __func__, ordinal, to, status);
 		} else {
-			cmn_err(CE_WARN, "!%s: tpm_wait_for_stat "
+			dev_err(tpm->tpm_dip, CE_WARN,
+			    "!%s: tpm_tis_wait_for_stat "
 			    "(DATA_AVAIL | VALID) failed status = 0x%0X",
 			    __func__, status);
 		}
@@ -278,8 +280,8 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz, clock_t to)
 	size = receive_data(tpm, buf, TPM_HEADER_SIZE);
 	if (size < TPM_HEADER_SIZE) {
 #ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: recv TPM_HEADER failed, size = %d",
-		    __func__, size);
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "!%s: recv TPM_HEADER failed, size = %d", __func__, size);
 #endif
 		goto OUT;
 	}
@@ -290,7 +292,7 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz, clock_t to)
 	expected = tpm_getbuf32(buf, TPM_PARAMSIZE_OFFSET);
 	if (expected > bufsiz) {
 #ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: paramSize is bigger "
+		dev_err(tpm->tpm_dip, CE_WARN, "!%s: paramSize is bigger "
 		    "than the requested size: paramSize=%d bufsiz=%d result=%d",
 		    __func__, (int)expected, (int)bufsiz, cmdresult);
 #endif
@@ -302,7 +304,7 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz, clock_t to)
 	    expected - TPM_HEADER_SIZE);
 	if (size < expected) {
 #ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: received data length (%d) "
+		dev_err(tpm->tpm_dip, CE_WARN, "!%s: received data length (%d) "
 		    "is less than expected (%d)", __func__, size, expected);
 #endif
 		goto OUT;
@@ -315,7 +317,8 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz, clock_t to)
 	status = tpm_tis_get_status(tpm);
 	if (ret != DDI_SUCCESS) {
 #ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: TPM didn't set stsValid after its I/O: "
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "!%s: TPM didn't set stsValid after its I/O: "
 		    "status = 0x%08X", __func__, status);
 #endif
 		goto OUT;
@@ -324,8 +327,8 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz, clock_t to)
 	/* There is still more data? */
 	if (status & TPM_STS_DATA_AVAIL) {
 #ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: TPM_STS_DATA_AVAIL is set:0x%08X",
-		    __func__, status);
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "!%s: TPM_STS_DATA_AVAIL is set:0x%08X", __func__, status);
 #endif
 		goto OUT;
 	}
