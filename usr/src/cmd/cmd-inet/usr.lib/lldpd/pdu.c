@@ -32,15 +32,6 @@
 #define	TLV_NUM_STANDARD 9
 #define	TLV_LEN_MAX	(0x1ff)
 
-typedef struct parsed_pdu {
-	tlv_t		pp_chassis_id;
-	tlv_t		pp_port_id;
-	tlv_t		pp_ttl;
-	tlv_list_t	pp_core;
-	tlv_list_t	pp_org_specific;
-	tlv_list_t	pp_unknown;
-} parsed_pdu_t;
-
 static inline lldp_tlv_type_t
 tlv_type(uint16_t tlv)
 {
@@ -181,70 +172,81 @@ make_shutdown_pdu(agent_t *a, buf_t *buf)
 }
 
 bool
-process_pdu(log_t *log, buf_t *buf, neighbor_t **np)
+process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 {
-	parsed_pdu_t	pdu = { 0 };
-	tlv_t		*chassis = &pdu.pp_chassis_id;
-	tlv_t		*port = &pdu.pp_port_id;
-	tlv_t		*ttl = &pdu.pp_ttl;
+	neighbor_t	*nb = NULL;
+	buf_t		buf = { 0 };
+	tlv_t		chassis = { 0 };
+	tlv_t		port = { 0 };
+	tlv_t		ttl = { 0 };
 	uint8_t		pdu_count[TLV_NUM_STANDARD] = { 0 };
 	bool		ret = true;
 
 	TRACE_ENTER(log);
 
-	tlv_list_init(&pdu.pp_core);
-	tlv_list_init(&pdu.pp_org_specific);
-	tlv_list_init(&pdu.pp_unknown);
+	*np = NULL;
+
+	nb = neighbor_new();
+	if (nb == NULL) {
+		log_warn(log, "failed to allocate new neighbor", LOG_T_END);
+		TRACE_RETURN(log);
+		return (false);
+	}
+
+	(void) memcpy(nb->nb_pdu, buf_ptr(raw), buf_len(raw));
+	nb->nb_pdu_len = buf_len(raw);
+
+	buf_init(&buf, nb->nb_pdu, nb->nb_pdu_len);
 
 	/*
 	 * 802.1AB 8.2 -- The first three PDUs must be (in order):
 	 * chassis id, port id, and ttl.
 	 */
-	if (!get_tlv_expect(log, buf, LLDP_TLV_CHASSIS_ID, chassis)) {
+	if (!get_tlv_expect(log, &buf, LLDP_TLV_CHASSIS_ID, &chassis)) {
 		ret = false;
 		goto done;
 	}
-	if (buf_len(&chassis->tlv_buf) < 2 ||
-	    buf_len(&chassis->tlv_buf) > LLDP_CHASSIS_MAX) {
+	if (buf_len(&chassis.tlv_buf) < 2 ||
+	    buf_len(&chassis.tlv_buf) > LLDP_CHASSIS_MAX) {
 		log_warn(log, "Chassis ID PDU length is invalid",
-		    LOG_T_UINT32, "len", buf_len(&chassis->tlv_buf),
+		    LOG_T_UINT32, "len", buf_len(&chassis.tlv_buf),
 		    LOG_T_END);
 		ret = false;
 		goto done;
 	}
 	pdu_count[LLDP_TLV_CHASSIS_ID]++;
 
-	if (!get_tlv_expect(log, buf, LLDP_TLV_PORT_ID, port)) {
+	if (!get_tlv_expect(log, &buf, LLDP_TLV_PORT_ID, &port)) {
 		ret = false;
 		goto done;
 	}
-	if (buf_len(&port->tlv_buf) < 2 ||
-	    buf_len(&port->tlv_buf) > LLDP_PORT_MAX) {
+	if (buf_len(&port.tlv_buf) < 2 ||
+	    buf_len(&port.tlv_buf) > LLDP_PORT_MAX) {
 		log_warn(log, "Port ID PDU length is invalid",
-		    LOG_T_UINT32, "len", buf_len(&port->tlv_buf),
+		    LOG_T_UINT32, "len", buf_len(&port.tlv_buf),
 		    LOG_T_END);
 		ret = false;
 		goto done;
 	}
 	pdu_count[LLDP_TLV_PORT_ID]++;
 
-	if (!get_tlv_expect(log, buf, LLDP_TLV_TTL, ttl)) {
+	if (!get_tlv_expect(log, &buf, LLDP_TLV_TTL, &ttl)) {
 		ret = false;
 		goto done;
 	}
-	if (buf_len(&ttl->tlv_buf) < 2) {
+	if (buf_len(&ttl.tlv_buf) < 2) {
 		log_warn(log, "TTL PDU length is invalid",
-		    LOG_T_UINT32, "len", buf_len(&ttl->tlv_buf),
+		    LOG_T_UINT32, "len", buf_len(&ttl.tlv_buf),
 		    LOG_T_END);
 		ret = false;
 		goto done;
 	}
 	pdu_count[LLDP_TLV_TTL]++;
 
-	while (buf_len(buf) > 0) {
+	while (buf_len(&buf) > 0) {
 		tlv_t tlv = { 0 };
 
-		if (!get_tlv(log, buf, &tlv)) {
+		if (!get_tlv(log, &buf, &tlv)) {
 			log_warn(log, "failed to read TLV pair; "
 			    "PDU is truncated",
 			    LOG_T_END);
@@ -270,7 +272,7 @@ process_pdu(log_t *log, buf_t *buf, neighbor_t **np)
 				continue;
 			}
 
-			if (!tlv_list_add(&pdu.pp_org_specific, &tlv)) {
+			if (!tlv_list_add(&nb->nb_org_tlvs, &tlv)) {
 				ret = false;
 				goto done;
 			}
@@ -300,13 +302,13 @@ process_pdu(log_t *log, buf_t *buf, neighbor_t **np)
 				}
 			}
 
-			if (!tlv_list_add(&pdu.pp_core, &tlv)) {
+			if (!tlv_list_add(&nb->nb_core_tlvs, &tlv)) {
 				ret = false;
 				goto done;
 			}
 			pdu_count[tlv.tlv_type]++;
 		} else {
-			if (!tlv_list_add(&pdu.pp_unknown, &tlv)) {
+			if (!tlv_list_add(&nb->nb_unknown_tlvs, &tlv)) {
 				ret = false;
 				goto done;
 			}
@@ -321,9 +323,12 @@ process_pdu(log_t *log, buf_t *buf, neighbor_t **np)
 	}
 
 done:
-	tlv_list_free(&pdu.pp_core);
-	tlv_list_free(&pdu.pp_org_specific);
-	tlv_list_free(&pdu.pp_unknown);
+	if (!ret) {
+		neighbor_free(nb);
+		nb = NULL;
+	}
+
+	*np = nb;
 
 	TRACE_RETURN(log);
 	return (ret);
