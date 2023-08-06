@@ -827,8 +827,9 @@ delete_objects(agent_t *a)
 			continue;
 
 		log_info(l, "ageing out neighbor",
-		    LOG_T_CHASSIS, "chassis", tlv_list_get(&nb->nb_tlvs, 0),
-		    LOG_T_PORT, "port", tlv_list_get(&nb->nb_tlvs, 1),
+		    LOG_T_CHASSIS, "chassis",
+		    tlv_list_get(&nb->nb_core_tlvs, 0),
+		    LOG_T_PORT, "port", tlv_list_get(&nb->nb_core_tlvs, 1),
 		    LOG_T_END);
 
 		uu_list_remove(a->a_neighbors, nb);
