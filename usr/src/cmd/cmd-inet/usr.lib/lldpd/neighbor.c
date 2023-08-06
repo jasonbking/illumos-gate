@@ -25,17 +25,17 @@
 #include "util.h"
 
 static uu_list_pool_t	*nb_pool;
+static umem_cache_t	*nb_cache;
 
 neighbor_t *
 neighbor_new(void)
 {
 	neighbor_t *nb;
 
-	nb = umem_zalloc(sizeof (*nb), UMEM_DEFAULT);
+	nb = umem_cache_alloc(nb_cache, UMEM_DEFAULT);
 	if (nb == NULL)
 		return (NULL);
 
-	uu_list_node_init(nb, &nb->nb_node, nb_pool);
 	return (nb);
 }
 
@@ -46,13 +46,51 @@ neighbor_free(neighbor_t *nb)
 		return;
 
 	uu_list_node_fini(nb, &nb->nb_node, nb_pool);
-	umem_free(nb, sizeof (*nb));
+
+	lldp_timer_fini(&nb->nb_timer);
+	nb->nb_time = 0;
+	nb->nb_ttl = 0;
+
+	(void) memset(nb->nb_src, '\0', sizeof (nb->nb_src));
+	(void) memset(nb->nb_dst, '\0', sizeof (nb->nb_dst));
+	(void) memset(nb->nb_pdu, '\0', sizeof (nb->nb_pdu));
+
+	tlv_list_free(&nb->nb_core_tlvs);
+	tlv_list_free(&nb->nb_org_tlvs);
+	tlv_list_free(&nb->nb_unknown_tlvs);
+
+	umem_cache_free(nb_cache, nb);
 }
 
 uu_list_t *
 neighbor_list_new(agent_t *a)
 {
 	return (uu_list_create(nb_pool, a, UU_LIST_DEBUG));
+}
+
+static int
+nb_ctor(void *buf, void *cbdata __unused, int flags __unused)
+{
+	neighbor_t *nb = buf;
+
+	(void) memset(nb, '\0', sizeof (*nb));
+	tlv_list_init(&nb->nb_core_tlvs);
+	tlv_list_init(&nb->nb_org_tlvs);
+	tlv_list_init(&nb->nb_unknown_tlvs);
+	uu_list_node_init(nb, &nb->nb_node, nb_pool);
+	return (0);
+}
+
+static void
+nb_dtor(void *buf, void *cbdata __unused)
+{
+	neighbor_t *nb = buf;
+
+	lldp_timer_fini(&nb->nb_timer);
+	tlv_list_free(&nb->nb_core_tlvs);
+	tlv_list_free(&nb->nb_org_tlvs);
+	tlv_list_free(&nb->nb_unknown_tlvs);
+	uu_list_node_fini(nb, &nb->nb_node, nb_pool);
 }
 
 static int
@@ -133,15 +171,15 @@ neighbor_cmp_msap(const neighbor_t *l, const neighbor_t *r)
 	int ret;
 
 	/* Chassis ID */
-	l_tlv = tlv_list_get((tlv_list_t *)&l->nb_tlvs, 0);
-	r_tlv = tlv_list_get((tlv_list_t *)&r->nb_tlvs, 0);
+	l_tlv = tlv_list_get((tlv_list_t *)&l->nb_core_tlvs, 0);
+	r_tlv = tlv_list_get((tlv_list_t *)&r->nb_core_tlvs, 0);
 	ret = chassis_cmp(l_tlv, r_tlv);
 	if (ret != 0)
 		return (ret);
 
 	/* Port ID */
-	l_tlv = tlv_list_get((tlv_list_t *)&l->nb_tlvs, 1);
-	r_tlv = tlv_list_get((tlv_list_t *)&r->nb_tlvs, 1);
+	l_tlv = tlv_list_get((tlv_list_t *)&l->nb_core_tlvs, 1);
+	r_tlv = tlv_list_get((tlv_list_t *)&r->nb_core_tlvs, 1);
 	return (port_cmp(l_tlv, r_tlv));
 }
 
@@ -166,18 +204,31 @@ neighbor_same(const neighbor_t *l, const neighbor_t *r)
 void
 neighbor_init(void)
 {
-	log_trace(log, "creating neighbor list pool", LOG_T_END);
-
+	/*
+	 * Note that we need to create the list pool prior to the umem
+	 * cache since we pre want to init the uu_list_node_t in the
+	 * cached objects.
+	 */
 	nb_pool = uu_list_pool_create("neighbors", sizeof (neighbor_t),
 	    offsetof(neighbor_t, nb_node), neighbor_cmp_msap_uu,
 	    UU_LIST_POOL_DEBUG);
 	if (nb_pool == NULL)
 		panic("failed to create neighbor list pool");
+
+	log_trace(log, "creating neighbor cache", LOG_T_END);
+
+	nb_cache = umem_cache_create("lldp neighbors", sizeof (neighbor_t),
+	    sizeof (uint8_t), nb_ctor, nb_dtor, NULL, NULL, NULL, 0);
+	if (nb_cache == NULL)
+		panic("failed to create neighbor cache");
 }
 
 void
 neighbor_fini(void)
 {
+	log_trace(log, "destroying neighbor cache", LOG_T_END);
+	umem_cache_destroy(nb_cache);
+
 	log_trace(log, "destroying neighbor list pool", LOG_T_END);
 	uu_list_pool_destroy(nb_pool);
 }

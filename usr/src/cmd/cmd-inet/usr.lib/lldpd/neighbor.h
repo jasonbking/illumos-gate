@@ -48,7 +48,7 @@ typedef struct neighbor {
 	uint8_t			nb_pdu[LLDP_PDU_MAX];
 	size_t			nb_pdu_len;
 
-	tlv_list_t		nb_tlvs;
+	tlv_list_t		nb_core_tlvs;
 	tlv_list_t		nb_org_tlvs;
 	tlv_list_t		nb_unknown_tlvs;
 } neighbor_t;
