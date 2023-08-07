@@ -52,8 +52,9 @@ static int sigfd = -1;
 
 static int lldp_daemonize(void);
 static int lldp_umem_nomem_cb(void);
+static void block_signals(sigset_t *);
 static int sigfd_create(void);
-static void lldp_main(void);
+static void lldp_main(int);
 static void lldp_handle_sig(int, void *);
 
 static fd_cb_t sig_cb = {
@@ -71,6 +72,7 @@ int
 main(int argc, char **argv)
 {
 	int c, pfd;
+	log_level_t level = LOG_L_INFO;
 
 	/*
 	 * For simplicity, memory allocation failures are always treated
@@ -81,10 +83,14 @@ main(int argc, char **argv)
 	if (getenv("LLDPD_DOORPATH") != NULL)
 		doorpath = getenv("LLDPD_DOORPATH");
 
-	while ((c = getopt(argc, argv, "d")) != -1) {
+	while ((c = getopt(argc, argv, "dt")) != -1) {
 		switch (c) {
 		case 'd':
 			debug = true;
+			level = LOG_L_DEBUG;
+			break;
+		case 't':
+			level = LOG_L_TRACE;
 			break;
 		case '?':
 			(void) fprintf(stderr, "Unknown option -%c\n", optopt);
@@ -110,9 +116,8 @@ main(int argc, char **argv)
 
 	VERIFY0(log_stream_add(log, "stderr", LFMT_BUNYAN, LOG_L_ERROR,
 	    log_stream_fd, (void *)(uintptr_t)STDERR_FILENO));
-	VERIFY0(log_stream_add(log, "stdout", LFMT_BUNYAN,
-	    debug ? LOG_L_DEBUG : LOG_L_INFO, log_stream_fd,
-	    (void *)(uintptr_t)STDOUT_FILENO));
+	VERIFY0(log_stream_add(log, "stdout", LFMT_BUNYAN, level,
+	    log_stream_fd, (void *)(uintptr_t)STDOUT_FILENO));
 
 	log_info(log, "startup...", LOG_T_END);
 
@@ -142,17 +147,13 @@ main(int argc, char **argv)
 	    LOG_T_UINT32, "sigfd", sigfd,
 	    LOG_T_END);
 
-	int rval = 0;
-	(void) write(pfd, &rval, sizeof (rval));
-	(void) close(pfd);
-
-	lldp_main();
+	lldp_main(pfd);
 
 	return (0);
 }
 
 static void
-lldp_main(void)
+lldp_main(int pfd)
 {
 	int ret;
 
@@ -164,6 +165,14 @@ lldp_main(void)
 	}
 
 	VERIFY(schedule_fd(sigfd, &sig_cb));
+
+	block_signals(NULL);
+
+	ret = 0;
+	(void) write(pfd, &ret, sizeof (ret));
+	VERIFY0(close(pfd));
+
+	log_debug(log, "starting main loop", LOG_T_END);
 
 	for (;;) {
 		port_event_t pe = { 0 };
@@ -250,7 +259,7 @@ static int
 lldp_daemonize(void)
 {
 	struct rlimit rlim;
-	sigset_t set, oset;
+	sigset_t oset;
 	int estatus, pfds[2];
 	pid_t child;
 
@@ -266,16 +275,16 @@ lldp_daemonize(void)
 		(void) setrlimit(RLIMIT_NOFILE, &rlim);
 	}
 
-	if (chdir("/") != 0)
-		err(EXIT_FAILURE, "failed to chdir to /");
+	if (!debug) {
+		if (chdir("/") != 0)
+			err(EXIT_FAILURE, "failed to chdir to /");
+	}
 
 	/*
 	 * Block all signals (except SIGABRT) while forking so the parent
 	 * doesn't exit before the child signals it's ready.
 	 */
-	VERIFY0(sigfillset(&set));
-	VERIFY0(sigdelset(&set, SIGABRT));
-	VERIFY0(sigprocmask(SIG_BLOCK, &set, &oset));
+	block_signals(&oset);
 
 	if (pipe(pfds) != 0)
 		err(EXIT_FAILURE, "failed to create pipe for daemonizing");
@@ -302,7 +311,7 @@ lldp_daemonize(void)
 		panic("setsid failed");
 
 	VERIFY0(sigprocmask(SIG_SETMASK, &oset, NULL));
-	(void) umask(0022);
+	(void) umask(022);
 
 	return (pfds[1]);
 }
@@ -336,6 +345,16 @@ sigfd_create(void)
 		VERIFY0(sigaddset(&set, SIGINT));
 
 	return (signalfd(-1, &set, SFD_CLOEXEC));
+}
+
+static void
+block_signals(sigset_t *oset)
+{
+	sigset_t set;
+
+	VERIFY0(sigfillset(&set));
+	VERIFY0(sigdelset(&set, SIGABRT));
+	VERIFY0(sigprocmask(SIG_BLOCK, &set, oset));
 }
 
 static int

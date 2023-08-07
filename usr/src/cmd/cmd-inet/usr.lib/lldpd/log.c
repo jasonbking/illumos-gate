@@ -154,6 +154,9 @@ log_init(const char *name, log_t **lp)
 	if (l->l_streams == NULL)
 		nomem();
 
+	if (custr_alloc(&l->l_bunyan) != 0)
+		nomem();
+
 	*lp = l;
 }
 
@@ -177,6 +180,9 @@ log_fini(log_t *lp)
 
 	uu_free(lp->l_name);
 	VERIFY0(mutex_destroy(&lp->l_lock));
+
+	custr_free(lp->l_bunyan);
+
 	umem_free(lp, sizeof (*lp));
 }
 
@@ -206,7 +212,6 @@ log_stream_fd(log_level_t lvl __unused, const char *msg, void *arg)
 		 * individual write fails, move on and try to still write a new
 		 * line at least...
 		 */
-
 		ret = write(fd, msg + off, MIN(msglen - off, maxbuf));
 		if (ret < 0)
 			break;
@@ -238,6 +243,7 @@ log_stream_add(log_t *l, const char *name, log_fmt_type_t fmt,
 	}
 
 	ls = umem_zalloc(sizeof (*ls), UMEM_NOFAIL);
+	uu_list_node_init(ls, &ls->ls_node, stream_pool);
 	ls->ls_name = xstrdup(name);
 	ls->ls_level = level;
 	ls->ls_fmt = fmt;
@@ -437,7 +443,7 @@ log_cb(void *e, void *argp)
 
 	ASSERT(MUTEX_HELD(&args->larg_log->l_lock));
 
-	if (stream->ls_level < args->larg_level)
+	if (stream->ls_level > args->larg_level)
 		return (UU_WALK_NEXT);
 
 	switch (stream->ls_fmt) {
@@ -464,6 +470,8 @@ log_vlvl(log_t *l, log_level_t level, const char *msg, va_list ap)
 
 	if (level < l->l_minlevel)
 		return;
+
+	VERIFY0(gettimeofday(&tv, NULL));
 
 	mutex_enter(&l->l_lock);
 	if ((l->l_fmts & LFMT_SYSLOG) != 0) {
@@ -577,7 +585,7 @@ bunyan_time(const struct timeval *tv, char *buf)
 		return (false);
 
 	VERIFY3U(strftime(buf, ISO_TIMELEN, "%FT%T", &tm), ==, 19);
-	(void) snprintf(&buf[19], 6, "%03dZ", (int)(tv->tv_usec / 1000));
+	(void) snprintf(&buf[19], 6, "%05dZ", (int)(tv->tv_usec / 1000));
 	return (true);
 }
 
@@ -642,6 +650,8 @@ log_bunyan_key(custr_t *cus, const char *name, log_type_t type, uintptr_t data,
 	const lldp_chassis_t	*ch;
 	const lldp_port_t	*pt;
 	char			buf[LLDP_CHASSIS_MAX] = { 0 };
+
+	VERIFY0(custr_append(cus, ", "));
 
 	if (!bunyan_add_str(cus, name))
 		return (false);
@@ -720,9 +730,11 @@ log_make_bunyan(log_t *l, const struct timeval *tv, log_level_t level,
 
 	/* Mandatory fields */
 
-	if (!log_bunyan_key(cus, "v", LOG_T_UINT32, (uintptr_t)bunyan_version,
-	    sizeof (uintptr_t)))
-		goto fail;
+	/*
+	 * For the first key, we don't want the separator. Since JSON
+	 * doesn't like a trailing separator, we do this one manually.
+	 */
+	VERIFY0(custr_append_printf(cus, "\"v\": %" PRIu32, bunyan_version));
 
 	if (!log_bunyan_key(cus, "level", LOG_T_UINT32, (uintptr_t)level,
 	    sizeof (uintptr_t)))
@@ -813,7 +825,7 @@ log_make_bunyan(log_t *l, const struct timeval *tv, log_level_t level,
 			goto fail;
 	}
 
-	VERIFY0(custr_append(cus, "}\n"));
+	VERIFY0(custr_append(cus, " }\n"));
 	return;
 
 fail:
@@ -891,18 +903,26 @@ log_sysinit(void)
 		    NULL));
 	}
 
-	key_pool = uu_list_pool_create("log keys", sizeof (log_key_t),
+	key_pool = uu_list_pool_create("log-keys", sizeof (log_key_t),
 	    offsetof(log_key_t, lk_node), log_key_cmp, UU_LIST_POOL_DEBUG);
-	VERIFY3P(key_pool, !=, NULL);
+	if (key_pool == NULL) {
+		panic("failed to create log key list pool: %s",
+		    uu_strerror(uu_error()));
+	}
 
-	stream_pool = uu_list_pool_create("log streams", sizeof (log_stream_t),
-	    offsetof(log_stream_t, ls_node), log_stream_cmp,
-	    UU_LIST_POOL_DEBUG);
-	VERIFY3P(stream_pool, !=, NULL);
+	stream_pool = uu_list_pool_create("log-streams",
+	    sizeof (log_stream_t), offsetof(log_stream_t, ls_node),
+	    log_stream_cmp, UU_LIST_POOL_DEBUG);
+	if (stream_pool == NULL) {
+		panic("failed to create log stream list pool: %s",
+		    uu_strerror(uu_error()));
+	}
 
 	key_cache = umem_cache_create("log keys", sizeof (log_key_t),
 	    0, key_ctor, key_dtor, NULL, NULL, NULL, 0);
-	VERIFY3P(key_cache, !=, NULL);
+	if (key_cache == NULL) {
+		panic("failed to create log key cache: %s", strerror(errno));
+	}
 }
 
 void
