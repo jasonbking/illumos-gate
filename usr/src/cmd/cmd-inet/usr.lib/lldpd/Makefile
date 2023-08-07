@@ -36,7 +36,7 @@ include		$(SRC)/cmd/Makefile.cmd
 include		$(SRC)/cmd/Makefile.ctf
 include		$(SRC)/cmd/cmd-inet/Makefile.cmd-inet
 
-ROOTMANIFESTDIR=	$(ROOTSVCNETWORK)/loadbalancer
+ROOTMANIFESTDIR=	$(ROOTSVCNETWORK)
 
 CHECKHDRS=	$(HDRS:%.h=%.check)
 
