@@ -50,7 +50,13 @@ install:=	TARGET= install
 clean:=		TARGET= clean
 clobber:=	TARGET= clobber
 
-LDLIBS +=	-lcustr -ldlpi -lumem -luutil -llldp
+LDLIBS +=	-lcustr	\
+		-ldladm	\
+		-ldlpi	\
+		-llldp	\
+		-lscf	\
+		-lumem	\
+		-luutil	\
 
 .KEEP_STATE:
 

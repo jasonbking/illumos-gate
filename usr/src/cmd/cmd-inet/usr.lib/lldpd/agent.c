@@ -22,6 +22,7 @@
 #include <string.h>
 #include <synch.h>
 #include <umem.h>
+#include <unistd.h>
 #include <sys/containerof.h>
 #include <sys/debug.h>
 #include <sys/ethernet.h>
@@ -79,6 +80,11 @@ static const uint8_t	lldp_addr[ETHERADDRL] = {
 	0x01, 0x80, 0xc2, 0x00, 0x00, 0x0e
 };
 
+static uu_list_pool_t	*agent_list_pool;
+
+mutex_t			agent_list_lock = ERRORCHECKMUTEX;
+uu_list_t		*agent_list;
+
 static inline bool
 dec(uint16_t *vp)
 {
@@ -112,6 +118,7 @@ agent_create(const char *name)
 
 	VERIFY0(mutex_init(&a->a_lock, USYNC_THREAD|LOCK_ERRORCHECK, NULL));
 	VERIFY0(cond_init(&a->a_cv, USYNC_THREAD, NULL));
+	uu_list_node_init(a, &a->a_node, agent_list_pool);
 
 	a->a_name = xstrdup(name);
 	a->a_port_enabled = false;
@@ -999,6 +1006,47 @@ fail:
 	}
 
 	return (false);
+}
+
+static int
+agent_name_cmp(const void *a, const void *b, void *arg __unused)
+{
+	const agent_t *l = a;
+	const agent_t *r = b;
+
+	return (strcmp(l->a_name, r->a_name));
+}
+
+void
+agent_init(int pfd)
+{
+	TRACE_ENTER(log);
+
+	mutex_enter(&agent_list_lock);
+
+	agent_list_pool = uu_list_pool_create("agent-pool", sizeof (agent_t),
+	    offsetof(agent_t, a_node), agent_name_cmp, UU_LIST_POOL_DEBUG);
+	if (agent_list_pool == NULL) {
+		int ev = uu_error();
+
+		log_uuerr(log, "failed to create agent list pool");
+		(void) write(pfd, &ev, sizeof (ev));
+		(void) close(pfd);
+		exit(EXIT_FAILURE);
+	}
+
+	agent_list = uu_list_create(agent_list_pool, NULL, UU_LIST_DEBUG);
+	if (agent_list == NULL) {
+		int ev = uu_error();
+
+		log_uuerr(log, "failed to create agent list");
+		(void) write(pfd, &ev, sizeof (ev));
+		(void) close(pfd);
+		exit(EXIT_FAILURE);
+	}
+
+	mutex_exit(&agent_list_lock);
+	TRACE_RETURN(log);
 }
 
 #define	STR(x) case x: return (#x)
