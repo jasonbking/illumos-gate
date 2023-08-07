@@ -1,10 +1,11 @@
 '\" te
 .\" Copyright (c) 2008, Sun Microsystems, Inc. All Rights Reserved.
 .\" Copyright 2019 Joyent, Inc.
+.\" Copyright 2023 RackTop Systems, Inc.
 .\" The contents of this file are subject to the terms of the Common Development and Distribution License (the "License").  You may not use this file except in compliance with the License.
 .\" You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE or http://www.opensolaris.org/os/licensing.  See the License for the specific language governing permissions and limitations under the License.
 .\" When distributing Covered Code, include this CDDL HEADER in each file and include the License file at usr/src/OPENSOLARIS.LICENSE.  If applicable, add the following below this CDDL HEADER, with the fields enclosed by brackets "[]" replaced with your own identifying information: Portions Copyright [yyyy] [name of copyright owner]
-.TH SVC.STARTD 8 "Dec 11, 2019"
+.TH SVC.STARTD 8 "Aug 7, 2023"
 .SH NAME
 svc.startd \- Service Management Facility master restarter
 .SH SYNOPSIS
@@ -76,6 +77,18 @@ to console during boot. The \fBverbose\fR option prints a single message per
 service started to indicate success or failure. You can use the \fBboot\fR
 \fB-m\fR option to override the \fBboot_messages\fR setting at boot time. See
 \fBkernel\fR(8).
+.RE
+
+.sp
+.ne 2
+.na
+\fB\fBinstance_tsformat\fR\fR
+.ad
+.sp .6
+.RS 4n
+Specify an alternate \fBstrftime\fR(3C) time format when logging \fBsvc.startd\fR
+instance events in a service's instance log file. This does not impact the
+format the actual service uses for any timestamps.
 .RE
 
 .sp
@@ -571,6 +584,7 @@ This request will take effect on the next restart of \fBsvc.startd\fR.
 .BR svcprop (1),
 .BR svcs (1),
 .BR setsid (2),
+.BR strftime (3C),
 .BR syslog (3C),
 .BR libscf (3LIB),
 .BR scf_value_is_type (3SCF),

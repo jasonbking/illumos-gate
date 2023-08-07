@@ -22,7 +22,7 @@
 /*
  * Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2015, Joyent, Inc. All rights reserved.
- * Copyright 2017 RackTop Systems.
+ * Copyright 2023 RackTop Systems, Inc.
  */
 
 #ifndef	_STARTD_H
@@ -202,6 +202,8 @@ extern const char *log_directory;	/* Current log directory path */
 
 #define	FS_TIMEZONE_DIR		"/usr/share/lib/zoneinfo"
 #define	FS_LOCALE_DIR		"/usr/lib/locale"
+
+extern const char *instlog_tsfmt;	/* Timestamp fmt for instance log */
 
 /*
  * Simple dictionary representation.

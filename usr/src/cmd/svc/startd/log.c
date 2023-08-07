@@ -22,7 +22,7 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  * Copyright 2011 Nexenta Systems. All rights reserved.
- * Copyright 2017 RackTop Systems.
+ * Copyright 2023 RackTop Systems, Inc.
  */
 
 /*
@@ -142,6 +142,12 @@ static int internal_debug_flags = 0x0;
 static char logbuf[LOGBUF_SZ] = "";
 static pthread_mutex_t logbuf_mutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
+
+/*
+ * Note that this is not defined as instlog_tsfmt[] = ... because
+ * it may be overwritten during startup by a config property.
+ */
+const char *instlog_tsfmt = "%b %e %T";
 
 static void
 xstrftime_poststart(char *buf, size_t bufsize, struct timeval *time)
@@ -356,7 +362,7 @@ vlog_instance(const char *fmri, const char *logstem, boolean_t canlog,
 		    strerror(errno));
 
 	if (st->st_log_timezone_known)
-		(void) strftime(timebuf, sizeof (timebuf), "%b %e %T",
+		(void) strftime(timebuf, sizeof (timebuf), instlog_tsfmt,
 		    localtime_r(&now.tv_sec, &ltime));
 	else
 		xstrftime_poststart(timebuf, sizeof (timebuf), &now);

@@ -22,7 +22,7 @@
 /*
  * Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2015, Joyent, Inc.
- * Copyright 2017 RackTop Systems.
+ * Copyright 2023 RackTop Systems, Inc.
  */
 
 /*
@@ -641,7 +641,8 @@ timestamp:
 			continue;
 
 		if (strcmp(buf, "logging") != 0 &&
-		    strcmp(buf, "boot_messages") != 0)
+		    strcmp(buf, "boot_messages") &&
+		    strcmp(buf, "instance_tsformat") != 0)
 			continue;
 
 		if (scf_property_type(prop, &ty) != 0) {
@@ -723,6 +724,14 @@ timestamp:
 				    "ignored\n", vbuf);
 			}
 
+		} else if (strcmp("instance_tsformat", buf) == 0) {
+			/*
+			 * This (like the other settings) are only
+			 * read when svc.startd starts, so once set,
+			 * it doesn't change, so we don't bother
+			 * with freeing this.
+			 */
+			instlog_tsfmt = safe_strdup(vbuf);
 		}
 	}
 
