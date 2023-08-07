@@ -125,6 +125,8 @@ typedef struct agent_cfg {
 } agent_cfg_t;
 
 typedef struct agent {
+	uu_list_node_t		a_node;
+
 	mutex_t			a_lock;
 	cond_t			a_cv;
 
@@ -156,6 +158,11 @@ typedef struct agent {
 } agent_t;
 
 #define	IS_AGENT_THREAD(a)	((a)->a_tid == thr_self())
+
+extern mutex_t		agent_list_lock;
+extern uu_list_t	*agent_list;
+
+void	agent_init(int);
 
 agent_t	*agent_create(const char *);
 void	agent_destroy(agent_t *);

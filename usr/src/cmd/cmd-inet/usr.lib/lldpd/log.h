@@ -65,7 +65,7 @@ void log_sysinit(void);
 void log_sysfini(void);
 
 void log_init(const char *, log_t **);
-int log_child(const log_t *, log_t **, ...) __sentinel(0);
+int log_child(log_t *, log_t **, ...) __sentinel(0);
 void log_fini(log_t *);
 
 typedef enum log_fmt_type {

@@ -18,13 +18,18 @@
 
 #include <synch.h>
 #include <liblldp.h>
+#include <libscf.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-extern lldp_config_t lldp_config;
-extern mutex_t lldp_config_lock;
+#define	LLDP_FMRI	"svc:/network/link-layer-discovery:default"
+
+extern lldp_config_t	lldp_config;
+extern mutex_t		lldp_config_lock;
+extern scf_handle_t	*rep_handle;
+extern char *		my_fmri;
 
 typedef struct fd_cb {
 	void	(*fc_fn)(int, void *);
