@@ -32,7 +32,10 @@
 #include <unistd.h>
 #include <umem.h>
 
+#include <libdladm.h>
+#include <libdllink.h>
 #include <liblldp.h>
+#include <libscf.h>
 
 #include "agent.h"
 #include "lldpd.h"
@@ -44,9 +47,14 @@
 lldp_config_t	lldp_config;
 mutex_t		lldp_config_lock = ERRORCHECKMUTEX;
 
+scf_handle_t	*rep_handle;
+dladm_handle_t	dl_handle;
+char		*my_fmri;
+
 static const char *doorpath = "/var/run/lldpd";
 
 static bool debug;
+static bool quit;
 static int evport = -1;
 static int sigfd = -1;
 
@@ -54,7 +62,9 @@ static int lldp_daemonize(void);
 static int lldp_umem_nomem_cb(void);
 static void block_signals(sigset_t *);
 static int sigfd_create(void);
+static void lldp_init(int);
 static void lldp_main(int);
+static void lldp_create_agents(void);
 static void lldp_handle_sig(int, void *);
 
 static fd_cb_t sig_cb = {
@@ -119,7 +129,35 @@ main(int argc, char **argv)
 	VERIFY0(log_stream_add(log, "stdout", LFMT_BUNYAN, level,
 	    log_stream_fd, (void *)(uintptr_t)STDOUT_FILENO));
 
+	lldp_init(pfd);
+	lldp_main(pfd);
+
+	return (EXIT_SUCCESS);
+}
+
+static void
+lldp_init(int pfd)
+{
+	dladm_status_t dlret;
+
+	TRACE_ENTER(log);
+
 	log_info(log, "startup...", LOG_T_END);
+
+	/*
+	 * For debugging/troubleshooting purposes, we want to be able
+	 * to manually run lldpd outside of SMF.
+	 */
+	my_fmri = getenv("SMF_FMRI");
+	if (my_fmri == NULL) {
+		my_fmri = LLDP_FMRI;
+		log_info(log,
+		    "SMF_FMRI not set (not run from SMF?); using default",
+		    LOG_T_STRING, "fmri", my_fmri,
+		    LOG_T_END);
+	}
+
+	agent_init(pfd);
 
 	evport = port_create();
 	if (evport < 0) {
@@ -128,7 +166,7 @@ main(int argc, char **argv)
 
 		(void) write(pfd, &e, sizeof (e));
 		(void) close(pfd);
-		return (EXIT_FAILURE);
+		exit(EXIT_FAILURE);
 	}
 	log_trace(log, "created event port",
 	    LOG_T_UINT32, "evport", evport,
@@ -141,21 +179,56 @@ main(int argc, char **argv)
 
 		(void) write(pfd, &e, sizeof (e));
 		(void) close(pfd);
-		return (EXIT_FAILURE);
+		exit(EXIT_FAILURE);
 	}
 	log_trace(log, "created signal fd",
 	    LOG_T_UINT32, "sigfd", sigfd,
 	    LOG_T_END);
 
-	lldp_main(pfd);
+	rep_handle = scf_handle_create(SCF_VERSION);
+	if (rep_handle == NULL) {
+		uint32_t serr = scf_error();
 
-	return (0);
+		log_error(log, "failed to create repository handle",
+		    LOG_T_UINT32, "err", serr,
+		    LOG_T_STRING, "errstr", scf_strerror(serr),
+		    LOG_T_END);
+
+		(void) write(pfd, &serr, sizeof (serr));
+		(void) close(pfd);
+		exit(EXIT_FAILURE);
+	}
+	log_trace(log, "created repository handle",
+	    LOG_T_POINTER, "rep_handle", (void *)rep_handle,
+	    LOG_T_END);
+
+	dlret = dladm_open(&dl_handle);
+	if (dlret != DLADM_STATUS_OK) {
+		char buf[DLADM_STRSIZE] = { 0 };
+
+		log_error(log, "failed to create dlmgt handle",
+		    LOG_T_UINT32, "err", dlret,
+		    LOG_T_STRING, "errstr", dladm_status2str(dlret, buf),
+		    LOG_T_END);
+
+		(void) write(pfd, &dlret, sizeof (dlret));
+		(void) close(pfd);
+		exit(EXIT_FAILURE);
+	}
+
+	lldp_create_agents();
+
+	/* XXX restarter */
+
+	TRACE_RETURN(log);
 }
 
 static void
 lldp_main(int pfd)
 {
 	int ret;
+
+	TRACE_ENTER(log);
 
 	ret = pthread_setname_np(pthread_self(), "main");
 	if (ret < 0) {
@@ -174,7 +247,7 @@ lldp_main(int pfd)
 
 	log_debug(log, "starting main loop", LOG_T_END);
 
-	for (;;) {
+	while (!quit) {
 		port_event_t pe = { 0 };
 		fd_cb_t *cb;
 
@@ -212,6 +285,91 @@ lldp_main(int pfd)
 			break;
 		}
 	}
+
+	log_info(log, "shutting down", LOG_T_END);
+
+	TRACE_RETURN(log);
+}
+
+static int
+dladm_cb(dladm_handle_t dlh, datalink_id_t did, void *arg)
+{
+	datalink_class_t	class;
+	dladm_status_t		ret;
+	char			link[MAXLINKNAMELEN] = { 0 };
+	dladm_phys_attr_t	dpa = { 0 };
+	agent_t			*a;
+
+	ret = dladm_datalink_id2info(dl_handle, did, NULL, &class, NULL,
+	    link, sizeof (link));
+	if (ret != DLADM_STATUS_OK) {
+		char buf[DLADM_STRSIZE] = { 0 };
+
+		log_warn(log, "failed to get datalink class",
+		    LOG_T_UINT32, "id", did,
+		    LOG_T_UINT32, "err", ret,
+		    LOG_T_STRING, "errstr", dladm_status2str(ret, buf),
+		    LOG_T_END);
+
+		/* Keep going */
+		return (DLADM_WALK_CONTINUE);
+	}
+
+	char buf[32] = { 0 };
+
+	log_debug(log, "found link",
+	    LOG_T_UINT32, "id", did,
+	    LOG_T_STRING, "link", link,
+	    LOG_T_STRING, "class", dladm_class2str(class, buf),
+	    LOG_T_UINT32, "classval", class,
+	    LOG_T_END);
+
+	/*
+	 * If a datalink was renamed, 'link' is the name seen in the os
+	 * while dpa.dp_dev is the hardware name (e.g. 'ixgbe0').
+	 */
+	ret = dladm_phys_info(dl_handle, did, &dpa, DLADM_OPT_ACTIVE);
+	if (ret != DLADM_STATUS_OK) {
+		char buf[DLADM_STRSIZE] = { 0 };
+
+		log_warn(log, "failed to get phys info on datalink",
+		    LOG_T_UINT32, "id", did,
+		    LOG_T_STRING, "link", link,
+		    LOG_T_UINT32, "err", ret,
+		    LOG_T_STRING, "errstr", dladm_status2str(ret, buf),
+		    LOG_T_END);
+
+		/* Keep going */
+		return (DLADM_WALK_CONTINUE);
+	}
+
+	a = agent_create(dpa.dp_dev);
+
+	mutex_enter(&agent_list_lock);
+	VERIFY0(uu_list_insert_after(agent_list, NULL, a));
+	mutex_exit(&agent_list_lock);
+
+	log_debug(log, "created agent",
+	    LOG_T_STRING, "agent", dpa.dp_dev,
+	    LOG_T_POINTER, "addr", a,
+	    LOG_T_END);
+
+	return (DLADM_WALK_CONTINUE);
+}
+
+static void
+lldp_create_agents(void)
+{
+	TRACE_ENTER(log);
+
+	/*
+	 * Until the mac/aggr/dlpi issue is sorted out, we don't
+	 * include aggrs in our walk.
+	 */
+	(void) dladm_walk_datalink_id(dladm_cb, dl_handle, NULL,
+	    DATALINK_CLASS_PHYS, DATALINK_ANY_MEDIATYPE, DLADM_OPT_ACTIVE);
+
+	TRACE_RETURN(log);	
 }
 
 static void
@@ -240,8 +398,10 @@ lldp_handle_sig(int fd, void *arg __unused)
 
 		switch (si.ssi_signo) {
 		case SIGHUP:
+			break;
 		case SIGKILL:
 			/* TODO: handle signal */
+			quit = true;
 			break;
 		default:
 			log_info(log, "ignoring signal",

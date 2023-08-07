@@ -65,6 +65,7 @@ typedef struct log_key {
 
 struct log {
 	mutex_t		l_lock;
+	struct log	*l_parent;
 	uu_list_t	*l_keys;
 	uu_list_t	*l_streams;
 	char		*l_name;
@@ -87,6 +88,8 @@ static const int bunyan_version = 0;
 
 __thread log_t *log;
 
+static int log_key_add_one(log_t *, const char *, log_type_t, uintptr_t);
+static int log_key_vadd(log_t *, va_list *);
 static void log_make_bunyan(log_t *, const struct timeval *, log_level_t,
     const char *, va_list *);
 static void key_tlv_copy(log_key_t *, const tlv_t *);
@@ -186,11 +189,52 @@ log_fini(log_t *lp)
 	umem_free(lp, sizeof (*lp));
 }
 
-int
-log_child(const log_t *parent, log_t **childp, ...)
+static int
+log_child_key_cb(void *el, void *arg)
 {
-	abort();
-	return (-1);
+	log_t		*l = arg;
+	log_key_t	*k = el;
+
+	if (log_key_add_one(l, k->lk_name, k->lk_type, k->lk_data) != 0)
+		nomem();
+
+	return (0);
+}
+	
+int
+log_child(log_t *parent, log_t **childp, ...)
+{
+	log_t *child;
+	va_list ap;
+
+	child = umem_zalloc(sizeof (*child), UMEM_NOFAIL);
+	
+	VERIFY0(mutex_init(&child->l_lock, USYNC_THREAD|LOCK_ERRORCHECK, NULL));
+
+	(void) strlcpy(child->l_host, parent->l_host, sizeof (child->l_host));
+	child->l_name = xstrdup(parent->l_name);
+	child->l_keys = uu_list_create(key_pool, NULL, UU_LIST_DEBUG);
+	if (child->l_keys == NULL)
+		nomem();
+
+	child->l_streams = uu_list_create(stream_pool, NULL, UU_LIST_DEBUG);
+	if (child->l_streams == NULL)
+		nomem();
+
+	VERIFY0(uu_list_walk(parent->l_keys, log_child_key_cb, child, 0));
+
+	va_start(ap, childp);
+	if (log_key_vadd(child, &ap) != 0)
+		nomem();
+	va_end(ap);
+
+	if (custr_alloc(&child->l_bunyan) != 0)
+		nomem();
+
+	child->l_parent = parent;
+	*childp = child;
+
+	return (0);
 }
 
 void
