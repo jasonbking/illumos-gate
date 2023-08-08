@@ -120,8 +120,8 @@ make_pdu(agent_t *a, buf_t *buf)
 	buf_t w = *buf;
 	buf_t tlv_w;
 
+	ASSERT(MUTEX_HELD(&a->a_lock));
 	mutex_enter(&lldp_config_lock);
-	mutex_enter(&a->a_lock);
 
 	cfg = &a->a_cfg;
 
@@ -148,6 +148,8 @@ make_pdu(agent_t *a, buf_t *buf)
 
 	/* Make buf reflect the amount of data written */
 	VERIFY(buf_truncate(buf, buf_len(buf) - buf_len(&w)));
+
+	mutex_exit(&lldp_config_lock);
 }
 
 void
@@ -155,8 +157,9 @@ make_shutdown_pdu(agent_t *a, buf_t *buf)
 {
 	buf_t w = *buf;
 
+	ASSERT(MUTEX_HELD(&a->a_lock));
+
 	mutex_enter(&lldp_config_lock);
-	mutex_enter(&a->a_lock);
 
 	/* We should always have enough space for a shutdown PDU */
 	VERIFY(write_chassis_id(&w));
@@ -164,7 +167,6 @@ make_shutdown_pdu(agent_t *a, buf_t *buf)
 	VERIFY(write_ttl(&w, 0));
 	VERIFY(write_end(&w));
 
-	mutex_exit(&a->a_lock);
 	mutex_exit(&lldp_config_lock);
 
 	/* Set written length in buf */
