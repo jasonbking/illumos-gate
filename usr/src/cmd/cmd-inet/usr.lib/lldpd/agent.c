@@ -209,6 +209,8 @@ agent_set_status(agent_t *a, lldp_admin_status_t status)
 {
 	VERIFY(!IS_AGENT_THREAD(a));
 
+	lldp_admin_status_t old_status;
+
 	switch (status) {
 	case LLDP_LINK_DISABLED:
 	case LLDP_LINK_RX:
@@ -220,8 +222,13 @@ agent_set_status(agent_t *a, lldp_admin_status_t status)
 	}
 
 	mutex_enter(&a->a_lock);
+	old_status = a->a_cfg.ac_status;
 	a->a_cfg.ac_status = status;
 	VERIFY0(cond_signal(&a->a_cv));
+	log_info(a->a_log, "agent admin status change",
+	    LOG_T_STRING, "old_status", lldp_admin_status_str(old_status),
+	    LOG_T_STRING, "new_status", lldp_admin_status_str(status),
+	    LOG_T_END);
 	mutex_exit(&a->a_lock);
 }
 

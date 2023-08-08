@@ -390,8 +390,10 @@ lldp_enable_agents(void)
 	if (wk == NULL)
 		nomem();
 
-	while ((agent = uu_list_walk_next(wk)) != NULL)
+	while ((agent = uu_list_walk_next(wk)) != NULL) {
 		(void) agent_enable(agent);
+		agent_set_status(agent, LLDP_LINK_TXRX);
+	}
 
 	uu_list_walk_end(wk);
 
