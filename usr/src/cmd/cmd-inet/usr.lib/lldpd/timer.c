@@ -41,6 +41,8 @@ lldp_timers_sysinit(void)
 	    offsetof(lldp_timer_t, lt_node), NULL, UU_LIST_POOL_DEBUG);
 	if (clock_pool == NULL)
 		panic("cannot create clock pool");
+
+	log_trace(log, "created timer list pool", LOG_T_END);
 }
 
 void
