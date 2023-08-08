@@ -127,6 +127,9 @@ agent_create(const char *name)
 	    LOG_T_STRING, "agent", a->a_name,
 	    LOG_T_END);
 
+	if (!lldp_clock_init(a, &a->a_clk))
+		nomem();
+
 	tx_init(a);
 	rx_init(a);
 	ttr_init(a);
@@ -184,6 +187,8 @@ agent_enable(agent_t *a)
 	mutex_enter(&a->a_lock);
 	a->a_port_enabled = true;
 	VERIFY0(cond_signal(&a->a_cv));
+	log_info(a->a_log, "port enabled", LOG_T_END);
+	mutex_exit(&a->a_lock);
 	return (true);
 }
 
@@ -195,6 +200,7 @@ agent_disable(agent_t *a)
 	mutex_enter(&a->a_lock);
 	a->a_port_enabled = false;
 	VERIFY0(cond_signal(&a->a_cv));
+	log_info(a->a_log, "port disabled", LOG_T_END);
 	mutex_exit(&a->a_lock);
 }
 
@@ -321,7 +327,6 @@ agent_thread(void *arg)
 				break;
 
 			if (ret == ETIME) {
-				mutex_enter(&a->a_lock);
 				lldp_clock_tock(&a->a_clk);
 				lldp_clock_tick(&a->a_clk, &tick);
 			}
@@ -421,7 +426,7 @@ static bool
 tx_next_state(tx_t *tx)
 {
 	agent_t *a = __containerof(tx, agent_t, a_tx);
-	tx_state_t next;
+	tx_state_t next = tx->tx_state;
 
 	TRACE_ENTER(tx->tx_log);
 
@@ -437,8 +442,7 @@ tx_next_state(tx_t *tx)
 			next = TX_IDLE;
 			break;
 		}
-		TRACE_RETURN(tx->tx_log);
-		return (false);
+		break;
 	case TX_IDLE:
 		if (admin_status(a) == LLDP_LINK_DISABLED ||
 		    admin_status(a) == LLDP_LINK_RX) {
@@ -450,15 +454,13 @@ tx_next_state(tx_t *tx)
 			next = TX_INFO_FRAME;
 			break;
 		}
-		TRACE_RETURN(tx->tx_log);
-		return (false);
+		break;
 	case TX_SHUTDOWN_FRAME:
 		if (lldp_timer_val(&tx->tx_shutdown) == 0) {
 			next = TX_LLDP_INITIALIZE;
 			break;
 		}
-		TRACE_RETURN(tx->tx_log);
-		return (false);
+		break;
 	case TX_INFO_FRAME:
 		next = TX_IDLE;
 		break;
@@ -467,6 +469,11 @@ tx_next_state(tx_t *tx)
 	}
 
 done:
+	if (tx->tx_state == next) {
+		TRACE_RETURN(tx->tx_log);
+		return (false);
+	}
+
 	log_debug(tx->tx_log, "state transition",
 	    LOG_T_STRING, "oldstate", tx_statestr(tx->tx_state),
 	    LOG_T_STRING, "newstate", tx_statestr(next),
@@ -507,7 +514,7 @@ static bool
 rx_next_state(agent_t *a)
 {
 	rx_t		*rx = &a->a_rx;
-	rx_state_t	next;
+	rx_state_t	next = rx->rx_state;
 
 	if (!rx->rx_info_age && !a->a_port_enabled) {
 		next = LLDP_WAIT_PORT_OPERATIONAL;
@@ -525,7 +532,7 @@ rx_next_state(agent_t *a)
 			next = RX_LLDP_INITIALIZE;
 			break;
 		}
-		return (false);
+		break;
 	case DELETE_AGED_INFO:
 		next = LLDP_WAIT_PORT_OPERATIONAL;
 		break;
@@ -535,7 +542,7 @@ rx_next_state(agent_t *a)
 			next = RX_WAIT_FOR_FRAME;
 			break;
 		}
-		return (false);
+		break;
 	case RX_WAIT_FOR_FRAME:
 		if (rx->rx_info_age) {
 			next = DELETE_INFO;
@@ -552,7 +559,7 @@ rx_next_state(agent_t *a)
 			next = RX_LLDP_INITIALIZE;
 			break;
 		}
-		return (false);
+		break;
 	case RX_FRAME:
 		if (rx->rx_ttl == 0) {
 			next = DELETE_INFO;
@@ -569,7 +576,7 @@ rx_next_state(agent_t *a)
 			next = RX_WAIT_FOR_FRAME;
 			break;
 		}
-		return (false);
+		break;
 	case DELETE_INFO:
 		next = RX_WAIT_FOR_FRAME;
 		break;
@@ -581,6 +588,11 @@ rx_next_state(agent_t *a)
 	}
 
 done:
+	if (rx->rx_state == next) {
+		TRACE_RETURN(rx->rx_log);
+		return (false);
+	}
+
 	log_debug(rx->rx_log, "state transition",
 	    LOG_T_STRING, "oldstate", rx_statestr(rx->rx_state),
 	    LOG_T_STRING, "newstate", rx_statestr(next),
@@ -662,7 +674,7 @@ static bool
 ttr_next_state(ttr_t *ttr)
 {
 	agent_t *a = __containerof(ttr, agent_t, a_ttr);
-	ttr_state_t next;
+	ttr_state_t next = ttr->ttr_state;
 
 	if (!a->a_port_enabled || admin_status(a) == LLDP_LINK_DISABLED ||
 	    admin_status(a) == LLDP_LINK_RX) {
@@ -677,7 +689,7 @@ ttr_next_state(ttr_t *ttr)
 			next = TX_TIMER_IDLE;
 			break;
 		}
-		return (false);
+		break;
 	case TX_TIMER_IDLE:
 		if (a->a_local_changes) {
 			next = SIGNAL_TX;
@@ -698,7 +710,7 @@ ttr_next_state(ttr_t *ttr)
 			next = TX_TICK;
 			break;
 		}
-		return (false);
+		break;
 	case TX_TIMER_EXPIRES:
 		next = SIGNAL_TX;
 		break;
@@ -716,6 +728,11 @@ ttr_next_state(ttr_t *ttr)
 	}
 
 done:
+	if (ttr->ttr_state == next) {
+		TRACE_RETURN(ttr->ttr_log);
+		return (false);
+	}
+
 	log_debug(ttr->ttr_log, "state transition",
 	    LOG_T_STRING, "oldstate", ttr_statestr(ttr->ttr_state),
 	    LOG_T_STRING, "newstate", ttr_statestr(next),
@@ -888,8 +905,8 @@ recv_frame(int fd __unused, void *arg)
 	buf_t		*b = NULL;
 	uint8_t		src[DLPI_PHYSADDR_MAX] = { 0 };
 	dlpi_recvinfo_t	di = { 0 };
-	size_t		srclen = 0;
-	size_t		blen = buf_len(b);
+	size_t		srclen = sizeof (src);
+	size_t		blen;
 	int		ret;
 
 	/* We should be running outside the agent's thread */
@@ -899,6 +916,7 @@ recv_frame(int fd __unused, void *arg)
 
 	buf_init(&rx->rx_buf, rx->rx_frame, sizeof (rx->rx_frame));
 	b = &rx->rx_buf;
+	blen = buf_len(b);
 	(void) memset(buf_ptr(b), '\0', buf_len(b));
 
 	ret = dlpi_recv(a->a_dlh, &src, &srclen, buf_ptr(b), &blen, 0, &di);
