@@ -65,6 +65,7 @@ static int sigfd_create(void);
 static void lldp_init(int);
 static void lldp_main(int);
 static void lldp_create_agents(void);
+static void lldp_enable_agents(void);
 static void lldp_handle_sig(int, void *);
 
 static fd_cb_t sig_cb = {
@@ -122,6 +123,7 @@ main(int argc, char **argv)
 	}
 
 	log_sysinit();
+
 	(void) log_init("lldpd", &log);
 
 	VERIFY0(log_stream_add(log, "stderr", LFMT_BUNYAN, LOG_L_ERROR,
@@ -157,6 +159,8 @@ lldp_init(int pfd)
 		    LOG_T_END);
 	}
 
+	lldp_timers_sysinit();
+	neighbor_init();
 	agent_init(pfd);
 
 	evport = port_create();
@@ -220,6 +224,8 @@ lldp_init(int pfd)
 
 	/* XXX restarter */
 
+	lldp_enable_agents();
+
 	TRACE_RETURN(log);
 }
 
@@ -252,7 +258,7 @@ lldp_main(int pfd)
 		fd_cb_t *cb;
 
 		ret = port_get(evport, &pe, NULL);
-		if (ret < 1) {
+		if (ret < 0) {
 			int e = errno;
 			switch (e) {
 			case EINTR:
@@ -370,6 +376,26 @@ lldp_create_agents(void)
 	    DATALINK_CLASS_PHYS, DATALINK_ANY_MEDIATYPE, DLADM_OPT_ACTIVE);
 
 	TRACE_RETURN(log);	
+}
+
+static void
+lldp_enable_agents(void)
+{
+	uu_list_walk_t	*wk;
+	agent_t		*agent;
+
+	TRACE_ENTER(log);
+
+	wk = uu_list_walk_start(agent_list, 0);
+	if (wk == NULL)
+		nomem();
+
+	while ((agent = uu_list_walk_next(wk)) != NULL)
+		(void) agent_enable(agent);
+
+	uu_list_walk_end(wk);
+
+	TRACE_RETURN(log);
 }
 
 static void
