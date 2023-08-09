@@ -118,6 +118,7 @@ make_pdu(agent_t *a, buf_t *buf)
 {
 	agent_cfg_t *cfg;
 	buf_t w = *buf;
+	buf_t copy;
 	buf_t tlv_w;
 
 	ASSERT(MUTEX_HELD(&a->a_lock));
@@ -130,8 +131,11 @@ make_pdu(agent_t *a, buf_t *buf)
 	VERIFY(write_port_id(a, &w));
 	VERIFY(write_ttl(&w, a->a_tx.tx_ttl));
 
-	/* When writing TLVs, guarantee space for the final END TLV */
-	VERIFY(buf_take(&w, buf_len(&w) - 2, &tlv_w));
+	/*
+	 * When writing TLVs, guarantee space for the final END TLV.
+	 */
+	copy = w;
+	VERIFY(buf_take(&copy, buf_len(&w) - 2, &tlv_w));
 
 	write_tlv_table(tlv_tbl, ARRAY_SIZE(tlv_tbl), cfg->ac_tx_tlvs, a,
 	    &tlv_w);
@@ -139,6 +143,8 @@ make_pdu(agent_t *a, buf_t *buf)
 	    cfg->ac_tx_8021_tlvs, a, &tlv_w);
 	write_tlv_table(tlv_8023_tlv_tbl, ARRAY_SIZE(tlv_8023_tlv_tbl),
 	    cfg->ac_tx_8023_tlvs, a, &tlv_w);
+
+	ASSERT3S((int)buf_len(&w), >=, (int)buf_len(&tlv_w));
 
 	/* Skip past all the TLVs written so far */
 	VERIFY(buf_skip(&w, buf_len(&w) - buf_len(&tlv_w)));
