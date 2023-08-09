@@ -824,7 +824,7 @@ update_objects(agent_t *a)
 	neighbor_t *nb = rx->rx_neighbor;
 
 	ASSERT3P(old_nb, !=, nb);
-	ASSERT(neighbor_cmp(old_nb, nb));
+	ASSERT(neighbor_same(old_nb, nb));
 
 	lldp_timer_init(&a->a_clk, &nb->nb_timer, "rxInfoAge", nb,
 	    rx->rx_log, "rxInfoAge", &rx->rx_info_age);

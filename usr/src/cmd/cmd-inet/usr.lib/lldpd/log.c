@@ -419,11 +419,11 @@ log_key_create(const char *name, log_type_t type, uintptr_t arg, size_t len)
 		panic("invalid type");
 		break;
 	case LOG_T_STRING:
-		ASSERT3U(k->lk_len, >, 0);
-		ASSERT(((char *)l->lk_data)[k->lk_len - 1] == '\0');
+		ASSERT3U(len, >, 0);
+		ASSERT(((const char *)p)[len - 1] == '\0');
 		k->lk_len = len;
-		k->lk_data = (uintptr_t)umem_zalloc(k->lk_len, UMEM_NOFAIL);
-		(void) memcpy((void *)k->lk_data, p, k->lk_len);
+		k->lk_data = (uintptr_t)umem_zalloc(len, UMEM_NOFAIL);
+		(void) memcpy((void *)k->lk_data, p, len);
 		return (k);
 	case LOG_T_POINTER:
 	case LOG_T_BOOLEAN:
@@ -740,7 +740,7 @@ log_bunyan_key(void *arg, const char *name, log_type_t type, uintptr_t data,
 			return (false);
 		break;
 	case LOG_T_POINTER:
-		VERIFY0(custr_append_printf(cus, "0x%p", (void *)data));
+		VERIFY0(custr_append_printf(cus, "\"0x%p\"", (void *)data));
 		break;
 	case LOG_T_BOOLEAN:
 		VERIFY0(custr_append_printf(cus, "%s",
