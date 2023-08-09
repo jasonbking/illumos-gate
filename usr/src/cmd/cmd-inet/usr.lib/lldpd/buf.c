@@ -123,6 +123,6 @@ buf_skip(buf_t *b, uint16_t amt)
 	if (b->b_len < amt)
 		return (false);
 	b->b_ptr += amt;
-	b->b_len += amt;
+	b->b_len -= amt;
 	return (true);
 }
