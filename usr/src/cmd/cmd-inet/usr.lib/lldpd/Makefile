@@ -18,6 +18,7 @@ MANIFEST =	lldpd.xml
 
 OBJS =		agent.o		\
 		buf.o		\
+		door.o		\
 		lldpd.o		\
 		log.o		\
 		neighbor.o	\
@@ -40,7 +41,7 @@ ROOTMANIFESTDIR=	$(ROOTSVCNETWORK)
 
 CHECKHDRS=	$(HDRS:%.h=%.check)
 
-CPPFLAGS +=	-D_REENTRANT -D__EXTENSIONS__
+CPPFLAGS +=	-D_REENTRANT -D__EXTENSIONS__ -DDEBUG
 CPPFLAGS +=	-I$(LIB_INC)
 
 CSTD =		$(CSTD_GNU99)
