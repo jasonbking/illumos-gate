@@ -10,30 +10,20 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
-#ifndef _UTIL_H
-#define	_UTIL_H
-
-/*
- * Describe the purpose of the file here.
- */
+#ifndef _LLDP_DOOR_H
+#define	_LLDP_DOOR_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include <libuutil.h>
-
-void __NORETURN nomem(void);
-void __NORETURN panic(const char *, ...);
-char *xstrdup(const char *);
-
-uu_list_walk_t *xuu_list_walk_start(uu_list_t *, uint_t);
+void lldp_create_door(int, const char *);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* _UTIL_H */
+#endif /* _LLDP_DOOR_H */
