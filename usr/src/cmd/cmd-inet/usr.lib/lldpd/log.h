@@ -89,7 +89,7 @@ void log_debug(log_t *, const char *, ...) __sentinel(0);
 void log_info(log_t *, const char *, ...) __sentinel(0);
 void log_warn(log_t *, const char *, ...) __sentinel(0);
 void log_error(log_t *, const char *, ...) __sentinel(0);
-void log_fatal(log_t *, const char *, ...) __sentinel(0) __NORETURN;
+void log_fatal(int, log_t *, const char *, ...) __sentinel(0) __NORETURN;
 
 void log_syserr(log_t *, const char *, int);
 void log_dlerr(log_t *, const char *, int);

@@ -31,6 +31,10 @@
 #include <signal.h>
 #include <unistd.h>
 #include <umem.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <sys/utsname.h>
 
 #include <libdladm.h>
 #include <libdllink.h>
@@ -38,6 +42,7 @@
 #include <libscf.h>
 
 #include "agent.h"
+#include "door.h"
 #include "lldpd.h"
 #include "log.h"
 #include "neighbor.h"
@@ -50,6 +55,8 @@ mutex_t		lldp_config_lock = ERRORCHECKMUTEX;
 scf_handle_t	*rep_handle;
 dladm_handle_t	dl_handle;
 char		*my_fmri;
+
+int start_pipe_fd = -1;
 
 static const char *doorpath = "/var/run/lldpd";
 
@@ -67,6 +74,7 @@ static void lldp_main(int);
 static void lldp_create_agents(void);
 static void lldp_enable_agents(void);
 static void lldp_handle_sig(int, void *);
+static void read_config(void);
 
 static fd_cb_t sig_cb = {
 	.fc_fn = lldp_handle_sig,
@@ -82,7 +90,7 @@ usage(void)
 int
 main(int argc, char **argv)
 {
-	int c, pfd;
+	int c;
 	log_level_t level = LOG_L_INFO;
 
 	/*
@@ -116,11 +124,8 @@ main(int argc, char **argv)
 
 	closefrom(STDERR_FILENO + 1);
 
-	if (!debug) {
-		pfd = lldp_daemonize();
-	} else {
-		pfd = open(_PATH_DEVNULL, O_WRONLY);
-	}
+	if (!debug)
+		start_pipe_fd = lldp_daemonize();
 
 	log_sysinit();
 
@@ -131,14 +136,14 @@ main(int argc, char **argv)
 	VERIFY0(log_stream_add(log, "stdout", LFMT_BUNYAN, level,
 	    log_stream_fd, (void *)(uintptr_t)STDOUT_FILENO));
 
-	lldp_init(pfd);
-	lldp_main(pfd);
+	lldp_init();
+	lldp_main();
 
 	return (EXIT_SUCCESS);
 }
 
 static void
-lldp_init(int pfd)
+lldp_init(void)
 {
 	dladm_status_t dlret;
 
@@ -165,12 +170,11 @@ lldp_init(int pfd)
 
 	evport = port_create();
 	if (evport < 0) {
-		int e = errno;
-		log_syserr(log, "failed to create event port", e);
-
-		(void) write(pfd, &e, sizeof (e));
-		(void) close(pfd);
-		exit(EXIT_FAILURE);
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "failed to create event port",
+		    LOG_T_STRING, "errmsg", strerror(errno),
+		    LOG_T_UINT32, "errno", errno,
+		    LOG_T_END);
 	}
 	log_trace(log, "created event port",
 	    LOG_T_UINT32, "evport", evport,
@@ -178,46 +182,45 @@ lldp_init(int pfd)
 
 	sigfd = sigfd_create();
 	if (sigfd < 0) {
-		int e = errno;
-		log_syserr(log, "failed to create signal fd", e);
-
-		(void) write(pfd, &e, sizeof (e));
-		(void) close(pfd);
-		exit(EXIT_FAILURE);
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "failed to create signal fd",
+		    LOG_T_STRING, "errmsg", strerror(errno),
+		    LOG_T_UINT32, "errno", errno,
+		    LOG_T_END);
 	}
 	log_trace(log, "created signal fd",
 	    LOG_T_UINT32, "sigfd", sigfd,
 	    LOG_T_END);
 
+	block_signals(NULL);
+
 	rep_handle = scf_handle_create(SCF_VERSION);
 	if (rep_handle == NULL) {
 		uint32_t serr = scf_error();
 
-		log_error(log, "failed to create repository handle",
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "failed to create repository handle",
 		    LOG_T_UINT32, "err", serr,
 		    LOG_T_STRING, "errstr", scf_strerror(serr),
 		    LOG_T_END);
-
-		(void) write(pfd, &serr, sizeof (serr));
-		(void) close(pfd);
-		exit(EXIT_FAILURE);
 	}
 	log_trace(log, "created repository handle",
 	    LOG_T_POINTER, "rep_handle", (void *)rep_handle,
 	    LOG_T_END);
 
+	read_config();
+
+	lldp_create_door(pfd, NULL);
+
 	dlret = dladm_open(&dl_handle);
 	if (dlret != DLADM_STATUS_OK) {
 		char buf[DLADM_STRSIZE] = { 0 };
 
-		log_error(log, "failed to create dlmgt handle",
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "failed to create dlmgt handle",
 		    LOG_T_UINT32, "err", dlret,
 		    LOG_T_STRING, "errstr", dladm_status2str(dlret, buf),
 		    LOG_T_END);
-
-		(void) write(pfd, &dlret, sizeof (dlret));
-		(void) close(pfd);
-		exit(EXIT_FAILURE);
 	}
 
 	lldp_create_agents();
@@ -232,24 +235,28 @@ lldp_init(int pfd)
 static void
 lldp_main(int pfd)
 {
-	int ret;
+	int ret, fd;
 
 	TRACE_ENTER(log);
 
 	ret = pthread_setname_np(pthread_self(), "main");
-	if (ret < 0) {
-		log_syserr(log, "failed to set thread name on main thread",
-		    ret);
-		exit(EXIT_FAILURE);
+	if (ret != 0) {
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "failed to set thread name on main thread",
+		    LOG_T_STRING, "errmsg", strerror(ret),
+		    LOG_T_UINT32, "errno", ret,
+		    LOG_T_END);
 	}
 
 	VERIFY(schedule_fd(sigfd, &sig_cb));
 
-	block_signals(NULL);
+	fd = start_pipe_fd;
+	start_pipe_fd = -1;
+	membar_producer();
 
 	ret = 0;
-	(void) write(pfd, &ret, sizeof (ret));
-	VERIFY0(close(pfd));
+	(void) write(fd, &ret, sizeof (ret));
+	VERIFY0(close(fd));
 
 	log_debug(log, "starting main loop", LOG_T_END);
 
@@ -265,7 +272,9 @@ lldp_main(int pfd)
 				continue;
 			case EBADF:
 			case EBADFD:
-				log_fatal(log, "event port fd error",
+				/* log_fatal() is __NORETURN */
+				log_fatal(SMF_EXIT_ERR_FATAL, log,
+				    "event port fd error",
 				    LOG_T_INT32, "fd", evport,
 				    LOG_T_INT32, "errno", e,
 				    LOG_T_STRING, "errmsg", strerror(e),
@@ -401,6 +410,43 @@ lldp_enable_agents(void)
 }
 
 static void
+read_config(void)
+{
+	struct utsname uts = { 0 };
+
+	mutex_enter(&lldp_config_lock);
+
+	/* Set defaults */
+
+	lldp_config.lcfg_chassis.llc_type = LLDP_CHASSIS_MACADDR;
+
+	if (lldp_config.lcfg_sysname == NULL) {
+		lldp_config.lcfg_sysname = umem_alloc(MAXHOSTNAMELEN,
+		    UMEM_NOFAIL);
+	}
+	(void) memset(lldp_config.lcfg_sysname, '\0', MAXHOSTNAMELEN);
+	VERIFY0(gethostname(lldp_config.lcfg_sysname, MAXHOSTNAMELEN));
+
+	lldp_config.lcfg_syscap = LLDP_CAP_ROUTER | LLDP_CAP_STATION;
+	lldp_config.lcfg_encap = LLDP_CAP_STATION;
+
+	if (uname(&uts) < 0)
+		err(EXIT_FAILURE, "uname failed");
+
+	free(lldp_config.lcfg_sysdesc);
+	lldp_config.lcfg_sysdesc = NULL;
+	(void) asprintf(&lldp_config.lcfg_sysdesc, "%s %s %s %s %s",
+	    uts.sysname, uts.nodename, uts.release, uts.version,
+	    uts.machine);
+	if (lldp_config.lcfg_sysdesc == NULL)
+		nomem();
+
+	/* XXX: Override from SMF */
+
+	mutex_exit(&lldp_config_lock);
+}
+
+static void
 lldp_handle_sig(int fd, void *arg __unused)
 {
 	signalfd_siginfo_t si = { 0 };
@@ -418,23 +464,36 @@ lldp_handle_sig(int fd, void *arg __unused)
 		    LOG_T_INT32, "n", n,
 		    LOG_T_END);
 	} else {
+		char buf[SIG2STR_MAX + 3] = { 0 };
+
+		(void) strlcat(buf, "SIG", sizeof (buf));
+		(void) sig2str(si.ssi_signo, buf + 3);
+
 		log_debug(log, "received signal",
 		    LOG_T_UINT32, "signo", si.ssi_signo,
-		    LOG_T_UINT32, "pid", si.ssi_pid,
-		    LOG_T_UINT32, "uid", si.ssi_uid,
+		    LOG_T_STRING, "signal", buf,
+		    LOG_T_UINT32, "srcpid", si.ssi_pid,
+		    LOG_T_UINT32, "srcuid", si.ssi_uid,
 		    LOG_T_END);
 
 		switch (si.ssi_signo) {
 		case SIGHUP:
+			/* XXX: reread config */
 			break;
+		case SIGINT:
 		case SIGKILL:
-			/* TODO: handle signal */
+			log_info(log, "Received exit signal",
+			    LOG_T_STRING, "signal", strsignal(si.ssi_signo),
+			    LOG_T_UINT32, "signo", si.ssi_signo,
+			    LOG_T_END);
 			quit = true;
 			break;
 		default:
 			log_info(log, "ignoring signal",
-			    LOG_T_UINT32, "pid", si.ssi_pid,
-			    LOG_T_UINT32, "uid", si.ssi_uid,
+			    LOG_T_STRING, "signal", buf,
+			    LOG_T_UINT32, "signo", si.ssi_signo,
+			    LOG_T_UINT32, "srcpid", si.ssi_pid,
+			    LOG_T_UINT32, "srcuid", si.ssi_uid,
 			    LOG_T_END);
 			break;
 		}

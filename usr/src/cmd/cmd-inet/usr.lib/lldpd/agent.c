@@ -846,10 +846,11 @@ delete_objects(agent_t *a)
 
 	log_debug(l, "ageing out neighbors", LOG_T_END);
 
-	wk = uu_list_walk_start(a->a_neighbors, UU_WALK_ROBUST);
+	wk = xuu_list_walk_start(a->a_neighbors, UU_WALK_ROBUST);
 	if (wk == NULL) {
-		log_fatal(l, "cannot iterate through neighbors",
-		    LOG_T_END);
+		/* This should be the only reason we fail */
+		VERIFY3U(uu_error(), ==, UU_ERROR_NO_MEMORY);
+		nomem();
 	}
 
 	count = 0;

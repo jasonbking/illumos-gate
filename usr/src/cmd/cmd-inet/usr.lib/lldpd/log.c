@@ -564,15 +564,23 @@ log_vlvl(log_t *l, log_level_t level, const char *msg, va_list ap)
 }
 
 void
-log_fatal(log_t *l, const char *msg, ...)
+log_fatal(int eval, log_t *l, const char *msg, ...)
 {
+	extern int start_pipe_fd;
+
 	va_list ap;
 
 	va_start(ap, msg);
 	log_vlvl(l, LOG_L_FATAL, msg, ap);
 	va_end(ap);
 
-	panic(msg);
+	membar_consumer();
+	if (start_pipe_fd >= 0) {
+		(void) write(start_pipe_fd, &eval, sizeof (eval));
+		(void) close(start_pipe_fd);
+	}
+
+	exit(eval);
 }
 
 void
@@ -753,8 +761,8 @@ log_bunyan_key(void *arg, const char *name, log_type_t type, uintptr_t data,
 		VERIFY0(custr_append_printf(cus, "%" PRIu32, (uint32_t)data));
 		break;
 	case LOG_T_XINT32:
-		/* We're outputting JSON5... */
-		VERIFY0(custr_append_printf(cus, "%" PRIx32, (uint32_t)data));
+		VERIFY0(custr_append_printf(cus, "\"0x%" PRIx32 "\"",
+		    (uint32_t)data));
 		break;
 	case LOG_T_INT64:
 		VERIFY0(custr_append_printf(cus, "%" PRId64, (int64_t)data));
@@ -763,7 +771,8 @@ log_bunyan_key(void *arg, const char *name, log_type_t type, uintptr_t data,
 		VERIFY0(custr_append_printf(cus, "%" PRIu64, (uint64_t)data));
 		break;
 	case LOG_T_XINT64:
-		VERIFY0(custr_append_printf(cus, "%" PRIx64, (uint64_t)data));
+		VERIFY0(custr_append_printf(cus, "\"0x%" PRIx64 "\"",
+		    (uint64_t)data));
 		break;
 	case LOG_T_MAC:
 		p = (const uint8_t *)data;
