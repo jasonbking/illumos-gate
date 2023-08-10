@@ -51,3 +51,18 @@ xstrdup(const char *s)
 
 	return (ns);
 }
+
+uu_list_walk_t *
+xuu_list_walk_start(uu_list_t *l, uint_t flags)
+{
+	uu_list_walk_t *wk;
+
+	wk = uu_list_walk_start(l, flags);
+	if (wk == NULL) {
+		/* Any other error is a bug by the caller */
+		VERUFY3U(uu_error(), ==, UU_ERROR_NO_MEMORY);
+		nomem();
+	}
+
+	return (wk);
+}
