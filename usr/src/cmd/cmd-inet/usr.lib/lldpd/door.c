@@ -16,7 +16,10 @@
 #include <door.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <unist.d.h>
+#include <libscf.h>
+#include <signal.h>
+#include <string.h>
+#include <unistd.h>
 #include <sys/debug.h>
 
 #include "door.h"
@@ -29,7 +32,7 @@ static int door_fd = -1;
 static inline int
 map_errno(int e)
 {
-	if (e == EACCESS || e == EPERM)
+	if (e == EACCES || e == EPERM)
 		return (SMF_EXIT_ERR_PERM);
 	return (SMF_EXIT_ERR_FATAL);
 }
@@ -41,15 +44,15 @@ lldp_door_server(void * cookie, char *argp, size_t argsz, door_desc_t *dp,
     uint_t ndesc)
 {
 	close_door_desc(dp, ndesc);
-	door_return(NULL, 0, NULL, 0);
+	VERIFY0(door_return(NULL, 0, NULL, 0));
 }
 
 void
-lldp_create_door(int pfd, const char *path)
+lldp_create_door(const char *path)
 {
 	const char	*dpath;
 	sigset_t	set, oset;
-	int		fd, ret;
+	int		fd;
 
 	/*
 	 * Regardless of how the rest of lldpd handles signals, we
@@ -115,8 +118,8 @@ lldp_create_door(int pfd, const char *path)
 static void
 close_door_desc(door_desc_t *dp, uint_t n)
 {
-	for (uint_t i = 0; i < n; i++; dp++) {
-		if ((dp->d_attributes & DOOR_DESCIPTOR) != 0)
+	for (uint_t i = 0; i < n; i++, dp++) {
+		if ((dp->d_attributes & DOOR_DESCRIPTOR) != 0)
 			continue;
 		(void) close(dp->d_data.d_desc.d_descriptor);
 	}

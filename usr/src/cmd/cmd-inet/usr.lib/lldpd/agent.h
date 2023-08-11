@@ -162,7 +162,7 @@ typedef struct agent {
 extern mutex_t		agent_list_lock;
 extern uu_list_t	*agent_list;
 
-void	agent_init(int);
+void	agent_init(void);
 
 agent_t	*agent_create(const char *);
 void	agent_destroy(agent_t *);
