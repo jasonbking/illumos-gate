@@ -1044,7 +1044,7 @@ agent_name_cmp(const void *a, const void *b, void *arg __unused)
 }
 
 void
-agent_init(int pfd)
+agent_init(void)
 {
 	TRACE_ENTER(log);
 
@@ -1055,20 +1055,22 @@ agent_init(int pfd)
 	if (agent_list_pool == NULL) {
 		int ev = uu_error();
 
-		log_uuerr(log, "failed to create agent list pool");
-		(void) write(pfd, &ev, sizeof (ev));
-		(void) close(pfd);
-		exit(EXIT_FAILURE);
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "failed to create agent list pool",
+		    LOG_T_STRING, "errmsg", uu_strerror(ev),
+		    LOG_T_UINT32, "uu_error", ev,
+		    LOG_T_END);
 	}
 
 	agent_list = uu_list_create(agent_list_pool, NULL, UU_LIST_DEBUG);
 	if (agent_list == NULL) {
 		int ev = uu_error();
 
-		log_uuerr(log, "failed to create agent list");
-		(void) write(pfd, &ev, sizeof (ev));
-		(void) close(pfd);
-		exit(EXIT_FAILURE);
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "failed to create agent list",
+		    LOG_T_STRING, "errmsg", uu_strerror(ev),
+		    LOG_T_UINT32, "uu_error", ev,
+		    LOG_T_END);
 	}
 
 	mutex_exit(&agent_list_lock);

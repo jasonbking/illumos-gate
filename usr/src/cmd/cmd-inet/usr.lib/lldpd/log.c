@@ -14,6 +14,7 @@
  * Copyright 2023 Jason King
  */
 
+#include <atomic.h>
 #include <errno.h>
 #include <netdb.h>
 #include <libcustr.h>

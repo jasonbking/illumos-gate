@@ -18,6 +18,7 @@
 #include <sys/signalfd.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
+#include <atomic.h>
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -69,8 +70,8 @@ static int lldp_daemonize(void);
 static int lldp_umem_nomem_cb(void);
 static void block_signals(sigset_t *);
 static int sigfd_create(void);
-static void lldp_init(int);
-static void lldp_main(int);
+static void lldp_init(void);
+static void lldp_main(void);
 static void lldp_create_agents(void);
 static void lldp_enable_agents(void);
 static void lldp_handle_sig(int, void *);
@@ -166,7 +167,7 @@ lldp_init(void)
 
 	lldp_timers_sysinit();
 	neighbor_init();
-	agent_init(pfd);
+	agent_init();
 
 	evport = port_create();
 	if (evport < 0) {
@@ -210,7 +211,7 @@ lldp_init(void)
 
 	read_config();
 
-	lldp_create_door(pfd, NULL);
+	lldp_create_door(NULL);
 
 	dlret = dladm_open(&dl_handle);
 	if (dlret != DLADM_STATUS_OK) {
@@ -233,7 +234,7 @@ lldp_init(void)
 }
 
 static void
-lldp_main(int pfd)
+lldp_main(void)
 {
 	int ret, fd;
 

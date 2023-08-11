@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <upanic.h>
+#include <libuutil.h>
+#include <sys/debug.h>
 #include "util.h"
 
 static char panicbuf[256];
@@ -59,8 +61,10 @@ xuu_list_walk_start(uu_list_t *l, uint_t flags)
 
 	wk = uu_list_walk_start(l, flags);
 	if (wk == NULL) {
+		uint32_t e = uu_error();
+
 		/* Any other error is a bug by the caller */
-		VERUFY3U(uu_error(), ==, UU_ERROR_NO_MEMORY);
+		VERIFY3U(e, ==, UU_ERROR_NO_MEMORY);
 		nomem();
 	}
 
