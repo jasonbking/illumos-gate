@@ -20,7 +20,7 @@
 extern "C" {
 #endif
 
-void lldp_create_door(int, const char *);
+void lldp_create_door(const char *);
 
 #ifdef __cplusplus
 }
