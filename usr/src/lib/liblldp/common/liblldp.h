@@ -138,11 +138,22 @@ typedef enum lldp_tx_8021_tlv {
 	LLDP_TX_X2_MGMT_VLAN =		(1 << 3),
 } lldp_tx_8021_tlv_t;
 
+extern const uint8_t lldp_oui_8023[3];
+
+typedef enum lldp_8023_type {
+	LLDP_8023_PHYCFG =		1,
+	LLDP_8023_POWER_MDI =		2,
+	LLDP_8023_AGGR =		3,	/* deprecated */
+	LLDP_8023_MTU =			4,
+	LLDP_8023_EEE =			5,
+	LLDP_8023_EEE_FAST_WAKE =	6,
+	LLDP_8023_ADDTL =		7,
+	LLDP_8023_POWER_MEASURE =	8,
+} lldp_8023_type_t;
+
 typedef enum lldp_tx_8023_tlv {
 	LLDP_TX_X3_PHYCFG =		(1 << 0),
-	LLDP_TX_X3_POWER =		(1 << 1),
-	LLDP_TX_X3_AGGR =		(1 << 2),
-	LLDP_TX_X3_MTU =		(1 << 3),
+	LLDP_TX_X3_MTU =		(1 << 1),
 } lldp_tx_8023_tlv_t;
 
 typedef struct lldp_config {

@@ -36,6 +36,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_caps_str;
 	lldp_chassis_str;
 	lldp_chassis_typestr;
+	lldp_oui_8023		{ ASSERT = { TYPE = OBJECT; SIZE = 3; }; };
 	lldp_port_str;
 	lldp_port_typestr;
 	lldp_tlv_type_str;
