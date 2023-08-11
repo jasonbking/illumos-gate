@@ -73,7 +73,6 @@ static int sigfd_create(void);
 static void lldp_init(void);
 static void lldp_main(void);
 static void lldp_create_agents(void);
-static void lldp_enable_agents(void);
 static void lldp_handle_sig(int, void *);
 static void read_config(void);
 
@@ -228,8 +227,6 @@ lldp_init(void)
 
 	/* XXX restarter */
 
-	lldp_enable_agents();
-
 	TRACE_RETURN(log);
 }
 
@@ -255,9 +252,12 @@ lldp_main(void)
 	start_pipe_fd = -1;
 	membar_producer();
 
-	ret = 0;
-	(void) write(fd, &ret, sizeof (ret));
-	VERIFY0(close(fd));
+	/* We daemonized, so now signal parent we've started up */
+	if (fd >= 0) {
+		ret = 0;
+		(void) write(fd, &ret, sizeof (ret));
+		VERIFY0(close(fd));
+	}
 
 	log_debug(log, "starting main loop", LOG_T_END);
 
@@ -386,28 +386,6 @@ lldp_create_agents(void)
 	    DATALINK_CLASS_PHYS, DATALINK_ANY_MEDIATYPE, DLADM_OPT_ACTIVE);
 
 	TRACE_RETURN(log);	
-}
-
-static void
-lldp_enable_agents(void)
-{
-	uu_list_walk_t	*wk;
-	agent_t		*agent;
-
-	TRACE_ENTER(log);
-
-	wk = uu_list_walk_start(agent_list, 0);
-	if (wk == NULL)
-		nomem();
-
-	while ((agent = uu_list_walk_next(wk)) != NULL) {
-		(void) agent_enable(agent);
-		agent_set_status(agent, LLDP_LINK_TXRX);
-	}
-
-	uu_list_walk_end(wk);
-
-	TRACE_RETURN(log);
 }
 
 static void

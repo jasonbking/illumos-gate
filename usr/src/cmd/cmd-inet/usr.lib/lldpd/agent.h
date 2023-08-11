@@ -114,6 +114,8 @@ typedef struct agent_cfg {
 	lldp_tx_8021_tlv_t	ac_tx_8021_tlvs;
 	lldp_tx_8023_tlv_t	ac_tx_8023_tlvs;
 	char			*ac_desc;
+	uint16_t		ac_mtu;
+
 	uint16_t		ac_tx_hold;
 	uint16_t		ac_tx_interval;
 	uint16_t		ac_reinit_delay;
@@ -151,6 +153,7 @@ typedef struct agent {
 	tx_t			a_tx;
 	ttr_t			a_ttr;
 
+	uint16_t		a_mtu;
 	bool			a_local_changes;
 	bool			a_new_neighbor;
 
