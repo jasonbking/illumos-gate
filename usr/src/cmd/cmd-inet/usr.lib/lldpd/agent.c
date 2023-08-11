@@ -142,10 +142,17 @@ agent_create(const char *name)
 	a->a_cfg.ac_tx_credit_max = DEFAULT_TX_CREDIT_MAX;
 	a->a_cfg.ac_tx_fast_init = DEFAULT_TX_FAST_INIT;
 
+	a->a_cfg.ac_status = LLDP_LINK_TXRX;
+
 	/* XXX: Override defaults from config */
 
 	a->a_dl_cb.fc_fn = recv_frame;
 	a->a_dl_cb.fc_arg = a;
+
+	if (!open_port(a)) {
+		agent_destroy(a);
+		return (NULL);
+	}
 
 	ret = thr_create(NULL, 0, agent_thread, a, 0, &a->a_tid);
 	if (ret != 0)
@@ -166,8 +173,8 @@ agent_destroy(agent_t *a)
 		VERIFY0(thr_join(tid, NULL, NULL));
 	}
 
-	VERIFY(!a->a_port_enabled);
-	VERIFY(a->a_dlh == NULL);
+	if (a->a_dlh != NULL)
+		dlpi_close(a->a_dlh);
 
 	ttr_fini(&a->a_ttr);
 	tx_fini(&a->a_tx);
@@ -284,31 +291,20 @@ agent_thread(void *arg)
 
 	VERIFY0(pthread_setname_np(pthread_self(), a->a_name));
 
+	if (!schedule_fd(dlpi_fd(a->a_dlh), &a->a_dl_cb)) {
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "failed to schedule port",
+		    LOG_T_STRING, "errmsg", strerror(errno),
+		    LOG_T_UINT32, "errno", errno,
+		    LOG_T_END);
+	}
+
 	run_tx = tx_machine(a);
 	run_rx = rx_machine(a);
 	run_ttr = ttr_machine(a);
 
 	lldp_clock_tick(&a->a_clk, &tick);
 	while (!a->a_exit) {
-		if (a->a_port_enabled && a->a_dlh == NULL) {
-			if (!open_port(a)) {
-				a->a_port_enabled = false;
-				continue;
-			}
-
-			if (!schedule_fd(dlpi_fd(a->a_dlh), &a->a_dl_cb)) {
-				log_syserr(log, "failed to schedule port",
-				    errno);
-				a->a_port_enabled = false;
-			}
-		}
-
-		if (!a->a_port_enabled && a->a_dlh != NULL) {
-			cancel_fd(dlpi_fd(a->a_dlh));
-			dlpi_close(a->a_dlh);
-			a->a_dlh = NULL;
-		}
-
 		/*
 		 * Run each state machine until they are 'idle' -- i.e.
 		 * there are no conditions present to allow the state
@@ -876,6 +872,21 @@ delete_objects(agent_t *a)
 	uu_list_walk_end(wk);
 }
 
+void
+something_changed_local(agent_t *a, bool locked)
+{
+	VERIFY(!IS_AGENT_THREAD(a));
+
+	if (!locked)
+		mutex_enter(&a->a_lock);
+
+	a->a_local_changes = true;
+	VERIFY0(cond_signal(&a->a_cv));
+
+	if (!locked)
+		mutex_exit(&a->a_lock);
+}
+
 static void
 something_changed_remote(agent_t *a)
 {
@@ -945,6 +956,10 @@ recv_frame(int fd __unused, void *arg)
 		goto done;
 	}
 
+	/*
+	 * Notifications (e.g. link up/down) will generate 0
+	 * byte reads, so we just ignore.
+	 */ 
 	if (di.dri_totmsglen == 0)
 		goto done;
 
@@ -994,6 +1009,38 @@ rx_process_frame(agent_t *a)
 	}
 }
 
+static void
+lldp_dlpi_cb(dlpi_handle_t dlh, dlpi_notifyinfo_t *ni, void *arg)
+{
+	agent_t *a = arg;
+
+	ASSERT(MUTEX_HELD(&a->a_lock));
+
+	switch (ni->dni_note) {
+	case DL_NOTE_LINK_UP:
+		log_info(a->a_log, "link up; port enabled",
+		    LOG_T_END);
+		a->a_port_enabled = true;
+		break;
+	case DL_NOTE_LINK_DOWN:
+		log_info(a->a_log, "link down; port disabled",
+		    LOG_T_END);
+
+		a->a_port_enabled = false;
+		break;
+	case DL_NOTE_SDU_SIZE:
+		log_info(log, "MTU changed",
+		    LOG_T_STRING, "port", a->a_name,
+		    LOG_T_UINT32, "mtu", ni->dni_size,
+		    LOG_T_END);
+
+		a->a_mtu = ni->dni_size;
+		break;
+	}
+
+	something_changed_local(a, true);
+}
+
 static bool
 open_port(agent_t *a)
 {
@@ -1020,6 +1067,14 @@ open_port(agent_t *a)
 	ret = dlpi_bind(a->a_dlh, lldp_sap, NULL);
 	if (ret != DLPI_SUCCESS) {
 		log_dlerr(log, "failed to bind to LLDP SAP", ret);
+		goto fail;
+	}
+
+	ret = dlpi_enabnotify(a->a_dlh, DL_NOTE_LINK_DOWN | DL_NOTE_LINK_UP |
+	    DL_NOTE_PHYS_ADDR | DL_NOTE_SDU_SIZE, lldp_dlpi_cb, a,
+	    &a->a_dl_nid);
+	if (ret != DLPI_SUCCESS) {
+		log_dlerr(log, "failed to enable DLPI notifications", ret);
 		goto fail;
 	}
 
