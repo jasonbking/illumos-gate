@@ -38,7 +38,7 @@ bool buf_skip(buf_t *, uint16_t);
 bool buf_put8(buf_t *, uint8_t);
 bool buf_put16(buf_t *, uint16_t);
 bool buf_ptrstr(buf_t *, const char *);
-bool buf_putbytes(buf_t *, void *, uint16_t);
+bool buf_putbytes(buf_t *, const void *, uint16_t);
 
 static inline uint8_t *
 buf_ptr(buf_t *b)

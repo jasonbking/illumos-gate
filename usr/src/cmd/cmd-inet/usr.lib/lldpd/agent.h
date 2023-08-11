@@ -153,7 +153,6 @@ typedef struct agent {
 	tx_t			a_tx;
 	ttr_t			a_ttr;
 
-	uint16_t		a_mtu;
 	bool			a_local_changes;
 	bool			a_new_neighbor;
 
