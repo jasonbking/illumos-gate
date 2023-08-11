@@ -1022,19 +1022,21 @@ lldp_dlpi_cb(dlpi_handle_t dlh, dlpi_notifyinfo_t *ni, void *arg)
 		    LOG_T_END);
 		a->a_port_enabled = true;
 		break;
+
 	case DL_NOTE_LINK_DOWN:
 		log_info(a->a_log, "link down; port disabled",
 		    LOG_T_END);
 
 		a->a_port_enabled = false;
 		break;
+
 	case DL_NOTE_SDU_SIZE:
-		log_info(log, "MTU changed",
+		log_info(log, "max SDU changed",
 		    LOG_T_STRING, "port", a->a_name,
-		    LOG_T_UINT32, "mtu", ni->dni_size,
+		    LOG_T_UINT32, "max_sdu", ni->dni_size,
 		    LOG_T_END);
 
-		a->a_mtu = ni->dni_size;
+		a->a_dl_info.di_max_sdu = ni->dni_size;
 		break;
 	}
 

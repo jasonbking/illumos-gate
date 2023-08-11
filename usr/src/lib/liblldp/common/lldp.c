@@ -13,8 +13,23 @@
  * Copyright 2022 Jason King
  */
 
+#include <stdbool.h>
+#include <stdio.h>
 #include <libcustr.h>
 #include <liblldp.h>
+
+const uint8_t lldp_oui_8023[3] = { 0x00, 0x12, 0x0f };
+
+static void
+lldp_hex_str(const uint8_t *v, size_t vlen, char *buf, size_t buflen, char *sep)
+{
+	while (vlen > 0) {
+		(void) snprintf(buf, buflen, "%02x%s", *v,
+		    (vlen > 1) ? sep : "");
+		v++;
+		vlen--;
+	}
+}
 
 const char *
 lldp_admin_status_str(lldp_admin_status_t s)
@@ -115,12 +130,46 @@ lldp_cap_str(lldp_cap_t t)
 size_t
 lldp_chassis_str(const lldp_chassis_t *c, char *buf, size_t buflen)
 {
+	switch (c->llc_type) {
+	case LLDP_CHASSIS_COMPONENT:
+	case LLDP_CHASSIS_IFALIAS:
+	case LLDP_CHASSIS_PORT:
+	case LLDP_CHASSIS_IFNAME:
+	case LLDP_CHASSIS_LOCAL:
+		(void) snprintf(buf, buflen, "%*s", (int)c->llc_len, c->llc_id);
+		break;
+	case LLDP_CHASSIS_MACADDR:
+		lldp_hex_str(c->llc_id, c->llc_len, buf, buflen, ":");
+		break;
+	case LLDP_CHASSIS_NETADDR:
+		break;
+	default:
+		lldp_hex_str(c->llc_id, c->llc_len, buf, buflen, "");
+		break;
+	}
 	return (0);
 }
 
 size_t
 lldp_port_str(const lldp_port_t *p, char *buf, size_t buflen)
 {
+	switch (p->llp_type) {
+	case LLDP_PORT_IFALIAS:
+	case LLDP_PORT_COMPONENT:
+	case LLDP_PORT_IFNAME:
+	case LLDP_PORT_LOCAL:
+		(void) snprintf(buf, buflen, "%*s", (int)p->llp_len, p->llp_id);
+		break;
+	case LLDP_PORT_MACADDR:
+		lldp_hex_str(p->llp_id, p->llp_len, buf, buflen, ":");
+		break;
+	case LLDP_PORT_NETADDR:
+	case LLDP_PORT_CIRCUIT_ID:
+		break;
+	default:
+		lldp_hex_str(p->llp_id, p->llp_len, buf, buflen, "");
+		break;
+	}
 	return (0);
 }
 

@@ -64,8 +64,6 @@ static bool write_vlan_name(agent_t *, buf_t *);
 static bool write_mgmt_vlan(agent_t *, buf_t *);
 
 static bool write_phycfg(agent_t *, buf_t *);
-static bool write_power(agent_t *, buf_t *);
-static bool write_aggr(agent_t *, buf_t *);
 static bool write_mtu(agent_t *, buf_t *);
 
 typedef struct tlv_tbl {
@@ -92,8 +90,6 @@ static tlv_tbl_t tlv_8021_tlv_tbl[] = {
 
 static tlv_tbl_t tlv_8023_tlv_tbl[] = {
 	{ LLDP_TX_X3_PHYCFG, write_phycfg },
-	{ LLDP_TX_X3_POWER, write_power },
-	{ LLDP_TX_X3_AGGR, write_aggr },
 	{ LLDP_TX_X3_MTU, write_mtu },
 };
 
@@ -611,23 +607,41 @@ write_mgmt_vlan(agent_t *a, buf_t *w)
 static bool
 write_phycfg(agent_t *a, buf_t *w)
 {
-	return (false);
-}
+	uint16_t tv = make_tlv(LLDP_TLV_ORG_SPEC, 9);
 
-static bool
-write_power(agent_t *a, buf_t *w)
-{
-	return (false);
-}
+	if (!buf_put16(w, tv))
+		return (false);
+	if (!buf_putbytes(w, lldp_oui_8023, sizeof (lldp_oui_8023)))
+		return (false);
+	if (!buf_put8(w, (uint8_t)LLDP_8023_PHYCFG))
+		return (false);
 
-static bool
-write_aggr(agent_t *a, buf_t *w)
-{
+	/*
+	 * 0 autoneg support (1 = enabled)
+	 * 1 autoneg status (1 = enabled)
+	 * 2-7 reserved
+	 */
+
+	/* 2 bytes RFC4836 ifMauAutoNegCapAdvertisedBits */
+
+	/*
+	 * 2 bytes last number of dot3MauType OID from RFC 4836
+	 */
+
 	return (false);
 }
 
 static bool
 write_mtu(agent_t *a, buf_t *w)
 {
-	return (false);
+	uint16_t tv = make_tlv(LLDP_TLV_ORG_SPEC, 6);
+
+	if (!buf_put16(w, tv))
+		return (false);
+	if (!buf_putbytes(w, lldp_oui_8023, sizeof (lldp_oui_8023)))
+		return (false);
+	if (!buf_put16(w, a->a_dl_info.di_max_sdu))
+		return (false);
+
+	return (true);
 }

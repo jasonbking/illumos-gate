@@ -98,7 +98,7 @@ buf_putstr(buf_t *b, const char *s)
 }
 
 bool
-buf_putbytes(buf_t *b, void *p, uint16_t n)
+buf_putbytes(buf_t *b, const void *p, uint16_t n)
 {
 	if (b->b_len < n)
 		return (false);
