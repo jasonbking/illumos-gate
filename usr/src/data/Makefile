@@ -13,10 +13,12 @@
 # Copyright 2017 Nexenta Systems, Inc.
 # Copyright 2019 Joyent, Inc.
 # Copyright 2022 OmniOS Community Edition (OmniOSce) Association.
+# Copyright 2023 Jason King
 #
 
 COMMON_SUBDIRS=	consfonts \
 		hwdata \
+		lldpdata \
 		locale \
 		terminfo \
 		zoneinfo
