@@ -29,6 +29,7 @@ extern "C" {
 void __NORETURN nomem(void);
 void __NORETURN panic(const char *, ...);
 char *xstrdup(const char *);
+char *xsprintf(const char *, ...);
 
 uu_list_walk_t *xuu_list_walk_start(uu_list_t *, uint_t);
 

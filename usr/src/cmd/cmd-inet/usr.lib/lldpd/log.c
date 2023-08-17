@@ -19,6 +19,7 @@
 #include <netdb.h>
 #include <libcustr.h>
 #include <libdlpi.h>
+#include <libscf.h>
 #include <libnvpair.h>
 #include <libuutil.h>
 #include <string.h>
@@ -565,6 +566,16 @@ log_vlvl(log_t *l, log_level_t level, const char *msg, va_list ap)
 }
 
 void
+log_lvl(log_t *l, log_level_t level, const char *msg, ...)
+{
+	va_list ap;
+
+	va_start(ap, msg);
+	log_vlvl(l, level, msg, ap);
+	va_end(ap);
+}
+
+void
 log_fatal(int eval, log_t *l, const char *msg, ...)
 {
 	extern int start_pipe_fd;
@@ -573,7 +584,6 @@ log_fatal(int eval, log_t *l, const char *msg, ...)
 
 	va_start(ap, msg);
 	log_vlvl(l, LOG_L_FATAL, msg, ap);
-	va_end(ap);
 
 	membar_consumer();
 	if (start_pipe_fd >= 0) {
@@ -639,7 +649,16 @@ log_syserr(log_t *l, const char *msg, int eval)
 {
 	log_error(l, msg,
 	    LOG_T_INT32, "err", eval,
-	    LOG_T_STRING, "errstr", strerror(eval),
+	    LOG_T_STRING, "errmsg", strerror(eval),
+	    LOG_T_END);
+}
+
+void
+log_fatal_syserr(log_t *l, const char *msg, int eval)
+{
+	log_fatal(SMF_EXIT_ERR_FATAL, l, msg,
+	    LOG_T_INT32, "err", eval,
+	    LOG_T_STRING, "errmsg", strerror(eval),
 	    LOG_T_END);
 }
 
@@ -648,16 +667,45 @@ log_dlerr(log_t *l, const char *msg, int eval)
 {
 	log_error(l, msg,
 	    LOG_T_INT32, "err", eval,
-	    LOG_T_STRING, "errstr", dlpi_strerror(eval),
+	    LOG_T_STRING, "errmsg", dlpi_strerror(eval),
 	    LOG_T_END);
 }
 
 void
-log_uuerr(log_t *l, const char *msg)
+log_fatal_dladm_err(log_t *l, const char *msg, dladm_status_t st)
 {
-	log_error(l, msg,
+	char buf[DLADM_STRSIZE] = { 0 };
+
+	log_fatal(SMF_EXIT_ERR_FATAL, l, msg,
+	    LOG_T_INT32, "err", st,
+	    LOG_T_STRING, "errmsg", dladm_status2str(st, buf),
+	    LOG_T_END);
+}
+
+void
+log_uuerr(log_t *l, log_level_t lvl, const char *msg)
+{
+	log_lvl(l, lvl, msg,
 	    LOG_T_INT32, "err", uu_error(),
-	    LOG_T_STRING, "errstr", uu_strerror(uu_error()),
+	    LOG_T_STRING, "errmsg", uu_strerror(uu_error()),
+	    LOG_T_END);
+}
+
+void
+log_fatal_uuerr(int eval, log_t *l, const char *msg)
+{
+	log_fatal(eval, l, msg,
+	    LOG_T_INT32, "err", uu_error(),
+	    LOG_T_STRING, "errmsg", uu_strerror(uu_error()),
+	    LOG_T_END);
+}
+
+void
+log_fatal_scferr(int eval, log_t *l, const char *msg)
+{
+	log_fatal(eval, l, msg,
+	    LOG_T_INT32, "err", scf_error(),
+	    LOG_T_STRING, "errmsg", scf_strerror(scf_error()),
 	    LOG_T_END);
 }
 

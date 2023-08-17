@@ -20,6 +20,7 @@
 
 #include "agent.h"
 #include "buf.h"
+#include "config.h"
 #include "lldpd.h"
 #include "log.h"
 #include "neighbor.h"
@@ -433,7 +434,7 @@ write_end(buf_t *w)
 static bool
 write_chassis_id(buf_t *w)
 {
-	lldp_chassis_t *chassis = &lldp_config.lcfg_chassis;
+	lldp_chassis_t *chassis = &lldp_config->lcfg_chassis;
 	uint16_t tv;
 
 	VERIFY(MUTEX_HELD(&lldp_config_lock));
@@ -511,8 +512,8 @@ write_sysname(agent_t *a, buf_t *w)
 	size_t namelen;
 	uint16_t tv;
 
-	namelen = (lldp_config.lcfg_sysname == NULL) ?
-	    0 : strlen(lldp_config.lcfg_sysname);
+	namelen = (lldp_config->lcfg_sysname == NULL) ?
+	    0 : strlen(lldp_config->lcfg_sysname);
 	if (namelen > LLDP_SYS_NAME_MAX) {
 		log_warn(a->a_tx.tx_log, "system name is too long; TLV "
 		    "will be truncated",
@@ -524,7 +525,7 @@ write_sysname(agent_t *a, buf_t *w)
 	tv = make_tlv(LLDP_TLV_SYS_NAME, namelen);
 	if (!buf_put16(w, tv))
 		return (false);
-	if (!buf_putbytes(w, lldp_config.lcfg_sysname, namelen))
+	if (!buf_putbytes(w, lldp_config->lcfg_sysname, namelen))
 		return (false);
 	
 	return (true);
@@ -538,8 +539,8 @@ write_sysdesc(agent_t *a, buf_t *w)
 	size_t desclen;
 	uint16_t tv;
 
-	desclen = (lldp_config.lcfg_sysdesc == NULL) ?
-	    0 : strlen(lldp_config.lcfg_sysdesc);
+	desclen = (lldp_config->lcfg_sysdesc == NULL) ?
+	    0 : strlen(lldp_config->lcfg_sysdesc);
 	if (desclen > LLDP_SYS_DESC_MAX) {
 		log_warn(a->a_tx.tx_log, "system description is too long; TLV "
 		    "will be truncated",
@@ -551,7 +552,7 @@ write_sysdesc(agent_t *a, buf_t *w)
 	tv = make_tlv(LLDP_TLV_SYS_DESC, desclen);
 	if (!buf_put16(w, tv))
 		return (false);
-	if (!buf_putbytes(w, lldp_config.lcfg_sysdesc, desclen))
+	if (!buf_putbytes(w, lldp_config->lcfg_sysdesc, desclen))
 		return (false);
 	
 	return (true);
@@ -566,9 +567,9 @@ write_syscap(agent_t *a, buf_t *w)
 
 	if (!buf_put16(w, tv))
 		return (false);
-	if (!buf_put16(w, lldp_config.lcfg_syscap))
+	if (!buf_put16(w, lldp_config->lcfg_syscap))
 		return (false);
-	if (!buf_put16(w, lldp_config.lcfg_encap))
+	if (!buf_put16(w, lldp_config->lcfg_encap))
 		return (false);
 
 	return (false);
