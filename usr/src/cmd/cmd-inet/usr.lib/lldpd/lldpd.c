@@ -43,6 +43,7 @@
 #include <libscf.h>
 
 #include "agent.h"
+#include "config.h"
 #include "door.h"
 #include "lldpd.h"
 #include "log.h"
@@ -50,12 +51,7 @@
 #include "timer.h"
 #include "util.h"
 
-lldp_config_t	lldp_config;
-mutex_t		lldp_config_lock = ERRORCHECKMUTEX;
-
-scf_handle_t	*rep_handle;
 dladm_handle_t	dl_handle;
-char		*my_fmri;
 
 int start_pipe_fd = -1;
 
@@ -74,7 +70,6 @@ static void lldp_init(void);
 static void lldp_main(void);
 static void lldp_create_agents(void);
 static void lldp_handle_sig(int, void *);
-static void read_config(void);
 
 static fd_cb_t sig_cb = {
 	.fc_fn = lldp_handle_sig,
@@ -151,76 +146,35 @@ lldp_init(void)
 
 	log_info(log, "startup...", LOG_T_END);
 
-	/*
-	 * For debugging/troubleshooting purposes, we want to be able
-	 * to manually run lldpd outside of SMF.
-	 */
-	my_fmri = getenv("SMF_FMRI");
-	if (my_fmri == NULL) {
-		my_fmri = LLDP_FMRI;
-		log_info(log,
-		    "SMF_FMRI not set (not run from SMF?); using default",
-		    LOG_T_STRING, "fmri", my_fmri,
-		    LOG_T_END);
-	}
-
+	config_init();
 	lldp_timers_sysinit();
 	neighbor_init();
 	agent_init();
 
 	evport = port_create();
-	if (evport < 0) {
-		log_fatal(SMF_EXIT_ERR_FATAL, log,
-		    "failed to create event port",
-		    LOG_T_STRING, "errmsg", strerror(errno),
-		    LOG_T_UINT32, "errno", errno,
-		    LOG_T_END);
-	}
+	if (evport < 0)
+		log_fatal_syserr(log, "failed to create event port", errno);
+
 	log_trace(log, "created event port",
 	    LOG_T_UINT32, "evport", evport,
 	    LOG_T_END);
 
 	sigfd = sigfd_create();
-	if (sigfd < 0) {
-		log_fatal(SMF_EXIT_ERR_FATAL, log,
-		    "failed to create signal fd",
-		    LOG_T_STRING, "errmsg", strerror(errno),
-		    LOG_T_UINT32, "errno", errno,
-		    LOG_T_END);
-	}
+	if (sigfd < 0)
+		log_fatal_syserr(log, "failed to create signal fd", errno);
+
 	log_trace(log, "created signal fd",
 	    LOG_T_UINT32, "sigfd", sigfd,
 	    LOG_T_END);
 
 	block_signals(NULL);
 
-	rep_handle = scf_handle_create(SCF_VERSION);
-	if (rep_handle == NULL) {
-		uint32_t serr = scf_error();
-
-		log_fatal(SMF_EXIT_ERR_FATAL, log,
-		    "failed to create repository handle",
-		    LOG_T_UINT32, "err", serr,
-		    LOG_T_STRING, "errstr", scf_strerror(serr),
-		    LOG_T_END);
-	}
-	log_trace(log, "created repository handle",
-	    LOG_T_POINTER, "rep_handle", (void *)rep_handle,
-	    LOG_T_END);
-
-	read_config();
-
 	lldp_create_door(NULL);
 
 	dlret = dladm_open(&dl_handle);
 	if (dlret != DLADM_STATUS_OK) {
-		char buf[DLADM_STRSIZE] = { 0 };
-
-		log_fatal(SMF_EXIT_ERR_FATAL, log,
-		    "failed to create dlmgt handle",
-		    LOG_T_UINT32, "err", dlret,
-		    LOG_T_STRING, "errstr", dladm_status2str(dlret, buf),
-		    LOG_T_END);
+		log_fatal_dladm_err(log, "failed to create dlmgt handle",
+		    dlret);
 	}
 
 	lldp_create_agents();
@@ -239,11 +193,8 @@ lldp_main(void)
 
 	ret = pthread_setname_np(pthread_self(), "main");
 	if (ret != 0) {
-		log_fatal(SMF_EXIT_ERR_FATAL, log,
-		    "failed to set thread name on main thread",
-		    LOG_T_STRING, "errmsg", strerror(ret),
-		    LOG_T_UINT32, "errno", ret,
-		    LOG_T_END);
+		log_fatal_syserr(log,
+		    "failed to set thread name on main thread", ret);
 	}
 
 	VERIFY(schedule_fd(sigfd, &sig_cb));
@@ -277,7 +228,7 @@ lldp_main(void)
 				log_fatal(SMF_EXIT_ERR_FATAL, log,
 				    "event port fd error",
 				    LOG_T_INT32, "fd", evport,
-				    LOG_T_INT32, "errno", e,
+				    LOG_T_INT32, "err", e,
 				    LOG_T_STRING, "errmsg", strerror(e),
 				    LOG_T_END);
 			default:
@@ -386,43 +337,6 @@ lldp_create_agents(void)
 	    DATALINK_CLASS_PHYS, DATALINK_ANY_MEDIATYPE, DLADM_OPT_ACTIVE);
 
 	TRACE_RETURN(log);	
-}
-
-static void
-read_config(void)
-{
-	struct utsname uts = { 0 };
-
-	mutex_enter(&lldp_config_lock);
-
-	/* Set defaults */
-
-	lldp_config.lcfg_chassis.llc_type = LLDP_CHASSIS_MACADDR;
-
-	if (lldp_config.lcfg_sysname == NULL) {
-		lldp_config.lcfg_sysname = umem_alloc(MAXHOSTNAMELEN,
-		    UMEM_NOFAIL);
-	}
-	(void) memset(lldp_config.lcfg_sysname, '\0', MAXHOSTNAMELEN);
-	VERIFY0(gethostname(lldp_config.lcfg_sysname, MAXHOSTNAMELEN));
-
-	lldp_config.lcfg_syscap = LLDP_CAP_ROUTER | LLDP_CAP_STATION;
-	lldp_config.lcfg_encap = LLDP_CAP_STATION;
-
-	if (uname(&uts) < 0)
-		err(EXIT_FAILURE, "uname failed");
-
-	free(lldp_config.lcfg_sysdesc);
-	lldp_config.lcfg_sysdesc = NULL;
-	(void) asprintf(&lldp_config.lcfg_sysdesc, "%s %s %s %s %s",
-	    uts.sysname, uts.nodename, uts.release, uts.version,
-	    uts.machine);
-	if (lldp_config.lcfg_sysdesc == NULL)
-		nomem();
-
-	/* XXX: Override from SMF */
-
-	mutex_exit(&lldp_config_lock);
 }
 
 static void

@@ -54,6 +54,22 @@ xstrdup(const char *s)
 	return (ns);
 }
 
+char *
+xsprintf(const char *fmt, ...)
+{
+	char *buf = NULL;
+	va_list ap;
+
+	va_start(ap, fmt);
+	(void) vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (buf == NULL)
+		nomem();
+
+	return (buf);
+}
+
 uu_list_walk_t *
 xuu_list_walk_start(uu_list_t *l, uint_t flags)
 {
