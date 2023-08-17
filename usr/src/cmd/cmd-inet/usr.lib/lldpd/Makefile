@@ -18,6 +18,7 @@ MANIFEST =	lldpd.xml
 
 OBJS =		agent.o		\
 		buf.o		\
+		config.o	\
 		door.o		\
 		lldpd.o		\
 		log.o		\
@@ -51,13 +52,14 @@ install:=	TARGET= install
 clean:=		TARGET= clean
 clobber:=	TARGET= clobber
 
-LDLIBS +=	-lcustr	\
-		-ldladm	\
-		-ldlpi	\
-		-llldp	\
-		-lscf	\
-		-lumem	\
-		-luutil	\
+LDLIBS +=	-lcustr		\
+		-ldladm		\
+		-ldlpi		\
+		-llldp		\
+		-lscf		\
+		-lsmbios	\
+		-lumem		\
+		-luutil
 
 .KEEP_STATE:
 
