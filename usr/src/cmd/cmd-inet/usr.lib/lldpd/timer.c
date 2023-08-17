@@ -104,7 +104,8 @@ lldp_clock_init(agent_t *a, lldp_clock_t *clk)
 	clk->lc_agent = a;
 	clk->lc_timers = uu_list_create(clock_pool, a, UU_LIST_DEBUG);
 	if (clk->lc_timers == NULL) {
-		log_uuerr(a->a_log, "failed to initialize timer tree");
+		log_uuerr(a->a_log, LOG_L_ERROR,
+		    "failed to initialize timer tree");
 		return (false);
 	}
 	return (true);

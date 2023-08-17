@@ -17,6 +17,8 @@
 #ifndef _LOG_H
 #define	_LOG_H
 
+#include <libdladm.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -91,9 +93,14 @@ void log_warn(log_t *, const char *, ...) __sentinel(0);
 void log_error(log_t *, const char *, ...) __sentinel(0);
 void log_fatal(int, log_t *, const char *, ...) __sentinel(0) __NORETURN;
 
+void log_fatal_syserr(log_t *, const char *, int) __NORETURN;
+void log_fatal_dladm_err(log_t *, const char *, dladm_status_t) __NORETURN;
+void log_fatal_uuerr(int, log_t *, const char *) __NORETURN;
+void log_fatal_scferr(int, log_t *, const char *) __NORETURN;
+
 void log_syserr(log_t *, const char *, int);
 void log_dlerr(log_t *, const char *, int);
-void log_uuerr(log_t *, const char *);
+void log_uuerr(log_t *, log_level_t, const char *);
 
 int logobj_init(logobj_t *, ...) __sentinel(0);
 int logobj_key_add(logobj_t *, ...) __sentinel(0);
