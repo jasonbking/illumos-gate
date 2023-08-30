@@ -1,228 +1,151 @@
 /*
- * Taken from https://www.iana.org/assignments/ianamau-mib/ianamau-mib
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
+ *
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * http://www.illumos.org/license/CDDL.
  */
-static struct lldp_mau_tbl {
-	uint16_t	lmt_id;
-	const char	*lmt_name;
-	const char	*lmt_desc;
-} lldp_mau_tbl[] = {
-/* BEGIN CSTYLED */
-	{ 1, "dot3MauTypeAUI", "no internal MAU, view from AUI" },
-	{ 2, "dot3MauType10Base5", "thick coax MAU" },
-	{ 3, "dot3MauTypeFoirl", "FOIRL MAU" },
-	{ 4, "dot3MauType10Base2", "thin coax MAU" },
-	{ 5, "dot3MauType10BaseT", "UTP MAU. },
-	{ 6, "dot3MauType10BaseFP", "passive fiber MAU" },
-	{ 7, "dot3MauType10BaseFB", "sync fiber MAU" },
-	{ 8, "dot3MauType10BaseFL", "async fiber MAU. },
-	{ 9, "dot3MauType10Broad36", "broadband DTE MAU. },
-	{ 10, "dot3MauType10BaseTHD", "UTP MAU, half duplex mode" },
-	{ 11, "dot3MauType10BaseTFD", "UTP MAU, full duplex mode" },
-	{ 12, "dot3MauType10BaseFLHD", "async fiber MAU, half duplex mode" },
-	{ 13, "dot3MauType10BaseFLFD", "async fiber MAU, full duplex mode" },
-	{ 14, "dot3MauType100BaseT4", "4 pair category 3 UTP" },
-	{ 15, "dot3MauType100BaseTXHD", "2 pair category 5 UTP, half duplex mode" },
-	{ 16, "dot3MauType100BaseTXFD", "2 pair category 5 UTP, full duplex mode" },
-	{ 17, "dot3MauType100BaseFXHD", "X fiber over PMT, half duplex mode" },
-	{ 18, "dot3MauType100BaseFXFD", "X fiber over PMT, full duplex mode" },
-	{ 19, "dot3MauType100BaseT2HD", "2 pair category 3 UTP, half duplex mode" },
-	{ 20, "dot3MauType100BaseT2FD", "2 pair category 3 UTP, full duplex mode" },
-	{ 21, "dot3MauType1000BaseXHD", "PCS/PMA, unknown PMD, half duplex mode" },
-	{ 22, "dot3MauType1000BaseXFD", "PCS/PMA, unknown PMD, full duplex mode" },
-	{ 23, "dot3MauType1000BaseLXHD", "Fiber over long-wavelength laser, half duplex },
-	{ 24, "dot3MauType1000BaseLXFD", "Fiber over long-wavelength laser, full duplex },
-	{ 25, "dot3MauType1000BaseSXHD", "Fiber over short-wavelength laser, half },
-	{ 26, "dot3MauType1000BaseSXFD", "Fiber over short-wavelength laser, full },
-	{ 27, "dot3MauType1000BaseCXHD", "Copper over 150-Ohm balanced cable, half },
-	{ 28, "dot3MauType1000BaseCXFD", "Copper over 150-Ohm balanced cable, full },
-	{ 29, "dot3MauType1000BaseTHD", "Four-pair Category 5 UTP, half duplex mode" },
-	{ 30, "dot3MauType1000BaseTFD", "Four-pair Category 5 UTP, full duplex mode" },
-	{ 31, "dot3MauType10GigBaseX", "X PCS/PMA, unknown PMD." },
-	{ 32, "dot3MauType10GigBaseLX4", "X fiber over WWDM optics" },
-	{ 33, "dot3MauType10GigBaseR", "R PCS/PMA, unknown PMD." },
-	{ 34, "dot3MauType10GigBaseER", "R fiber over 1550 nm optics" },
-	{ 35, "dot3MauType10GigBaseLR", "R fiber over 1310 nm optics" },
-	{ 36, "dot3MauType10GigBaseSR", "R fiber over 850 nm optics" },
-	{ 37, "dot3MauType10GigBaseW", "W PCS/PMA, unknown PMD." },
-	{ 38, "dot3MauType10GigBaseEW", "W fiber over 1550 nm optics" },
-	{ 39, "dot3MauType10GigBaseLW", "W fiber over 1310 nm optics" },
-	{ 40, "dot3MauType10GigBaseSW", "W fiber over 850 nm optics" },
-	{ 41, "dot3MauType10GigBaseCX4", "X copper over 8 pair 100-Ohm balanced cable" },
-	{ 42, "dot3MauType2BaseTL", "Voice grade UTP copper, up to 2700m, optional PAF" },
-	{ 43, "dot3MauType10PassTS", "Voice grade UTP copper, up to 750m, optional PAF" },
-	{ 44, "dot3MauType100BaseBX10D", "One single-mode fiber OLT, long wavelength, 10km" },
-	{ 45, "dot3MauType100BaseBX10U", "One single-mode fiber ONU, long wavelength, 10km" },
-	{ 46, "dot3MauType100BaseLX10", "Two single-mode fibers, long wavelength, 10km" },
-	{ 47, "dot3MauType1000BaseBX10D", "One single-mode fiber OLT, long wavelength, 10km" },
-	{ 48, "dot3MauType1000BaseBX10U", "One single-mode fiber ONU, long wavelength, 10km" },
-	{ 49, "dot3MauType1000BaseLX10", "Two sigle-mode fiber, long wavelength, 10km" },
-	{ 50, "dot3MauType1000BasePX10D", "One single-mode fiber EPON OLT, 10km" },
-	{ 51, "dot3MauType1000BasePX10U", "One single-mode fiber EPON ONU, 10km" },
-	{ 52, "dot3MauType1000BasePX20D", "One single-mode fiber EPON OLT, 20km" },
-	{ 53, "dot3MauType1000BasePX20U", "One single-mode fiber EPON ONU, 20km" },
-	{ 54, "dot3MauType10GbaseT", "Four-pair Category 6A or better, full duplex mode only" },
-	{ 55, "dot3MauType10GbaseLRM", "R multimode fiber over 1310 nm optics" },
-	{ 56, "dot3MauType1000baseKX", "X backplane, full duplex mode only" },
-	{ 57, "dot3MauType10GbaseKX4", "4 lane X backplane, full duplex mode only" },
-	{ 58, "dot3MauType10GbaseKR", "R backplane, full duplex mode only" },
-	{ 59, "dot3MauType10G1GbasePRXD1", "One single-mode fiber asymmetric-rate EPON OLT, supporting low },
-	{ 60, "dot3MauType10G1GbasePRXD2", "One single-mode fiber asymmetric-rate EPON OLT, supporting },
-	{ 61, "dot3MauType10G1GbasePRXD3", "One single-mode fiber asymmetric-rate EPON OLT, supporting high },
-	{ 62, "dot3MauType10G1GbasePRXU1", "One single-mode fiber asymmetric-rate EPON ONU, supporting low },
-	{ 63, "dot3MauType10G1GbasePRXU2", "One single-mode fiber asymmetric-rate EPON ONU, supporting },
-	{ 64, "dot3MauType10G1GbasePRXU3", "One single-mode fiber asymmetric-rate EPON ONU, supporting high },
-	{ 65, "dot3MauType10GbasePRD1", "One single-mode fiber symmetric-rate EPON OLT, supporting low },
-	{ 66, "dot3MauType10GbasePRD2", "One single-mode fiber symmetric-rate EPON OLT, supporting },
-	{ 67, "dot3MauType10GbasePRD3", "One single-mode fiber symmetric-rate EPON OLT, supporting high },
-	{ 68, "dot3MauType10GbasePRU1", "One single-mode fiber symmetric-rate EPON ONU, supporting },
-	{ 69, "dot3MauType10GbasePRU3", "One single-mode fiber symmetric-rate EPON ONU, supporting high },
-	{ 70, "dot3MauType40GbaseKR4", "40GBASE-R PCS/PMA over an electrical },
-	{ 71, "dot3MauType40GbaseCR4", "40GBASE-R PCS/PMA over 4 lane shielded },
-	{ 72, "dot3MauType40GbaseSR4", "40GBASE-R PCS/PMA over 4 lane multimode },
-	{ 73, "dot3MauType40GbaseFR", "40GBASE-R PCS/PMA over single mode },
-	{ 74, "dot3MauType40GbaseLR4", "40GBASE-R PCS/PMA over 4 WDM lane },
-	{ 75, "dot3MauType100GbaseCR10", "100GBASE-R PCS/PMA over 10 lane },
-	{ 76, "dot3MauType100GbaseSR10", "100GBASE-R PCS/PMA over 10 lane },
-	{ 77, "dot3MauType100GbaseLR4", "100GBASE-R PCS/PMA over 4 WDM lane },
-	{ 78, "dot3MauType100GbaseER4", "100GBASE-R PCS/PMA over 4 WDM lane },
-	{ 79, "dot3MauType1000baseT1", "1000BASE-T1 single balanced twisted-pair copper cabling PHY" },
-	{ 80, "dot3MauType1000basePX30D", "One single-mode fiber EPON OLT, 20km, 1:32 split ratio" },
-	{ 81, "dot3MauType1000basePX30U", "One single-mode fiber EPON ONU, 20km, 1:32 split ratio" },
-	{ 82, "dot3MauType1000basePX40D", "One single-mode fiber EPON OLT, 20km, 1:64 split ratio" },
-	{ 83, "dot3MauType1000basePX40U", "One single-mode fiber EPON ONU, 20km, 1:64 split ratio" },
-	{ 84, "dot3MauType10G1GbasePRXD4", "One single-mode fiber asymmetric-rate EPON OLT, supporting },
-	{ 85, "dot3MauType10G1GbasePRXU4", "One single-mode fiber asymmetric-rate EPON ONU, supporting },
-	{ 86, "dot3MauType10GbasePRD4", "One single-mode fiber symmetric-rate EPON OLT, supporting },
-	{ 87, "dot3MauType10GbasePRU4", "One single-mode fiber symmetric-rate EPON ONU, supporting },
-	{ 88, "dot3MauType25GbaseCR", "25GBASE-R PCS/PMA over shielded balanced copper cable" },
-	{ 89, "dot3MauType25GbaseCRS", "25GBASE-R PCS/PMA over shielded balanced copper cable },
-	{ 90, "dot3MauType25GbaseKR", "25GBASE-R PCS/PMA over an electrical backplane" },
-	{ 91, "dot3MauType25GbaseKRS", "25GBASE-R PCS/PMA over an electrical backplane without RS-FEC" },
-	{ 92, "dot3MauType25GbaseR", "25GBASE-R PCS/PMA over undefined PMD" },
-	{ 93, "dot3MauType25GbaseSR", "25GBASE-R PCS/PMA over multimode fiber" },
-	{ 94, "dot3MauType25GbaseT", "Four-pair twisted-pair balanced copper cabling" },
-	{ 95, "dot3MauType40GbaseER4", "40GBASE-R PCS/PMA over 4 WDM lane single mode fiber" },
-	{ 96, "dot3MauType40GbaseR", "40GBASE-R PCS as over undefined PMA/PMD" },
-	{ 97, "dot3MauType40GbaseT", "Four-pair twisted-pair balanced copper cabling" },
-	{ 98, "dot3MauType100GbaseCR4", " 100GBASE-R PCS/PMA over 4 lane shielded copper balanced cable" },
-	{ 99, "dot3MauType100GbaseKR4", "100GBASE-R PCS/PMA over an electrical backplane" },
-	{ 100, "dot3MauType100GbaseKP4", "100GBASE-P PCS/PMA over an electrical backplane PMD" },
-	{ 101, "dot3MauType100GbaseR", "100GBASE-R Multi-lane PCS over undefined PMA/PMD" },
-	{ 102, "dot3MauType100GbaseSR4", "100GBASE-R PCS/PMA over 4 lane multimode fiber" },
-	{ 103, "dot3MauType2p5GigT", "2.5GBASE-T Four-pair twisted-pair balanced copper cabling PHY" },
-	{ 104, "dot3MauType5GigT", "5GBASE-T Four-pair twisted-pair balanced copper cabling PHY" },
-	{ 105, "dot3MauType100baseT1", "100BASE-T1 Single balanced twisted-pair copper cabling PHY" },
-	{ 106, "dot3MauType1000baseRHA", "1000BASE-RHA Plastic optical fiber PHY" },
-	{ 107, "dot3MauType1000baseRHB", "1000BASE-RHB Plastic optical fiber PHY" },
-	{ 108, "dot3MauType1000baseRHC", "1000BASE-RHC Plastic optical fiber PHY" },
-	{ 109, "dot3MauType2p5GbaseKX", "2.5GBASE-X PMD over an electrical backplane" },
-	{ 110, "dot3MauType2p5GbaseX", "2.5GBASE-X PCS/PMA over undefined PMD" },
-	{ 111, "dot3MauType5GbaseKR", "5GBASE-KR PMD over an electrical backplane" },
-	{ 112, "dot3MauType5GbaseR", "5GBASE-R PCS/PMA over undefined PMD" },
-	{ 113, "dot3MauType10GpassXR", "Coax cable distribution network PHY continuous downstream/burst mode upstream PHY" },
-	{ 114, "dot3MauType25GbaseLR", "25GBASE-R PCS/PMA over single-mode fiber PMD, with long reach" },
-	{ 115, "dot3MauType25GbaseER", "25GBASE-R PCS/PMA over single-mode fiber PMD, with extended reach" },
-	{ 116, "dot3MauType50GbaseR", "50GBASE-R Multi-lane PCS over undefined PMA/PMD" },
-	{ 117, "dot3MauType50GbaseCR", "50GBASE-R PCS/PMA over shielded copper balanced cable PMD" },
-	{ 118, "dot3MauType50GbaseKR", "50GBASE-R PCS/PMA over an electrical backplane PMD" },
-	{ 119, "dot3MauType50GbaseSR", "50GBASE-R PCS/PMA over multimode fiber PMD" },
-	{ 120, "dot3MauType50GbaseFR", "50GBASE-R PCS/PMA over single mode fiber PMD with reach up to at least 2 km" },
-	{ 121, "dot3MauType50GbaseLR", "50GBASE-R PCS/PMA over single mode fiber PMD with reach up to at least 10 km" },
-	{ 122, "dot3MauType50GbaseER", "50GBASE-R PCS/PMA over single-mode fiber PMD with reach up to at least 40 km" },
-	{ 123, "dot3MauType100GbaseCR2", "100GBASE-R PCS/PMA over 2 lane shielded copper balanced cable PMD" },
-	{ 124, "dot3MauType100GbaseKR2", "100GBASE-R PCS/PMA over an electrical backplane PMD" },
-	{ 125, "dot3MauType100GbaseSR2", "100GBASE-R PCS/PMA over 2 lane multimode fiber PMD" },
-	{ 126, "dot3MauType100GbaseDR", "100GBASE-R PCS/PMA over single mode fiber PMD" },
-	{ 127, "dot3MauType200GbaseR", "200GBASE-R Multi-lane PCS over undefined PMA/PMD" },
-	{ 128, "dot3MauType200GbaseDR4", "200GBASE-R PCS/PMA over 4-lane single-mode fiber PMD" },
-	{ 129, "dot3MauType200GbaseFR4", "200GBASE-R PCS/PMA over 4 WDM lane single-mode fiber PMD with reach up to at least 2 km" },
-	{ 130, "dot3MauType200GbaseLR4", "200GBASE-R PCS/PMA over 4 WDM lane single-mode fiber PMD with reach up to at least 10 km" },
-	{ 131, "dot3MauType200GbaseCR4", "200GBASE-R PCS/PMA over 4 lane shielded copper balanced cable PMD" },
-	{ 132, "dot3MauType200GbaseKR4", "200GBASE-R PCS/PMA over an electrical backplane PMD" },
-	{ 133, "dot3MauType200GbaseSR4", "200GBASE-R PCS/PMA over 4 lane multimode fiber PMD" },
-	{ 134, "dot3MauType200GbaseER4", "200GBASE-R PCS/PMA over 4 WDM lane single-mode fiber PMD with reach up to at least 40 km" },
-	{ 135, "dot3MauType400GbaseR", "400GBASE-R Multi-lane PCS over undefined PMA/PMD" },
-	{ 136, "dot3MauType400GbaseSR16", "400GBASE-R PCS/PMA over 16-lane multimode fiber PMD" },
-	{ 137, "dot3MauType400GbaseDR4", "400GBASE-R PCS/PMA over 4-lane single-mode fiber PMD" },
-	{ 138, "dot3MauType400GbaseFR8", "400GBASE-R PCS/PMA over 8 WDM lane single-mode fiber PMD with reach up to at least 2 km" },
-	{ 139, "dot3MauType400GbaseLR8", "400GBASE-R PCS/PMA over 8 WDM lane single-mode fiber PMD with reach up to at least 10 km" },
-	{ 140, "dot3MauType400GbaseER8", "400GBASE-R PCS/PMA over 8 WDM lane single-mode fiber PMD with reach up to at least 40 km" },
-	{ 141, "dot3MauType10baseT1L", "10BASE-T1L Single balanced pair PHY" },
-	{ 142, "dot3MauType10baseT1SHD", "10BASE-T1S Single balanced pair PHY, half duplex mode" },
-	{ 143, "dot3MauType10baseT1SMD", "10BASE-T1S Single balanced pair PHY, multidrop mode" },
-	{ 144, "dot3MauType10baseT1SFD", "10BASE-T1S Single balanced pair PHY, full duplex mode" },
-	{ 145, "dot3MauType100GbaseFR1", "100GBASE-R PCS/PMA over single-mode fiber PMD with reach up to at least 2 km" },
-	{ 146, "dot3MauType100GbaseLR1", "100GBASE-R PCS/PMA over single-mode fiber PMD with reach up to at least 10 km" },
-	{ 147, "dot3MauType400GbaseFR4", "400GBASE-R PCS/PMA over 4 WDM lane single-mode fiber PMD with reach up to at least 2 km" },
-	{ 148, "dot3MauType400GbaseLR46", "400GBASE-R PCS/PMA over 4 WDM lane single-mode fiber PMD with reach up to at least 6 km" },
-	{ 149, "dot3MauType400GbaseSR8", "400GBASE-R PCS/PMA over 8-lane multimode fiber PMD as specified in Clause 138" },
-	{ 150, "dot3MauType400GbaseSR4p2", "400GBASE-R PCS/PMA over 8-lane multimode fiber PMD as specified in Clause 150" },
-	{ 151, "dot3MauType2p5GbaseT1", "Single balanced pair of conductors PHY as specified in Clause 149" },
-	{ 152, "dot3MauType5GbaseT1", "Single balanced pair of conductors PHY as specified in Clause 149" },
-	{ 153, "dot3MauType10GbaseT1", "Single balanced pair of conductors PHY as specified in Clause 149" },
-	{ 154, "dot3MauType25G10GbasePQGD2", "One single mode fiber, 1 x 25.78125 GBd continuous transmission / 1 x 10.3125 GBd burst mode reception, medium power class, as specified in Clause 141" },
-	{ 155, "dot3MauType25G10GbasePQGD3", "One single mode fiber, 1 x 25.78125 GBd continuous transmission / 1 x 10.3125 GBd burst mode reception, high power class, as specified in Clause 141" },
-	{ 156, "dot3MauType25G10GbasePQGU2", "One single mode fiber, 1 x 25.78125 GBd continuous reception / 1 x 10.3125 GBd burst mode transmission, medium power class, as specified in Clause 141" },
-	{ 157, "dot3MauType25G10GbasePQGU3", "One single mode fiber, 1 x 25.78125 GBd continuous reception / 1 x 10.3125 GBd burst mode transmission, high power class, as specified in Clause 141" },
-	{ 158, "dot3MauType25G10GbasePQXD2", "One single mode fiber, 1 x 25.78125 GBd continuous transmission / 1 x 10.3125 GBd burst mode reception, medium power class, as specified in Clause 141" },
-	{ 159, "dot3MauType25G10GbasePQXD3", "One single mode fiber, 1 x 25.78125 GBd continuous transmission / 1 x 10.3125 GBd burst mode reception, high power class, as specified in Clause 141" },
-	{ 160, "dot3MauType25G10GbasePQXU2", "One single mode fiber, 1 x 25.78125 GBd continuous reception / 1 x 10.3125 GBd burst mode transmission, medium power class, as specified in Clause 141" },
-	{ 161, "dot3MauType25G10GbasePQXU3", "One single mode fiber, 1 x 25.78125 GBd continuous reception / 1 x 10.3125 GBd burst mode transmission, high power class, as specified in Clause 141" },
-	{ 162, "dot3MauType25GbasePQGD2", "One single mode fiber, 1 x 25.78125 GBd continuous transmission / 1 x 25.78125 GBd burst mode reception, medium power class, as specified in Clause 141" },
-	{ 163, "dot3MauType25GbasePQGD3", "One single mode fiber, 1 x 25.78125 GBd continuous transmission / 1 x 25.78125 GBd burst mode reception, high power class, as specified in Clause 141" },
-	{ 164, "dot3MauType25GbasePQGU2", "One single mode fiber, 1 x 25.78125 GBd continuous reception / 1 x 25.78125 GBd burst mode transmission, medium power class, as specified in Clause 141" },
-	{ 165, "dot3MauType25GbasePQGU3", "One single mode fiber, 1 x 25.78125 GBd continuous reception / 1 x 25.78125 GBd burst mode transmission, high power class, as specified in Clause 141" },
-	{ 166, "dot3MauType25GbasePQXD2", "One single mode fiber, 1 x 25.78125 GBd continuous transmission / 1 x 25.78125 GBd burst mode reception, medium power class, as specified in Clause 141" },
-	{ 167, "dot3MauType25GbasePQXD3", "One single mode fiber, 1 x 25.78125 GBd continuous transmission / 1 x 25.78125 GBd burst mode reception, high power class, as specified in Clause 141" },
-	{ 168, "dot3MauType25GbasePQXU2", "One single mode fiber, 1 x 25.78125 GBd continuous reception / 1 x 25.78125 GBd burst mode transmission, medium power class, as specified in Clause 141" },
-	{ 169, "dot3MauType25GbasePQXU3", "One single mode fiber, 1 x 25.78125 GBd continuous reception / 1 x 25.78125 GBd burst mode transmission, high power class, as specified in Clause 141" },
-	{ 170, "dot3MauType50G10GbasePQGD2", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 1 x 10.3125 GBd burst mode reception, medium power class, as specified in Clause 141" },
-	{ 171, "dot3MauType50G10GbasePQGD3", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 1 x 10.3125 GBd burst mode reception, high power class, as specified in Clause 141" },
-	{ 172, "dot3MauType50G10GbasePQGU2", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 1 x 10.3125 GBd burst mode transmission, medium power class, as specified in Clause 141" },
-	{ 173, "dot3MauType50G10GbasePQGU3", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 1 x 10.3125 GBd burst mode transmission, high power class, as specified in Clause 141" },
-	{ 174, "dot3MauType50G10GbasePQXD2", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 1 x 10.3125 GBd burst mode reception, medium power class, as specified in Clause 141" },
-	{ 175, "dot3MauType50G10GbasePQXD3", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 1 x 10.3125 GBd burst mode reception, high power class, as specified in Clause 141" },
-	{ 176, "dot3MauType50G10GbasePQXU2", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 1 x 10.3125 GBd burst mode transmission, medium power class, as specified in Clause 141" },
-	{ 177, "dot3MauType50G10GbasePQXU3", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 1 x 10.3125 GBd burst mode transmission, high power class, as specified in Clause 141" },
-	{ 178, "dot3MauType50G25GbasePQGD2", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 1 x 25.78125 GBd burst mode reception, medium power class, as specified in Clause 141" },
-	{ 179, "dot3MauType50G25GbasePQGD3", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 1 x 25.78125 GBd burst mode reception, high power class, as specified in Clause 141" },
-	{ 180, "dot3MauType50G25GbasePQGU2", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 1 x 25.78125 GBd burst mode transmission, medium power class, as specified in Clause 141" },
-	{ 181, "dot3MauType50G25GbasePQGU3", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 1 x 25.78125 GBd burst mode transmission, high power class, as specified in Clause 141" },
-	{ 182, "dot3MauType50G25GbasePQXD2", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 1 x 25.78125 GBd burst mode reception, medium power class, as specified in Clause 141" },
-	{ 183, "dot3MauType50G25GbasePQXD3", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 1 x 25.78125 GBd burst mode reception, high power class, as specified in Clause 141" },
-	{ 184, "dot3MauType50G25GbasePQXU2", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 1 x 25.78125 GBd burst mode transmission, medium power class, as specified in Clause 141" },
-	{ 185, "dot3MauType50G25GbasePQXU3", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 1 x 25.78125 GBd burst mode transmission, high power class, as specified in Clause 141" },
-	{ 186, "dot3MauType50GbasePQGD2", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 2 x 25.78125 GBd burst mode reception, medium power class, as specified in Clause 141" },
-	{ 187, "dot3MauType50GbasePQGD3", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 2 x 25.78125 GBd burst mode reception, high power class, as specified in Clause 141" },
-	{ 188, "dot3MauType50GbasePQGU2", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 2 x 25.78125 GBd burst mode transmission, medium power class, as specified in Clause 141" },
-	{ 189, "dot3MauType50GbasePQGU3", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 2 x 25.78125 GBd burst mode transmission, high power class, as specified in Clause 141" },
-	{ 190, "dot3MauType50GbasePQXD2", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 2 x 25.78125 GBd burst mode reception, medium power class, as specified in Clause 141" },
-	{ 191, "dot3MauType50GbasePQXD3", "One single mode fiber, 2 x 25.78125 GBd continuous transmission / 2 x 25.78125 GBd burst mode reception, high power class, as specified in Clause 141" },
-	{ 192, "dot3MauType50GbasePQXU2", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 2 x 25.78125 GBd burst mode transmission, medium power class, as specified in Clause 141" },
-	{ 193, "dot3MauType50GbasePQXU3", "One single mode fiber, 2 x 25.78125 GBd continuous reception / 2 x 25.78125 GBd burst mode transmission, high power class, as specified in Clause 141" },
-	{ 194, "dot3MauType100GbaseZR", "100GBASE-R PCS/100GBASE-ZR PMA over a PMD with reach up to at least 80 km as specified in Clause 154" },
-	{ 195, "dot3MauType10GbaseBR10D", "One single-mode fiber OLT PHY supporting a distance of at least 10 km as specified in Clause 158" },
-	{ 196, "dot3MauType10GbaseBR10U", "One single-mode fiber ONU PHY supporting a distance of at least 10 km as specified in Clause 158" },
-	{ 197, "dot3MauType10GbaseBR20D", "One single-mode fiber OLT PHY supporting a distance of at least 20 km as specified in Clause 158" },
-	{ 198, "dot3MauType10GbaseBR20U", "One single-mode fiber ONU PHY supporting a distance of at least 20 km as specified in Clause 158" },
-	{ 199, "dot3MauType10GbaseBR40D", "One single-mode fiber OLT PHY supporting a distance of at least 40 km as specified in Clause 158" },
-	{ 200, "dot3MauType10GbaseBR40U", "One single-mode fiber ONU PHY supporting a distance of at least 40 km as specified in Clause 158" },
-	{ 201, "dot3MauType25GbaseBR10D", "One single-mode fiber OLT PHY supporting a distance of at least 10 km as specified in Clause 159" },
-	{ 202, "dot3MauType25GbaseBR10U", "One single-mode fiber ONU PHY supporting a distance of at least 10 km as specified in Clause 159" },
-	{ 203, "dot3MauType25GbaseBR20D", "One single-mode fiber OLT PHY supporting a distance of at least 20 km as specified in Clause 159" },
-	{ 204, "dot3MauType25GbaseBR20U", "One single-mode fiber ONU PHY supporting a distance of at least 20 km as specified in Clause 159" },
-	{ 205, "dot3MauType25GbaseBR40D", "One single-mode fiber OLT PHY supporting a distance of at least 40 km as specified in Clause 159" },
-	{ 206, "dot3MauType25GbaseBR40U", "One single-mode fiber ONU PHY supporting a distance of at least 40 km as specified in Clause 159" },
-	{ 207, "dot3MauType50GbaseBR10D", "One single-mode fiber OLT PHY supporting a distance of at least 10 km as specified in Clause 160" },
-	{ 208, "dot3MauType50GbaseBR10U", "One single-mode fiber ONU PHY supporting a distance of at least 10 km as specified in Clause 160" },
-	{ 209, "dot3MauType50GbaseBR20D", "One single-mode fiber OLT PHY supporting a distance of at least 20 km as specified in Clause 160" },
-	{ 210, "dot3MauType50GbaseBR20U", "One single-mode fiber ONU PHY supporting a distance of at least 20 km as specified in Clause 160" },
-	{ 211, "dot3MauType50GbaseBR40D", "One single-mode fiber OLT PHY supporting a distance of at least 40 km as specified in Clause 160" },
-	{ 212, "dot3MauType50GbaseBR40U", "One single-mode fiber ONU PHY supporting a distance of at least 40 km as specified in Clause 160" },
-	{ 213, "b2p5GbaseAU", "Glass optical fiber PHY as specified in Clause 166" },
-	{ 214, "b5GbaseAU", "Glass optical fiber PHY as specified in Clause 166" },
-	{ 215, "b10GbaseAU", "Glass optical fiber PHY as specified in Clause 166" },
-	{ 216, "b25GbaseAU", "Glass optical fiber PHY as specified in Clause 166" },
-	{ 217, "b50GbaseAU", "Glass optical fiber PHY as specified in Clause 166" },
-/* END CSTYLED */
-};
+
+/*
+ * Copyright 2023 Jason King
+ */
+
+#include <synch.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/ctype.h>	/* want C locale ISSPACE() */
+#include "liblldp.h"
+
+#define	LLDP_MAU_FILENAME	"/usr/share/lldpdata/mau.txt"
+
+typedef struct lldp_mau {
+	const char	*lm_name;
+	const char	*lm_desc;
+} lldp_mau_t;
+
+
+static mutex_t		lldp_mau_lock = ERRORCHECKMUTEX;
+static bool		lldp_mau_loaded;
+static size_t		lldp_mau_num;
+static size_t		lldp_mau_alloc;
+static lldp_mau_t	*lldp_maus;
+
+static void
+skip_whitespace(char **pp)
+{
+	char *p = *pp;
+
+	while (*p != '\0' && ISSPACE(*p))
+		p++;
+
+	*pp = p;
+}
+
+static char *
+get_tok(char **linep)
+{
+	char *p = *linep;
+	bool in_quote = false;
+
+	skip_whitespace(&p);
+
+	if (*p == '\0')
+		return (NULL);
+
+	
+}
+
+static void
+parse_line(char *line)
+{
+	char *num = NULL;
+	char *name = NULL;
+	char *desc = NULL;
+
+	if (!ISDIGIT(*line))
+		return;
+
+	/* Get the numeric value in 'num' */
+	num = line;
+	while (*line != '\0' && ISDIGIT(*line))
+		line++;
+	if (*line == '\0')
+		return;
+	*line++ = '\0';
+
+	skip_whitespace(&line);
+
+}
+
+static void
+load_maus(void)
+{
+	FILE *f = NULL;
+	char *line = NULL;
+	size_t len = 0;
+	ssize_t n;
+
+	mutex_enter(&lldp_mau_lock);
+	if (lldp_mau_loaded) {
+		mutex_exit(&lldp_mau_lock);
+		return;
+	}
+
+	f = fopen(LLDP_MAU_FILENAME, "rF");
+	if (f == NULL)
+		goto done;
+
+	while ((n = getline(&line, &len, f)) > 0) {
+		char *p = line;
+
+		skip_whitespace(&p);
+
+		/* Skip empty lines */
+		if (*p == '\0')
+			continue;
+
+		/* Skip comment lines */
+		if (*p == '#')
+			continue;
+
+		parse_line(p);
+	}
+
+	(void) fclose(f);
+
+done:
+	/*
+	 * We only try to load the MAU data once, if that fails, we
+	 * just won't return any data.
+	 */
+	lldp_mau_loaded = true;
+	mutex_exit(&lldp_mau_lock);
+}
+
+const char *
+lldp_mau_name(uint16_t id)
+{
+	load_maus();
+
+	if (id > lldp_mau_num || lldp_maus[id].lm_name == NULL)
+		return (NULL);
+
+	return (lldp_maus[id].lm_name);
+}
+
+const char *
+lldp_mau_desc(uint16_t id)
+{
+	load_maus();
+
+	if (id > lldp_mau_num || lldp_maus[id].lm_desc == NULL)
+		return (NULL);
+
+	return (lldp_maus[id].lm_desc);
+}
