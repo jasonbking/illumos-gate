@@ -57,7 +57,7 @@ LDLIBS +=	-lcustr		\
 		-ldlpi		\
 		-llldp		\
 		-lscf		\
-		-lsmbios	\
+		-ltopo		\
 		-lumem		\
 		-luutil
 
