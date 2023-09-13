@@ -16,10 +16,11 @@
 #include <netdb.h>
 #include <stdbool.h>
 #include <string.h>
-#include <smbios.h>
 #include <synch.h>
 #include <libscf.h>
 #include <unistd.h>
+#include <fm/libtopo.h>
+#include <fm/topo_hc.h>
 #include <sys/debug.h>
 #include <sys/utsname.h>
 
@@ -54,11 +55,15 @@ scf_propertygroup_t	*scf_pg;
 scf_property_t		*scf_prop;
 scf_value_t		*scf_val;
 
+topo_hdl_t		*topo_hdl;
+
 static void set_chassis_id(log_t *, lldp_chassis_t *, const char *);
 
 void
 config_init(void)
 {
+	int e;
+
 	TRACE_ENTER(log);
 
 	my_fmri = getenv("SMF_FMRI");
@@ -134,13 +139,22 @@ config_init(void)
 		    "failed to decode SMF fmri");
 	}
 
+	topo_hdl = topo_open(TOPO_VERSION, NULL, &e);
+	if (topo_hdl == NULL) {
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "failed to obtain topo handle",
+		    LOG_T_STRING, "errmsg", topo_strerror(e),
+		    LOG_T_END);
+	}
+
 	TRACE_RETURN(log);
 }
 
 bool
 config_read(void)
 {
-	lldp_config_t	*cfg;
+	lldp_config_t	*cfg = NULL;
+	int		e;
 	char		host[MAXHOSTNAMELEN] = { 0 };
 	struct utsname	uts = { 0 };
 	bool		ret = true;
@@ -148,6 +162,32 @@ config_read(void)
 	TRACE_ENTER(log);
 
 	log_debug(log, "loading configuration", LOG_T_END);
+
+	cfg = umem_zalloc(sizeof (*cfg), UMEM_DEFAULT);
+	if (cfg == NULL) {
+		log_syserr(log, "failed to allocate new lldp config", errno);
+		return (false);
+	}
+	
+	e = 0;	    
+	(void) topo_snap_hold(topo_hdl, NULL, &e);
+	if (e != 0) {
+		log_error(log, "failed to create topo snapshot",
+		    LOG_T_INT32, "err", e,
+		    LOG_T_STRING, "errmsg", topo_strerror(e),
+		    LOG_T_END);
+		umem_free(cfg, sizeof (*cfg));
+		return (false);
+	}
+
+	if (!config_get_defaults(cfg))
+		goto fail;
+
+	if (config_get_smf(cfg) != SCF_ERROR_NONE)
+		goto fail;
+
+	topo_snap_release(topo_hdl);
+
 
 	cfg = &i_cfg[i_cfg_gen ^ 1];
 
@@ -248,69 +288,139 @@ done:
 
 	TRACE_RETURN(log);
 	return (ret);
+
+fail:
+	config_free(cfg);
+	topo_snap_release(topo_hdl);
+	return (false);
 }
 
-/*
- * Set the LLDP chassis id value using the SMBIOS serial field of
- * the SMB_TYPE_SYSTEM struct. This should match what fmd uses as its
- * chassis id in the hc topology, so it's hopefully consistent.
- */
-static bool
-chassis_serial_smbios(log_t *l, lldp_chassis_t *chassis)
+static int
+topo_cb(topo_hdl_t *th, tnode_t *np, void *arg)
 {
-	smbios_hdl_t	*shp = NULL;
-	smbios_struct_t	st = { 0 };
-	smbios_info_t	info = { 0 };
-	size_t		len;
-	int		errval;
+	lldp_config_t	*cfg = arg;
+	char		*cid;
+	int		e;
 
-	shp = smbios_open(NULL, SMB_VERSION, 0, &errval);
-	if (shp == NULL) {
-		log_warn(l, "failed to load SMBIOS info",
-		    LOG_T_INT32, "err", errval,
-		    LOG_T_STRING, "errmsg", smbios_errmsg(errval),
+	/* Currently we only use the root node */
+
+	cid = topo_prop_get_string(np, FM_FMRI_AUTHORITY, FM_FMRI_AUTH_CHASSIS,
+	    &cid, &e);
+	if (cid == NULL) {
+		log_fatal(SMF_EXIT_ERR_FATAL, "failed to get chassis id",
+		    LOG_T_STRING, "errmsg", topo_strerror(e),
+		    LOG_T_END);
+		return (TOPO_WALK_TERMINATE);
+	}
+
+	(void) strlcpy(cfg->lcfg_chassis.llc_id, cid, LLDP_CHASSIS_MAX);
+	cfg->lcfg_chassic.llc_type = LLDP_CHASSIS_COMPONENT;
+
+	topo_hdl_strfree(th, cid);
+	return (TOPO_WALK_TERMINATE);
+}
+
+static bool 
+config_get_defaults(lldp_config_t *cfg)
+{
+	topo_walk_t	*wp;
+	int		e;
+
+	wp = topo_walk_init(topo_hdl, FM_FMRI_SCHEME_HC, topo_cb, cfg, &e);
+	if (wp == NULL) {
+		log_error(log, "failed to start topo walk",
+		    LOG_T_INT, "err",
+		    LOG_T_STRING, "errmsg", topo_strerror(e),
 		    LOG_T_END);
 		return (false);
 	}
 
-	if (smbios_truncated(shp)) {
-		log_warn(l, "SMBIOS table is truncated", LOG_T_END);
-		goto fail;
+	while ((e = topo_walk_step(wp, TOPO_WALK_CHILD)) == TOPO_WALK_NEXT)
+		;
+
+	if (e == TOPO_WALK_ERR) {
+		log_error(log, "topo walk failed", LOG_T_END);
+		topo_walk_fini(wp);
+		return (false);
 	}
 
-	if (smbios_lookup_type(shp, SMB_TYPE_SYSTEM, &st) != 0) {
-		log_warn(l, "failed to find SMB_TYPE_SYSTEM entry", LOG_T_END);
-		goto fail;
-	}
-
-	if (smbios_info_common(shp, st.smbstr_id, &info) != 0) {
-		log_warn(l, "failed to get SMB_TYPE_SYSTEM common info",
-		    LOG_T_END);
-		goto fail;
-	}
-
-	len = strlen(info.smbi_serial);
-	if (len > LLDP_CHASSIS_MAX) {
-		log_warn(l, "SMBIOS system serial too long; value will be "
-		    "truncated", LOG_T_END);
-	}
-
-	/*
-	 * There is no chassis id type for a serial number.
-	 * LLDP_CHASSIS_COMPONENT seems like the closest analogue, so
-	 * we use that.
-	 */
-	chassis->llc_type = LLDP_CHASSIS_COMPONENT;
-	(void) strncpy((char *)chassis->llc_id, info.smbi_serial,
-	    LLDP_CHASSIS_MAX);
-	chassis->llc_len = len;
-
-	smbios_close(shp);
+	topo_walk_fini(wp);
 	return (true);
+}
 
-fail:
-	smbios_close(shp);
-	return (false);
+static scf_error_t
+config_get_smf(lldp_config_t *cfg)
+{
+	char *s = NULL;
+	size_t len;
+	scf_error_t e;
+
+	e = config_get_pg(log, scf_inst, CONFIG_PG, scf_pg);
+	if (e != SCF_ERROR_NONE)
+		return (e);
+
+	e = config_get_prop(log, scf_pg, CONFIG_SYSNAME, scf_val);
+	switch (e) {
+	case SCF_ERROR_NOT_FOUND:
+		break;
+	case SCF_ERROR_NONE:
+		free(cfg->lcfg_sysname);
+
+		len = scf_value_get_ustring(scf_val, NULL, 0);
+		if (len == 0)
+			break;
+
+		cfg->lcfg_sysname = calloc(1, len + 1);
+		if (cfg->lcfg_sysname == NULL)
+			nomem();
+
+		(void) scf_value_get_ustring(scf_val, cfg->lcfg_sysname,
+		    len + 1);
+		break;
+	default:
+		return (e);
+	}
+
+	e = config_get_prop(log, scf_pg, CONFIG_SYSDESC, scf_val);
+	switch (e) {
+	case SCF_ERROR_NOT_FOUND:
+		break;
+	case SCF_ERROR_NONE:
+		free(cfg->lcfg_sysdesc);
+
+		len = scf_value_get_ustring(scf_val, NULL, 0);
+		if (len == 0)
+			break;
+
+		cfg->lcfg_sysdesc = calloc(1, len + 1);
+		if (cfg->lcfg_sysdesc == NULL)
+			nomem();
+
+		(void) scf_value_get_ustring(scf_val, cfg->lcfg_sysdesc,
+		    len + 1);
+		break;
+	default:
+		return (e);
+	}
+
+	/* XXX: Should we allow syscap or mgmt if be set in smf? */
+	return (SCF_ERROR_NONE);
+}
+
+static void
+config_free(lldp_config_t *cfg)
+{
+	if (cfg == NULL)
+		return;
+
+	free(cfg->lcfg_sysname);
+	free(cfg->lcfg_sysdesc);
+	if (cfg->lcfg_mgmt_if != NULL) {
+		for (uint_t i = 0; i < cfg->lcfg_mgmt_if[i]; i++)
+			free(cfg->lcfg_mgmt_if[i]);
+		free(cfg->lcfg_mgmt_if);
+	}
+	umem_free(cfg, sizeof (*cfg);
 }
 
 static void
@@ -329,14 +439,14 @@ set_chassis_id(log_t *log, lldp_chassis_t *chassis, const char *def)
 	chassis->llc_len = hlen;
 }
 
-bool
+scf_error_t
 config_get_pg(log_t *log, const scf_instance_t *inst, const char *name,
     scf_propertygroup_t *pg)
 {
 	if (scf_instance_get_pg_composed(inst, NULL, name, pg) == 0)
-		return (true);
+		return (SCF_ERROR_NONE);
 
-	uint_t serr = scf_error();
+	scf_error_t serr = scf_error();
 
 	/*
 	 * For any property group (for now at least), it's not an error
@@ -351,7 +461,7 @@ config_get_pg(log_t *log, const scf_instance_t *inst, const char *name,
 		    LOG_T_END);
 	}
 
-	return (false);
+	return (serr);
 }
 
 bool
