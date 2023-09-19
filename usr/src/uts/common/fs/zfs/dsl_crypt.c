@@ -80,14 +80,6 @@
  */
 int zfs_disable_ivset_guid_check = 0;
 
-/*
- * The original support for ZFS projects accidentially missed including
- * an objset's projectused dnode in the HMAC calculation (see illumos#13795).
- * When this setting is enabled, a failed local HMAC verification will re-try
- * HMAC verification without including the projectused dnode.
- */
-int zfs_allow_objset_hmac_compat = 1;
-
 static void
 dsl_wrapping_key_hold(dsl_wrapping_key_t *wkey, void *tag)
 {

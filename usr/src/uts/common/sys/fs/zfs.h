@@ -27,7 +27,7 @@
  * Copyright 2020 Joyent, Inc.
  * Copyright (c) 2017 Datto Inc.
  * Copyright (c) 2017, Intel Corporation.
- * Copyright 2021 Jason King
+ * Copyright 2023 Jason King
  */
 
 /* Portions Copyright 2010 Robert Milkowski */
@@ -185,6 +185,7 @@ typedef enum {
 	ZFS_PROP_KEY_GUID,
 	ZFS_PROP_KEYSTATUS,
 	ZFS_PROP_IVSET_GUID,		/* not exposed to the user */
+	ZFS_PROP_DNODE_HASH,		/* not exposed to the user */
 	ZFS_NUM_PROPS
 } zfs_prop_t;
 
@@ -978,7 +979,6 @@ typedef enum zpool_errata {
 	ZPOOL_ERRATA_ZOL_2094_ASYNC_DESTROY,
 	ZPOOL_ERRATA_ZOL_6845_ENCRYPTION,
 	ZPOOL_ERRATA_ZOL_8308_ENCRYPTION,
-	ZPOOL_ERRATA_ILLUMOS_13795_ENCRYPTION,
 } zpool_errata_t;
 
 typedef struct pool_removal_stat {

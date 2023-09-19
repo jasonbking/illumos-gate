@@ -24,6 +24,7 @@
  */
 /*
  * Copyright (c) 2012 by Delphix. All rights reserved.
+ * Copyright 2023 Jason King
  */
 
 /*
@@ -136,6 +137,14 @@ zprop_register_hidden(int prop, const char *name, zprop_type_t type,
 	    type == PROP_TYPE_NUMBER, B_FALSE, NULL);
 }
 
+void
+zprop_register_hidden_index(int prop, const char *name, uint64_t def,
+    zprop_attr_t attr, int objset_types, const char *values,
+    const char *colname, const zprop_index_t *idx_tbl)
+{
+	zprop_register_impl(prop, name, PROP_TYPE_INDEX, def, NULL, attr
+	    objset_types, values, colname, B_TRUE, B_FALSE, idx_tbl);
+}
 
 /*
  * A comparison function we can use to order indexes into property tables.
