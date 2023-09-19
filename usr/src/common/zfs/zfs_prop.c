@@ -263,6 +263,13 @@ zfs_prop_init(void)
 		{ NULL }
 	};
 
+	static zprop_index_t dnode_hash_table[] = {
+		{ "user-group-project", xx },
+		{ "user-group", xx },
+		{ "host-compat", xx },
+		{ NULL }
+	};
+
 	/* inherit index properties */
 	zprop_register_index(ZFS_PROP_REDUNDANT_METADATA, "redundant_metadata",
 	    ZFS_REDUNDANT_METADATA_ALL,
@@ -531,6 +538,10 @@ zfs_prop_init(void)
 	    ZFS_TYPE_FILESYSTEM | ZFS_TYPE_VOLUME, "PBKDF2SALT");
 	zprop_register_hidden(ZFS_PROP_KEY_GUID, "keyguid", PROP_TYPE_NUMBER,
 	    PROP_READONLY, ZFS_TYPE_DATASET, "KEYGUID");
+	zprop_register_hidden_index(ZFS_PROP_DNODE_HASH, "dnodehash", 0,
+	    PROP_INHERIT, ZFS_TYPE_FILESYSTEM | ZFS_TYPE_VOLUME,
+	    "user-group-project | user-group | host-compat", "DNODEHASH",
+	    dnode_hash_table);
 
 	/* oddball properties */
 	zprop_register_impl(ZFS_PROP_CREATION, "creation", PROP_TYPE_NUMBER, 0,

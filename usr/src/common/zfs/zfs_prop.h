@@ -112,6 +112,8 @@ void zprop_register_index(int, const char *, uint64_t, zprop_attr_t, int,
     const char *, const char *, const zprop_index_t *);
 void zprop_register_hidden(int, const char *, zprop_type_t, zprop_attr_t,
     int, const char *);
+void zprop_register_hidden_index(int, const char *, uint64_t, zprop_attr_t, int,
+    const char *, const char *, const zprop_index_t *);
 
 /*
  * Common routines for zfs and zpool property management
