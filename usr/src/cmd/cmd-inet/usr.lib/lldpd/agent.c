@@ -154,11 +154,17 @@ agent_create(const char *name)
 		return (NULL);
 	}
 
-	ret = thr_create(NULL, 0, agent_thread, a, 0, &a->a_tid);
+	ret = thr_create(NULL, 0, agent_thread, a, THR_SUSPENDED, &a->a_tid);
 	if (ret != 0)
 		panic("failed to create agent thread");
 
 	return (a);
+}
+
+void
+agent_start(agent_t *a)
+{
+	VERIFY0(thr_continue(a->a_tid));
 }
 
 void
