@@ -132,18 +132,19 @@ typedef struct agent {
 	mutex_t			a_lock;
 	cond_t			a_cv;
 
-	char			*a_name;
-	struct log		*a_log;
-	thread_t		a_tid;
+	char			*a_name;	/* RO */
+	struct log		*a_log;		/* RW */
+	thread_t		a_tid;		/* RO */
 
 	dlpi_handle_t		a_dlh;
 	dlpi_notifyid_t		a_dl_nid;
 	dlpi_info_t		a_dl_info;
 	fd_cb_t			a_dl_cb;
 
-	bool			a_exit;
-	bool			a_port_enabled;
+	bool			a_exit;		/* RW */
+	bool			a_port_enabled;	/* RW */
 
+	agent_cfg_t		a_default_cfg;
 	agent_cfg_t		a_cfg;
 
 	uu_list_t		*a_neighbors;
@@ -167,6 +168,7 @@ extern uu_list_t	*agent_list;
 void	agent_init(void);
 
 agent_t	*agent_create(const char *);
+void	agent_start(agent_t *);
 void	agent_destroy(agent_t *);
 bool	agent_enable(agent_t *);
 void	agent_disable(agent_t *);
