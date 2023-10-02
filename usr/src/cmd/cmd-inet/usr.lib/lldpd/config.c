@@ -34,29 +34,28 @@
 #define	CONFIG_SYSDESC	"sysdesc"
 #define	CONFIG_MGMTIF	"mgmtif"
 
-/*
- * We maintain two copies of the configuration. When refreshing/loading the
- * configuration, we update the 'non-active' copy and then switch to it.
- * This way we're never left with a partial configuration -- if we fail
- * to update, we continue to use the existing config.
- */
-static lldp_config_t	i_cfg[2];
-static uint_t		i_cfg_gen;
-
-lldp_config_t	*lldp_config = &i_cfg[0];
 mutex_t		lldp_config_lock = ERRORCHECKMUTEX;
+lldp_config_t	*lldp_config;
+
+/*
+ * The default config is created during startup and is read-only once
+ * created.
+ */
+lldp_config_t	lldp_default_config;
 
 char		*my_fmri;
 
 scf_handle_t		*rep_handle;
 scf_service_t		*scf_svc;
 scf_instance_t		*scf_inst;
+scf_snapshot_t		*scf_snap;
 scf_propertygroup_t	*scf_pg;
 scf_property_t		*scf_prop;
 scf_value_t		*scf_val;
 
 topo_hdl_t		*topo_hdl;
 
+static bool config_get_defaults(lldp_config_t *);
 static void set_chassis_id(log_t *, lldp_chassis_t *, const char *);
 
 void
@@ -114,6 +113,16 @@ config_init(void)
 	    LOG_T_POINTER, "inst_handle", (void *)scf_inst,
 	    LOG_T_END);
 
+	scf_snap = scf_snapshot_create(rep_handle);
+	if (scf_snap == NULL) {
+		log_fatal_scferr(SMF_EXIT_ERR_FATAL, log,
+		    "failed to allocate scf snapshot");
+	}
+
+	log_trace(log, "created smf snapshot handle",
+	    LOG_T_POINTER, "snap", (void *)scf_snap,
+	    LOG_T_END);
+
 	scf_pg = scf_pg_create(rep_handle);
 	if (scf_pg == NULL) {
 		log_fatal_scferr(SMF_EXIT_ERR_FATAL, log,
@@ -147,152 +156,94 @@ config_init(void)
 		    LOG_T_END);
 	}
 
+	if (!config_get_defaults(&lldp_default_config)) {
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "failed to obtain default configuration", LOG_T_END);
+	}
+
+	config_read();
+
 	TRACE_RETURN(log);
+}
+
+static void
+config_free(lldp_config_t *cfg)
+{
+	free(cfg->lcfg_sysname);
+	free(cfg->lcfg_sysdesc);
+	/* TODO: management interfaces */
+	free(cfg);
+}
+
+static lldp_config_t *
+config_new(void)
+{
+	lldp_config_t *cfg;
+
+	cfg = umem_zalloc(sizeof (*cfg), UMEM_DEFAULT);
+	if (cfg == NULL) {
+		log_syserr(log, "failed to allocate new lldp config", errno);
+		return (NULL);
+	}
+
+	/* Populate with defaults */
+	(void) memcpy(&cfg->lcfg_chassis, &lldp_default_config.lcfg_chassis,
+	    sizeof (cfg->lcfg_chassis));
+
+	cfg->lcfg_sysname = strdup(lldp_default_config.lcfg_sysname);
+	if (cfg->lcfg_sysname == NULL) {
+		log_syserr(log, "failed to allocate memory for system name",
+		    errno);
+		config_free(cfg);
+		return (NULL);
+	}
+
+	cfg->lcfg_sysdesc = strdup(lldp_default_config.lcfg_sysdesc);
+	if (cfg->lcfg_sysdesc == NULL) {
+		log_syserr(log,
+		    "failed to allocate mmeory for system description", errno);
+		config_free(cfg);
+	}
+
+	cfg->lcfg_syscap = lldp_default_config.lcfg_syscap;
+	cfg->lcfg_encap = lldp_default_config.lcfg_encap;
+
+	/* TODO: management interfaces */
+
+	return (cfg);
 }
 
 bool
 config_read(void)
 {
 	lldp_config_t	*cfg = NULL;
-	int		e;
-	char		host[MAXHOSTNAMELEN] = { 0 };
-	struct utsname	uts = { 0 };
+	scf_error_t	serr;
 	bool		ret = true;
 
 	TRACE_ENTER(log);
 
 	log_debug(log, "loading configuration", LOG_T_END);
 
-	cfg = umem_zalloc(sizeof (*cfg), UMEM_DEFAULT);
-	if (cfg == NULL) {
-		log_syserr(log, "failed to allocate new lldp config", errno);
+	cfg = config_new();
+	if (cfg == NULL)
 		return (false);
-	}
-	
-	e = 0;	    
-	(void) topo_snap_hold(topo_hdl, NULL, &e);
-	if (e != 0) {
-		log_error(log, "failed to create topo snapshot",
-		    LOG_T_INT32, "err", e,
-		    LOG_T_STRING, "errmsg", topo_strerror(e),
-		    LOG_T_END);
-		umem_free(cfg, sizeof (*cfg));
-		return (false);
-	}
-
-	if (!config_get_defaults(cfg))
-		goto fail;
-
-	if (config_get_smf(cfg) != SCF_ERROR_NONE)
-		goto fail;
-
-	topo_snap_release(topo_hdl);
-
-
-	cfg = &i_cfg[i_cfg_gen ^ 1];
-
-	VERIFY0(gethostname(host, MAXHOSTNAMELEN));
-
-	/* First set to hardwired defaults */
-	set_chassis_id(log, &cfg->lcfg_chassis, host);
-
-	if (cfg->lcfg_sysname != NULL)
-		free(cfg->lcfg_sysname);
-	cfg->lcfg_sysname = xstrdup(host);
-
-	if (uname(&uts) < 0)
-		log_fatal_syserr(log, "uname failed", SMF_EXIT_ERR_FATAL);
-
-	if (cfg->lcfg_sysdesc != NULL)
-		free(cfg->lcfg_sysdesc);
-	cfg->lcfg_sysdesc = xsprintf("%s %s %s %s %s",
-	    uts.sysname, uts.nodename, uts.release, uts.version, uts.machine);
-
-	cfg->lcfg_syscap = LLDP_CAP_ROUTER | LLDP_CAP_STATION;
-
-	/* XXX: Check ip forwarding */
-	cfg->lcfg_encap = LLDP_CAP_STATION;
-
-	if (cfg->lcfg_mgmt_if != NULL) {
-		for (uint_t i = 0; cfg->lcfg_mgmt_if[i] != NULL; i++)
-			free(cfg->lcfg_mgmt_if[i]);
-		free(cfg->lcfg_mgmt_if);
-		cfg->lcfg_mgmt_if = NULL;
-	}
 
 	/* Override any settings from SMF */
-	if (!config_get_pg(log, scf_inst, CONFIG_PG, scf_pg))
+	if (!config_get_pg(log, "default", CONFIG_PG, scf_pg)) {
+		config_free(cfg);
 		goto done;
-
-	if (config_get_prop(log, scf_pg, CONFIG_SYSNAME, scf_prop) &&
-	    config_get_value(log, scf_prop, scf_val)) {
-		if (scf_value_is_type(scf_val, SCF_TYPE_HOST)) {
-			ssize_t len;
-
-			len = scf_value_get_ustring(scf_val, NULL, 0);
-			if (len > 0) {
-				cfg->lcfg_sysname = calloc(1, len + 1);
-
-				if (cfg->lcfg_sysname == NULL)
-					nomem();
-
-				(void) scf_value_get_ustring(scf_val,
-				    cfg->lcfg_sysname, len + 1);
-			} else {
-				log_debug(log,
-				    "sysname property exists but empty",
-				    LOG_T_END);
-			}
-		} else {
-			log_error(log, "sysname property is not SCF_TYPE_HOST",
-			    LOG_T_STRING, "type",
-			    scf_type_to_string(scf_value_type(scf_val)),
-			    LOG_T_END);
-		}
 	}
 
-	if (config_get_prop(log, scf_pg, CONFIG_SYSDESC, scf_prop) &&
-	    config_get_value(log, scf_prop, scf_val)) {
-		if (scf_value_is_type(scf_val, SCF_TYPE_USTRING)) {
-			ssize_t len;
-
-			len = scf_value_get_ustring(scf_val, NULL, 0);
-			if (len > 0) {
-				cfg->lcfg_sysdesc = calloc(1, len + 1);
-				if (cfg->lcfg_sysdesc == NULL)
-					nomem();
-
-				(void) scf_value_get_ustring(scf_val,
-				    cfg->lcfg_sysdesc, len + 1);
-			} else {
-				log_debug(log,
-				    "sysdesc property exists but empty",
-				    LOG_T_END);
-			}
-		} else {
-			log_error(log,
-			    "sysdesc property is not SCF_TYPE_USTRING",
-			    LOG_T_STRING, "type",
-			    scf_type_to_string(scf_value_type(scf_val)),
-			    LOG_T_END);
-		}
-	}
+	config_get_hostname(log, cfg, scf_pg);
+	config_get_sysdesc(log, cfg, scf_pg);
 
 done:
 	mutex_enter(&lldp_config_lock);
-
 	lldp_config = cfg;
-	i_cfg_gen ^= 1;
-
 	mutex_exit(&lldp_config_lock);
 
 	TRACE_RETURN(log);
 	return (ret);
-
-fail:
-	config_free(cfg);
-	topo_snap_release(topo_hdl);
-	return (false);
 }
 
 static int
@@ -300,6 +251,7 @@ topo_cb(topo_hdl_t *th, tnode_t *np, void *arg)
 {
 	lldp_config_t	*cfg = arg;
 	char		*cid;
+	size_t		cidlen;
 	int		e;
 
 	/* Currently we only use the root node */
@@ -313,18 +265,31 @@ topo_cb(topo_hdl_t *th, tnode_t *np, void *arg)
 		return (TOPO_WALK_TERMINATE);
 	}
 
-	(void) strlcpy(cfg->lcfg_chassis.llc_id, cid, LLDP_CHASSIS_MAX);
-	cfg->lcfg_chassic.llc_type = LLDP_CHASSIS_COMPONENT;
+	cidlen = strlen(cid);
+
+	set_chassis_id(&cfg->lcfg_chassis, LLDP_CHASSIS_COMPONENT,
+	    cid, MIN(cidlen, sizeof (cfg->lcfg_chassis.llc_id));
 
 	topo_hdl_strfree(th, cid);
 	return (TOPO_WALK_TERMINATE);
 }
 
 static bool 
-config_get_defaults(lldp_config_t *cfg)
+config_get_topo(lldp_config_t *cfg)
 {
 	topo_walk_t	*wp;
 	int		e;
+
+	e = 0;	    
+	(void) topo_snap_hold(topo_hdl, NULL, &e);
+	if (e != 0) {
+		log_error(log, "failed to create topo snapshot",
+		    LOG_T_INT32, "err", e,
+		    LOG_T_STRING, "errmsg", topo_strerror(e),
+		    LOG_T_END);
+		umem_free(cfg, sizeof (*cfg));
+		return (false);
+	}
 
 	wp = topo_walk_init(topo_hdl, FM_FMRI_SCHEME_HC, topo_cb, cfg, &e);
 	if (wp == NULL) {
@@ -345,66 +310,126 @@ config_get_defaults(lldp_config_t *cfg)
 	}
 
 	topo_walk_fini(wp);
+	topo_snap_release(topo_hdl);
+
 	return (true);
 }
 
-static scf_error_t
-config_get_smf(lldp_config_t *cfg)
+static void
+config_get_def_hostname(lldp_config_t *cfg)
 {
-	char *s = NULL;
-	size_t len;
-	scf_error_t e;
+	char host[MAXHOSTNAMELEN] = { 0 };
 
-	e = config_get_pg(log, scf_inst, CONFIG_PG, scf_pg);
-	if (e != SCF_ERROR_NONE)
-		return (e);
+	VERIFY0(gethostname, host, sizeof (host));
+	cfg->lcfg_sysname = xstrdup(host);
+}
 
-	e = config_get_prop(log, scf_pg, CONFIG_SYSNAME, scf_val);
-	switch (e) {
-	case SCF_ERROR_NOT_FOUND:
-		break;
-	case SCF_ERROR_NONE:
-		free(cfg->lcfg_sysname);
+static void
+config_get_hostname(log_t *log, lldp_config_t *cfg, scf_propertygroup_t *pg)
+{
+	if (!config_get_prop(log, pg, CONFIG_SYSNAME, scf_val))
+		return;
 
-		len = scf_value_get_ustring(scf_val, NULL, 0);
-		if (len == 0)
-			break;
-
-		cfg->lcfg_sysname = calloc(1, len + 1);
-		if (cfg->lcfg_sysname == NULL)
-			nomem();
-
-		(void) scf_value_get_ustring(scf_val, cfg->lcfg_sysname,
-		    len + 1);
-		break;
-	default:
-		return (e);
+	if (scf_value_is_type(scf_val, SCF_TYPE_HOST) != SCF_SUCCESS) {
+		/* TODO: errmsg */
+		scf_value_reset(scf_val);
+		return;
 	}
 
-	e = config_get_prop(log, scf_pg, CONFIG_SYSDESC, scf_val);
-	switch (e) {
-	case SCF_ERROR_NOT_FOUND:
-		break;
-	case SCF_ERROR_NONE:
-		free(cfg->lcfg_sysdesc);
+	ssize_t len = scf_value_get_ustring(scf_val, NULL, 0);
 
-		len = scf_value_get_ustring(scf_val, NULL, 0);
-		if (len == 0)
-			break;
-
-		cfg->lcfg_sysdesc = calloc(1, len + 1);
-		if (cfg->lcfg_sysdesc == NULL)
-			nomem();
-
-		(void) scf_value_get_ustring(scf_val, cfg->lcfg_sysdesc,
-		    len + 1);
-		break;
-	default:
-		return (e);
+	if (len == 0) {
+		/* TODO: msg */
+		scf_value_reset(scf_val);
+		return;
 	}
 
-	/* XXX: Should we allow syscap or mgmt if be set in smf? */
-	return (SCF_ERROR_NONE);
+	char *name = calloc(1, len + 1);
+
+	if (name == NULL) {
+		/* TODO: msg */
+		scf_value_reset(scf_val);
+		return;
+	}
+
+	free(cfg->lcfg_sysname);
+	cfg->lcfg_sysname = name;
+}
+
+static void
+config_get_def_sysdesc(lldp_config_t *cfg)
+{
+	struct utsname uts = { 0 };
+
+	/*
+	 * utsname(2) isn't explicitly defined as returning 0 on success,
+	 * so we can't use VERIFY0() here.
+	 */
+	VERIFY3S(uname(&uts), >=, 0);
+
+	cfg->lcfg_sysdesc = xsprintf("%s %s %s %s %s",
+	    uts.sysname, uts.nodename, uts.release, uts.version, uts.machine);
+}
+
+static void
+config_get_sysdesc(log_t *log, lldp_config_t *cfg, scf_propertygroup_t *pg)
+{
+	if (!config_get_prop(log, pg, CONFIG_SYSDESC, scf_val))
+		return;
+
+	if (scf_value_is_type(scf_val, SCF_TYPE_USTRING) != SCF_SUCCESS) {
+		/* TODO: errmsg */
+		scf_value_reset(scf_val);
+		return;
+	}
+
+	ssize_t len = scf_value_get_ustring(scf_val, NULL, 0);
+
+	if (len == 0) {
+		/* TODO: msg */
+		scf_value_reset(scf_val);
+		return;
+	}
+
+	char *desc = calloc(1, len + 1);
+
+	if (desc == NULL) {
+		/* TODO: msg */
+		scf_value_reset(scf_val);
+		return;
+	}
+
+	free(cfg->lcfg_sysdesc);
+	cfg->lcfg_sysdesc = desc;
+}
+
+static void
+config_get_def_syscap(lldp_config_t *cfg)
+{
+	cfg->lcfg_syscap = LLDP_CAP_ROUTER | LLDP_CAP_STATION;
+
+	/* TODO: Check if IP forwarding is enabled */
+	cfg->lcfg_encap = LLDP_CAP_STATION;
+}
+
+static void
+config_get_def_mgmtaddr(lldp_config_t *cfg)
+{
+	/* TODO */
+}
+
+static bool
+config_get_defaults(lldp_config_t *cfg)
+{
+	if (!config_get_topo(cfg))
+		return (false);
+
+	config_get_def_hostname(cfg);
+	config_get_def_sysdesc(cfg);
+	config_get_def_syscap(cfg);
+	config_get_def_mgmtaddr(cfg);
+
+	return (true);
 }
 
 static void
@@ -423,27 +448,19 @@ config_free(lldp_config_t *cfg)
 	umem_free(cfg, sizeof (*cfg);
 }
 
-static void
-set_chassis_id(log_t *log, lldp_chassis_t *chassis, const char *def)
-{
-	(void) memset(chassis->llc_id, '\0', LLDP_CHASSIS_MAX);
-
-	if (chassis_serial_smbios(log, chassis))
-		return;
-
-	size_t hlen = strlen(def);
-
-	/* Fall back to local assigned for chassis id */
-	chassis->llc_type = LLDP_CHASSIS_LOCAL;
-	(void) strncpy((char *)chassis->llc_id, def, LLDP_CHASSIS_MAX);
-	chassis->llc_len = hlen;
-}
-
 scf_error_t
-config_get_pg(log_t *log, const scf_instance_t *inst, const char *name,
+config_get_pg(log_t *log, const char *inst, const char *name,
     scf_propertygroup_t *pg)
 {
-	if (scf_instance_get_pg_composed(inst, NULL, name, pg) == 0)
+	if (scf_service_get_instance(scf_svc, name, scf_inst) == 0) {
+		return (scf_error());
+	}
+
+	if (scf_instance_get_snapshot(scf_inst, "running", scf_snap) == 0) {
+		return (scf_error());
+	}
+
+	if (scf_instance_get_pg_composed(inst, scf_inst, name, pg) != 0)
 		return (SCF_ERROR_NONE);
 
 	scf_error_t serr = scf_error();
@@ -466,53 +483,58 @@ config_get_pg(log_t *log, const scf_instance_t *inst, const char *name,
 
 bool
 config_get_prop(log_t *log, const scf_propertygroup_t *pg, const char *name,
-    scf_property_t *prop)
+    scf_value_t *val)
 {
-	if (scf_pg_get_property(pg, name, prop) == 0)
-		return (true);
+	const char *errmsg = NULL;
+	scf_error_t serr;
 
-	uint_t serr = scf_error();
+	if (scf_pg_get_property(pg, name, prop) != 0) {
+		serr = scf_error();
 
-	if (serr != SCF_ERROR_NOT_FOUND) {
-		ssize_t lim = scf_limit(SCF_LIMIT_MAX_NAME_LENGTH);
+		if (serr == SCF_ERROR_NOT_FOUND)
+			return (false);
 
-		VERIFY3S(lim, >, 0);
-
-		char buf[lim];
-
-		(void) scf_pg_get_name(pg, buf, lim);
-
-		log_error(log, "failed to read SMF property",
-		    LOG_T_STRING, "pg", buf,
-		    LOG_T_STRING, "property", name,
-		    LOG_T_UINT32, "err", serr,
-		    LOG_T_STRING, "errmsg", scf_strerror(serr),
-		    LOG_T_END);
+		errmsg = "failed to read SMF property";
+		goto fail;
 	}
 
-	return (false);
-}
-
-bool
-config_get_value(log_t *log, const scf_property_t *prop, scf_value_t *val)
-{
 	if (scf_property_get_value(prop, val) == 0)
 		return (true);
 
-	uint_t serr = scf_error();
-	ssize_t lim = scf_limit(SCF_LIMIT_MAX_NAME_LENGTH);
+	serr = scf_error();
+	if (serr == SCF_ERROR_NOT_SET)
+		return (false);
 
+	errmsg = "failed to read SMF property value";
+
+fail:
+	ssize_t lim;
+	lim = scf_limit(SCF_LIMIT_MAX_NAME_LENGTH);
 	VERIFY3S(lim, >, 0);
 
-	char propstr[lim];
+	char buf[lim];
 
-	(void) scf_property_get_name(prop, propstr, lim);
+	(void) scf_pg_get_name(pg, buf, lim);
 
-	log_error(log, "failed to read SMF property value",
-	    LOG_T_STRING, "property", propstr,
+	log_error(log, errmsg,
+	    LOG_T_STRING, "pg", buf,
+	    LOG_T_STRING, "property", name,
 	    LOG_T_UINT32, "err", serr,
 	    LOG_T_STRING, "errmsg", scf_strerror(serr),
 	    LOG_T_END);
 
 	return (false);
+}
+
+static void
+set_chassis_id(lldp_chassis_t *c, lldp_chassis_type_t type,
+    const uint8_t *val, const uint8_t len)
+{
+	c->llc_type = type;
+	(void) memcpy(c->llc_id, val, len);
+
+	/* For easy of observability, make sure any unused space is NUL */
+	if (len < sizeof (c->llc_id)) {
+		(void) memset(c->llc_id + len, '\0', sizeof (c->llc_id) - len);
+	}
 }
