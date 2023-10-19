@@ -18,6 +18,7 @@
 #include <string.h>
 #include <synch.h>
 #include <libscf.h>
+#include <umem.h>
 #include <unistd.h>
 #include <fm/libtopo.h>
 #include <fm/topo_hc.h>
@@ -55,7 +56,13 @@ scf_value_t		*scf_val;
 
 topo_hdl_t		*topo_hdl;
 
+static void config_free(lldp_config_t *);
+static scf_error_t config_get_pg(log_t *, const char *, const char *,
+    scf_propertygroup_t *);
 static bool config_get_defaults(lldp_config_t *);
+static void config_get_hostname(log_t *, lldp_config_t *,
+    scf_propertygroup_t *);
+static void config_get_sysdesc(log_t *, lldp_config_t *, scf_propertygroup_t *);
 static void set_chassis_id(log_t *, lldp_chassis_t *, const char *);
 
 void
@@ -166,15 +173,6 @@ config_init(void)
 	TRACE_RETURN(log);
 }
 
-static void
-config_free(lldp_config_t *cfg)
-{
-	free(cfg->lcfg_sysname);
-	free(cfg->lcfg_sysdesc);
-	/* TODO: management interfaces */
-	free(cfg);
-}
-
 static lldp_config_t *
 config_new(void)
 {
@@ -217,7 +215,6 @@ bool
 config_read(void)
 {
 	lldp_config_t	*cfg = NULL;
-	scf_error_t	serr;
 	bool		ret = true;
 
 	TRACE_ENTER(log);
@@ -268,7 +265,7 @@ topo_cb(topo_hdl_t *th, tnode_t *np, void *arg)
 	cidlen = strlen(cid);
 
 	set_chassis_id(&cfg->lcfg_chassis, LLDP_CHASSIS_COMPONENT,
-	    cid, MIN(cidlen, sizeof (cfg->lcfg_chassis.llc_id));
+	    cid, MIN(cidlen, sizeof (cfg->lcfg_chassis.llc_id)));
 
 	topo_hdl_strfree(th, cid);
 	return (TOPO_WALK_TERMINATE);
@@ -320,7 +317,7 @@ config_get_def_hostname(lldp_config_t *cfg)
 {
 	char host[MAXHOSTNAMELEN] = { 0 };
 
-	VERIFY0(gethostname, host, sizeof (host));
+	VERIFY0(gethostname(host, sizeof (host)));
 	cfg->lcfg_sysname = xstrdup(host);
 }
 
@@ -445,7 +442,7 @@ config_free(lldp_config_t *cfg)
 			free(cfg->lcfg_mgmt_if[i]);
 		free(cfg->lcfg_mgmt_if);
 	}
-	umem_free(cfg, sizeof (*cfg);
+	umem_free(cfg, sizeof (*cfg));
 }
 
 scf_error_t
@@ -487,6 +484,7 @@ config_get_prop(log_t *log, const scf_propertygroup_t *pg, const char *name,
 {
 	const char *errmsg = NULL;
 	scf_error_t serr;
+	ssize_t lim;
 
 	if (scf_pg_get_property(pg, name, prop) != 0) {
 		serr = scf_error();
@@ -508,7 +506,6 @@ config_get_prop(log_t *log, const scf_propertygroup_t *pg, const char *name,
 	errmsg = "failed to read SMF property value";
 
 fail:
-	ssize_t lim;
 	lim = scf_limit(SCF_LIMIT_MAX_NAME_LENGTH);
 	VERIFY3S(lim, >, 0);
 
