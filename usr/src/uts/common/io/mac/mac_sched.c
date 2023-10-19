@@ -1684,6 +1684,11 @@ mac_rx_srs_proto_fanout(mac_soft_ring_set_t *mac_srs, mblk_t *head)
 				break;
 			case OTH:
 				softring = mac_srs->srs_oth_soft_rings[0];
+				break;
+			default:
+				dev_err(mcip->mci_mip->mi_dip, CE_PANIC,
+				    "%s: invalid packet type %d\n",
+				    __func__, type);
 			}
 			mac_rx_soft_ring_process(mcip, softring,
 			    headmp[type], tailmp[type], cnt[type], sz[type]);
@@ -2167,7 +2172,7 @@ mac_rx_srs_fanout(mac_soft_ring_set_t *mac_srs, mblk_t *head)
 
 		for (i = 0; i < fanout_cnt; i++) {
 			if (headmp[type][i] != NULL) {
-				mac_soft_ring_t	*softring;
+				mac_soft_ring_t	*softring = NULL;
 
 				ASSERT(tailmp[type][i]->b_next == NULL);
 				switch (type) {
@@ -2183,6 +2188,11 @@ mac_rx_srs_fanout(mac_soft_ring_set_t *mac_srs, mblk_t *head)
 					softring =
 					    mac_srs->srs_oth_soft_rings[i];
 					break;
+				default:
+					dev_err(mcip->mci_mip->mi_dip,
+					    CE_PANIC,
+					    "%s: invalid packet type %d\n",
+					    __func__, type);
 				}
 				mac_rx_soft_ring_process(mcip,
 				    softring, headmp[type][i], tailmp[type][i],
@@ -4035,7 +4045,7 @@ void
 mac_tx_srs_drain(mac_soft_ring_set_t *mac_srs, uint_t proc_type)
 {
 	mblk_t			*head, *tail;
-	size_t			sz;
+	size_t			sz = 0;
 	uint32_t		tx_mode;
 	uint_t			saved_pkt_count;
 	mac_tx_stats_t		stats;
@@ -4152,7 +4162,7 @@ mac_tx_srs_drain(mac_soft_ring_set_t *mac_srs, uint_t proc_type)
 		}
 	} else if (tx_mode == SRS_TX_BW_FANOUT || tx_mode == SRS_TX_BW_AGGR) {
 		mblk_t *prev;
-		uint64_t hint;
+		uint64_t hint = 0;
 
 		/*
 		 * We are here because the timer fired and we

@@ -258,7 +258,7 @@ int
 mac_bcast_add(mac_client_impl_t *mcip, const uint8_t *addr, uint16_t vid,
     mac_addrtype_t addrtype)
 {
-	mac_impl_t 		*mip = mcip->mci_mip;
+	mac_impl_t		*mip = mcip->mci_mip;
 	mac_bcast_grp_t		*grp = NULL, **last_grp;
 	size_t			addr_len = mip->mi_type->mt_addr_length;
 	int			rc = 0;
@@ -634,7 +634,7 @@ mac_bcast_refresh(mac_impl_t *mip, mac_multicst_t refresh_fn, void *arg,
 		 * refresh.
 		 */
 		next = grp->mma_next;
-		refresh_fn(arg, add, grp->mma_addr);
+		(void) refresh_fn(arg, add, grp->mma_addr);
 	}
 }
 
@@ -667,6 +667,6 @@ mac_client_bcast_refresh(mac_client_impl_t *mcip, mac_multicst_t refresh_fn,
 		 * refresh.
 		 */
 		next = grp->mma_next;
-		refresh_fn(arg, add, grp->mma_addr);
+		(void) refresh_fn(arg, add, grp->mma_addr);
 	}
 }

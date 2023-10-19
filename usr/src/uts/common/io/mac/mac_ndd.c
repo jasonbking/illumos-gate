@@ -157,7 +157,7 @@ void
 mac_ndd_ioctl(mac_impl_t *mip, queue_t *wq, mblk_t *mp)
 {
 	IOCP    iocp;
-	int	cmd, err, rval;
+	int	cmd, rval, err = 0;
 
 	iocp = (IOCP)mp->b_rptr;
 	if (iocp->ioc_count == 0 || mp->b_cont == NULL) {
@@ -184,8 +184,8 @@ mac_ndd_get_ioctl(mac_impl_t *mip, mblk_t *mp, int avail, int *rval)
 {
 	mblk_t		*mp1;
 	char		*valp;
-	uchar_t 	*value;
-	uint32_t	new_value;
+	uchar_t		*value;
+	uint32_t	new_value = 0;
 	int		size_out = 0, i;
 	int		status = EINVAL;
 	char		*name, priv_name[MAXLINKPROPNAME];
@@ -326,11 +326,11 @@ get_done:
 static int
 mac_ndd_set_ioctl(mac_impl_t *mip, mblk_t *mp, int avail, int *rval)
 {
-	mblk_t  	*mp1;
+	mblk_t		*mp1;
 	char		*valp, *name, *new_valuep;
-	uchar_t 	*vp;
+	uchar_t		*vp;
 	long		new_value;
-	int		status, i;
+	int		status = 0, i;
 	uint8_t		u8;
 	uint16_t	u16;
 	uint32_t	u32;

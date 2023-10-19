@@ -53,16 +53,8 @@ INSTALL_TARGET	= $(BINARY) $(ROOTMODULE)
 CFLAGS		+= $(CCVERBOSE)
 INC_PATH	+= -I$(UTSBASE)/common/io/bpf
 
-
-CERRWARN	+= -_gcc=-Wno-unused-label
-CERRWARN	+= $(CNOWARN_UNINIT)
-CERRWARN	+= -_gcc=-Wno-type-limits
-CERRWARN	+= -_gcc=-Wno-switch
-CERRWARN	+= -_gcc=-Wno-unused-variable
-
 # needs work
-SMOFF += all_func_returns
-$(OBJS_DIR)/mac_util.o := SMOFF += signed
+$(OBJS_DIR)/mac.o := SMOFF += all_func_returns
 
 #
 #	Default build targets.

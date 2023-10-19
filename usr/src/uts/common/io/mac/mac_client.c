@@ -161,7 +161,7 @@ static void mac_virtual_link_update(mac_impl_t *);
 static int mac_client_datapath_setup(mac_client_impl_t *, uint16_t,
     uint8_t *, mac_resource_props_t *, boolean_t, mac_unicast_impl_t *);
 static void mac_client_datapath_teardown(mac_client_handle_t,
-    mac_unicast_impl_t *, flow_entry_t *);
+    mac_unicast_impl_t *);
 static int mac_resource_ctl_set(mac_client_handle_t, mac_resource_props_t *);
 
 /* ARGSUSED */
@@ -1513,8 +1513,7 @@ mac_client_close(mac_client_handle_t mch, uint16_t flags)
 
 	/* If we have only setup up minimal datapth setup, tear it down */
 	if (mcip->mci_state_flags & MCIS_NO_UNICAST_ADDR) {
-		mac_client_datapath_teardown((mac_client_handle_t)mcip, NULL,
-		    mcip->mci_flent);
+		mac_client_datapath_teardown((mac_client_handle_t)mcip, NULL);
 		mcip->mci_state_flags &= ~MCIS_NO_UNICAST_ADDR;
 	}
 
@@ -2930,11 +2929,11 @@ mac_unicast_add(mac_client_handle_t mch, uint8_t *mac_addr, uint16_t flags,
 }
 
 static void
-mac_client_datapath_teardown(mac_client_handle_t mch, mac_unicast_impl_t *muip,
-    flow_entry_t *flent)
+mac_client_datapath_teardown(mac_client_handle_t mch, mac_unicast_impl_t *muip)
 {
 	mac_client_impl_t	*mcip = (mac_client_impl_t *)mch;
 	mac_impl_t		*mip = mcip->mci_mip;
+	flow_entry_t		*flent;
 	boolean_t		no_unicast;
 
 	/*
@@ -3204,7 +3203,7 @@ mac_unicast_remove(mac_client_handle_t mch, mac_unicast_handle_t mah)
 	}
 
 	mui_vid = muip->mui_vid;
-	mac_client_datapath_teardown(mch, muip, flent);
+	mac_client_datapath_teardown(mch, muip);
 
 	if ((mcip->mci_flags & MAC_CLIENT_FLAGS_PRIMARY) &&
 	    mui_vid == VLAN_ID_NONE) {
@@ -3521,7 +3520,7 @@ mac_tx(mac_client_handle_t mch, mblk_t *mp_chain, uintptr_t hint,
 {
 	mac_tx_cookie_t		cookie = 0;
 	int			error;
-	mac_tx_percpu_t		*mytx;
+	mac_tx_percpu_t		*mytx = NULL;
 	mac_soft_ring_set_t	*srs;
 	flow_entry_t		*flent;
 	boolean_t		is_subflow = B_FALSE;

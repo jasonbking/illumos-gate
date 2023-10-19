@@ -23,7 +23,7 @@
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2020 Joyent, Inc.
  * Copyright 2015 Garrett D'Amore <garrett@damore.org>
- * Copyright 2020 RackTop Systems, Inc.
+ * Copyright 2023 RackTop Systems, Inc.
  */
 
 /*
@@ -1956,7 +1956,6 @@ void
 mac_hwring_set_default(mac_handle_t mh, mac_ring_handle_t rh)
 {
 	mac_impl_t *mip = (mac_impl_t *)mh;
-	mac_ring_t *ring = (mac_ring_t *)rh;
 
 	ASSERT(MAC_PERIM_HELD(mh));
 	VERIFY(mip->mi_state_flags & MIS_IS_AGGR);
@@ -2082,7 +2081,8 @@ mac_set_group_state(mac_group_t *grp, mac_group_state_t state)
 
 		if (grp->mrg_type == MAC_RING_TYPE_RX &&
 		    GROUP_INTR_DISABLE_FUNC(grp) != NULL) {
-			GROUP_INTR_DISABLE_FUNC(grp)(GROUP_INTR_HANDLE(grp));
+			(void) GROUP_INTR_DISABLE_FUNC(grp)(
+			    GROUP_INTR_HANDLE(grp));
 		}
 		break;
 
@@ -2095,7 +2095,8 @@ mac_set_group_state(mac_group_t *grp, mac_group_state_t state)
 
 		if (grp->mrg_type == MAC_RING_TYPE_RX &&
 		    GROUP_INTR_ENABLE_FUNC(grp) != NULL) {
-			GROUP_INTR_ENABLE_FUNC(grp)(GROUP_INTR_HANDLE(grp));
+			(void) GROUP_INTR_ENABLE_FUNC(grp)(
+			    GROUP_INTR_HANDLE(grp));
 		}
 		/* The ring is not available for reservations any more */
 		break;
@@ -2901,7 +2902,7 @@ mac_promisc_refresh(mac_handle_t mh, mac_setpromisc_t refresh, void *arg)
 	/*
 	 * Call the refresh function with the current promiscuity.
 	 */
-	refresh(arg, (mip->mi_devpromisc != 0));
+	(void) refresh(arg, (mip->mi_devpromisc != 0));
 }
 
 /*
@@ -3365,6 +3366,8 @@ mac_prop_check_size(mac_prop_id_t id, uint_t valsize, boolean_t is_range)
 	case MAC_PROP_EN_5000FDX_CAP:
 	case MAC_PROP_ADV_2500FDX_CAP:
 	case MAC_PROP_EN_2500FDX_CAP:
+	case MAC_PROP_ADV_1000FDX_CAP:
+	case MAC_PROP_EN_1000FDX_CAP:
 	case MAC_PROP_ADV_1000HDX_CAP:
 	case MAC_PROP_EN_1000HDX_CAP:
 	case MAC_PROP_ADV_100FDX_CAP:
@@ -3460,8 +3463,18 @@ mac_prop_check_size(mac_prop_id_t id, uint_t valsize, boolean_t is_range)
 	case MAC_PROP_WL_MLME:
 		minsize = sizeof (wl_mlme_t);
 		break;
+	case MAC_PROP_RXRINGSRANGE:
+	case MAC_PROP_TXRINGSRANGE:
+		minsize = sizeof (mac_propval_range_t);
+		break;
+	case MAC_PROP_IB_LINKMODE:
+		minsize = sizeof (uint32_t);
+		break;
 	case MAC_PROP_VN_PROMISC_FILTERED:
 		minsize = sizeof (boolean_t);
+		break;
+	case MAC_PROP_SECONDARY_ADDRS:
+		minsize = sizeof (mac_secondary_addr_t);
 		break;
 	case MAC_PROP_MEDIA:
 		/*
@@ -3471,8 +3484,10 @@ mac_prop_check_size(mac_prop_id_t id, uint_t valsize, boolean_t is_range)
 		 */
 		minsize = sizeof (mac_ether_media_t);
 		break;
+	case MAC_PROP_PRIVATE:
+		minsize = 0;
+		break;
 	}
-
 	return (valsize >= minsize);
 }
 
@@ -3838,6 +3853,8 @@ mac_prop_info(mac_handle_t mh, mac_prop_id_t id, char *name,
 		if (perm != NULL)
 			*perm = MAC_PROP_PERM_READ;
 		return (0);
+	default:
+		break;
 	}
 
 	/*
@@ -3919,6 +3936,8 @@ mac_prop_info(mac_handle_t mh, mac_prop_id_t id, char *name,
 			bcopy(&sdu, default_val, sizeof (sdu));
 		}
 	}
+	default:
+		break;
 	}
 
 	return (0);
@@ -4285,7 +4304,7 @@ mac_init_group(mac_impl_t *mip, mac_group_t *group, int size,
 int
 mac_init_rings(mac_impl_t *mip, mac_ring_type_t rtype)
 {
-	mac_capab_rings_t	*cap_rings;
+	mac_capab_rings_t	*cap_rings = NULL;
 	mac_group_t		*group;
 	mac_group_t		*groups;
 	mac_group_info_t	group_info;
@@ -4311,7 +4330,8 @@ mac_init_rings(mac_impl_t *mip, mac_ring_type_t rtype)
 		cap_rings->mr_type = MAC_RING_TYPE_TX;
 		break;
 	default:
-		ASSERT(B_FALSE);
+		dev_err(mip->mi_dip, CE_PANIC, "%s: invalid ring type %d\n",
+		    __func__, rtype);
 	}
 
 	if (!i_mac_capab_get((mac_handle_t)mip, MAC_CAPAB_RINGS, cap_rings))
@@ -4637,8 +4657,8 @@ mac_compare_ddi_handle(mac_group_t *groups, uint_t grpcnt, mac_ring_t *cring)
 void
 mac_free_rings(mac_impl_t *mip, mac_ring_type_t rtype)
 {
-	mac_group_t *group, *groups;
-	uint_t group_count;
+	mac_group_t *group, *groups = NULL;
+	uint_t group_count = 0;
 
 	switch (rtype) {
 	case MAC_RING_TYPE_RX:
@@ -4667,7 +4687,8 @@ mac_free_rings(mac_impl_t *mip, mac_ring_type_t rtype)
 		mip->mi_default_tx_ring = NULL;
 		break;
 	default:
-		ASSERT(B_FALSE);
+		dev_err(mip->mi_dip, CE_PANIC, "%s: invalid ring type %d\n",
+		    __func__, rtype);
 	}
 
 	for (group = groups; group != NULL; group = group->mrg_next) {
@@ -4839,9 +4860,9 @@ int
 i_mac_group_add_ring(mac_group_t *group, mac_ring_t *ring, int index)
 {
 	mac_impl_t *mip = (mac_impl_t *)group->mrg_mh;
-	mac_capab_rings_t *cap_rings;
+	mac_capab_rings_t *cap_rings = NULL;
 	boolean_t driver_call = (ring == NULL);
-	mac_group_type_t group_type;
+	mac_group_type_t group_type = MAC_GROUP_TYPE_STATIC;
 	int ret = 0;
 	flow_entry_t *flent;
 
@@ -4857,7 +4878,8 @@ i_mac_group_add_ring(mac_group_t *group, mac_ring_t *ring, int index)
 		group_type = mip->mi_tx_group_type;
 		break;
 	default:
-		ASSERT(B_FALSE);
+		dev_err(mip->mi_dip, CE_PANIC, "%s: invalid ring type %d\n",
+		    __func__, group->mrg_type);
 	}
 
 	/*
@@ -5056,7 +5078,7 @@ i_mac_group_rem_ring(mac_group_t *group, mac_ring_t *ring,
 {
 	mac_impl_t *mip = (mac_impl_t *)group->mrg_mh;
 	mac_capab_rings_t *cap_rings = NULL;
-	mac_group_type_t group_type;
+	mac_group_type_t group_type = MAC_GROUP_TYPE_STATIC;
 
 	ASSERT(MAC_PERIM_HELD((mac_handle_t)mip));
 
@@ -5223,7 +5245,9 @@ i_mac_group_rem_ring(mac_group_t *group, mac_ring_t *ring,
 		break;
 	}
 	default:
-		ASSERT(B_FALSE);
+		dev_err(mip->mi_dip, CE_PANIC, "%s: invalid ring type %d\n",
+		    __func__, ring->mr_type);
+		break;
 	}
 
 	/*
@@ -7281,7 +7305,7 @@ mac_release_rx_group(mac_client_impl_t *mcip, mac_group_t *group)
 
 	/* remove group from share */
 	if (mcip->mci_share != 0) {
-		mip->mi_share_capab.ms_sremove(mcip->mci_share,
+		(void) mip->mi_share_capab.ms_sremove(mcip->mci_share,
 		    group->mrg_driver);
 	}
 
@@ -7761,7 +7785,7 @@ mac_release_tx_group(mac_client_impl_t *mcip, mac_group_t *grp)
 		}
 	}
 	if (share != 0)
-		mip->mi_share_capab.ms_sremove(share, grp->mrg_driver);
+		(void) mip->mi_share_capab.ms_sremove(share, grp->mrg_driver);
 
 	/* move the ring back to the pool */
 	if (mip->mi_tx_group_type == MAC_GROUP_TYPE_DYNAMIC) {

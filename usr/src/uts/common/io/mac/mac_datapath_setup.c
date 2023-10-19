@@ -726,7 +726,7 @@ mac_tx_cpu_init(flow_entry_t *flent, mac_resource_props_t *mrp,
 	mac_ring_t *ring;
 	processorid_t worker_cpuid;
 	boolean_t retargetable_client = B_FALSE;
-	int i, j;
+	int i, j = 0;
 
 	if (RETARGETABLE_CLIENT((mac_group_t *)flent->fe_tx_ring_group,
 	    flent->fe_mcip)) {
@@ -1084,7 +1084,7 @@ mac_flow_cpu_init(flow_entry_t *flent, cpupart_t *cpupart)
 {
 	mac_soft_ring_set_t *rx_srs;
 	processorid_t cpuid;
-	int i, j, k, srs_cnt, maxcpus, soft_ring_cnt = 0;
+	int i, j, srs_cnt, maxcpus, soft_ring_cnt = 0;
 	mac_cpus_t *srs_cpu;
 	mac_resource_props_t *emrp = &flent->fe_effective_props;
 
@@ -1517,7 +1517,7 @@ mac_rx_srs_update_bwlimit(mac_soft_ring_set_t *srs, mac_resource_props_t *mrp)
 			srs->srs_drain_func = mac_rx_srs_drain_bw;
 		}
 	}
-done:
+
 	mutex_exit(&srs->srs_bw->mac_bw_lock);
 	mutex_exit(&srs->srs_lock);
 }
@@ -1582,7 +1582,7 @@ mac_tx_srs_update_bwlimit(mac_soft_ring_set_t *srs, mac_resource_props_t *mrp)
 			}
 		}
 	}
-done:
+
 	srs_tx->st_func = mac_tx_get_func(srs_tx->st_mode);
 	mutex_exit(&srs->srs_bw->mac_bw_lock);
 	mutex_exit(&srs->srs_lock);
@@ -1862,7 +1862,8 @@ mac_srs_fanout_modify(mac_client_impl_t *mcip, mac_direct_rx_t rx_func,
 		    cpuid);
 		softring = mac_rx_srs->srs_tcp_soft_rings[i];
 		if (softring->s_ring_rx_arg2 != NULL) {
-			mcip->mci_resource_bind((void *)mcip->mci_resource_arg,
+			(void) mcip->mci_resource_bind(
+			    (void *)mcip->mci_resource_arg,
 			    softring->s_ring_rx_arg2, cpuid);
 		}
 	}
@@ -2291,7 +2292,7 @@ done:
 static uint32_t
 mac_find_fanout(flow_entry_t *flent, uint32_t link_type)
 {
-	uint32_t			fanout_type;
+	uint32_t			fanout_type = 0;
 	mac_resource_props_t		*mrp = &flent->fe_effective_props;
 
 	/* no fanout for subflows */
@@ -2891,7 +2892,7 @@ mac_datapath_setup(mac_client_impl_t *mcip, flow_entry_t *flent,
 	mac_group_t		*default_rgroup;
 	mac_group_t		*default_tgroup;
 	int			err;
-	uint16_t		vid;
+	uint16_t		vid = VLAN_ID_NONE;
 	uint8_t			*mac_addr;
 	mac_group_state_t	next_state;
 	mac_client_impl_t	*group_only_mcip;
@@ -3874,17 +3875,18 @@ void
 mac_tx_srs_del_ring(mac_soft_ring_set_t *mac_srs, mac_ring_t *tx_ring)
 {
 	int i;
-	mac_soft_ring_t *soft_ring, *remove_sring;
+	mac_soft_ring_t *soft_ring = NULL, *remove_sring;
 	mac_client_impl_t *mcip = mac_srs->srs_mcip;
 
 	mutex_enter(&mac_srs->srs_lock);
 	for (i = 0; i < mac_srs->srs_tx_ring_count; i++) {
-		soft_ring =  mac_srs->srs_tx_soft_rings[i];
+		soft_ring = mac_srs->srs_tx_soft_rings[i];
 		if (soft_ring->s_ring_tx_arg2 == tx_ring)
 			break;
 	}
 	mutex_exit(&mac_srs->srs_lock);
-	ASSERT(i < mac_srs->srs_tx_ring_count);
+	ASSERT3U(i, <, mac_srs->srs_tx_ring_count);
+	ASSERT3P(soft_ring, !=, NULL);
 	remove_sring = soft_ring;
 	/*
 	 * In the case of aggr, the soft ring associated with a Tx ring

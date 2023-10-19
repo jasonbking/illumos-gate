@@ -244,8 +244,7 @@ mac_sw_cksum_ipv4(mblk_t *mp, uint32_t ip_hdr_offset, ipha_t *ipha,
 	 */
 	*up = 0;
 	cksum = IP_CSUM(mp, ulp_offset, cksum);
-	*up = (uint16_t)(cksum ? cksum : ~cksum);
-
+	*up = (uint16_t)(cksum > 0 ? cksum : (~cksum & 0xFFFF));
 	return (B_TRUE);
 
 bail:
@@ -803,7 +802,7 @@ static void
 mac_sw_lso(mblk_t *omp, mac_emul_t emul, mblk_t **head, mblk_t **tail,
     uint_t *count)
 {
-	uint32_t ocsum_flags, ocsum_start, ocsum_stuff;
+	uint32_t ocsum_flags, ocsum_start = 0, ocsum_stuff = 0;
 	uint32_t mss;
 	uint32_t oehlen, oiphlen, otcphlen, ohdrslen, opktlen, odatalen;
 	uint32_t oleft;
@@ -816,7 +815,7 @@ mac_sw_lso(mblk_t *omp, mac_emul_t emul, mblk_t **head, mblk_t **tail,
 	ipha_t *niph;
 	tcph_t *ntcph;
 	uint16_t ip_id;
-	uint32_t tcp_seq, tcp_sum, otcp_sum;
+	uint32_t tcp_seq, tcp_sum = 0, otcp_sum;
 
 	uint32_t offset;
 	mblk_t *odatamp;
