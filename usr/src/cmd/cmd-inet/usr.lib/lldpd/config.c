@@ -21,10 +21,13 @@
 #include <umem.h>
 #include <unistd.h>
 #include <fm/libtopo.h>
+#include <sys/fm/protocol.h>
 #include <fm/topo_hc.h>
 #include <sys/debug.h>
+#include <sys/sysmacros.h>
 #include <sys/utsname.h>
 
+#include "agent.h"
 #include "config.h"
 #include "lldpd.h"
 #include "log.h"
@@ -243,32 +246,132 @@ done:
 	return (ret);
 }
 
-static int
-topo_cb(topo_hdl_t *th, tnode_t *np, void *arg)
+struct topo_arg {
+	log_t		*ta_log;
+	lldp_config_t	*ta_cfg;
+	bool		ta_root;
+};
+
+static void
+topo_do_root(topo_hdl_t *th, tnode_t *np, struct topo_arg *arg)
 {
-	lldp_config_t	*cfg = arg;
 	char		*cid;
 	size_t		cidlen;
 	int		e;
 
-	/* Currently we only use the root node */
-
-	cid = topo_prop_get_string(np, FM_FMRI_AUTHORITY, FM_FMRI_AUTH_CHASSIS,
-	    &cid, &e);
-	if (cid == NULL) {
-		log_fatal(SMF_EXIT_ERR_FATAL, "failed to get chassis id",
+	if (topo_prop_get_string(np, FM_FMRI_AUTHORITY, FM_FMRI_AUTH_CHASSIS,
+	    &cid, &e) != 0) {
+		log_fatal(SMF_EXIT_ERR_FATAL, arg->ta_log,
+		    "failed to get chassis id",
 		    LOG_T_STRING, "errmsg", topo_strerror(e),
 		    LOG_T_END);
-		return (TOPO_WALK_TERMINATE);
 	}
 
 	cidlen = strlen(cid);
 
-	set_chassis_id(&cfg->lcfg_chassis, LLDP_CHASSIS_COMPONENT,
-	    cid, MIN(cidlen, sizeof (cfg->lcfg_chassis.llc_id)));
+	set_chassis_id(&arg->ta_cfg->lcfg_chassis, LLDP_CHASSIS_COMPONENT,
+	    cid, MIN(cidlen, sizeof (arg->ta_cfg->lcfg_chassis.llc_id)));
 
 	topo_hdl_strfree(th, cid);
-	return (TOPO_WALK_TERMINATE);
+	arg->ta_root = false;
+}
+
+static void
+topo_do_portnum(log_t *log, agent_t *a, const char *nname)
+{
+	unsigned long val;
+
+	if (strncmp(nname, "port=", 5) != 0) {
+		return;
+	}
+
+	errno = 0;
+	val = strtoul(nname + 5, NULL, 10);
+	if (errno != 0) {
+		return;
+	}
+
+	if (val > UINT32_MAX) {
+		log_fatal(SMF_EXIT_ERR_FATAL, log,
+		    "topo port number out of range",
+		    LOG_T_STRING, "port", a->a_name,
+		    LOG_T_UINT64,  "portnum", (uint64_t)val,
+		    LOG_T_STRING, "portstr", nname,
+		    LOG_T_END);
+	}
+
+	a->a_cfg.ac_portnum = (uint32_t)val;
+}
+
+static void
+topo_do_link(topo_hdl_t *th, tnode_t *np, const char *lname,
+    struct topo_arg *arg)
+{
+	agent_t *a = NULL;
+	agent_t cmp = {
+		.a_name = (char *)lname,
+	};
+	tnode_t	*parent;
+
+	a = uu_list_find(agent_list, &cmp, NULL, NULL);
+	if (a == NULL) {
+		log_fatal(SMF_EXIT_ERR_FATAL, arg->ta_log,
+		    "found link without agent",
+		    LOG_T_STRING, "link", lname,
+		    LOG_T_END);
+	}
+
+	topo_do_portnum(arg->ta_log, a, topo_node_name(np));
+
+	parent = topo_node_parent(np);
+	VERIFY3P(parent, !=, NULL);
+
+	char *label, *devdesc;
+	int e;
+
+	/*
+	 * Save the parent's label and device-name properties if they
+	 * exist.
+	 */
+	if (topo_prop_get_string(parent, TOPO_PGROUP_PROTOCOL, TOPO_PROP_LABEL,
+	    &label, &e) == 0) {
+		a->a_cfg.ac_label = xstrdup(label);
+		topo_hdl_strfree(th, label);
+	}
+
+	if (topo_prop_get_string(parent, TOPO_PGROUP_PCI, TOPO_PCI_DEVNM,
+	    &devdesc, &e) == 0) {
+		a->a_cfg.ac_devname = xstrdup(devdesc);
+		topo_hdl_strfree(th, devdesc);
+	}
+}
+
+static int
+topo_cb(topo_hdl_t *th, tnode_t *np, void *argp)
+{
+	struct topo_arg	*arg = argp;
+
+	/*
+	 * XXX: can we use topo_node_parent(np) == NULL to
+	 * identify the root node instead?
+	 */
+	if (arg->ta_root) {
+		topo_do_root(th, np, arg);
+		return (TOPO_WALK_NEXT);
+	}
+
+	char	*link_name;
+	int	e;
+
+	if (topo_prop_get_string(np, TOPO_PGROUP_DATALINK,
+	    TOPO_PGROUP_DATALINK_LINK_NAME, &link_name, &e) != 0) {
+		return (TOPO_WALK_NEXT);
+	}
+
+	topo_do_link(th, np, link_name, arg);
+	topo_hdl_strfree(th, link_name);
+
+	return (TOPO_WALK_NEXT);
 }
 
 static bool 
@@ -276,6 +379,11 @@ config_get_topo(lldp_config_t *cfg)
 {
 	topo_walk_t	*wp;
 	int		e;
+	struct topo_arg	arg = {
+		.ta_log = log,
+		.ta_cfg = cfg,
+		.ta_root = true,
+	};
 
 	e = 0;	    
 	(void) topo_snap_hold(topo_hdl, NULL, &e);
@@ -288,10 +396,10 @@ config_get_topo(lldp_config_t *cfg)
 		return (false);
 	}
 
-	wp = topo_walk_init(topo_hdl, FM_FMRI_SCHEME_HC, topo_cb, cfg, &e);
+	wp = topo_walk_init(topo_hdl, FM_FMRI_SCHEME_HC, topo_cb, &arg, &e);
 	if (wp == NULL) {
 		log_error(log, "failed to start topo walk",
-		    LOG_T_INT, "err",
+		    LOG_T_INT32, "err",
 		    LOG_T_STRING, "errmsg", topo_strerror(e),
 		    LOG_T_END);
 		return (false);

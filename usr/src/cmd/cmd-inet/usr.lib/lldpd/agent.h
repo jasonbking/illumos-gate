@@ -114,6 +114,11 @@ typedef struct agent_cfg {
 	lldp_tx_8021_tlv_t	ac_tx_8021_tlvs;
 	lldp_tx_8023_tlv_t	ac_tx_8023_tlvs;
 	char			*ac_desc;
+
+	char			*ac_label;
+	char			*ac_devname;
+	uint32_t		ac_portnum;
+
 	uint16_t		ac_mtu;
 
 	uint16_t		ac_tx_hold;

@@ -13,15 +13,15 @@
  * Copyright 2022 Jason King
  */
 
-#ifndef _BUF_H
-#define	_BUF_H
-
 #include <inttypes.h>
 #include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#ifndef _BUF_H
+#define	_BUF_H
 
 typedef struct buf {
 	uint8_t		*b_ptr;
