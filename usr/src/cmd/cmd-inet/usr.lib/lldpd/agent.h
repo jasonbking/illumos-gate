@@ -19,9 +19,10 @@
 #include <inttypes.h>
 #include <libdlpi.h>
 #include <liblldp.h>
+#include <libscf.h>
+#include <libuutil.h>
 #include <synch.h>
 #include <thread.h>
-#include <libuutil.h>
 
 #include "buf.h"
 #include "lldpd.h"
@@ -129,6 +130,8 @@ typedef struct agent_cfg {
 	uint16_t		ac_tx_fast_init;
 
 	uint16_t		ac_neighbor_max;
+
+	scf_property_group_t	*ac_smf_pg;
 } agent_cfg_t;
 
 typedef struct agent {
@@ -163,6 +166,12 @@ typedef struct agent {
 	bool			a_new_neighbor;
 
 	lldp_agent_stats_t	a_stats;
+
+	char			*a_fmri;
+	scf_instance_t		*a_smf_inst;
+	scf_snapshot_t		*a_smf_snap;
+	scf_value_t		*a_smf_val;
+	scf_property_t		*a_smf_prop;
 } agent_t;
 
 #define	IS_AGENT_THREAD(a)	((a)->a_tid == thr_self())
@@ -184,6 +193,8 @@ lldp_admin_status_t	agent_get_status(agent_t *);
 void agent_local_change(agent_t *);
 void agent_rx_frame(agent_t *);
 size_t agent_num_neighbors(agent_t *);
+
+const char *agent_fmri(const agent_t *);
 
 #ifdef __cplusplus
 }
