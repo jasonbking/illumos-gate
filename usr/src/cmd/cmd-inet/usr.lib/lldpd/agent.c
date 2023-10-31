@@ -29,6 +29,7 @@
 #include <sys/sysmacros.h>
 
 #include "agent.h"
+#include "config.h"
 #include "log.h"
 #include "neighbor.h"
 #include "pdu.h"
@@ -144,7 +145,16 @@ agent_create(const char *name)
 
 	a->a_cfg.ac_status = LLDP_LINK_TXRX;
 
-	/* XXX: Override defaults from config */
+	a->a_smf_inst = scf_instance_create(rep_handle);
+	a->a_smf_snap = scf_snapshot_create(rep_handle);
+	a->a_smf_val = scf_value_create(rep_handle);
+	a->a_smf_prop = scf_property_create(rep_handle);
+	a->a_cfg.ac_smf_pg = scf_pg_create(rep_handle);
+	// XXX: change for failure
+
+	
+	config_agent_init(a);
+	(void) config_agent_read(a);
 
 	a->a_dl_cb.fc_fn = recv_frame;
 	a->a_dl_cb.fc_arg = a;

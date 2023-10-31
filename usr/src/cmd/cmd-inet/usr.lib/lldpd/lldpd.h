@@ -24,7 +24,8 @@
 extern "C" {
 #endif
 
-#define	LLDP_FMRI	"svc:/network/link-layer-discovery:default"
+#define	LLDP_FMRI	"svc:/network/link-layer-discovery"
+#define	LLDP_SVC_FMRI	LLDP_FMRI ":default"
 
 typedef struct fd_cb {
 	void	(*fc_fn)(int, void *);

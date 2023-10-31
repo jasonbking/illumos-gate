@@ -77,7 +77,7 @@ config_init(void)
 
 	my_fmri = getenv("SMF_FMRI");
 	if (my_fmri == NULL) {
-		my_fmri = LLDP_FMRI;
+		my_fmri = LLDP_SVC_FMRI;
 		log_info(log,
 		    "SMF_FMRI not set (not run from SMF?); using default",
 		    LOG_T_STRING, "fmri", my_fmri,
@@ -642,4 +642,16 @@ set_chassis_id(lldp_chassis_t *c, lldp_chassis_type_t type,
 	if (len < sizeof (c->llc_id)) {
 		(void) memset(c->llc_id + len, '\0', sizeof (c->llc_id) - len);
 	}
+}
+
+void
+config_agent_init(agent_t *a)
+{
+
+}
+
+bool
+config_agent_read(agent_t *a)
+{
+	return (false);
 }
