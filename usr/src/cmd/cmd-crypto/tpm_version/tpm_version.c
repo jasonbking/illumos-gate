@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #include <err.h>
@@ -33,7 +33,7 @@ main(int argc, char * const *argv)
 {
 	int fd, c, version;
 
-	while ((c = getopt(argc, argv, "q")) == -1) {
+	while ((c = getopt(argc, argv, "q")) != -1) {
 		switch (c) {
 		case 'q':
 			quiet = true;
