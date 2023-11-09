@@ -48,6 +48,7 @@
 
 #include <sys/byteorder.h>	/* for ntohs, ntohl, htons, htonl */
 #include <sys/sysmacros.h>
+#include <sys/mkdev.h>
 #include <sys/sdt.h>
 
 #include <sys/tpm.h>
@@ -1387,12 +1388,25 @@ tpm_attach_minor_node(tpm_t *tpm)
 		return (false);
 	}
 
+	tpm_minors = id_space_create("tpm clients", 0, MAXMIN64);
+	if (tpm_minors == NULL) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "failed to create minor id space");
+		ddi_remove_minor_node(tpm->tpm_dip, NULL);
+		return (false);
+	}
+
 	return (true);
 }
 
 static void
 tpm_cleanup_minor_node(tpm_t *tpm)
 {
+	if (tpm_minors != NULL) {
+		id_space_destroy(tpm_minors);
+		tpm_minors = NULL;
+	}
+
 	ddi_remove_minor_node(tpm->tpm_dip, NULL);
 }
 

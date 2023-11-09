@@ -36,6 +36,8 @@ SYMBOL_VERSION ILLUMOSprivate {
 	# stuff we need here and can move entries as appropriate later.
 	id_alloc_nosleep		{ FLAGS = EXTERN };
 	id_free				{ FLAGS = EXTERN };
+	id_space_create			{ FLAGS = EXTERN };
+	id_space_destroy		{ FLAGS = EXTERN };
 	p0				{ FLAGS = EXTERN };
 	minclsyspri			{ FLAGS = EXTERN };
 	thread_create			{ FLAGS = EXTERN };
