@@ -25,7 +25,7 @@ tpm20_init(tpm_t *tpm)
 
 	/*
 	 * TPM2.0 defines explicit timeouts (unlike TPM1.2 where there are
-	 * default timeouts, but the TPM can advertise it's own timeout
+	 * default timeouts, but the TPM can advertise its own timeout
 	 * values if desired).
 	 */
 	tpm->tpm_timeout_a = TPM20_TIMEOUT_A;
@@ -66,7 +66,19 @@ tpm20_get_timeout(uint32_t cmd)
 		return (TPM20_TIMEOUT_A);
 	case TPM_CC_NV_Read:
 		return (TPM20_TIMEOUT_B);
+	case TPM_CC_Create:
+	case TPM_CC_CreatePrimary:
+	case TPM_CC_CreateLoaded:
+		/*
+		 * TCG PC Client Decide Driver Design Principles for TPM 2.0
+		 * Section 10 says these three should use an 180s timeout.
+		 */
+		return ((clock_t)180000);
 	default:
-		return (TPM20_TIMEOUT_B);
+		/*
+		 * Similiarly, it also says commands not explicitly
+		 * mentioned to [PTP] should use a 90s timeout.
+		 */
+		return ((clock_t)90000);
 	}
 }
