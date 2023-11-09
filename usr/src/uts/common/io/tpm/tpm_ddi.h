@@ -195,10 +195,10 @@ typedef enum tpm_wait {
 
 typedef enum tpm_attach_seq {
 #ifdef __amd64
-	TPM_ATTACH_REGS =	1,
+	TPM_ATTACH_REGS =	0,
 #endif
 #ifdef sun4v
-	TPM_ATTACH_HSVC =	1,
+	TPM_ATTACH_HSVC =	0,
 #endif
 #ifdef __amd64
 	TPM_ATTACH_DEV_INIT,

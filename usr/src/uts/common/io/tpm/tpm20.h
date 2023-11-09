@@ -53,6 +53,9 @@ struct tpm;
 #define	TPM_CC_HierarchyChangeAuth	0x00000129
 #define	TPM_CC_GetCapability		0x0000017a
 #define	TPM_CC_NV_Read			0x0000014e
+#define	TPM_CC_Create			0x00000153
+#define	TPM_CC_CreatePrimary		0x00000131
+#define	TPM_CC_CreateLoaded		0x00000191
 
 bool tpm20_init(struct tpm *);
 int tpm20_seed_random(tpm_t *, uchar_t *, size_t);
