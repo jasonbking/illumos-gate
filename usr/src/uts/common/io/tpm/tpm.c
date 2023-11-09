@@ -23,7 +23,7 @@
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #include <sys/devops.h>		/* used by dev_ops */
@@ -87,7 +87,11 @@ typedef struct tpm_attach_desc {
  * Explicitly not static as it is a tunable. Set to true to enable
  * debug messages.
  */
+#ifdef DEBUG
+bool				tpm_debug = true;
+#else
 bool				tpm_debug = false;
+#endif
 
 static id_space_t		*tpm_minors;
 static void			*tpm_statep = NULL;
@@ -99,6 +103,8 @@ static ddi_device_acc_attr_t	tpm_acc_attr = {
 	.devacc_attr_dataorder =	DDI_STRICTORDER_ACC,
 };
 #endif
+
+static const char *tpm_hwvend_str(uint16_t);
 
 /* Can we accept write(2) requests without blocking? */
 static inline bool
@@ -1088,6 +1094,7 @@ static bool
 tpm_attach_dev_init(tpm_t *tpm)
 {
 	uint32_t id;
+	bool ret;
 
 	/*
 	 * The lower 32 bits of the interface id register are identical
@@ -1104,7 +1111,8 @@ tpm_attach_dev_init(tpm_t *tpm)
 		 * will set tpm_family since both TPM1.2 and TPM2.0
 		 * devices can use this interface.
 		 */
-		return (tpm_tis_init(tpm));
+		ret = tpm_tis_init(tpm);
+		break;
 	case TPM_INTF_IFTYPE_FIFO:
 		tpm->tpm_iftype = TPM_IF_FIFO;
 		tpm->tpm_family = TPM_FAMILY_2_0;
@@ -1116,19 +1124,48 @@ tpm_attach_dev_init(tpm_t *tpm)
 		 * modules using the TIS interface, so tpm_tis_init()
 		 * will set the properties for both TIS and FIFO.
 		 */
-		return (tpm_tis_init(tpm));
+		ret = tpm_tis_init(tpm);
+		break;
 	case TPM_INTF_IFTYPE_CRB:
 		tpm->tpm_iftype = TPM_IF_CRB;
 		tpm->tpm_family = TPM_FAMILY_2_0;
-		return (crb_init(tpm));
+		ret = crb_init(tpm);
+		break;
+	default:
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "Unsupported interface type %d", TPM_INTF_IFTYPE(id));
+		return (false);
 	}
 
+	if (!ret)
+		return (ret);
+
+	char *famstr = "";
+
+	switch (tpm->tpm_family) {
+	case TPM_FAMILY_1_2:
+		famstr = "1.2";
+		break;
+	case TPM_FAMILY_2_0:
+		famstr  = "2.0";
+		break;
+	}
+
+	/*
+	 * XXX: These are really hardware and firmware properties,
+	 * would it be better to use ndi_prop_update_int() instead?
+	 */
 	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
 	    "tpm-deviceid", tpm->tpm_did);
 	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
 	    "tpm-vendorid", tpm->tpm_vid);
+	(void) ddi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "tpm-hwvendor", (char *)tpm_hwvend_str(tpm->tpm_vid));
 	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
 	    "tpm-revision", tpm->tpm_rid);
+	(void) ddi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "tpm-family", famstr);
+	dev_err(tpm->tpm_dip, CE_NOTE, "!TPM version is %s", famstr);
 
 	return (true);
 }
@@ -1157,18 +1194,32 @@ tpm_attach_intr_alloc(tpm_t *tpm)
 		return (false);
 	}
 
-	if ((types & DDI_INTR_TYPE_FIXED) != 0) {
+	if (types == 0) {
+		tpm->tpm_use_interrupts = false;
+		return (true);
+	}
+	tpm_dbg(tpm, CE_CONT, "?supported interrupt types: 0x%b\n", types,
+	    "\020\001FIXED\002MSI\003MSI-X");
+
+	if ((types & DDI_INTR_TYPE_FIXED) == 0) {
 		dev_err(tpm->tpm_dip, CE_WARN,
 		    "fixed interrupts are not supported");
 		return (false);
 	}
 
-	if (ddi_intr_get_navail(tpm->tpm_dip, DDI_INTR_TYPE_FIXED,
-	    &navail) != DDI_SUCCESS) {
+	ret = ddi_intr_get_navail(tpm->tpm_dip, DDI_INTR_TYPE_FIXED,
+	    &navail);
+	if (ret != DDI_SUCCESS) {
+		if (ret == DDI_INTR_NOTFOUND) {
+			tpm->tpm_use_interrupts = false;
+			return (true);
+		}
+
 		dev_err(tpm->tpm_dip, CE_WARN,
 		    "could not determine available interrupts");
 		return (false);
 	}
+	tpm_dbg(tpm, CE_CONT, "?available interrupts: %d\n", navail);
 
 	if (ddi_intr_get_nintrs(tpm->tpm_dip, DDI_INTR_TYPE_FIXED,
 	    &nintrs) != DDI_SUCCESS) {
@@ -1176,10 +1227,12 @@ tpm_attach_intr_alloc(tpm_t *tpm)
 		    "could not count %s interrupts", "FIXED");
 		return (false);
 	}
+	tpm_dbg(tpm, CE_CONT, "?number of interrupts: %d\n", nintrs);
 
 	if (nintrs < 1) {
 		dev_err(tpm->tpm_dip, CE_WARN, "no interrupts supported");
-		return (false);
+		tpm->tpm_use_interrupts = false;
+		return (true);
 	}
 
 	if (nintrs != 1) {
@@ -1480,6 +1533,10 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		return (DDI_FAILURE);
 	}
 
+	if (tpm_debug) {
+		dev_err(dip, CE_CONT, "?%s: enter\n", __func__);
+	}
+
 	/* Nothing out of ordinary here */
 	switch (cmd) {
 	case DDI_ATTACH:
@@ -1530,6 +1587,7 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 			    "attach sequence failed %s (%d)", desc->tad_name,
 			    desc->tad_seq);
 			tpm_cleanup(tpm);
+			ddi_soft_state_free(tpm_statep, instance);
 			return (DDI_FAILURE);
 		}
 
@@ -1586,6 +1644,7 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		}
 	}
 
+	ddi_report_dev(tpm->tpm_dip);
 	return (DDI_SUCCESS);
 }
 
@@ -1864,11 +1923,12 @@ _init(void)
 	int ret;
 
 	ret = ddi_soft_state_init(&tpm_statep, sizeof (tpm_t), 1);
-	if (ret) {
+	if (ret != 0) {
 		cmn_err(CE_WARN, "!%s: ddi_soft_state_init failed: %d",
 		    __func__, ret);
 		return (ret);
 	}
+
 	ret = mod_install(&tpm_ml);
 	if (ret != 0) {
 		cmn_err(CE_WARN, "!%s: mod_install returned %d",
@@ -1903,4 +1963,52 @@ _fini()
 	ddi_soft_state_fini(&tpm_statep);
 
 	return (ret);
+}
+
+/*
+ * From TCG TPM Vendor ID Registry Family 1.2 and 2.0
+ * Version 1.06 Revision 0.94
+ */
+static struct {
+	uint16_t	vid;
+	const char	*vstr;
+} vid_tbl[] = {
+	{ 0x1022, "AMD" },
+	{ 0x6688, "Ant" },
+	{ 0x1114, "Atmel" },
+	{ 0x14E4, "Broadcom" },
+	{ 0xC5C0, "Cisco" },
+	{ 0x232B, "FlySlice Technologies" },
+	{ 0x232A, "Fuzhou Rockchip" },
+	{ 0x6666, "Google" },
+	{ 0x103C, "HPI" },
+	{ 0x1590, "HPE" },
+	{ 0x8888, "Huawei" },
+	{ 0x1014, "IBM" },
+	{ 0x15D1, "Infineon" },
+	{ 0x8086, "Intel" },
+	{ 0x17AA, "Lenovo" },
+	{ 0x1414, "Microsoft" },
+	{ 0x100B, "National Semi" },
+	{ 0x1B4E, "Nationz" },
+	{ 0x1050, "Nuvoton Technology nee Winbind" },
+	{ 0x1011, "Qualcomm" },
+	{ 0x144D, "Samsung" },
+	{ 0x19FA, "Sinosun" },
+	{ 0x1055, "SMSC" },
+	{ 0x025E, "Solidigm" },
+	{ 0x104A, "STMicroelectronics" },
+	{ 0x104C, "Texas Instruments" },
+};
+
+static const char *
+tpm_hwvend_str(uint16_t vid)
+{
+	for (uint_t i = 0; i < ARRAY_SIZE(vid_tbl); i++) {
+		if (vid_tbl[i].vid == vid) {
+			return (vid_tbl[i].vstr);
+		}
+	}
+
+	return ("Unknown");
 }

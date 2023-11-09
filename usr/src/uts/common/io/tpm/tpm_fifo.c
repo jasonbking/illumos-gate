@@ -23,7 +23,7 @@
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #include "tpm_ddi.h"
@@ -463,36 +463,49 @@ tpm_tis_init(tpm_t *tpm)
 {
 	tpm_tis_t *tis = &tpm->tpm_u.tpmu_tis;
 	uint32_t cap;
-	uint32_t didvid;
-	uint8_t rid;
+	uint32_t devid;
+	uint8_t revid;
 
 	VERIFY(tpm->tpm_iftype == TPM_IF_TIS || tpm->tpm_iftype == TPM_IF_FIFO);
 
 	cap = tpm_get32(tpm, TPM_INTF_CAP);
 
-	switch (TIS_INTF_VER_VAL(cap)) {
-	case TIS_INTF_VER_VAL_1_21:
-	case TIS_INTF_VER_VAL_1_3:
-		tpm->tpm_family = TPM_FAMILY_1_2;
+	switch (tpm->tpm_iftype) {
+	case TPM_IF_TIS:
+		switch (TIS_INTF_VER_VAL(cap)) {
+		case TIS_INTF_VER_VAL_1_21:
+		case TIS_INTF_VER_VAL_1_3:
+			tpm->tpm_family = TPM_FAMILY_1_2;
+			break;
+		case TIS_INTF_VER_VAL_1_3_TPM:
+			tpm->tpm_family = TPM_FAMILY_2_0;
+			break;
+		default:
+			dev_err(tpm->tpm_dip, CE_NOTE,
+			    "!%s: unknown TPM interface version 0x%x", __func__,
+			    TIS_INTF_VER_VAL(cap));
+			return (false);
+		}
 		break;
-	case TIS_INTF_VER_VAL_1_3_TPM:
-		tpm->tpm_family = TPM_FAMILY_2_0;
+	case TPM_IF_FIFO:
+		VERIFY3S(tpm->tpm_family, ==, TPM_FAMILY_2_0);
 		break;
 	default:
-		dev_err(tpm->tpm_dip, CE_NOTE,
-		    "!%s: unknown TPM interface version 0x%x", __func__,
-		    TIS_INTF_VER_VAL(cap));
-		return (false);
+		/*
+		 * We should only be called if the TPM is using the TIS
+		 * or FIFO interface.
+		 */
+		dev_err(tpm->tpm_dip, CE_PANIC, "%s: invalid interface type %d",
+		    __func__, tpm->tpm_iftype);
+		break;
 	}
 
-	didvid = tpm_get32(tpm, TPM_DID_VID);
-	rid = tpm_get8(tpm, TPM_RID);
-	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip, "tpm-deviceid",
-	    (didvid) >> 16);
-	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip, "tpm-vendorid",
-	    BE_16(didvid & 0xffff));
-	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip, "tpm-revision",
-	    rid);
+	devid = tpm_get32(tpm, TPM_DID_VID);
+	revid = tpm_get8(tpm, TPM_RID);
+
+	tpm->tpm_did = devid >> 16;
+	tpm->tpm_vid = devid & 0xffff;
+	tpm->tpm_rid = revid;
 
 	tis->ttis_state = TPMT_ST_IDLE;
 	tis->ttis_xfer_size = TIS_INTF_XFER_VAL(cap);
