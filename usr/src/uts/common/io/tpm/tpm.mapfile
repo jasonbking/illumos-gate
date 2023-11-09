@@ -34,12 +34,21 @@ SYMBOL_VERSION ILLUMOSprivate {
 	# Some of these might make sense to move into something like
 	# ddi.mapfile or kernel.mapfile. For now, we define the external
 	# stuff we need here and can move entries as appropriate later.
+	id_alloc			{ FLAGS = EXTERN };
 	id_alloc_nosleep		{ FLAGS = EXTERN };
 	id_free				{ FLAGS = EXTERN };
 	id_space_create			{ FLAGS = EXTERN };
 	id_space_destroy		{ FLAGS = EXTERN };
 	p0				{ FLAGS = EXTERN };
 	minclsyspri			{ FLAGS = EXTERN };
+	refhash_create			{ FLAGS = EXTERN };
+	refhash_destroy			{ FLAGS = EXTERN };
+	refhash_hold			{ FLAGS = EXTERN };
+	refhash_insert			{ FLAGS = EXTERN };
+	refhash_lookup			{ FLAGS = EXTERN };
+	refhash_remove			{ FLAGS = EXTERN };
+	refhash_rele			{ FLAGS = EXTERN };
+	thread_create			{ FLAGS = EXTERN };
 	thread_create			{ FLAGS = EXTERN };
 	thread_join			{ FLAGS = EXTERN };
 

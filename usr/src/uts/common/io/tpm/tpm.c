@@ -78,6 +78,8 @@ typedef struct tpm_attach_desc {
 
 /* We assume a system will only have a single TPM device. */
 #define	TPM_CTL_MINOR		0
+#define	TPM_INSTANCE(_dev)	0
+#define	TPM_CLIENT(_dev)	(getminor(_dev))
 
 #define	TPM_INTF_IFTYPE(x)	((x) & 0xf)
 #define	TPM_INTF_IFTYPE_FIFO	(0x0)
@@ -94,6 +96,8 @@ bool				tpm_debug = true;
 bool				tpm_debug = false;
 #endif
 
+static kmutex_t			tpm_clients_lock;
+static refhash_t		*tpm_clients;
 static id_space_t		*tpm_minors;
 static void			*tpm_statep = NULL;
 
@@ -153,32 +157,34 @@ static tpm_client_t *
 tpm_client_get(dev_t dev)
 {
 	tpm_client_t *c;
+	int minor;
 
-	c = ddi_get_soft_state(tpm_statep, getminor(dev));
-	if (c == NULL) {
-		return (NULL);
+	minor = TPM_CLIENT(dev);
+
+	mutex_enter(&tpm_clients_lock);
+	c = refhash_lookup(tpm_clients, &minor);
+	if (c != NULL) {
+		refhash_hold(tpm_clients, c);
 	}
+	mutex_exit(&tpm_clients_lock);
 
-	mutex_enter(&c->tpmc_lock);
-	if (c->tpmc_closing) {
-		mutex_exit(&c->tpmc_lock);
-		return (NULL);
-	}
-
-	c->tpmc_refcnt++;
 	return (c);
 }
 
 void
 tpm_client_refhold(tpm_client_t *c)
 {
-	atomic_inc_uint(&c->tpmc_refcnt);
+	mutex_enter(&tpm_clients_lock);
+	refhash_hold(tpm_clients, c);
+	mutex_exit(&tpm_clients_lock);
 }
 
 void
 tpm_client_refrele(tpm_client_t *c)
 {
-	atomic_dec_uint(&c->tpmc_refcnt);	
+	mutex_enter(&tpm_clients_lock);
+	refhash_rele(tpm_clients, c);
+	mutex_exit(&tpm_clients_lock);
 }
 
 void
@@ -273,6 +279,7 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 	tpm_t *tpm;
 	tpm_client_t *c;
 	int minor;
+	int kmflag = KM_SLEEP;
 
 	if (otype != OTYP_CHR) {
 		return (SET_ERROR(EINVAL));
@@ -292,6 +299,10 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 		return (SET_ERROR(EINVAL));
 	}
 
+	if ((flag & FNDELAY) == FNDELAY) {
+		kmflag = KM_NOSLEEP;
+	}
+
 	tpm = ddi_get_soft_state(tpm_statep, TPM_CTL_MINOR);
 
 	mutex_enter(&tpm->tpm_lock);
@@ -309,16 +320,31 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 	}
 	mutex_exit(&tpm->tpm_lock);
 
-	minor = id_alloc_nosleep(tpm_minors);
-	if (minor == -1) {
-		return (SET_ERROR(EBUSY));
-	}
-
-	if (ddi_soft_state_zalloc(tpm_statep, minor) != DDI_SUCCESS) {
-		id_free(tpm_minors, minor);
+	c = kmem_zalloc(sizeof (*c), kmflag);
+	if (c == NULL) {
 		return (SET_ERROR(ENOMEM));
 	}
-	c = ddi_get_soft_state(tpm_statep, minor);
+
+	if ((flag & FNDELAY) == FNDELAY) {
+		minor = id_alloc_nosleep(tpm_minors);
+		if (minor == -1) {
+			kmem_free(c, sizeof (*c));
+			return (SET_ERROR(ENOMEM));
+		}
+	} else {
+		minor = id_alloc(tpm_minors);
+	}
+
+	c->tpmc_tpm = tpm;
+
+	c->tpmc_minor = minor;
+	c->tpmc_state = TPM_CLIENT_IDLE;
+	c->tpmc_buf = kmem_zalloc(TPM_IO_BUF_SIZE, kmflag);
+	if (c->tpmc_buf == NULL) {
+		id_free(tpm_minors, c->tpmc_minor);
+		kmem_free(c, sizeof (*c));
+		return (SET_ERROR(ENOMEM));
+	}
 
 	void *pri = tpm->tpm_use_interrupts ?
 	    DDI_INTR_PRI(tpm->tpm_intr_pri) : NULL;
@@ -326,10 +352,6 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 	mutex_init(&c->tpmc_lock, NULL, MUTEX_DRIVER, pri);
 	cv_init(&c->tpmc_cv, NULL, CV_DRIVER, pri);
 
-	c->tpmc_tpm = tpm;
-	c->tpmc_minor = minor;
-	c->tpmc_state = TPM_CLIENT_IDLE;
-	c->tpmc_buf = kmem_zalloc(TPM_IO_BUF_SIZE, KM_SLEEP);
 	c->tpmc_buflen = TPM_IO_BUF_SIZE;
 	c->tpmc_locality = DEFAULT_LOCALITY;
 
@@ -339,6 +361,10 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 	if ((flag & FNDELAY) == FNDELAY) {
 		c->tpmc_mode |= TPM_MODE_NONBLOCK;
 	}
+
+	mutex_enter(&tpm_clients_lock);
+	refhash_insert(tpm_clients, c);
+	mutex_exit(&tpm_clients_lock);
 
 	*devp = makedevice(getmajor(*devp), minor);
 	return (0);
@@ -363,8 +389,8 @@ tpm_client_cleanup(tpm_client_t *c)
 	mutex_exit(&c->tpmc_lock);
 	mutex_destroy(&c->tpmc_lock);
 
-	ddi_soft_state_free(tpm_statep, c->tpmc_minor);
 	id_free(tpm_minors, c->tpmc_minor);
+	kmem_free(c, sizeof (*c));
 }
 
 static int
@@ -381,7 +407,7 @@ tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 		return (SET_ERROR(ENXIO));
 	}
 
-	c->tpmc_closing = true;
+	mutex_enter(&c->tpmc_lock);
 
 	tpm_cancel(c);
 
@@ -398,7 +424,13 @@ tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 		}
 	}
 
-	tpm_client_cleanup(c);
+	mutex_exit(&c->tpmc_lock);
+
+	mutex_enter(&tpm_clients_lock);
+	refhash_remove(tpm_clients, c);
+	refhash_rele(tpm_clients, c);
+	mutex_exit(&tpm_clients_lock);
+
 	return (0);
 }
 
@@ -441,7 +473,7 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 		return (SET_ERROR(ENXIO));
 	}
 
-	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+	mutex_enter(&c->tpmc_lock);
 
 	size_t amt_copied = 0;
 	size_t amt_avail = tpm_uio_size(uiop);
@@ -590,7 +622,7 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 		return (SET_ERROR(ENXIO));
 	}
 
-	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+	mutex_enter(&c->tpmc_lock);
 
 	switch (c->tpmc_state) {
 	case TPM_CLIENT_IDLE:
@@ -657,7 +689,7 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		return (SET_ERROR(ENXIO));
 	}
 
-	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+	mutex_enter(&c->tpmc_lock);
 
 	switch (cmd) {
 	case TPMIOC_GETVERSION:
@@ -746,7 +778,7 @@ tpm_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 		return (SET_ERROR(ENXIO));
 	}
 
-	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+	mutex_enter(&c->tpmc_lock);
 
 	*reventsp = 0;
 
@@ -1931,10 +1963,51 @@ static struct modlinkage tpm_ml = {
 	.ml_linkage =	{ &modldrv, NULL },
 };
 
+
+static uint64_t
+tpm_client_hash(const void *e)
+{
+	const tpm_client_t *c = e;
+
+	/*
+	 * For now, we don't need to be particularly clever. We can just
+	 * distribute over the buckets. The expectation is that the TPM
+	 * operation time is going to dwarf any client lookup time by
+	 * many orders of magnitude.
+	 */
+	return ((uint64_t)c->tpmc_minor);
+}
+
+static int
+tpm_client_cmp(const void *a, const void *b)
+{
+	const tpm_client_t *l = a;
+	const tpm_client_t *r = b;
+
+	if (l->tpmc_minor < r->tpmc_minor)
+		return (-1);
+	if (l->tpmc_minor > r->tpmc_minor)
+		return (1);
+	return (0);
+}
+
+static void
+tpm_client_dtor(void *p)
+{
+	tpm_client_t *c = p;
+
+	tpm_client_cleanup(c);
+}
+
+/* An arbitrary prime */
+#define	TPM_CLIENT_BUCKETS	7
+
 int
 _init(void)
 {
 	int ret;
+
+	mutex_init(&tpm_clients_lock, NULL, MUTEX_DRIVER, NULL);
 
 	ret = ddi_soft_state_init(&tpm_statep, sizeof (tpm_t), 1);
 	if (ret != 0) {
@@ -1943,10 +2016,16 @@ _init(void)
 		return (ret);
 	}
 
+	tpm_clients = refhash_create(TPM_CLIENT_BUCKETS, tpm_client_hash,
+	    tpm_client_cmp, tpm_client_dtor, sizeof (tpm_client_t),
+	    offsetof(tpm_client_t, tpmc_reflink),
+	    offsetof(tpm_client_t, tpmc_minor), KM_SLEEP);
+	
 	ret = mod_install(&tpm_ml);
 	if (ret != 0) {
 		cmn_err(CE_WARN, "!%s: mod_install returned %d",
 		    __func__, ret);
+		refhash_destroy(tpm_clients);
 		ddi_soft_state_fini(&tpm_statep);
 		return (ret);
 	}
@@ -1970,9 +2049,15 @@ _fini()
 {
 	int ret;
 
+	refhash_destroy(tpm_clients);
+	mutex_destroy(&tpm_clients_lock);
+
 	ret = mod_remove(&tpm_ml);
 	if (ret != 0)
 		return (ret);
+
+	refhash_destroy(tpm_clients);
+	mutex_destroy(&tpm_clients_lock);
 
 	ddi_soft_state_fini(&tpm_statep);
 
