@@ -38,6 +38,7 @@
 #include <sys/ksynch.h>
 #include <sys/list.h>
 #include <sys/byteorder.h>
+#include <sys/refhash.h>
 #include "tpm_tis.h"
 
 /* Duration index is SHORT, MEDIUM, LONG, UNDEFINED */
@@ -287,7 +288,7 @@ typedef enum tpm_client_state {
 } tpm_client_state_t;
 
 struct tpm_client {
-	volatile uint_t		tpmc_refcnt;
+	refhash_link_t		tpmc_reflink;
 	list_node_t		tpmc_node;
 	kmutex_t		tpmc_lock;
 	kcondvar_t		tpmc_cv;
