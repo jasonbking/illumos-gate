@@ -78,7 +78,7 @@ typedef struct tpm_attach_desc {
 
 /* We assume a system will only have a single TPM device. */
 #define	TPM_CTL_MINOR		0
-#define	TPM_INSTANCE(_dev)	0
+#define	TPM_INSTANCE(_dev)	TPM_CTL_MINOR
 #define	TPM_CLIENT(_dev)	(getminor(_dev))
 
 #define	TPM_INTF_IFTYPE(x)	((x) & 0xf)
@@ -303,7 +303,7 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 		kmflag = KM_NOSLEEP;
 	}
 
-	tpm = ddi_get_soft_state(tpm_statep, TPM_CTL_MINOR);
+	tpm = ddi_get_soft_state(tpm_statep, TPM_INSTANCE(dev));
 
 	mutex_enter(&tpm->tpm_lock);
 
@@ -322,12 +322,19 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 
 	c = kmem_zalloc(sizeof (*c), kmflag);
 	if (c == NULL) {
+		mutex_enter(&tpm->tpm_lock);
+		tpm->tpm_client_count--;
+		mutex_exit(&tpm->tpm_lock);
 		return (SET_ERROR(ENOMEM));
 	}
 
 	if ((flag & FNDELAY) == FNDELAY) {
 		minor = id_alloc_nosleep(tpm_minors);
 		if (minor == -1) {
+			mutex_enter(&tpm->tpm_lock);
+			tpm->tpm_client_count--;
+			mutex_exit(&tpm->tpm_lock);
+
 			kmem_free(c, sizeof (*c));
 			return (SET_ERROR(ENOMEM));
 		}
@@ -341,6 +348,10 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 	c->tpmc_state = TPM_CLIENT_IDLE;
 	c->tpmc_buf = kmem_zalloc(TPM_IO_BUF_SIZE, kmflag);
 	if (c->tpmc_buf == NULL) {
+		mutex_enter(&tpm->tpm_lock);
+		tpm->tpm_client_count--;
+		mutex_exit(&tpm->tpm_lock);
+
 		id_free(tpm_minors, c->tpmc_minor);
 		kmem_free(c, sizeof (*c));
 		return (SET_ERROR(ENOMEM));
@@ -370,9 +381,10 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 	return (0);
 }
 
-void
-tpm_client_cleanup(tpm_client_t *c)
+static void
+tpm_client_dtor(void *arg)
 {
+	tpm_client_t *c = arg;
 	tpm_t *tpm = c->tpmc_tpm;
 
 	mutex_enter(&tpm->tpm_lock);
@@ -386,10 +398,10 @@ tpm_client_cleanup(tpm_client_t *c)
 	kmem_free(c->tpmc_buf, c->tpmc_buflen);
 
 	cv_destroy(&c->tpmc_cv);
-	mutex_exit(&c->tpmc_lock);
 	mutex_destroy(&c->tpmc_lock);
 
 	id_free(tpm_minors, c->tpmc_minor);
+	bzero(c, sizeof (*c));
 	kmem_free(c, sizeof (*c));
 }
 
@@ -481,7 +493,7 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	size_t to_copy = 0;
 	int ret = 0;
 
-	if ((c->tpmc_mode & TPM_MODE_WRITE) != 0) {
+	if ((c->tpmc_mode & TPM_MODE_WRITE) == 0) {
 		/* XXX better return value? */
 		ret = SET_ERROR(EIO);
 		goto done;
@@ -710,7 +722,7 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		}
 		break;
 	case TPMIOC_SETLOCALITY:
-		if ((c->tpmc_mode & TPM_MODE_WRITE) != 0) {
+		if ((c->tpmc_mode & TPM_MODE_WRITE) == 0) {
 			/* XXX: better value? didn't open for write */
 			ret = SET_ERROR(ENXIO);
 			break;
@@ -754,7 +766,7 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		tpm_cancel(c);
 		break;
 	case TPMIOC_MAKESTICKY:
-		/* XXX: TODO */
+		/* TODO */
 		ret = SET_ERROR(ENOTSUP);
 		break;
 	default:
@@ -845,6 +857,8 @@ tpm_exec_client(tpm_client_t *c)
 	if (ret == 0) {
 		c->tpmc_bufread = 0;
 	}
+
+	mutex_exit(&tpm->tpm_lock);
 
 	mutex_enter(&c->tpmc_lock);
 	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
@@ -1420,25 +1434,12 @@ tpm_attach_minor_node(tpm_t *tpm)
 		return (false);
 	}
 
-	tpm_minors = id_space_create("tpm clients", 0, MAXMIN64);
-	if (tpm_minors == NULL) {
-		dev_err(tpm->tpm_dip, CE_WARN,
-		    "failed to create minor id space");
-		ddi_remove_minor_node(tpm->tpm_dip, NULL);
-		return (false);
-	}
-
 	return (true);
 }
 
 static void
 tpm_cleanup_minor_node(tpm_t *tpm)
 {
-	if (tpm_minors != NULL) {
-		id_space_destroy(tpm_minors);
-		tpm_minors = NULL;
-	}
-
 	ddi_remove_minor_node(tpm->tpm_dip, NULL);
 }
 
@@ -1664,7 +1665,7 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	case 1:
 		if (!tpm->tpm_use_interrupts) {
 			dev_err(tpm->tpm_dip, CE_NOTE,
-			    "interrupts disabled. TPM will poll");
+			    "!interrupts disabled. TPM will poll");
 			tpm->tpm_wait = TPM_WAIT_POLL;
 			break;
 		}
@@ -1967,7 +1968,7 @@ static struct modlinkage tpm_ml = {
 static uint64_t
 tpm_client_hash(const void *e)
 {
-	const tpm_client_t *c = e;
+	const int *minorp = e;
 
 	/*
 	 * For now, we don't need to be particularly clever. We can just
@@ -1975,28 +1976,20 @@ tpm_client_hash(const void *e)
 	 * operation time is going to dwarf any client lookup time by
 	 * many orders of magnitude.
 	 */
-	return ((uint64_t)c->tpmc_minor);
+	return ((uint64_t)(*minorp));
 }
 
 static int
 tpm_client_cmp(const void *a, const void *b)
 {
-	const tpm_client_t *l = a;
-	const tpm_client_t *r = b;
+	const int *l = a;
+	const int *r = b;
 
-	if (l->tpmc_minor < r->tpmc_minor)
+	if (*l < *r)
 		return (-1);
-	if (l->tpmc_minor > r->tpmc_minor)
+	if (*l > *r)
 		return (1);
 	return (0);
-}
-
-static void
-tpm_client_dtor(void *p)
-{
-	tpm_client_t *c = p;
-
-	tpm_client_cleanup(c);
 }
 
 /* An arbitrary prime */
@@ -2006,8 +1999,6 @@ int
 _init(void)
 {
 	int ret;
-
-	mutex_init(&tpm_clients_lock, NULL, MUTEX_DRIVER, NULL);
 
 	ret = ddi_soft_state_init(&tpm_statep, sizeof (tpm_t), 1);
 	if (ret != 0) {
@@ -2020,15 +2011,27 @@ _init(void)
 	    tpm_client_cmp, tpm_client_dtor, sizeof (tpm_client_t),
 	    offsetof(tpm_client_t, tpmc_reflink),
 	    offsetof(tpm_client_t, tpmc_minor), KM_SLEEP);
-	
+
+	tpm_minors = id_space_create("tpm minor numbers", 1, MAXMIN64);
+	if (tpm_minors == NULL) {
+		cmn_err(CE_WARN, "!%s: failed to create tpm minor id space",
+		    __func__);
+		refhash_destroy(tpm_clients);
+		ddi_soft_state_fini(&tpm_statep);
+		return (-1);
+	}
+
 	ret = mod_install(&tpm_ml);
 	if (ret != 0) {
 		cmn_err(CE_WARN, "!%s: mod_install returned %d",
 		    __func__, ret);
+		id_space_destroy(tpm_minors);
 		refhash_destroy(tpm_clients);
 		ddi_soft_state_fini(&tpm_statep);
 		return (ret);
 	}
+
+	mutex_init(&tpm_clients_lock, NULL, MUTEX_DRIVER, NULL);
 
 	return (ret);
 }
@@ -2049,13 +2052,11 @@ _fini()
 {
 	int ret;
 
-	refhash_destroy(tpm_clients);
-	mutex_destroy(&tpm_clients_lock);
-
 	ret = mod_remove(&tpm_ml);
 	if (ret != 0)
 		return (ret);
 
+	id_space_destroy(tpm_minors);
 	refhash_destroy(tpm_clients);
 	mutex_destroy(&tpm_clients_lock);
 

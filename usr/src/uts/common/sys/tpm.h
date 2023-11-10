@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #ifndef _SYS_TPM_H
@@ -23,7 +23,7 @@ extern "C" {
 #define	TPMDEV_VERSION_1_2	1
 #define	TPMDEV_VERSION_2_0	2
 
-#define	TPMIOC			('T' << 8)
+#define	TPMIOC			('T' << 24)|('P' << 16)|('M' << 8)
 #define	TPMIOC_GETVERSION	(TPMIOC|1)
 #define	TPMIOC_SETLOCALITY	(TPMIOC|2)
 #define	TPMIOC_CANCEL		(TPMIOC|3)

@@ -548,7 +548,7 @@ tis_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 	int ret;
 
 	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
-	VERIFY3S(tpm->tpm_iftype, ==, TPM_IF_CRB);
+	VERIFY(tpm->tpm_iftype == TPM_IF_TIS || tpm->tpm_iftype == TPM_IF_FIFO);
 	VERIFY3U(buflen, >=, TPM_HEADER_SIZE);
 
 	cmdlen = tpm_cmdlen(buf);
