@@ -28,6 +28,7 @@
  * Copyright 2021 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2022 Garrett D'Amore <garrett@damore.org>
  * Copyright 2024 Oxide Computer Company
+ * Copyright 2023 Jason King
  */
 
 /*	Copyright (c) 1984, 1986, 1987, 1988, 1989 AT&T	*/
@@ -107,6 +108,7 @@
 #include <sys/pm.h>
 #include <sys/soundcard.h>
 #include <sys/cpuid_drv.h>
+#include <sys/tpm.h>
 
 #include "codes.h"
 #include "ramdata.h"
@@ -1836,6 +1838,14 @@ const struct ioc cpuid_ioc[] = { /* (('c'<<24)|('i'<<16)|('d'<<8)) */
 	{ (uint_t)CPUID_RDMSR, "CPUID_RDMSR", NULL }, /* 1 */
 };
 
+const struct ioc tpm_ioc[] = { /* ('T'<<8) */
+	/* tpm ioctls */
+	{ (uint_t)TPMIOC_GETVERSION,		"TPMIOC_GETVERSION", NULL },
+	{ (uint_t)TPMIOC_SETLOCALITY,		"TPMIOC_SETLOCALITY", NULL },
+	{ (uint_t)TPMIOC_CANCEL,		"TPMIOC_CANCEL", NULL },
+	{ (uint_t)TPMIOC_MAKESTICKY,		"TPMIOC_MAKESTICKY", NULL },
+};
+
 /*
  * Because some IOC codes do overlap, and we are performing linear
  * lookup with first match returned, care must be taken about the order
@@ -1892,6 +1902,7 @@ const struct iocs iocs[] = {
 	{ .nitems = ARRAY_SIZE(hid_ioc), .data = hid_ioc},
 	{ .nitems = ARRAY_SIZE(cpuid_ioc), .data = cpuid_ioc},
 	{ .nitems = ARRAY_SIZE(pm_ioc), .data = pm_ioc},
+	{ .nitems = ARRAY_SIZE(tpm_ioc), .data = tpm_ioc},
 	{ .nitems = 0, .data = NULL }
 };
 
