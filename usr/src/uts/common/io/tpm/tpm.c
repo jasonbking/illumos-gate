@@ -855,6 +855,12 @@ tpm_exec_client(tpm_client_t *c)
 	ret = tpm_exec_internal(tpm, c->tpmc_locality, c->tpmc_buf,
 	    c->tpmc_buflen);
 	if (ret == 0) {
+		/*
+		 * If we succeeded, the amount of output will be in the
+		 * returned header.
+		 */
+		c->tpmc_bufused = tpm_getbuf32(c->tpmc_buf,
+		    TPM_PARAMSIZE_OFFSET);
 		c->tpmc_bufread = 0;
 	}
 
@@ -968,7 +974,7 @@ tpm_wait_common(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t value,
 	deadline = ddi_get_lbolt() + timeout;
 	while ((now = ddi_get_lbolt()) < deadline) {
 		status = getf(tpm, reg, mask);
-		if (mask == value)
+		if (status == value)
 			break;
 
 		clock_t until = tpm_get_waittime(tpm, wait, now, deadline);

@@ -230,41 +230,59 @@ fail:
 }
 
 static int
-receive_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
+receive_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 {
 	int size = 0;
-	int retried = 0;
+	bool retried = false;
 	uint8_t stsbits;
 
 	/* A number of consecutive bytes that can be written to TPM */
 	uint16_t burstcnt;
 
 retry:
-	while (size < bufsiz && (tpm_tis_wait_for_stat(tpm,
-	    (TPM_STS_DATA_AVAIL|TPM_STS_VALID),
-	    tpm->tpm_timeout_c, false) == DDI_SUCCESS)) {
+	while (size < amt) {
+		int ret;
+
+		ret = tpm_tis_wait_for_stat(tpm,
+		    TPM_STS_DATA_AVAIL|TPM_STS_VALID, tpm->tpm_timeout_c,
+		    false);
+		if (ret != 0) {
+			break;
+		}
+
 		/*
 		 * Burstcount should be available within TIMEOUT_D
 		 * after STS is set to valid
 		 * burstcount is dynamic, so have to get it each time
 		 */
 		burstcnt = tpm_tis_get_burstcount(tpm);
-		for (; burstcnt > 0 && size < bufsiz; burstcnt--) {
+		for (; burstcnt > 0 && size < amt; burstcnt--) {
 			buf[size++] = tpm_get8(tpm, TPM_DATA_FIFO);
 		}
 	}
 	stsbits = tpm_tis_get_status(tpm);
+
 	/* check to see if we need to retry (just once) */
-	if (size < bufsiz && !(stsbits & TPM_STS_DATA_AVAIL) && retried == 0) {
+	if (size < amt && !(stsbits & TPM_STS_DATA_AVAIL) && !retried) {
 		/* issue responseRetry (TIS 1.2 pg 54) */
 		tpm_put8(tpm, TPM_STS, TPM_STS_RESPONSE_RETRY);
+
 		/* update the retry counter so we only retry once */
-		retried++;
+		retried = true;
+
 		/* reset the size to 0 and reread the entire response */
 		size = 0;
 		goto retry;
 	}
-	return (size);
+
+	if (size != amt) {
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "!short read: expected %lu, read %u", amt, size);
+		/* XXX: Better error value? */
+		return (ENODATA);
+	}
+
+	return (0);
 }
 
 /* Receive the data from the TPM */
@@ -276,37 +294,36 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz, clock_t to)
 	uint32_t expected, status;
 	uint32_t cmdresult;
 
+	/*
+	 * We should always have a buffer large enough for the smallest
+	 * result.
+	 */
+	VERIFY3U(bufsiz, >=, TPM_HEADER_SIZE);
+
 	/* Read tag(2 bytes), paramsize(4), and result(4) */
-	size = receive_data(tpm, buf, TPM_HEADER_SIZE);
-	if (size < TPM_HEADER_SIZE) {
-#ifdef DEBUG
-		dev_err(tpm->tpm_dip, CE_WARN,
-		    "!%s: recv TPM_HEADER failed, size = %d", __func__, size);
-#endif
+	ret = receive_data(tpm, buf, TPM_HEADER_SIZE);
+	if (ret != 0) {
 		goto OUT;
 	}
 
+	/* If we succeeded, we have TPM_HEADER_SIZE bytes in buf */
 	cmdresult = tpm_getbuf32(buf, TPM_RETURN_OFFSET);
 
 	/* Get 'paramsize'(4 bytes)--it includes tag and paramsize */
 	expected = tpm_getbuf32(buf, TPM_PARAMSIZE_OFFSET);
 	if (expected > bufsiz) {
-#ifdef DEBUG
-		dev_err(tpm->tpm_dip, CE_WARN, "!%s: paramSize is bigger "
-		    "than the requested size: paramSize=%d bufsiz=%d result=%d",
-		    __func__, (int)expected, (int)bufsiz, cmdresult);
-#endif
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "!command returned more data than expected: "
+		    "amount returned = %u max = %lu command result = %d",
+		    expected, bufsiz, cmdresult);
+
 		goto OUT;
 	}
 
 	/* Read in the rest of the data from the TPM */
-	size += receive_data(tpm, (uint8_t *)&buf[TPM_HEADER_SIZE],
+	ret = receive_data(tpm, buf + TPM_HEADER_SIZE,
 	    expected - TPM_HEADER_SIZE);
-	if (size < expected) {
-#ifdef DEBUG
-		dev_err(tpm->tpm_dip, CE_WARN, "!%s: received data length (%d) "
-		    "is less than expected (%d)", __func__, size, expected);
-#endif
+	if (ret != 0) {
 		goto OUT;
 	}
 
@@ -316,20 +333,17 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz, clock_t to)
 
 	status = tpm_tis_get_status(tpm);
 	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
 		dev_err(tpm->tpm_dip, CE_WARN,
-		    "!%s: TPM didn't set stsValid after its I/O: "
-		    "status = 0x%08X", __func__, status);
-#endif
+		    "!failed to set valid status after I/O; status = 0x%08X",
+		    status);
 		goto OUT;
 	}
 
 	/* There is still more data? */
 	if (status & TPM_STS_DATA_AVAIL) {
-#ifdef DEBUG
 		dev_err(tpm->tpm_dip, CE_WARN,
-		    "!%s: TPM_STS_DATA_AVAIL is set:0x%08X", __func__, status);
-#endif
+		    "!reported more data after reading result "
+		    "(TPM_STS_DATA_AVAIL still set: 0x%08X", status);
 		goto OUT;
 	}
 
@@ -342,7 +356,7 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz, clock_t to)
 OUT:
 	tpm_tis_set_ready(tpm);
 	tis_release_locality(tpm, tpm->tpm_locality, 0);
-	return (size);
+	return (ret);
 }
 
 /*
