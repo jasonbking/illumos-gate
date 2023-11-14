@@ -174,10 +174,11 @@ typedef struct tpm_crb {
  *			the status of the request.
  *
  * For TPM1.2 devices the default is TPM_WAIT_POLL (to match the historic
- * behavior of the TPM driver). For TPM2.0 devices, it possible the TPM device
- * can process requests much faster than the timeouts specified by the standard
- * (e.g. software TPMs aka fTPMs that run on the host processor at a special
- * privilege level). As such, the default for TPM2.0 devices is TPM_WAIT_INTR.
+ * behavior of the TPM driver). For TPM2.0 devices, it is possible the TPM
+ * device can process requests much faster than the timeouts specified by the
+ * standard (e.g. software TPMs aka fTPMs that run on the host processor at a
+ * special privilege level). As such, the default for TPM2.0 devices is
+ * TPM_WAIT_INTR.
  *
  * However, it is currently unknown how vulnerable TPM devices are to
  * timing attacks. At the same time, it is also possible that a given TPM
