@@ -290,7 +290,6 @@ static int
 tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz, clock_t to)
 {
 	int ret;
-	int size = 0;
 	uint32_t expected, status;
 	uint32_t cmdresult;
 
