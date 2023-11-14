@@ -33,6 +33,8 @@ struct tpm;
 
 #define	TPM20_TIMEOUT_CANCEL	TPM20_TIMEOUT_B
 
+#define	TPM_ST_NO_SESSIONS 0x8001
+
 /*
  * The TPM2.0 commands that have explicit timeouts. These might get removed
  * in lieu of a common header file listing all of the commands.
@@ -57,9 +59,28 @@ struct tpm;
 #define	TPM_CC_CreatePrimary		0x00000131
 #define	TPM_CC_CreateLoaded		0x00000191
 
+#define	TPM_RC_SUCCESS			0
+
+/* Table 2:22 From Part 4 */
+#define	TPM_CAP_TPM_PROPERTIES		0x00000006
+
+typedef uint32_t TPM_PT;
+#define	PT_GROUP			0x00000100
+#define	PT_FIXED			(PT_GROUP * 1)
+#define	TPM_PT_FIRMWARE_VERSION_1	(PT_FIXED + 11)
+#define	TPM_PT_FIRMWARE_VERSION_2	(PT_FIXED + 12)
+#define	TPM_PT_MAX_COMMAND_SIZE		(PT_FIXED + 30)
+#define	TPM_PT_MAX_RESPONSE_SIZE	(PT_FIXED + 31)
+
+typedef struct {
+	TPM_PT		property;
+	uint32_t	value;
+} TPMS_TAGGED_PROPERTY;
+
+
 bool tpm20_init(struct tpm *);
-int tpm20_seed_random(tpm_t *, uchar_t *, size_t);
-int tpm20_generate_random(tpm_t *, uchar_t *, size_t);
+int tpm20_seed_random(struct tpm *, uchar_t *, size_t);
+int tpm20_generate_random(struct tpm *, uchar_t *, size_t);
 clock_t tpm20_get_timeout(uint32_t);
 
 #ifdef __cplusplus

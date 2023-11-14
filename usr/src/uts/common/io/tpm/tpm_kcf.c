@@ -23,7 +23,7 @@
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 /*
@@ -41,6 +41,9 @@
 #include <sys/crypto/common.h>
 #include <sys/crypto/impl.h>
 #include <sys/crypto/spi.h>
+
+#include "tpm_ddi.h"
+#include "tpm20.h"
 
 /*
  * CSPI information (entry points, provider info, etc.)
@@ -68,9 +71,6 @@ static int tpmrng_ext_info(crypto_provider_handle_t,
 static crypto_provider_management_ops_t tpmrng_extinfo_op = {
 	.ext_info =	tpmrng_ext_info,
 };
-
-static int tpmrng_register(tpm_state_t *);
-static int tpmrng_unregister(tpm_state_t *);
 
 static crypto_ops_t tpmrng_crypto_ops = {
 	.co_control_ops =	&tpmrng_control_ops,
@@ -103,15 +103,17 @@ tpmrng_ext_info(crypto_provider_handle_t prov,
     crypto_provider_ext_info_t *ext_info,
     crypto_req_handle_t cfreq __unused)
 {
-	tpm_state_t *tpm = (tpm_state_t *)prov;
+	tpm_t *tpm = (tpm_t *)prov;
+	char *s = "";
 	char buf[64];
 
 	if (tpm == NULL)
 		return (DDI_FAILURE);
 
+	VERIFY0(ddi_prop_lookup_string(DDI_DEV_T_ANY, tpm->tpm_dip,
+	    DDI_PROP_DONTPASS, "tpm-hwvendor", &s));
 	strncpy_spacepad(ext_info->ei_manufacturerID,
-	    (char *)tpm->vers_info.tpmVendorID,
-	    sizeof (ext_info->ei_manufacturerID));
+	    s, sizeof (ext_info->ei_manufacturerID));
 
 	strncpy_spacepad(ext_info->ei_model, "0",
 	    sizeof (ext_info->ei_model));
@@ -128,12 +130,19 @@ tpmrng_ext_info(crypto_provider_handle_t prov,
 	ext_info->ei_free_public_memory = CRYPTO_UNAVAILABLE_INFO;
 	ext_info->ei_time[0] = 0;
 
-	ext_info->ei_hardware_version.cv_major = tpm->vers_info.version.major;
-	ext_info->ei_hardware_version.cv_minor = tpm->vers_info.version.minor;
-	ext_info->ei_firmware_version.cv_major =
-	    tpm->vers_info.version.revMajor;
-	ext_info->ei_firmware_version.cv_minor =
-	    tpm->vers_info.version.revMinor;
+	switch (tpm->tpm_family) {
+	case TPM_FAMILY_1_2:
+		ext_info->ei_hardware_version.cv_major = 1;
+		ext_info->ei_hardware_version.cv_minor = 2;
+		break;
+	case TPM_FAMILY_2_0:
+		ext_info->ei_hardware_version.cv_major = 2;
+		ext_info->ei_hardware_version.cv_minor = 0;
+		break;
+	}
+
+	ext_info->ei_firmware_version.cv_major = tpm->tpm_fw_major;
+	ext_info->ei_firmware_version.cv_minor = tpm->tpm_fw_minor;
 
 	(void) snprintf(buf, sizeof (buf), "tpmrng TPM RNG");
 
@@ -142,8 +151,8 @@ tpmrng_ext_info(crypto_provider_handle_t prov,
 	return (CRYPTO_SUCCESS);
 }
 
-static int
-tpmrng_register(tpm_state_t *tpm)
+int
+tpmrng_register(tpm_t *tpm)
 {
 	int			ret;
 	char			id[64];
@@ -153,38 +162,39 @@ tpmrng_register(tpm_state_t *tpm)
 
 	(void) snprintf(id, sizeof (id), "tpmrng %s", IDENT_TPMRNG);
 
-	tpmrng_prov_info.pi_provider_description = ID;
-	tpmrng_prov_info.pi_provider_dev.pd_hw = tpm->dip;
+	tpmrng_prov_info.pi_provider_description = id;
+	tpmrng_prov_info.pi_provider_dev.pd_hw = tpm->tpm_dip;
 	tpmrng_prov_info.pi_provider_handle = tpm;
 
-	ret = crypto_register_provider(&tpmrng_prov_info, &tpm->n_prov);
+	ret = crypto_register_provider(&tpmrng_prov_info, &tpm->tpm_n_prov);
 	if (ret != CRYPTO_SUCCESS) {
-		tpm->n_prov = NULL;
+		tpm->tpm_n_prov = 0;
 		return (DDI_FAILURE);
 	}
 
-	crypto_provider_notification(tpm->n_prov, CRYPTO_PROVIDER_READY);
+	crypto_provider_notification(tpm->tpm_n_prov, CRYPTO_PROVIDER_READY);
 
-	rngmech = strdup("random");
-	ret = crypto_load_dev_disabled("tpm", ddi_get_instance(tpm->dip),
+	rngmech = kmem_zalloc(1 * sizeof (crypto_mech_name_t), KM_SLEEP);
+	(void) strlcpy(rngmech[0], "random", sizeof (crypto_mech_name_t));
+
+	ret = crypto_load_dev_disabled("tpm", ddi_get_instance(tpm->tpm_dip),
 	    1, rngmech);
-#ifdef DEBUG
 	if (ret != CRYPTO_SUCCESS)
 		cmn_err(CE_WARN, "!crypto_load_dev_disabled failed (%d)", ret);
-#endif
+
 	return (DDI_SUCCESS);
 }
 
-static int
-tpmrng_unregister(tpm_state_t *tpm)
+int
+tpmrng_unregister(tpm_t *tpm)
 {
 	int ret;
 	ASSERT(tpm != NULL);
-	if (tpm->n_prov) {
-		ret = crypto_unregister_provider(tpm->n_prov);
-		tpm->n_prov = NULL;
+	if (tpm->tpm_n_prov) {
+		ret = crypto_unregister_provider(tpm->tpm_n_prov);
 		if (ret != CRYPTO_SUCCESS)
 			return (DDI_FAILURE);
+		tpm->tpm_n_prov = 0;
 	}
 	return (DDI_SUCCESS);
 }
@@ -201,17 +211,37 @@ tpmrng_seed_random(crypto_provider_handle_t provider, crypto_session_id_t sid,
     uchar_t *buf, size_t len, uint_t entropy_est __unused,
     uint32_t flags __unused, crypto_req_handle_t req __unused)
 {
-	tpm_state_t *tpm = (tpm_state_t *)provider;
+	tpm_t *tpm = (tpm_t *)provider;
 
-	return (tpm12_seed_random(tpm, buf, len));
+	switch (tpm->tpm_family) {
+	case TPM_FAMILY_1_2:
+		return (tpm12_seed_random(tpm, buf, len));
+	case TPM_FAMILY_2_0:
+		return (tpm20_seed_random(tpm, buf, len));
+	default:
+		dev_err(tpm->tpm_dip, CE_PANIC,
+		    "unknown TPM family %d", tpm->tpm_family);
+		/* Make gcc happy */
+		return (CRYPTO_FAILED);
+	}
 }
 
-/* ARGSUSED */
 static int
 tpmrng_generate_random(crypto_provider_handle_t provider,
-    crypto_session_id_t sid, uchar_t *buf, size_t len, crypto_req_handle_t req)
+    crypto_session_id_t sid __unused, uchar_t *buf, size_t len,
+    crypto_req_handle_t req __unused)
 {
-	tpm_state_t *tpm = (tpm_state_t *)provider;
+	tpm_t *tpm = (tpm_t *)provider;
 
-	return (tpm12_generate_random(tpm, buf, len));
+	switch (tpm->tpm_family) {
+	case TPM_FAMILY_1_2:
+		return (tpm12_generate_random(tpm, buf, len));
+	case TPM_FAMILY_2_0:
+		return (tpm20_generate_random(tpm, buf, len));
+	default:
+		dev_err(tpm->tpm_dip, CE_PANIC,
+		    "unknown TPM family %d", tpm->tpm_family);
+		/* Make gcc happy */
+		return (CRYPTO_FAILED);
+	}
 }

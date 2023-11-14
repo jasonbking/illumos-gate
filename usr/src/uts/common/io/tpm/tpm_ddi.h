@@ -23,7 +23,7 @@
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  *
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #ifndef	_TPM_DDI_H
@@ -34,6 +34,7 @@
 #include <sys/types.h>
 #include <sys/ddi.h>
 #include <sys/sunddi.h>
+#include <sys/crypto/spi.h>
 #include <sys/debug.h>
 #include <sys/ksynch.h>
 #include <sys/list.h>
@@ -208,6 +209,7 @@ typedef enum tpm_attach_seq {
 #endif
 	TPM_ATTACH_SYNC,
 	TPM_ATTACH_THREAD,
+	TPM_ATTACH_ICLIENT,
 	TPM_ATTACH_MINOR_NODE,
 	TPM_ATTACH_RAND,
 	TPM_ATTACH_END			/* should always be last */
@@ -226,9 +228,12 @@ struct tpm {
 
 	kmutex_t		tpm_lock;
 	uint8_t			*tpm_addr;	/* TPM mapped address */
+				/*
+				 * TPM client count does not include the
+				 * internal client.
+				 */
 	uint_t			tpm_client_count;	/* RW */
 	uint_t			tpm_client_max;		/* RW */
-	bool			tpm_exclusive;		/* WO */
 
 	ddi_intr_handle_t	*tpm_harray;		/* WO */
 	int			tpm_nintr;		/* WO */
@@ -254,6 +259,9 @@ struct tpm {
 	uint16_t		tpm_did;		/* WO */
 	uint8_t			tpm_rid;		/* WO */
 
+	uint32_t		tpm_fw_major;		/* WO */
+	uint32_t		tpm_fw_minor;		/* WO */
+
 	uint8_t			tpm_locality;	/* locality during cmd exec */
 
 	clock_t			tpm_timeout_a;		/* WO */
@@ -263,9 +271,10 @@ struct tpm {
 	clock_t			tpm_timeout_poll;	/* WO */
 
 	ddi_intr_handle_t	tpm_isr;
-#if 0
+
 	crypto_kcf_provider_handle_t	tpm_n_prov;
-#endif
+
+	tpm_client_t		*tpm_internal_client;
 };
 
 typedef enum tpm_mode {
@@ -290,6 +299,7 @@ typedef enum tpm_client_state {
 struct tpm_client {
 	refhash_link_t		tpmc_reflink;
 	list_node_t		tpmc_node;
+
 	kmutex_t		tpmc_lock;
 	kcondvar_t		tpmc_cv;
 	tpm_t			*tpmc_tpm;		/* Write once (WO) */
@@ -306,6 +316,7 @@ struct tpm_client {
 	int			tpmc_cmdresult;		/* RW */
 	bool			tpmc_cancelled;		/* RW */
 	bool			tpmc_closing;		/* WO */
+	bool			tpmc_iskernel;		/* WO */
 };
 
 static inline bool
@@ -372,6 +383,8 @@ void tpm_dbg(const tpm_t *, int, const char *, ...);
 
 clock_t tpm_get_timeout(tpm_t *, uint32_t);
 
+void tpm_dispatch_cmd(tpm_client_t *);
+
 int tpm12_seed_random(tpm_t *, uchar_t *, size_t);
 int tpm12_generate_random(tpm_t *, uchar_t *, size_t);
 bool tpm12_init(tpm_t *);
@@ -394,6 +407,10 @@ int crb_cancel_cmd(tpm_client_t *);
 void crb_intr_mgmt(tpm_t *, bool);
 uint_t crb_intr(caddr_t, caddr_t);
 
-int tpm_exec_internal(tpm_t *, uint8_t, uint8_t *, size_t);
+int tpm_exec_internal(tpm_t *, uint8_t, uio_t *, uio_t *);
+int tpm_exec_internal_simple(tpm_t *, uint8_t, uint8_t *, size_t);
+
+int tpmrng_register(tpm_t *);
+int tpmrng_unregister(tpm_t *);
 
 #endif	/* _TPM_DDI_H */

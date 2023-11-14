@@ -250,6 +250,7 @@ SYMBOL_SCOPE {
 	strcpy				{ FLAGS = EXTERN };
 	strlcpy				{ FLAGS = EXTERN };
 	strlen				{ FLAGS = EXTERN };
+	strncpy				{ FLAGS = EXTERN };
 	timeout				{ FLAGS = EXTERN };
 	uiomove				{ FLAGS = EXTERN };
 	untimeout			{ FLAGS = EXTERN };

@@ -14,6 +14,7 @@
  */
 
 #include <sys/debug.h>
+#include <sys/crypto/common.h>
 #include "tpm_ddi.h"
 #include "tpm20.h"
 
@@ -81,4 +82,134 @@ tpm20_get_timeout(uint32_t cmd)
 		 */
 		return ((clock_t)90000);
 	}
+}
+
+#define	RNDHDR_SIZE	(TPM_HEADER_SIZE + sizeof (uint16_t))
+
+int
+tpm20_generate_random(tpm_t *tpm, uchar_t *buf, size_t len)
+{
+	if (len > UINT16_MAX) {
+		return (CRYPTO_DATA_LEN_RANGE);
+	}
+
+	uint8_t cmd[RNDHDR_SIZE] = { 0 };
+	iovec_t	iov[2] = {
+		[0] = {
+			.iov_base = (char *)cmd,
+			.iov_len = sizeof (cmd),
+		},
+		[1] = {
+			.iov_base = (char *)buf,
+			.iov_len = len,
+		},
+	};
+	uio_t in = {
+		.uio_iov = iov,
+		.uio_iovcnt = 1,
+		.uio_segflg = UIO_SYSSPACE,
+	};
+	uio_t out = {
+		.uio_iov = iov,
+		.uio_iovcnt = 2,
+		.uio_segflg = UIO_SYSSPACE,
+	};
+	int ret;
+	uint32_t tpmret;
+
+	BE_OUT16(cmd + TPM_TAG_OFFSET,		TPM_ST_NO_SESSIONS);
+	BE_OUT32(cmd + TPM_PARAMSIZE_OFFSET,	RNDHDR_SIZE);
+	BE_OUT32(cmd + TPM_COMMAND_CODE_OFFSET,	TPM_CC_GetRandom);
+	BE_OUT16(cmd + TPM_HEADER_SIZE,		(uint16_t)len);
+
+	ret = tpm_exec_internal(tpm, 0, &in, &out);
+	if (ret != 0) {
+		/* XXX: Can we map to better errors here?
+		 * Maybe CRYPTO_BUSY for timeouts?
+		 */
+		return (CRYPTO_FAILED);
+	}
+
+	tpmret = tpm_getbuf32(cmd, TPM_RETURN_OFFSET);
+	if (tpmret != TPM_RC_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "!TPM_CC_GetRandom failed with %u\n", tpmret);
+		/* TODO: Maybe map TPM rc codes to CRYPTO_xxx values */
+		return (CRYPTO_FAILED);
+	}
+
+	return (CRYPTO_SUCCESS);
+}
+
+#define	TPM_STIR_MAX 128
+
+int
+tpm20_seed_random(tpm_t *tpm, uchar_t *buf, size_t len)
+{
+	/* XXX: Should we maybe just truncate instead? */
+	if (len > TPM_STIR_MAX) {
+		return (CRYPTO_DATA_LEN_RANGE);
+	}
+
+	uint32_t plen = len + TPM_HEADER_SIZE;
+	uint8_t cmd[] = {
+		/* Header */
+		0x80, 0x01,		/* TPM_ST_NO_SESSIONS */
+		(uint8_t)((plen >> 24) & 0xff),	/* Param size */
+		(uint8_t)((plen >> 16) & 0xff),
+		(uint8_t)((plen >> 8) & 0xff),
+		(uint8_t)(plen & 0xff),
+		0x00, 0x00, 0x01, 0x46,	/* TPM_CC_StirRandom */
+
+		/* Parameters */
+
+		/*
+		 * The data is sent as a TPM2B_SENSITIVE_DATA type which
+		 * includes a 16-bit length followed by the value.
+		 *
+		 * No parameters are returned in the response.
+		 */
+		(uint8_t)((len >> 8) & 0xff),
+		(uint8_t)(len & 0xff),
+	};
+	iovec_t iov[2] = {
+		[0] = {
+			.iov_base = (char *)cmd,
+			.iov_len = sizeof (cmd),
+		},
+		[1] = {
+			.iov_base = (char *)buf,
+			.iov_len = len,
+		}
+	};
+	uio_t in = {
+		.uio_iov = iov,
+		.uio_iovcnt = 2,
+		.uio_segflg = UIO_SYSSPACE,
+	};
+	/* The TPM just returns a header w/ no data */
+	uio_t out = {
+		.uio_iov = iov,
+		.uio_iovcnt = 1,
+		.uio_segflg = UIO_SYSSPACE,
+	};
+	int	ret;
+	uint32_t tpmret;
+
+	ret = tpm_exec_internal(tpm, 0, &in, &out);
+	if (ret != 0) {
+		/* XXX: Map to better errors? */
+		return (CRYPTO_FAILED);
+	}
+
+	tpmret = tpm_getbuf32(cmd, TPM_RETURN_OFFSET);
+	if (tpmret != TPM_RC_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_CONT,
+		    "!TPM_CC_StirRandom failed with %u\n", tpmret);
+		/* TODO: Maybe map TPM return codes to CRYPTO_xxx values */
+		return (CRYPTO_FAILED);
+	}
+
+done:
+	return (ret);
 }
