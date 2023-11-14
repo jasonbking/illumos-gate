@@ -108,11 +108,13 @@ tpm20_generate_random(tpm_t *tpm, uchar_t *buf, size_t len)
 		.uio_iov = iov,
 		.uio_iovcnt = 1,
 		.uio_segflg = UIO_SYSSPACE,
+		.uio_resid = RNDHDR_SIZE,
 	};
 	uio_t out = {
 		.uio_iov = iov,
 		.uio_iovcnt = 2,
 		.uio_segflg = UIO_SYSSPACE,
+		.uio_resid = RNDHDR_SIZE + len,
 	};
 	int ret;
 	uint32_t tpmret;
@@ -186,12 +188,14 @@ tpm20_seed_random(tpm_t *tpm, uchar_t *buf, size_t len)
 		.uio_iov = iov,
 		.uio_iovcnt = 2,
 		.uio_segflg = UIO_SYSSPACE,
+		.uio_resid = plen,
 	};
 	/* The TPM just returns a header w/ no data */
 	uio_t out = {
 		.uio_iov = iov,
 		.uio_iovcnt = 1,
 		.uio_segflg = UIO_SYSSPACE,
+		.uio_resid = TPM_HEADER_SIZE,
 	};
 	int	ret;
 	uint32_t tpmret;
