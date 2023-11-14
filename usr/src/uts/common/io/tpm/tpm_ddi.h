@@ -197,17 +197,10 @@ typedef enum tpm_wait {
 } tpm_wait_t;
 
 typedef enum tpm_attach_seq {
-#ifdef __amd64
 	TPM_ATTACH_REGS =	0,
-#endif
-#ifdef sun4v
-	TPM_ATTACH_HSVC =	0,
-#endif
-#ifdef __amd64
 	TPM_ATTACH_DEV_INIT,
 	TPM_ATTACH_INTR_ALLOC,
 	TPM_ATTACH_INTR_HDLRS,
-#endif
 	TPM_ATTACH_SYNC,
 	TPM_ATTACH_THREAD,
 	TPM_ATTACH_ICLIENT,
