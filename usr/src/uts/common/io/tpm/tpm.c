@@ -53,11 +53,6 @@
 
 #include <sys/tpm.h>
 
-#ifdef sun4v
-#include <sys/hypervisor_api.h>
-#include <sys/hsvc.h>
-#endif
-
 #include <tss/platform.h>	/* from SUNWtss */
 #include <tss/tpm.h>		/* from SUNWtss */
 
@@ -1173,7 +1168,6 @@ tpm_resume(tpm_t *tpm)
 	return (DDI_SUCCESS);
 }
 
-#ifdef __amd64
 static bool
 tpm_attach_regs(tpm_t *tpm)
 {
@@ -1475,7 +1469,6 @@ tpm_cleanup_intr_hdlrs(tpm_t *tpm)
 		VERIFY3S(ret, ==, DDI_SUCCESS);
 	}
 }
-#endif /* amd64 */
 
 static bool
 tpm_attach_sync(tpm_t *tpm)
@@ -1565,34 +1558,6 @@ tpm_cleanup_minor_node(tpm_t *tpm)
 	ddi_remove_minor_node(tpm->tpm_dip, NULL);
 }
 
-#ifdef sun4v
-static uint64_t hsvc_tpm_minor = 0;
-static hsvc_info_t hsvc_tpm = {
-	HSVC_REV_1, NULL, HSVC_GROUP_TPM, 1, 0, NULL
-};
-
-static bool
-tpm_attach_hsvc(tpm_t *tpm)
-{
-	int ret;
-
-	ret = hsvc_register(&hsvc_tpm, &hscv_tpm_minor);
-	if (ret != 0) {
-		dev_err(tpm->tpm_dip, CE_WARN,
-		    "failed to register with hypervisor: 0x%0x", ret);
-		return (false);
-	}
-
-	return (true);
-}
-
-static void
-tpm_cleanup_hsvc(tpm_t *tpm)
-{
-	hsvc_unregister(&hsvc_tpm);
-}
-#endif
-
 static bool
 tpm_attach_kcf(tpm_t *tpm)
 {
@@ -1612,23 +1577,12 @@ tpm_cleanup_kcf(tpm_t *tpm)
 }
 
 static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
-#ifdef __amd64
 	[TPM_ATTACH_REGS] = {
 		.tad_seq = TPM_ATTACH_REGS,
 		.tad_name = "registers",
 		.tad_attach = tpm_attach_regs,
 		.tad_cleanup = tpm_cleanup_regs,
 	},
-#endif
-#ifdef sun4v
-	[TPM_ATTACH_HSVC] = {
-		.tad_seq = TPM_ATTACH_HSVC,
-		.tad_name = "hypervisor",
-		.tad_attach = tpm_attach_hsvc,
-		.tad_cleanup = tpm_cleanup_hsvc,
-	},
-#endif
-#ifdef __amd64
 	[TPM_ATTACH_DEV_INIT] = {
 		.tad_seq = TPM_ATTACH_DEV_INIT,
 		.tad_name = "device initialization",
@@ -1647,7 +1601,6 @@ static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
 		.tad_attach = tpm_attach_intr_hdlrs,
 		.tad_cleanup = tpm_cleanup_intr_hdlrs,
 	},
-#endif
 	[TPM_ATTACH_SYNC] = {
 		.tad_seq = TPM_ATTACH_SYNC,
 		.tad_name = "synchronization",
@@ -1920,61 +1873,6 @@ tpm_get_ordinal_duration(tpm_t *tpm, uint32_t ordinal)
 /*
  * TPM accessor functions
  */
-#ifdef sun4v
-extern uint64_t
-hcall_tpm_get(uint64_t, uint64_t, uint64_t, uint64_t *);
-
-extern uint64_t
-hcall_tpm_put(uint64_t, uint64_t, uint64_t, uint64_t);
-
-uint8_t
-tpm_get8(tpm_t *tpm, unsigned long offset)
-{
-	uint64_t value;
-
-	(void) hcall_tpm_get(tpm->locality, offset, sizeof (uint8_t), &value);
-	return ((uint8_t)value);
-}
-
-uint32_t
-tpm_get32(tpm_t *tpm, unsigned long offset)
-{
-	uint64_t value;
-
-	(void) hcall_tpm_get(tpm->locality, offset, sizeof (uint32_t), &value);
-	return ((uint32_t)value);
-}
-
-void
-tpm_put8(tpm_t *tpm, unsigned long offset, uint8_t value)
-{
-	(void) hcall_tpm_put(tpm->locality, offset, sizeof (uint8_t), value);
-}
-
-uint8_t
-tpm_get8_loc(tpm_t *tpm __unused, uint8_t loc, unsigned long offset)
-{
-	uint64_t value;
-
-	(void) hcall_tpm_get(loc, offset, sizeof (uint8_t), &value);
-	return ((uint8_t)value);
-}
-
-void
-tpm_put8_loc(tpm_t *tpm __unused, unsigned long offset, uint8_t loc,
-    uint8_t value)
-{
-	(void) hcall_tpm_put(loc, offfset, sizeof (uint8_t), value);
-}
-
-void
-tpm_put32(tpm_t *tpm __unused, unsigned long offset, uint32_t value)
-{
-	(void) hcall_tpm_put(tpm->locality, offset, sizeof (uint32_t), value);
-}
-
-#elif defined(__amd64)
-
 static inline uintptr_t
 tpm_locality_offset(uint8_t locality)
 {
@@ -2046,7 +1944,7 @@ tpm_put32(tpm_t *tpm, unsigned long offset, uint32_t value)
 	ddi_put32(tpm->tpm_handle, tpm_reg_addr(tpm, offset), value);
 }
 
-#else
+#if !defined(__amd64)
 #error TPM Accessor functions not defined for platform
 #endif
 
