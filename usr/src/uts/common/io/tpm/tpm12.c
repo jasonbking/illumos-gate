@@ -406,7 +406,8 @@ tpm12_get_timeouts(tpm_t *tpm)
 		0, 0, 1, 21	/* TPM_CAP_PROP_TIS_TIMEOUT(0x115) */
 	};
 
-	ret = tpm_exec_internal(tpm, DEFAULT_LOCALITY, buf, sizeof (buf));
+	ret = tpm_exec_internal_simple(tpm, DEFAULT_LOCALITY, buf,
+	    sizeof (buf));
 	if (ret != 0) {
 		/* XXX: ereport? */
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: command failed: %d",
@@ -489,7 +490,8 @@ tpm12_get_duration(tpm_t *tpm)
 		0, 0, 1, 32	/* TPM_CAP_PROP_TIS_DURATION(0x120) */
 	};
 
-	ret = tpm_exec_internal(tpm, DEFAULT_LOCALITY, buf, sizeof (buf));
+	ret = tpm_exec_internal_simple(tpm, DEFAULT_LOCALITY, buf,
+	    sizeof (buf));
 	if (ret != 0) {
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: command failed: %d",
 		    __func__, ret);
@@ -555,7 +557,8 @@ tpm12_get_version(tpm_t *tpm, tpm12_vers_info_t *vp)
 		0, 0, 0, 0,	/* SUB_CAP size in bytes */
 	};
 
-	ret = tpm_exec_internal(tpm, DEFAULT_LOCALITY, buf, sizeof (buf));
+	ret = tpm_exec_internal_simple(tpm, DEFAULT_LOCALITY, buf,
+	    sizeof (buf));
 	if (ret != DDI_SUCCESS) {
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: command failed: %d",
 		    __func__, ret);
@@ -594,31 +597,26 @@ tpm12_get_ordinal_duration(tpm_t *tpm, uint32_t ordinal)
 	/* Is it a TSC_ORDINAL? */
 	if (ordinal & TSC_ORDINAL_MASK) {
 		if (ordinal >= TSC_ORDINAL_MAX) {
-#ifdef DEBUG
-			cmn_err(CE_WARN,
+			tpm_dbg(tpm, CE_WARN,
 			    "!%s: tsc ordinal: %d exceeds MAX: %d",
 			    __func__, ordinal, TSC_ORDINAL_MAX);
-#endif
 			return (0);
 		}
 		index = tsc12_ords_duration[ordinal];
 	} else {
 		if (ordinal >= TPM_ORDINAL_MAX) {
-#ifdef DEBUG
-			cmn_err(CE_WARN,
+			tpm_dbg(tpm, CE_WARN,
 			    "!%s: ordinal %d exceeds MAX: %d",
 			    __func__, ordinal, TPM_ORDINAL_MAX);
-#endif
 			return (0);
 		}
 		index = tpm12_ords_duration[ordinal];
 	}
 
 	if (index > TPM_DURATION_MAX_IDX) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: duration index '%d' is out of bounds",
-		    __func__, index);
-#endif
+		tpm_dbg(tpm, CE_WARN,
+		    "!%s: duration index '%d' is out of bounds", __func__,
+		    index);
 		return (0);
 	}
 	return (tpm->tpm_u.tpmu_tis.ttis_duration[index]);
@@ -640,7 +638,8 @@ tpm12_continue_selftest(tpm_t *tpm)
 	};
 
 	/* Need a longer timeout */
-	ret = tpm_exec_internal(tpm, DEFAULT_LOCALITY, buf, sizeof (buf));
+	ret = tpm_exec_internal_simple(tpm, DEFAULT_LOCALITY, buf,
+	    sizeof (buf));
 	if (ret != DDI_SUCCESS) {
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: command timed out",
 		    __func__);
@@ -650,7 +649,6 @@ tpm12_continue_selftest(tpm_t *tpm)
 	return (DDI_SUCCESS);
 }
 
-#if 0
 /*
  * Header + length of seed data (as BE32 int) + max amount of seed a TPM12
  * can accept in a single command.
@@ -670,26 +668,15 @@ tpm12_seed_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 
 	BE_OUT16(cmdbuf + TPM_TAG_OFFSET,		TPM_TAG_RQU_COMMAND);
 	BE_OUT16(cmdbuf + TPM_PARAMSIZE_OFFSET,		len);
-	BE_OUT32(cmdbuf + TPM_COMMAND_CODE_OFFFSET,	TPM_ORD_StirRandom);
+	BE_OUT32(cmdbuf + TPM_COMMAND_CODE_OFFSET,	TPM_ORD_StirRandom);
 	BE_OUT32(cmdbuf + TPM_HEADER_SIZE,		buflen);
 	bcopy(cmdbuf + TPM_HEADER_SIZE + sizeof (uint32_t), buf, buflen);
 
-	/* Acquire lock for exclusive use of TPM */
-	TPM_EXCLUSIVE_LOCK(tpm);
+	ret = tpm_exec_internal_simple(tpm, DEFAULT_LOCALITY, cmdbuf, len);
 
-	ret = tpm_io_lock(tpm);
 	/* Timeout reached */
-	if (ret)
-		return (CRYPTO_BUSY);
-
-	/* Command doesn't return any data */
-	ret = itpm_command(tpm, cmdbuf, len, NULL, 0);
-	tpm_unlock(tpm);
-
-	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s failed", __func__);
-#endif
+	if (ret != 0) {
+		tpm_dbg(tpm, CE_WARN, "!%s failed", __func__);
 		return (CRYPTO_FAILED);
 	}
 
@@ -707,33 +694,46 @@ tpm12_generate_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 	int		ret;
 	uint32_t	cmdlen = RNDHDR_SIZE;
 	uint8_t		cmdbuf[RNDHDR_SIZE] = { 0 };
+	iovec_t		iov[2] = {
+		[0] = {
+			.iov_base = (char *)cmdbuf,
+			.iov_len = RNDHDR_SIZE,
+		},
+		[1] = {
+			.iov_base = (char *)buf,
+			.iov_len = buflen,
+		}
+	};
+	uio_t		in = {
+		.uio_iov = iov,
+		.uio_iovcnt = 1,
+		.uio_segflg = UIO_SYSSPACE,
+	};
+	uio_t		out = {
+		.uio_iov = iov,
+		.uio_iovcnt = 2,
+		.uio_segflg = UIO_SYSSPACE,
+	};
 
 	BE_OUT16(cmdbuf + TPM_TAG_OFFSET,		TPM_TAG_RQU_COMMAND);
 	BE_OUT32(cmdbuf + TPM_PARAMSIZE_OFFSET,		RNDHDR_SIZE);
 	BE_OUT32(cmdbuf + TPM_COMMAND_CODE_OFFSET,	TPM_ORD_GetRandom);
 	BE_OUT32(cmdbuf + TPM_HEADER_SIZE,		buflen);
 
-	/* Acquire lock for exclusive use of TPM */
-	TPM_EXCLUSIVE_LOCK(tpm);
+	ret = tpm_exec_internal(tpm, DEFAULT_LOCALITY, &in, &out);
 
-	ret = tpm_io_lock(tpm);
-	/* Timeout reached */
-	if (ret)
-		return (CRYPTO_BUSY);
-
-	ret = itpm_command(tpm, cmdbuf, cmdlen, buf, buflen);
-	tpm_unlock(tpm);
-
-	if (ret != DDI_SUCCESS) {
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s failed", __func__);
-#endif
-		return (CRYPTO_FAILED);
+	if (ret != 0) {
+		switch (ret) {
+		case ETIME:
+			return (CRYPTO_BUSY);
+		default:
+			return (CRYPTO_FAILED);
+		}
 	}
 
+	/* XXX: Do we need to check the header for an error? */
 	return (CRYPTO_SUCCESS);
 }
-#endif
 
 /*
  * Initialize TPM1.2 device
@@ -825,6 +825,9 @@ tpm12_init(tpm_t *tpm)
 	    vers_info.tpmcap_minor);
 	(void) ddi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
 	    "tpm-version", buf);
+
+	tpm->tpm_fw_major = vers_info.tpmcap_rev_major;
+	tpm->tpm_fw_minor = vers_info.tpmcap_rev_minor;
 
 	(void) snprintf(buf, sizeof (buf), "%d.%d",
 	    vers_info.tpmcap_rev_major,

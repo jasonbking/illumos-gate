@@ -34,6 +34,14 @@ SYMBOL_VERSION ILLUMOSprivate {
 	# Some of these might make sense to move into something like
 	# ddi.mapfile or kernel.mapfile. For now, we define the external
 	# stuff we need here and can move entries as appropriate later.
+
+	# The crypto ones in particular seem like creating a
+	# crypto.mapfile for crypto providers would be very appropriate.
+	crypto_load_dev_disabled	{ FLAGS = EXTERN };
+	crypto_provider_notification	{ FLAGS = EXTERN };
+	crypto_register_provider	{ FLAGS = EXTERN };
+	crypto_unregister_provider	{ FLAGS = EXTERN };
+	
 	id_alloc			{ FLAGS = EXTERN };
 	id_alloc_nosleep		{ FLAGS = EXTERN };
 	id_free				{ FLAGS = EXTERN };
