@@ -101,7 +101,7 @@ static refhash_t		*tpm_clients;
 static id_space_t		*tpm_minors;
 static void			*tpm_statep = NULL;
 
-#ifdef __x86
+#ifndef sun4v
 static ddi_device_acc_attr_t	tpm_acc_attr = {
 	.devacc_attr_version =		DDI_DEVICE_ATTR_V0,
 	.devacc_attr_endian_flags =	DDI_STRUCTURE_LE_ACC,
@@ -274,17 +274,97 @@ tpm_cancel(tpm_client_t *c)
 }
 
 static int
+tpm_create_client(tpm_t *tpm, int flag, int minor, tpm_client_t **clientp)
+{
+	tpm_client_t *c;
+	uint8_t *buf;
+	void *pri;
+	tpm_mode_t mode = TPM_MODE_RDONLY;
+	int kmflag;
+	bool is_kernel;
+
+	IMPLY(minor == -1, clientp == &tpm->tpm_internal_client);
+
+	if ((flag & FREAD) != FREAD) {
+		/* O_WRONLY doesn't make sense for the device */
+		return (SET_ERROR(EINVAL));
+	}
+
+	/* We do allow O_RDONLY for things like obtaining TPM version */
+	if ((flag & FWRITE) == FWRITE) {
+		mode = TPM_MODE_WRITE;
+	} else {
+		mode = TPM_MODE_RDONLY;
+	}
+
+	if ((flag & FNDELAY) == FNDELAY) {
+		kmflag = KM_NOSLEEP;
+		mode |= TPM_MODE_NONBLOCK;
+		if (minor == -1) {
+			/* XXX: A better return value? */
+			return (SET_ERROR(ENOSPC));
+		}
+	} else {
+		kmflag = KM_SLEEP;
+	}
+
+	if ((flag & FEXCL) == FEXCL) {
+		/* It really doesn't make sense to support exclusive access */
+		return (SET_ERROR(EINVAL));
+	}
+
+	if ((flag & FKLYR) == FKLYR) {
+		is_kernel = true;
+	} else {
+		is_kernel = false;
+	}
+
+	pri = tpm->tpm_use_interrupts ? DDI_INTR_PRI(tpm->tpm_intr_pri) : NULL;
+
+	c = kmem_zalloc(sizeof (*c), kmflag);
+	if (c == NULL) {
+		return (SET_ERROR(ENOMEM));
+	}
+
+	buf = kmem_zalloc(TPM_IO_BUF_SIZE, kmflag);
+	if (buf == NULL) {
+		kmem_free(c, sizeof (*c));
+		return (SET_ERROR(ENOMEM));
+	}
+
+	c->tpmc_tpm = tpm;
+	c->tpmc_minor = minor;
+	c->tpmc_mode = mode;
+	c->tpmc_iskernel = is_kernel;
+	c->tpmc_state = TPM_CLIENT_IDLE;
+	c->tpmc_buf = buf;
+	c->tpmc_buflen = TPM_IO_BUF_SIZE;
+	c->tpmc_locality = DEFAULT_LOCALITY;
+
+	mutex_init(&c->tpmc_lock, NULL, MUTEX_DRIVER, pri);
+	cv_init(&c->tpmc_cv, NULL, CV_DRIVER, pri);
+
+	*clientp = c;
+	return (0);
+}
+
+static int
 tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 {
 	tpm_t *tpm;
 	tpm_client_t *c;
 	int minor;
-	int kmflag = KM_SLEEP;
+	int ret;
 
 	if (otype != OTYP_CHR) {
 		return (SET_ERROR(EINVAL));
 	}
 
+	/*
+	 * Only allow root access for now. The features of a TPM2.0 device
+	 * may in the future prompt us to relax this, but for now we will
+	 * be conservative in who has access.
+	 */
 	if (drv_priv(credp) != 0) {
 		return (SET_ERROR(EPERM));
 	}
@@ -293,85 +373,34 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 		return (SET_ERROR(ENXIO));
 	}
 
-	/* Opening the TPM O_WRONLY makes no sense */
-	if ((flag & FREAD) != FREAD) {
-		/* XXX: Better value? */
-		return (SET_ERROR(EINVAL));
-	}
-
-	if ((flag & FNDELAY) == FNDELAY) {
-		kmflag = KM_NOSLEEP;
-	}
-
 	tpm = ddi_get_soft_state(tpm_statep, TPM_INSTANCE(dev));
 
 	mutex_enter(&tpm->tpm_lock);
 
-	IMPLY(tpm->tpm_exclusive, tpm->tpm_client_count == 1);
-	if (tpm->tpm_client_count == tpm->tpm_client_max ||
-	    tpm->tpm_exclusive ||
-	    tpm->tpm_client_count > 0 && ((flag & FEXCL) == FEXCL)) {
+	if (tpm->tpm_client_count == tpm->tpm_client_max) {
 		mutex_exit(&tpm->tpm_lock);
 		return (SET_ERROR(EBUSY));
-	}
-	tpm->tpm_client_count++;
-	if ((flag & FEXCL) == FEXCL) {
-		tpm->tpm_exclusive = true;
-	}
-	mutex_exit(&tpm->tpm_lock);
-
-	c = kmem_zalloc(sizeof (*c), kmflag);
-	if (c == NULL) {
-		mutex_enter(&tpm->tpm_lock);
-		tpm->tpm_client_count--;
-		mutex_exit(&tpm->tpm_lock);
-		return (SET_ERROR(ENOMEM));
 	}
 
 	if ((flag & FNDELAY) == FNDELAY) {
 		minor = id_alloc_nosleep(tpm_minors);
 		if (minor == -1) {
-			mutex_enter(&tpm->tpm_lock);
-			tpm->tpm_client_count--;
-			mutex_exit(&tpm->tpm_lock);
-
-			kmem_free(c, sizeof (*c));
-			return (SET_ERROR(ENOMEM));
+			/* XXX: Better error value? */
+			return (SET_ERROR(ENOSPC));
 		}
 	} else {
 		minor = id_alloc(tpm_minors);
 	}
 
-	c->tpmc_tpm = tpm;
-
-	c->tpmc_minor = minor;
-	c->tpmc_state = TPM_CLIENT_IDLE;
-	c->tpmc_buf = kmem_zalloc(TPM_IO_BUF_SIZE, kmflag);
-	if (c->tpmc_buf == NULL) {
-		mutex_enter(&tpm->tpm_lock);
-		tpm->tpm_client_count--;
+	ret = tpm_create_client(tpm, flag, minor, &c);
+	if (ret != 0) {
+		id_free(tpm_minors, minor);
 		mutex_exit(&tpm->tpm_lock);
-
-		id_free(tpm_minors, c->tpmc_minor);
-		kmem_free(c, sizeof (*c));
-		return (SET_ERROR(ENOMEM));
+		return (ret);
 	}
 
-	void *pri = tpm->tpm_use_interrupts ?
-	    DDI_INTR_PRI(tpm->tpm_intr_pri) : NULL;
-
-	mutex_init(&c->tpmc_lock, NULL, MUTEX_DRIVER, pri);
-	cv_init(&c->tpmc_cv, NULL, CV_DRIVER, pri);
-
-	c->tpmc_buflen = TPM_IO_BUF_SIZE;
-	c->tpmc_locality = DEFAULT_LOCALITY;
-
-	if ((flag & FWRITE) == FWRITE) {
-		c->tpmc_mode |= TPM_MODE_WRITE;
-	}
-	if ((flag & FNDELAY) == FNDELAY) {
-		c->tpmc_mode |= TPM_MODE_NONBLOCK;
-	}
+	tpm->tpm_client_count++;
+	mutex_exit(&tpm->tpm_lock);
 
 	mutex_enter(&tpm_clients_lock);
 	refhash_insert(tpm_clients, c);
@@ -388,10 +417,10 @@ tpm_client_dtor(void *arg)
 	tpm_t *tpm = c->tpmc_tpm;
 
 	mutex_enter(&tpm->tpm_lock);
-	VERIFY3U(tpm->tpm_client_count, >, 0);
-	IMPLY(tpm->tpm_exclusive, tpm->tpm_client_count == 1);
-	tpm->tpm_client_count--;
-	tpm->tpm_exclusive = false;
+	if (c != tpm->tpm_internal_client) {
+		VERIFY3U(tpm->tpm_client_count, >, 0);
+		tpm->tpm_client_count--;
+	}
 	mutex_exit(&tpm->tpm_lock);
 
 	bzero(c->tpmc_buf, c->tpmc_buflen);
@@ -400,7 +429,10 @@ tpm_client_dtor(void *arg)
 	cv_destroy(&c->tpmc_cv);
 	mutex_destroy(&c->tpmc_lock);
 
-	id_free(tpm_minors, c->tpmc_minor);
+	if (c != tpm->tpm_internal_client) {
+		id_free(tpm_minors, c->tpmc_minor);
+	}
+
 	bzero(c, sizeof (*c));
 	kmem_free(c, sizeof (*c));
 }
@@ -458,7 +490,7 @@ tpm_uio_size(const struct uio *uiop)
 	return (amt);
 }
 
-static void
+void
 tpm_dispatch_cmd(tpm_client_t *c)
 {
 	tpm_t *tpm = c->tpmc_tpm;
@@ -812,27 +844,77 @@ tpm_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 }
 
 int
-tpm_exec_internal(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
+tpm_exec_internal(tpm_t *tpm, uint8_t loc, uio_t *in, uio_t *out)
 {
-	int ret = 0;
+	tpm_client_t *c = tpm->tpm_internal_client;
+	uint32_t inlen, outlen;
+	uint32_t cmdlen;
 
-	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
-	VERIFY3U(buflen, >=, TPM_HEADER_SIZE);
+	inlen = tpm_uio_size(in);
+	outlen = tpm_uio_size(out);
 
-	switch (tpm->tpm_iftype) {
-	case TPM_IF_TIS:
-	case TPM_IF_FIFO:
-		ret = tis_exec_cmd(tpm, loc, buf, buflen);
-		break;
-	case TPM_IF_CRB:
-		ret = crb_exec_cmd(tpm, loc, buf, buflen);
-		break;
-	default:
-		dev_err(tpm->tpm_dip, CE_PANIC, "%s: invalid iftype %d",
-		    __func__, tpm->tpm_iftype);
+	VERIFY3U(inlen, >, TPM_HEADER_SIZE);
+
+	mutex_enter(&c->tpmc_lock);
+
+	while (c->tpmc_state != TPM_CLIENT_IDLE) {
+		cv_wait(&c->tpmc_cv, &c->tpmc_lock);
 	}
 
-	return (ret);
+	c->tpmc_state = TPM_CLIENT_CMD_RECEPTION;
+
+	c->tpmc_locality = loc;
+
+	VERIFY0(uiomove(c->tpmc_buf, inlen, UIO_READ, in));
+
+	cmdlen = tpm_getbuf32(c->tpmc_buf, TPM_PARAMSIZE_OFFSET);
+	VERIFY3U(cmdlen, ==, inlen);
+
+	c->tpmc_bufused = cmdlen;
+
+	tpm_dispatch_cmd(c);
+
+	while (c->tpmc_state != TPM_CLIENT_CMD_COMPLETION) {
+		cv_wait(&c->tpmc_cv, &c->tpmc_lock);
+	}
+
+	if (c->tpmc_cmdresult != 0) {
+		return (c->tpmc_cmdresult);
+	}
+
+	VERIFY0(uiomove(c->tpmc_buf, c->tpmc_bufused, UIO_WRITE, out));
+
+	tpm_client_reset(c);
+	mutex_exit(&c->tpmc_lock);
+
+	return (0);
+}
+
+int
+tpm_exec_internal_simple(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
+{
+	VERIFY3U(buflen, >=, TPM_HEADER_SIZE);
+
+	iovec_t iov_in = {
+		.iov_base = (char *)buf,
+		.iov_len = tpm_cmdlen(buf),
+	};
+	iovec_t iov_out = {
+		.iov_base = (char *)buf,
+		.iov_len = buflen,
+	};
+	uio_t in = {
+		.uio_iov = &iov_in,
+		.uio_iovcnt = 1,
+		.uio_segflg = UIO_SYSSPACE,
+	};
+	uio_t out = {
+		.uio_iov = &iov_out,
+		.uio_iovcnt = 1,
+		.uio_segflg = UIO_SYSSPACE,
+	};
+
+	return (tpm_exec_internal(tpm, loc, &in, &out));
 }
 
 static int
@@ -852,8 +934,21 @@ tpm_exec_client(tpm_client_t *c)
 	mutex_enter(&tpm->tpm_lock);
 	mutex_exit(&c->tpmc_lock);
 
-	ret = tpm_exec_internal(tpm, c->tpmc_locality, c->tpmc_buf,
-	    c->tpmc_buflen);
+	switch (tpm->tpm_iftype) {
+	case TPM_IF_TIS:
+	case TPM_IF_FIFO:
+		ret = tis_exec_cmd(tpm, c->tpmc_locality, c->tpmc_buf,
+		    c->tpmc_bufused);
+		break;
+	case TPM_IF_CRB:
+		ret = crb_exec_cmd(tpm, c->tpmc_locality, c->tpmc_buf,
+		    c->tpmc_bufused);
+		break;
+	default:
+		dev_err(tpm->tpm_dip, CE_PANIC, "%s: invalid iftype %d",
+		    __func__, tpm->tpm_iftype);
+	}
+
 	if (ret == 0) {
 		/*
 		 * If we succeeded, the amount of output will be in the
@@ -1428,6 +1523,27 @@ tpm_cleanup_thread(tpm_t *tpm)
 }
 
 static bool
+tpm_attach_iclient(tpm_t *tpm)
+{
+	int ret;
+
+	ret = tpm_create_client(tpm, FREAD|FWRITE|FKLYR, -1,
+	    &tpm->tpm_internal_client);
+	if (ret != 0) {
+		return (false);
+	}
+
+	return (true);
+}
+
+static void
+tpm_cleanup_iclient(tpm_t *tpm)
+{
+	tpm_client_dtor(tpm->tpm_internal_client);
+	tpm->tpm_internal_client = NULL;
+}
+
+static bool
 tpm_attach_minor_node(tpm_t *tpm)
 {
 	int ret;
@@ -1480,12 +1596,16 @@ tpm_cleanup_hsvc(tpm_t *tpm)
 static bool
 tpm_attach_rng(tpm_t *tpm)
 {
+	if (tpmrng_register(tpm) != DDI_SUCCESS)
+		return (false);
+
 	return (true);
 }
 
 static void
 tpm_cleanup_rng(tpm_t *tpm)
 {
+	(void) tpmrng_unregister(tpm);
 }
 
 static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
@@ -1536,6 +1656,12 @@ static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
 		.tad_name = "service thread",
 		.tad_attach = tpm_attach_thread,
 		.tad_cleanup = tpm_cleanup_thread,
+	},
+	[TPM_ATTACH_ICLIENT] = {
+		.tad_seq = TPM_ATTACH_ICLIENT,
+		.tad_name = "internal client",
+		.tad_attach = tpm_attach_iclient,
+		.tad_cleanup = tpm_cleanup_iclient,
 	},
 	[TPM_ATTACH_MINOR_NODE] = {
 		.tad_seq = TPM_ATTACH_MINOR_NODE,
