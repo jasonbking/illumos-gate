@@ -212,7 +212,7 @@ typedef enum tpm_attach_seq {
 	TPM_ATTACH_THREAD,
 	TPM_ATTACH_ICLIENT,
 	TPM_ATTACH_MINOR_NODE,
-	TPM_ATTACH_RAND,
+	TPM_ATTACH_KCF,
 	TPM_ATTACH_END			/* should always be last */
 } tpm_attach_seq_t;
 #define	TPM_ATTACH_NUM_ENTRIES	(TPM_ATTACH_END)
@@ -411,7 +411,7 @@ uint_t crb_intr(caddr_t, caddr_t);
 int tpm_exec_internal(tpm_t *, uint8_t, uio_t *, uio_t *);
 int tpm_exec_internal_simple(tpm_t *, uint8_t, uint8_t *, size_t);
 
-int tpmrng_register(tpm_t *);
-int tpmrng_unregister(tpm_t *);
+int tpm_kcf_register(tpm_t *);
+int tpm_kcf_unregister(tpm_t *);
 
 #endif	/* _TPM_DDI_H */
