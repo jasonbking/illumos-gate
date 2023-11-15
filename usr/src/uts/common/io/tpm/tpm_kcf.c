@@ -33,8 +33,6 @@
  * As such, we currently only register TPM2.0 devices with KCF.
  */
 
-#define	IDENT_TPMRNG	"TPM Random Number Generator"
-
 #include <sys/types.h>
 #include <sys/ddi.h>
 #include <sys/sunddi.h>
@@ -152,50 +150,63 @@ tpmrng_ext_info(crypto_provider_handle_t prov,
 }
 
 int
-tpmrng_register(tpm_t *tpm)
+tpm_kcf_register(tpm_t *tpm)
 {
 	int			ret;
 	char			id[64];
-	crypto_mech_name_t	*rngmech;
 
 	ASSERT(tpm != NULL);
 
-	(void) snprintf(id, sizeof (id), "tpmrng %s", IDENT_TPMRNG);
+	(void) strlcpy(id, "Trusted Platform Module", sizeof (id));
 
 	tpmrng_prov_info.pi_provider_description = id;
 	tpmrng_prov_info.pi_provider_dev.pd_hw = tpm->tpm_dip;
 	tpmrng_prov_info.pi_provider_handle = tpm;
 
 	ret = crypto_register_provider(&tpmrng_prov_info, &tpm->tpm_n_prov);
+	dev_err(tpm->tpm_dip, CE_NOTE, "%s: tpm = 0x%p", __func__, tpm);
+
 	if (ret != CRYPTO_SUCCESS) {
 		tpm->tpm_n_prov = 0;
 		return (DDI_FAILURE);
 	}
+	ASSERT3U(tpm->tpm_n_prov, !=, 0);
 
 	crypto_provider_notification(tpm->tpm_n_prov, CRYPTO_PROVIDER_READY);
 
-	rngmech = kmem_zalloc(1 * sizeof (crypto_mech_name_t), KM_SLEEP);
-	(void) strlcpy(rngmech[0], "random", sizeof (crypto_mech_name_t));
+	if (tpm->tpm_family == TPM_FAMILY_1_2) {
+		/*
+		 * For unknown reasons, even when TPM1.2 devices were registered with
+		 * KCF, the RNG mechanism was always disabled by default. We preserve
+		 * the historical behavior for now.
+		 */
+		crypto_mech_name_t	*rngmech;
 
-	ret = crypto_load_dev_disabled("tpm", ddi_get_instance(tpm->tpm_dip),
-	    1, rngmech);
-	if (ret != CRYPTO_SUCCESS)
-		cmn_err(CE_WARN, "!crypto_load_dev_disabled failed (%d)", ret);
+		rngmech = kmem_zalloc(1 * sizeof (crypto_mech_name_t), KM_SLEEP);
+		(void) strlcpy(rngmech[0], "random", sizeof (crypto_mech_name_t));
+
+		ret = crypto_load_dev_disabled("tpm", ddi_get_instance(tpm->tpm_dip),
+		    1, rngmech);
+		if (ret != CRYPTO_SUCCESS)
+			cmn_err(CE_WARN, "!crypto_load_dev_disabled failed (%d)", ret);
+	}
 
 	return (DDI_SUCCESS);
 }
 
 int
-tpmrng_unregister(tpm_t *tpm)
+tpm_kcf_unregister(tpm_t *tpm)
 {
-	int ret;
-	ASSERT(tpm != NULL);
-	if (tpm->tpm_n_prov) {
-		ret = crypto_unregister_provider(tpm->tpm_n_prov);
-		if (ret != CRYPTO_SUCCESS)
+	if (tpm->tpm_n_prov != 0) {
+		int ret = crypto_unregister_provider(tpm->tpm_n_prov);
+		if (ret != CRYPTO_SUCCESS) {
+			dev_err(tpm->tpm_dip, CE_WARN,
+			    "failed to unregister from KCF");
 			return (DDI_FAILURE);
+		}
 		tpm->tpm_n_prov = 0;
 	}
+
 	return (DDI_SUCCESS);
 }
 

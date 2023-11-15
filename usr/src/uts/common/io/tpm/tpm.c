@@ -1594,18 +1594,21 @@ tpm_cleanup_hsvc(tpm_t *tpm)
 #endif
 
 static bool
-tpm_attach_rng(tpm_t *tpm)
+tpm_attach_kcf(tpm_t *tpm)
 {
-	if (tpmrng_register(tpm) != DDI_SUCCESS)
+#ifdef notyet
+	if (tpm_kcf_register(tpm) != DDI_SUCCESS)
 		return (false);
-
+#endif
 	return (true);
 }
 
 static void
-tpm_cleanup_rng(tpm_t *tpm)
+tpm_cleanup_kcf(tpm_t *tpm)
 {
-	(void) tpmrng_unregister(tpm);
+#ifdef notyet
+	(void) tpm_kcf_unregister(tpm);
+#endif
 }
 
 static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
@@ -1669,11 +1672,11 @@ static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
 		.tad_attach = tpm_attach_minor_node,
 		.tad_cleanup = tpm_cleanup_minor_node,
 	},
-	[TPM_ATTACH_RAND] = {
-		.tad_seq = TPM_ATTACH_RAND,
-		.tad_name = "rng provider",
-		.tad_attach = tpm_attach_rng,
-		.tad_cleanup = tpm_cleanup_rng,
+	[TPM_ATTACH_KCF] = {
+		.tad_seq = TPM_ATTACH_KCF,
+		.tad_name = "kcf provider",
+		.tad_attach = tpm_attach_kcf,
+		.tad_cleanup = tpm_cleanup_kcf,
 	},
 };
 
