@@ -176,19 +176,23 @@ tpm_kcf_register(tpm_t *tpm)
 
 	if (tpm->tpm_family == TPM_FAMILY_1_2) {
 		/*
-		 * For unknown reasons, even when TPM1.2 devices were registered with
-		 * KCF, the RNG mechanism was always disabled by default. We preserve
-		 * the historical behavior for now.
+		 * For unknown reasons, even when TPM1.2 devices were
+		 * registered with KCF, the RNG mechanism was always disabled
+		 * by default. We preserve the historical behavior for now.
 		 */
 		crypto_mech_name_t	*rngmech;
 
-		rngmech = kmem_zalloc(1 * sizeof (crypto_mech_name_t), KM_SLEEP);
-		(void) strlcpy(rngmech[0], "random", sizeof (crypto_mech_name_t));
+		rngmech = kmem_zalloc(1 * sizeof (crypto_mech_name_t),
+		    KM_SLEEP);
+		(void) strlcpy(rngmech[0], "random",
+		    sizeof (crypto_mech_name_t));
 
-		ret = crypto_load_dev_disabled("tpm", ddi_get_instance(tpm->tpm_dip),
-		    1, rngmech);
-		if (ret != CRYPTO_SUCCESS)
-			cmn_err(CE_WARN, "!crypto_load_dev_disabled failed (%d)", ret);
+		ret = crypto_load_dev_disabled("tpm",
+		    ddi_get_instance(tpm->tpm_dip), 1, rngmech);
+		if (ret != CRYPTO_SUCCESS) {
+			cmn_err(CE_WARN,
+			    "!crypto_load_dev_disabled failed (%d)", ret);
+		}
 	}
 
 	return (DDI_SUCCESS);
