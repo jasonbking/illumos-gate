@@ -137,8 +137,14 @@ crb_set_state(tpm_t *tpm, tpm_crb_state_t next_state)
 	crb->tcrb_state = next_state;
 }
 
+static bool
+crb_is_go_idle_done(tpm_t *tpm)
+{
+	return (tpm_get32(tpm, TPM_CRB_CTRL_REQ) == 0 ? true : false);
+}
+
 static int
-tpm_crb_go_idle(tpm_t *tpm)
+crb_go_idle(tpm_t *tpm)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 	uint32_t status;
@@ -162,11 +168,10 @@ tpm_crb_go_idle(tpm_t *tpm)
 	}
 
 	tpm_put32(tpm, TPM_CRB_CTRL_REQ, TPM_CRB_CTRL_REQ_GO_IDLE);
-
-	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_REQ,
-	    TPM_CRB_CTRL_REQ_GO_IDLE, 0, tpm->tpm_timeout_c, false);
-	if (ret != 0)
+	ret = tpm_wait(tpm, crb_is_go_idle_done, tpm->tpm_timeout_c);
+	if (ret != 0) {
 		return (ret);
+	}
 
 	/*
 	 * The TPM should assert the idle state in TPM_CRB_CTRL_STS once
@@ -184,6 +189,12 @@ tpm_crb_go_idle(tpm_t *tpm)
 	return (0);
 }
 
+static bool
+crb_is_go_ready_done(tpm_t *tpm)
+{
+	return (tpm_get32(tpm, TPM_CRB_CTRL_REQ) == 0 ? true : false);
+}
+
 static int
 crb_go_ready(tpm_t *tpm)
 {
@@ -197,15 +208,14 @@ crb_go_ready(tpm_t *tpm)
 	 * READY state.
 	 */
 	tpm_put32(tpm, TPM_CRB_CTRL_REQ, TPM_CRB_CTRL_REQ_CMD_READY);
-	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_REQ,
-	    TPM_CRB_CTRL_REQ_CMD_READY, 0, tpm->tpm_timeout_c, true);
+	ret = tpm_wait(tpm, crb_is_go_ready_done, tpm->tpm_timeout_c);
 	if (ret == 0) {
 		crb_set_state(tpm, TCRB_ST_READY);
 		return (0);
 	}
 
 	/* If we timed out, try to go back to the idle state */
-	(void) tpm_crb_go_idle(tpm);
+	(void) crb_go_idle(tpm);
 	return (ret);
 }
 
@@ -278,7 +288,7 @@ crb_intr(caddr_t arg0, caddr_t arg1 __unused)
 	 * TODO: It might be nice to have dtrace sdt probes for each
 	 * type of interrupt.
 	 */
-	cv_signal(&tpm->tpm_intr_cv);
+	cv_signal(&tpm->tpm_thr_cv);
 
 	return (DDI_INTR_CLAIMED);
 }
@@ -294,7 +304,7 @@ crb_send_data(tpm_t *tpm, const uint8_t *buf, size_t amt)
 	VERIFY3U(amt, >=, TPM_HEADER_SIZE);
 	VERIFY3U(tpm_cmdlen(buf), ==, amt);
 
-	ret = tpm_crb_go_idle(tpm);
+	ret = crb_go_idle(tpm);
 	if (ret != 0) {
 		return (ret);
 	}
@@ -347,16 +357,19 @@ crb_send_data(tpm_t *tpm, const uint8_t *buf, size_t amt)
 	return (ret);
 }
 
-static int
-crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen, clock_t to)
+static bool
+crb_data_ready(tpm_t *tpm)
 {
-	int ret;
+	/*
+	 * Writing a 1 to this register starts execution of a command.
+	 * The TPM will return 0 once the command has completed execution.
+	 */
+	return (tpm_get32(tpm, TPM_CRB_CTRL_START) == 0 ? true : false);
+}
 
-	ret = tpm_wait_u32(tpm, TPM_CRB_CTRL_START, 1, 0, to, false);
-	if (ret != 0) {
-		return (ret);
-	}
-
+static int
+crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen)
+{
 	crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
 
 	/* First, read in the header */
@@ -371,7 +384,8 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen, clock_t to)
 		    (unsigned long)resp_len);
 
 		/* Try to recover by going idle */
-		(void) tpm_crb_go_idle(tpm);
+		(void) crb_go_idle(tpm);
+
 		/* XXX: Better error? */
 		return (SET_ERROR(ENOSPC));
 	}
@@ -382,11 +396,20 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen, clock_t to)
 	return (0);
 }
 
+static bool
+crb_request_locality_done(tpm_t *tpm)
+{
+	uint32_t val = tpm_get32(tpm, TPM_LOC_STATE);
+	uint32_t mask = TPM_LOC_STATE_REG_VALID | TPM_LOC_STATE_LOC_ASSIGNED |
+	    TPM_LOC_SET(tpm->tpm_locality);
+
+	return ((tpm_get32(tpm, TPM_LOC_STATE) & mask) == mask ? true : false);
+}
+
 static int
 crb_request_locality(tpm_t *tpm, uint8_t locality)
 {
 	uint32_t status;
-	uint32_t mask;
 	int ret;
 	uint8_t old_locality;
 
@@ -411,9 +434,6 @@ crb_request_locality(tpm_t *tpm, uint8_t locality)
 		return (0);
 	}
 
-	mask = TPM_LOC_STATE_REG_VALID | TPM_LOC_STATE_LOC_ASSIGNED |
-	    TPM_LOC_SET(locality);
-
 	/*
 	 * Set the new locality now so the tpm_put32() command writes the
 	 * request to the correct locality request register. If we fail,
@@ -428,9 +448,7 @@ crb_request_locality(tpm_t *tpm, uint8_t locality)
 	 * write the value with the desired flags set.
 	 */
 	tpm_put32(tpm, TPM_LOC_CTRL, TPM_LOC_CTRL_REQUEST);
-
-	ret = tpm_wait_u32(tpm, TPM_LOC_STATE, mask, mask,
-	    tpm->tpm_timeout_c, true);
+	ret = tpm_wait(tpm, crb_request_locality_done, tpm->tpm_timeout_c);
 	if (ret != 0) {
 		/*
 		 * XXX: Should this generate an ereport? Maybe even disable
@@ -458,8 +476,7 @@ crb_release_locality(tpm_t *tpm, uint8_t locality)
 int
 crb_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 {
-	clock_t to;
-	uint32_t cmd, cmdlen;
+	uint32_t cmdlen;
 	int ret, ret2;
 
 	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
@@ -480,14 +497,22 @@ crb_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 		goto done;
 	}
 
-	cmd = tpm_cmd(buf);
+	ret = tpm_wait_cmd(tpm, buf, crb_data_ready);
+	if (ret != 0) {
+		goto done;
+	}
+
+	ret = crb_recv_data(tpm, buf, buflen);
 
 	/*
-	 * Since CRB only supports TPM2.0, we just need the TPM2.0
-	 * timeouts.
+	 * PTP 6.5.3.9.2 The TPM shall maintin the respone in the buffer
+	 * until a receipt of write of 1 to TPM_CRB_CTRL_REQ_x.goIdle.
+	 *
+	 * The wording suggests the response could possibly be maintained
+	 * once in the idle state, but it's the best we can do to prevent
+	 * any snooping of the last response after we're done with it.
 	 */
-	to = tpm20_get_timeout(cmd);
-	ret = crb_recv_data(tpm, buf, buflen, to);
+	(void) crb_go_idle(tpm);
 
 done:
 	/*
@@ -496,46 +521,6 @@ done:
 	 */
 	ret2 = crb_release_locality(tpm, loc);
 	return ((ret != 0) ? ret : ret2);
-}
-
-int
-crb_cancel_cmd(tpm_client_t *c)
-{
-	tpm_t *tpm = c->tpmc_tpm;
-
-	VERIFY(MUTEX_HELD(&c->tpmc_lock));
-
-	/*
-	 * We should only be called when the client is in the process of
-	 * executing a command.
-	 */
-	VERIFY3S(c->tpmc_state, ==, TPM_CLIENT_CMD_EXECUTION);
-
-	mutex_enter(&tpm->tpm_lock);
-
-	/* We also should't be called from the tpm service thread either. */
-	VERIFY3P(curthread, !=, tpm->tpm_thread);
-
-	tpm->tpm_thr_cancelreq = true;
-	cv_signal(&tpm->tpm_thr_cv);
-
-	if (tpm_client_nonblock(c)) {
-		mutex_exit(&tpm->tpm_lock);
-		return (0);
-	}
-
-	while (tpm->tpm_thr_cancelreq) {
-		int ret = cv_wait_sig(&tpm->tpm_thr_cv, &tpm->tpm_lock);
-
-		if (ret == 0) {
-			mutex_exit(&tpm->tpm_lock);
-			return (SET_ERROR(EINTR));
-		}
-	}
-
-	mutex_exit(&tpm->tpm_lock);
-	tpm_client_reset(c);
-	return (0);
 }
 
 void

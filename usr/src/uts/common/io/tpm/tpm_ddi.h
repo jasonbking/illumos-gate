@@ -113,7 +113,6 @@ typedef struct tpm_tis {
 	uint32_t		ttis_intr;
 	bool			ttis_has_sts_valid_int;	/* WO */
 	bool			ttis_has_cmd_ready_int;	/* WO */
-	clock_t			ttis_duration[TPM_DURATION_MAX]; /* WO */
 } tpm_tis_t;
 
 /*
@@ -218,6 +217,10 @@ struct tpm {
 	int			tpm_instance;
 	ddi_acc_handle_t	tpm_handle;
 
+	kmutex_t		tpm_suspend_lock;
+	kcondvar_t		tpm_suspend_cv;
+	bool			tpm_suspended;
+
 	tpm_attach_seq_t	tpm_seq;
 
 	kmutex_t		tpm_lock;
@@ -234,7 +237,6 @@ struct tpm {
 	uint_t			tpm_intr_pri;		/* WO */
 	tpm_wait_t		tpm_wait;		/* WO */
 	bool			tpm_use_interrupts;	/* WO */
-	kcondvar_t		tpm_intr_cv;		
 
 	kthread_t		*tpm_thread;		/* WO */
 	kcondvar_t		tpm_thr_cv;
@@ -263,6 +265,7 @@ struct tpm {
 	clock_t			tpm_timeout_c;		/* WO */
 	clock_t			tpm_timeout_d;		/* WO */
 	clock_t			tpm_timeout_poll;	/* WO */
+	clock_t			tpm_duration[TPM_DURATION_MAX]; /* WO */
 
 	ddi_intr_handle_t	tpm_isr;
 
@@ -331,6 +334,7 @@ tpm_is_cancelled(tpm_t *tpm)
 	return (tpm->tpm_active->tpmc_cancelled);
 }
 
+#define	TPM12_ORDINAL_MAX	243
 #define	TPM_LOCALITY_MAX	4
 #define	TPM_OFFSET_MAX		0x0fff
 
@@ -365,17 +369,18 @@ tpm_wait_nointr(const tpm_t *tpm)
 }
 
 uint8_t tpm_get8(tpm_t *, unsigned long);
+uint8_t tpm_get8_loc(tpm_t *, uint8_t, unsigned long);
 uint32_t tpm_get32(tpm_t *, unsigned long);
 uint64_t tpm_get64(tpm_t *, unsigned long);
 void tpm_put8(tpm_t *, unsigned long, uint8_t);
 void tpm_put32(tpm_t *, unsigned long, uint32_t);
 
-int tpm_wait_u8(tpm_t *, unsigned long, uint8_t, uint8_t, clock_t, bool);
-int tpm_wait_u32(tpm_t *, unsigned long, uint32_t, uint32_t, clock_t, bool);
+int tpm_wait(tpm_t *, bool (*)(tpm_t *), clock_t);
+int tpm_wait_cmd(tpm_t *, const uint8_t *, bool(*)(tpm_t *));
+
+clock_t tpm_get_timeout(tpm_t *, const uint8_t *);
 
 void tpm_dbg(const tpm_t *, int, const char *, ...);
-
-clock_t tpm_get_timeout(tpm_t *, uint32_t);
 
 void tpm_dispatch_cmd(tpm_client_t *);
 
@@ -383,21 +388,20 @@ int tpm12_seed_random(tpm_t *, uchar_t *, size_t);
 int tpm12_generate_random(tpm_t *, uchar_t *, size_t);
 bool tpm12_init(tpm_t *);
 clock_t tpm12_get_ordinal_duration(tpm_t *, uint32_t);
+clock_t tpm12_get_timeout(tpm_t *, uint32_t);
 
-clock_t tpm_get_ordinal_duration(tpm_t *, uint32_t);
+clock_t tpm_get_duration(tpm_t *, const uint8_t *);
 
 void tpm_client_refrele(tpm_client_t *);
 void tpm_client_reset(tpm_client_t *);
 
 bool tpm_tis_init(tpm_t *);
 int tis_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
-int tpm_tis_cancel_cmd(tpm_client_t *);
 void tpm_tis_intr_mgmt(tpm_t *, bool);
 uint_t tpm_tis_intr(caddr_t, caddr_t);
 
 bool crb_init(tpm_t *);
 int crb_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
-int crb_cancel_cmd(tpm_client_t *);
 void crb_intr_mgmt(tpm_t *, bool);
 uint_t crb_intr(caddr_t, caddr_t);
 

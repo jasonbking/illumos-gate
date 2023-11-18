@@ -477,7 +477,6 @@ tpm12_get_timeouts(tpm_t *tpm)
 static int
 tpm12_get_duration(tpm_t *tpm)
 {
-	tpm_tis_t *tis = &tpm->tpm_u.tpmu_tis;
 	int ret;
 	uint32_t duration;
 	uint32_t len;
@@ -518,7 +517,7 @@ tpm12_get_duration(tpm_t *tpm)
 	} else if (duration < TEN_MILLISECONDS) {
 		duration *= 1000;
 	}
-	tis->ttis_duration[TPM_SHORT] = drv_usectohz(duration);
+	tpm->tpm_duration[TPM_SHORT] = drv_usectohz(duration);
 
 	duration = tpm_getbuf32(buf, TPM_CAP_DUR_MEDIUM_OFFSET);
 	if (duration == 0) {
@@ -526,7 +525,7 @@ tpm12_get_duration(tpm_t *tpm)
 	} else if (duration < TEN_MILLISECONDS) {
 		duration *= 1000;
 	}
-	tis->ttis_duration[TPM_MEDIUM] = drv_usectohz(duration);
+	tpm->tpm_duration[TPM_MEDIUM] = drv_usectohz(duration);
 
 	duration = tpm_getbuf32(buf, TPM_CAP_DUR_LONG_OFFSET);
 	if (duration == 0) {
@@ -534,10 +533,10 @@ tpm12_get_duration(tpm_t *tpm)
 	} else if (duration < FOUR_HUNDRED_MILLISECONDS) {
 		duration *= 1000;
 	}
-	tis->ttis_duration[TPM_LONG] = drv_usectohz(duration);
+	tpm->tpm_duration[TPM_LONG] = drv_usectohz(duration);
 
 	/* Just make the undefined duration be the same as the LONG */
-	tis->ttis_duration[TPM_UNDEFINED] = tis->ttis_duration[TPM_LONG];
+	tpm->tpm_duration[TPM_UNDEFINED] = tpm->tpm_duration[TPM_LONG];
 
 	return (0);
 }
@@ -617,9 +616,18 @@ tpm12_get_ordinal_duration(tpm_t *tpm, uint32_t ordinal)
 		tpm_dbg(tpm, CE_WARN,
 		    "!%s: duration index '%d' is out of bounds", __func__,
 		    index);
-		return (0);
+		return (tpm->tpm_duration[TPM_UNDEFINED]);
 	}
-	return (tpm->tpm_u.tpmu_tis.ttis_duration[index]);
+
+	return (tpm->tpm_duration[index]);
+}
+
+clock_t
+tpm12_get_timeout(tpm_t *tpm, uint32_t cmd)
+{
+	VERIFY3U(cmd, <, TPM_ORDINAL_MAX);
+	
+	return (tpm->tpm_duration[tpm12_ords_duration[cmd]]);
 }
 
 /*
@@ -768,10 +776,10 @@ tpm12_init(tpm_t *tpm)
 	 * when we call TPM_GetCapability to get the duration values from
 	 * the TPM itself).
 	 */
-	tis->ttis_duration[TPM_SHORT] = drv_usectohz(TPM_DEFAULT_DURATION);
-	tis->ttis_duration[TPM_MEDIUM] = drv_usectohz(TPM_DEFAULT_DURATION);
-	tis->ttis_duration[TPM_LONG] = drv_usectohz(TPM_DEFAULT_DURATION);
-	tis->ttis_duration[TPM_UNDEFINED] = drv_usectohz(TPM_DEFAULT_DURATION);
+	tpm->tpm_duration[TPM_SHORT] = drv_usectohz(TPM_DEFAULT_DURATION);
+	tpm->tpm_duration[TPM_MEDIUM] = drv_usectohz(TPM_DEFAULT_DURATION);
+	tpm->tpm_duration[TPM_LONG] = drv_usectohz(TPM_DEFAULT_DURATION);
+	tpm->tpm_duration[TPM_UNDEFINED] = drv_usectohz(TPM_DEFAULT_DURATION);
 
 	/* Find out supported capabilities */
 	intf_caps = tpm_get32(tpm, TPM_INTF_CAP);
