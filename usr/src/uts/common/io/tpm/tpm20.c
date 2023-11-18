@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #include <sys/debug.h>
@@ -143,11 +143,21 @@ tpm20_generate_random(tpm_t *tpm, uchar_t *buf, size_t len)
 		return (CRYPTO_DATA_LEN_RANGE);
 	}
 
-	uint8_t cmd[RNDHDR_SIZE] = { 0 };
-	iovec_t	iov[2] = {
+	uint8_t cmd[RNDHDR_SIZE] = {
+		0x80, 0x01,				/* TPM_ST_NO_SESSIONS */
+		0x00, 0x00, 0x00, RNDHDR_SIZE,		/* Param Size */
+		0x00, 0x00, 0x01, 0x7b,			/* TPM_CC_GetRandom */
+		(len >> 8) & 0xff,
+		len & 0xff,				/* bytes requested */
+	};
+	iovec_t iov_in = {
+		.iov_base = (char *)cmd,
+		.iov_len = RNDHDR_SIZE,
+	};
+	iovec_t iov_out[2] = {
 		[0] = {
 			.iov_base = (char *)cmd,
-			.iov_len = sizeof (cmd),
+			.iov_len = RNDHDR_SIZE,
 		},
 		[1] = {
 			.iov_base = (char *)buf,
@@ -155,24 +165,19 @@ tpm20_generate_random(tpm_t *tpm, uchar_t *buf, size_t len)
 		},
 	};
 	uio_t in = {
-		.uio_iov = iov,
+		.uio_iov = &iov_in,
 		.uio_iovcnt = 1,
 		.uio_segflg = UIO_SYSSPACE,
 		.uio_resid = RNDHDR_SIZE,
 	};
 	uio_t out = {
-		.uio_iov = iov,
+		.uio_iov = iov_out,
 		.uio_iovcnt = 2,
 		.uio_segflg = UIO_SYSSPACE,
 		.uio_resid = RNDHDR_SIZE + len,
 	};
 	int ret;
 	uint32_t tpmret;
-
-	BE_OUT16(cmd + TPM_TAG_OFFSET,		TPM_ST_NO_SESSIONS);
-	BE_OUT32(cmd + TPM_PARAMSIZE_OFFSET,	RNDHDR_SIZE);
-	BE_OUT32(cmd + TPM_COMMAND_CODE_OFFSET,	TPM_CC_GetRandom);
-	BE_OUT16(cmd + TPM_HEADER_SIZE,		(uint16_t)len);
 
 	ret = tpm_exec_internal(tpm, 0, &in, &out);
 	if (ret != 0) {
