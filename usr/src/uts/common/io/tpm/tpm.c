@@ -58,6 +58,7 @@
 
 #include "tpm_tis.h"
 #include "tpm_ddi.h"
+#include "tpm20.h"
 
 extern pri_t minclsyspri;
 
@@ -105,6 +106,16 @@ static ddi_device_acc_attr_t	tpm_acc_attr = {
 #endif
 
 static const char *tpm_hwvend_str(uint16_t);
+
+static inline void
+tpm_enter(tpm_t *tpm)
+{
+	mutex_enter(&tpm->tpm_suspend_lock);
+	while (tpm->tpm_suspended) {
+		cv_wait(&tpm->tpm_suspend_cv, &tpm->tpm_suspend_lock);
+	}
+	mutex_exit(&tpm->tpm_suspend_lock);
+}
 
 /* Can we accept write(2) requests without blocking? */
 static inline bool
@@ -195,35 +206,20 @@ tpm_client_reset(tpm_client_t *c)
 	pollwakeup(&c->tpmc_pollhead, POLLOUT);
 }
 
-static void
+static int
 tpm_cancel(tpm_client_t *c)
 {
 	tpm_t *tpm = c->tpmc_tpm;
 
+	/* We should't be called from the tpm service thread either. */
+	VERIFY3P(curthread, !=, tpm->tpm_thread);
 	VERIFY(MUTEX_HELD(&c->tpmc_lock));
 
 	switch (c->tpmc_state) {
 	case TPM_CLIENT_IDLE:
-		break;
+		return (0);
 	case TPM_CLIENT_CMD_RECEPTION:
 	case TPM_CLIENT_CMD_COMPLETION:
-		tpm_client_reset(c);
-		break;
-	case TPM_CLIENT_CMD_EXECUTION:
-		/*
-		 * The interface specific cancellation method will
-		 * reset the client state after it has completed cancelling
-		 * the current command.
-		 */
-		switch (tpm->tpm_iftype) {
-		case TPM_IF_TIS:
-		case TPM_IF_FIFO:
-			(void) tpm_tis_cancel_cmd(c);
-			break;
-		case TPM_IF_CRB:
-			(void) crb_cancel_cmd(c);
-			break;
-		}
 		break;
 	case TPM_CLIENT_CMD_DISPATCH:
 		if (list_link_active(&c->tpmc_node)) {
@@ -260,12 +256,31 @@ tpm_cancel(tpm_client_t *c)
 				cv_wait(&c->tpmc_cv, &c->tpmc_lock);
 			}
 		}
-		tpm_client_reset(c);
+		break;
+	case TPM_CLIENT_CMD_EXECUTION:
+		mutex_enter(&tpm->tpm_lock);
+
+		tpm->tpm_thr_cancelreq = true;
+		cv_signal(&tpm->tpm_thr_cv);
+
+		do {
+			int ret = cv_wait_sig(&tpm->tpm_thr_cv, &tpm->tpm_lock);
+
+			if (ret == 0) {
+				mutex_exit(&tpm->tpm_lock);
+				return (SET_ERROR(EINTR));
+			}
+		} while (tpm->tpm_thr_cancelreq);
+
+		mutex_exit(&tpm->tpm_lock);
 		break;
 	default:
 		cmn_err(CE_PANIC, "unexpected tpm connection state 0x%x",
 		    c->tpmc_state);
 	}
+
+	tpm_client_reset(c);
+	return (0);
 }
 
 static int
@@ -370,6 +385,8 @@ tpm_open(dev_t *devp, int flag, int otype, cred_t *credp)
 
 	tpm = ddi_get_soft_state(tpm_statep, TPM_INSTANCE(dev));
 
+	tpm_enter(tpm);
+
 	mutex_enter(&tpm->tpm_lock);
 
 	if (tpm->tpm_client_count == tpm->tpm_client_max) {
@@ -436,6 +453,7 @@ static int
 tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 {
 	tpm_client_t *c;
+	int ret;
 
 	if (otyp != OTYP_CHR) {
 		return (SET_ERROR(EINVAL));
@@ -446,16 +464,21 @@ tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 		return (SET_ERROR(ENXIO));
 	}
 
+	tpm_enter(c->tpmc_tpm);
+
 	mutex_enter(&c->tpmc_lock);
 
-	tpm_cancel(c);
+	ret = tpm_cancel(c);
+	if (ret != 0) {
+		return (ret);
+	}
 
 	/*
 	 * After cancelling, we have to wait for the client to become idle
 	 * to ensure the tpm thread is not using the client.
 	 */
 	while (c->tpmc_state != TPM_CLIENT_IDLE) {
-		int ret = cv_wait_sig(&c->tpmc_cv, &c->tpmc_lock);
+		ret = cv_wait_sig(&c->tpmc_cv, &c->tpmc_lock);
 
 		if (ret <= 0) {
 			mutex_exit(&c->tpmc_lock);
@@ -511,6 +534,8 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	if (c == NULL) {
 		return (SET_ERROR(ENXIO));
 	}
+
+	tpm_enter(c->tpmc_tpm);
 
 	mutex_enter(&c->tpmc_lock);
 
@@ -661,6 +686,8 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 		return (SET_ERROR(ENXIO));
 	}
 
+	tpm_enter(c->tpmc_tpm);
+
 	mutex_enter(&c->tpmc_lock);
 
 	switch (c->tpmc_state) {
@@ -728,6 +755,8 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		return (SET_ERROR(ENXIO));
 	}
 
+	tpm_enter(c->tpmc_tpm);
+
 	mutex_enter(&c->tpmc_lock);
 
 	switch (cmd) {
@@ -790,7 +819,7 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 		c->tpmc_locality = val;
 		break;
 	case TPMIOC_CANCEL:
-		tpm_cancel(c);
+		ret = tpm_cancel(c);
 		break;
 	case TPMIOC_MAKESTICKY:
 		/* TODO */
@@ -816,6 +845,8 @@ tpm_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 	if (c == NULL) {
 		return (SET_ERROR(ENXIO));
 	}
+
+	tpm_enter(c->tpmc_tpm);
 
 	mutex_enter(&c->tpmc_lock);
 
@@ -933,18 +964,22 @@ tpm_exec_client(tpm_client_t *c)
 	case TPM_IF_TIS:
 	case TPM_IF_FIFO:
 		ret = tis_exec_cmd(tpm, c->tpmc_locality, c->tpmc_buf,
-		    c->tpmc_bufused);
+		    c->tpmc_buflen);
 		break;
 	case TPM_IF_CRB:
 		ret = crb_exec_cmd(tpm, c->tpmc_locality, c->tpmc_buf,
-		    c->tpmc_bufused);
+		    c->tpmc_buflen);
 		break;
 	default:
 		dev_err(tpm->tpm_dip, CE_PANIC, "%s: invalid iftype %d",
 		    __func__, tpm->tpm_iftype);
 	}
 
-	if (ret == 0) {
+	switch (ret) {
+	case ECANCELED:
+		cv_signal(&tpm->tpm_thr_cv);
+		break;
+	case 0:
 		/*
 		 * If we succeeded, the amount of output will be in the
 		 * returned header.
@@ -952,6 +987,7 @@ tpm_exec_client(tpm_client_t *c)
 		c->tpmc_bufused = tpm_getbuf32(c->tpmc_buf,
 		    TPM_PARAMSIZE_OFFSET);
 		c->tpmc_bufread = 0;
+		break;
 	}
 
 	mutex_exit(&tpm->tpm_lock);
@@ -1017,105 +1053,162 @@ tpm_exec_thread(void *arg)
 	}
 }
 
-static clock_t
-tpm_get_waittime(tpm_t *tpm, tpm_wait_t wait_type, clock_t now,
-    clock_t deadline)
+/*
+ * Wait up to timeout ticks for cond(tpm) to be true. This should be used
+ * for conditions where there's no potential concern about the timing used.
+ * Basically anything but waiting for a command to complete.
+ */
+int
+tpm_wait(tpm_t *tpm, bool (*cond)(tpm_t *), clock_t timeout)
 {
-	clock_t until;
+	clock_t deadline, now;
 
-	switch (wait_type) {
-	case TPM_WAIT_POLLONCE:
-	case TPM_WAIT_INTR:
-		return (deadline);
-	case TPM_WAIT_POLL:
-		until = now + tpm->tpm_timeout_poll;
-		return ((until < deadline) ? until : deadline);
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+
+	/*
+	 * We should never be called in a context where we can receive a
+	 * signal.
+	 */
+	VERIFY(!ddi_can_receive_sig());
+
+	deadline = ddi_get_lbolt() + timeout;
+	while ((now = ddi_get_lbolt()) <= deadline) {
+		if (cond(tpm)) {
+			return (0);
+		}
+
+		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, deadline);
+
+		if (tpm->tpm_thr_cancelreq) {
+			tpm->tpm_thr_cancelreq = false;
+			return (SET_ERROR(ECANCELED));
+		}
 	}
 
-	cmn_err(CE_PANIC, "invalid wait_type %d", wait_type);
+	if (!cond(tpm)) {
+		return (SET_ERROR(ETIME));
+	}
 
-	/*NOTREACHED*/
 	return (0);
 }
 
 /*
- * Wait for a register to return a (possibly masked) value.
+ * Wait for command in buf to complete execution. `done` is a transport
+ * (TIS/FIFO/CRB) specific callback to determine if the command has
+ * completed.
  *
- * If intr is set, wait the full timeout value and expect an interrupt
- * will likely wake us sooner when the condition we're checking has been satisified.
- *
- * If intr is not set, check every tpm->tpm_timeout_poll cycles.
- *
- * If tpm->tpm_wait == TPM_WAIT_POLLONCE, always wait the full timeout value
- * regardless of the setting of wait_intr.
+ * Commands can have both an expected duration as well as a timeout,
+ * as well as potentially caring about TPM_WAIT_POLL, so the semantics
+ * are a bit different than tpm_wait().
  */
-static int
-tpm_wait_common(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t value,
-    clock_t timeout, bool intr,
-    uint32_t (*getf)(tpm_t *, unsigned long, uint32_t)) {
-	clock_t deadline, now;
-	uint32_t status;
-	int ret = 1;
-	tpm_wait_t wait;
+int
+tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf, bool (*done)(tpm_t *))
+{
+	clock_t exp_done, deadline, now;
 
 	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
 
-	wait = intr ? tpm->tpm_wait : tpm_wait_nointr(tpm);
-	deadline = ddi_get_lbolt() + timeout;
-	while ((now = ddi_get_lbolt()) < deadline) {
-		status = getf(tpm, reg, mask);
-		if (status == value)
-			break;
+	/*
+	 * We should never be called in a context where we can receive
+	 * a signal. In fact, we should only be called from the worker
+	 * thread.
+	 */
+	VERIFY(!ddi_can_receive_sig());
+	VERIFY3P(curthread, ==, tpm->tpm_thread);
 
-		clock_t until = tpm_get_waittime(tpm, wait, now, deadline);
-		ret = cv_timedwait(&tpm->tpm_intr_cv, &tpm->tpm_lock, until);
-	}
+	now = ddi_get_lbolt();
 
-	/* If we timed out, check the status one final time */
-	if (ret <= 0) {
-		status = getf(tpm, reg, mask);
-		if (status != value) {
-			goto timedout;
+	/*
+	 * Commands can have both an expected duration as well as a timeout.
+	 * The difference being that the expection duration is how long the
+	 * command should take to execute (but can take longer), while
+	 * exceeding the timeout means something's gone wrong, and the
+	 * request should be abandoned.
+	 *
+	 * If the command has an expected duration, we wait the expected
+	 * amount of time and use the supplied callback (done) to check if
+	 * the command has completed. If interrupts are enabled, we may
+	 * check sooner if the TPM triggers an interrupt. While executing
+	 * a command, the TPM should only trigger an interrupt when the
+	 * command is complete, however even if it triggers an interrupt for
+	 * another reason, we'll just determine the command is not yet
+	 * complete and go back to waiting.
+	 *
+	 * The exception to this behavior is if the wait mode is
+	 * TPM_WAIT_POLLONCE.  In this instance, we check exactly one time --
+	 * after the command timeout.
+	 */
+	deadline = now + tpm_get_timeout(tpm, buf);
+
+	exp_done = (tpm->tpm_wait != TPM_WAIT_POLLONCE) ?
+	    now + tpm_get_duration(tpm, buf) : 0;
+	VERIFY3S(exp_done, <=, deadline);
+
+	/*
+	 * Wait for the expected command duration, or until we are
+	 * interrupted due to cancellation or receiving a 'command done'
+	 * interrupt.
+	 */
+	while ((now = ddi_get_lbolt()) <= exp_done) {
+		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, exp_done);
+
+		if (tpm->tpm_thr_cancelreq) {
+			/* We were cancelled */
+			tpm->tpm_thr_cancelreq = false;
+			return (ECANCELED);
+		}
+
+		/*
+		 * We either received an interrupt or reached the expected
+		 * command duration, check if the command is finished.
+		 */
+		if (done(tpm)) {
+			return (0);
 		}
 	}
 
+	/*
+	 * Command is taking longer than expected, either start periodically
+	 * polling (if allowed), or wait until the timeout is reached
+	 * (and check again).
+	 */
+	while ((now = ddi_get_lbolt()) <= deadline) {
+		clock_t when = 0;
+
+		switch (tpm->tpm_wait) {
+		case TPM_WAIT_POLLONCE:
+		case TPM_WAIT_INTR:
+			when = deadline;
+			break;
+		case TPM_WAIT_POLL:
+			when = ddi_get_lbolt() + tpm->tpm_timeout_poll;
+			break;
+		}
+	
+		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, exp_done);
+		if (tpm->tpm_thr_cancelreq) {
+			tpm->tpm_thr_cancelreq = false;
+			return (ECANCELED);
+		}
+
+		if (tpm->tpm_wait == TPM_WAIT_POLLONCE) {
+			continue;
+		}
+
+		if (done(tpm)) {
+			return (0);
+		}
+	}
+
+	if (!done(tpm)) {
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "timeout waiting for command completion (cmd=0x%x)",
+		    tpm_cmd(buf));
+		/* XXX: post ereport? */
+		return (SET_ERROR(ETIME));
+	}
+
 	return (0);
-
-timedout:
-	/* XXX: Generate ereport? */
-	dev_err(tpm->tpm_dip, CE_WARN,
-	    "%s: timeout (%ld usecs) waiting for reg 0x%lx & 0x%x == 0x%x\n",
-	    __func__, drv_hztousec(timeout), reg, mask, value);
-	return (ETIME);
-}
-
-static uint32_t
-tpm_wait_u32f(tpm_t *tpm, unsigned long reg, uint32_t mask)
-{
-	return (tpm_get32(tpm, reg) & mask);
-}
-
-int
-tpm_wait_u32(tpm_t *tpm, unsigned long reg, uint32_t mask, uint32_t val,
-    clock_t timeout, bool intr)
-{
-	return (tpm_wait_common(tpm, reg, mask, val, timeout, intr,
-	    tpm_wait_u32f));
-}
-
-static uint32_t
-tpm_wait_u8f(tpm_t *tpm, unsigned long reg, uint32_t mask)
-{
-	uint32_t val = tpm_get8(tpm, reg) & 0xff;
-	return (val & mask);
-}
-
-int
-tpm_wait_u8(tpm_t *tpm, unsigned long reg, uint8_t mask, uint8_t val,
-    clock_t timeout, bool intr)
-{
-	return (tpm_wait_common(tpm, reg, mask, val, timeout, intr,
-	    tpm_wait_u8f));
 }
 
 /*
@@ -1124,47 +1217,6 @@ tpm_wait_u8(tpm_t *tpm, unsigned long reg, uint8_t mask, uint8_t val,
 static int
 tpm_quiesce(dev_info_t *dip __unused)
 {
-	return (DDI_SUCCESS);
-}
-
-int
-tpm_wait_for_u32(tpm_t *tpm, uint32_t reg, uint32_t mask, uint32_t val,
-    clock_t timeout)
-{
-	clock_t deadline = ddi_get_lbolt() + timeout;
-
-	while ((tpm_get32(tpm, reg) & mask) != val) {
-		if (ddi_get_lbolt() >= deadline) {
-#ifdef DEBUG
-			cmn_err(CE_WARN, "!%s: polling timeout (%ld usecs)",
-			    __func__, drv_hztousec(timeout));
-#endif
-			return (ETIME);
-		}
-
-		delay(tpm->tpm_timeout_poll);
-	}
-
-	return (0);
-}
-
-/*
- * Auxilary Functions
- */
-
-static int
-tpm_resume(tpm_t *tpm)
-{
-#if 0
-	mutex_enter(&tpm->pm_mutex);
-	if (!tpm->suspended) {
-		mutex_exit(&tpm->pm_mutex);
-		return (DDI_FAILURE);
-	}
-	tpm->suspended = 0;
-	cv_broadcast(&tpm->suspend_cv);
-	mutex_exit(&tpm->pm_mutex);
-#endif
 	return (DDI_SUCCESS);
 }
 
@@ -1307,7 +1359,6 @@ tpm_attach_dev_init(tpm_t *tpm)
 	    "tpm-revision", tpm->tpm_rid);
 	(void) ddi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
 	    "tpm-family", famstr);
-	dev_err(tpm->tpm_dip, CE_NOTE, "!TPM version is %s", famstr);
 
 	return (true);
 }
@@ -1478,14 +1529,12 @@ tpm_attach_sync(tpm_t *tpm)
 
 	mutex_init(&tpm->tpm_lock, NULL, MUTEX_DRIVER, pri);
 	cv_init(&tpm->tpm_thr_cv, NULL, CV_DRIVER, pri);
-	cv_init(&tpm->tpm_intr_cv, NULL, CV_DRIVER, pri);
 	return (true);
 }
 
 static void
 tpm_cleanup_sync(tpm_t *tpm)
 {
-	cv_destroy(&tpm->tpm_intr_cv);
 	cv_destroy(&tpm->tpm_thr_cv);
 	mutex_destroy(&tpm->tpm_lock);
 }
@@ -1656,6 +1705,21 @@ tpm_cleanup(tpm_t *tpm)
 }
 
 static int
+tpm_resume(tpm_t *tpm)
+{
+	mutex_enter(&tpm->tpm_suspend_lock);
+	if (!tpm->tpm_suspended) {
+		mutex_exit(&tpm->tpm_suspend_lock);
+		return (DDI_FAILURE);
+	}
+	tpm->tpm_suspended = false;
+	cv_broadcast(&tpm->tpm_suspend_cv);
+	mutex_exit(&tpm->tpm_suspend_lock);
+
+	return (DDI_SUCCESS);
+}
+
+static int
 tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 {
 	tpm_t *tpm = NULL;
@@ -1789,16 +1853,14 @@ tpm_suspend(tpm_t *tpm)
 	if (tpm == NULL)
 		return (DDI_FAILURE);
 
-#if 0
-	mutex_enter(&tpm->pm_mutex);
-	if (tpm->suspended) {
-		mutex_exit(&tpm->pm_mutex);
+	mutex_enter(&tpm->tpm_suspend_lock);
+	if (tpm->tpm_suspended) {
+		mutex_exit(&tpm->tpm_suspend_lock);
 		return (DDI_SUCCESS);
 	}
-	tpm->suspended = 1;
-	mutex_exit(&tpm->pm_mutex);
-#endif
 
+	tpm->tpm_suspended = true;
+	mutex_exit(&tpm->tpm_suspend_lock);
 	return (DDI_SUCCESS);
 }
 
@@ -1807,8 +1869,6 @@ tpm_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 {
 	int instance;
 	tpm_t *tpm;
-
-	ASSERT(dip != NULL);
 
 	instance = ddi_get_instance(dip);
 	if (instance < 0)
@@ -1855,19 +1915,33 @@ tpm_getinfo(dev_info_t *dip __unused, ddi_info_cmd_t cmd, void *arg __unused,
 		*resultp = 0;
 		break;
 	default:
-#ifdef DEBUG
-		cmn_err(CE_WARN, "!%s: cmd %d is not implemented", __func__,
-		    cmd);
-#endif
 		return (DDI_FAILURE);
 	}
 	return (DDI_SUCCESS);
 }
 
 clock_t
-tpm_get_ordinal_duration(tpm_t *tpm, uint32_t ordinal)
+tpm_get_duration(tpm_t *tpm, const uint8_t *buf)
 {
-	return (0);
+	uint32_t cmd = tpm_cmd(buf);
+
+	if (cmd < TPM12_ORDINAL_MAX) {
+		return (tpm12_get_ordinal_duration(tpm, cmd));
+	}
+
+	return (tpm20_get_duration(tpm, buf));
+}
+
+clock_t
+tpm_get_timeout(tpm_t *tpm, const uint8_t *buf)
+{
+	uint32_t cmd = tpm_cmd(buf);
+
+	if (cmd < TPM12_ORDINAL_MAX) {
+		return (tpm12_get_timeout(tpm, cmd));
+	}
+
+	return (tpm20_get_timeout(tpm, buf));
 }
 
 /*

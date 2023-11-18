@@ -73,9 +73,10 @@ SYMBOL_SCOPE {
 	cv_init				{ FLAGS = EXTERN };
 	cv_reltimedwait			{ FLAGS = EXTERN };
 	cv_signal			{ FLAGS = EXTERN };
-        cv_timedwait                    { FLAGS = EXTERN };
+	cv_timedwait			{ FLAGS = EXTERN };
 	cv_wait				{ FLAGS = EXTERN };
-        cv_wait_sig                     { FLAGS = EXTERN };
+	cv_wait_sig			{ FLAGS = EXTERN };
+	ddi_can_receive_sig		{ FLAGS = EXTERN };
 	ddi_cb_register			{ FLAGS = EXTERN };
 	ddi_cb_unregister		{ FLAGS = EXTERN };
 	ddi_copyin			{ FLAGS = EXTERN };

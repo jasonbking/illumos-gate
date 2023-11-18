@@ -28,45 +28,50 @@ tpm20_init(tpm_t *tpm)
 	 * TPM2.0 defines explicit timeouts (unlike TPM1.2 where there are
 	 * default timeouts, but the TPM can advertise its own timeout
 	 * values if desired).
+	 *
+	 * Timeouts are in milliseconds.
 	 */
-	tpm->tpm_timeout_a = TPM20_TIMEOUT_A;
-	tpm->tpm_timeout_b = TPM20_TIMEOUT_B;
-	tpm->tpm_timeout_c = TPM20_TIMEOUT_C;
-	tpm->tpm_timeout_d = TPM20_TIMEOUT_D;
+	tpm->tpm_timeout_a = drv_usectohz(TPM20_TIMEOUT_A * 1000);
+	tpm->tpm_timeout_b = drv_usectohz(TPM20_TIMEOUT_B * 1000);
+	tpm->tpm_timeout_c = drv_usectohz(TPM20_TIMEOUT_C * 1000);
+	tpm->tpm_timeout_d = drv_usectohz(TPM20_TIMEOUT_D * 1000);
 
+	tpm->tpm_timeout_poll = drv_usectohz(TPM_POLLING_TIMEOUT * 1000);
 	return (true);
 }
 
 clock_t
-tpm20_get_timeout(uint32_t cmd)
+tpm20_get_timeout(tpm_t *tpm, const uint8_t *buf)
 {
+	uint32_t cmd = tpm_cmd(buf);
+
 	switch (cmd) {
 	case TPM_CC_Startup:
-		return (TPM20_TIMEOUT_A);
+		return (tpm->tpm_timeout_a);
 	case TPM_CC_SelfTest:
-		return (TPM20_TIMEOUT_A);
+		return (tpm->tpm_timeout_a);
 	case TPM_CC_GetRandom:
-		return (TPM20_TIMEOUT_B);
+		return (tpm->tpm_timeout_b);
 	case TPM_CC_HashSequenceStart:
-		return (TPM20_TIMEOUT_A);
+		return (tpm->tpm_timeout_a);
 	case TPM_CC_SequenceUpdate:
-		return (TPM20_TIMEOUT_A);
+		return (tpm->tpm_timeout_a);
 	case TPM_CC_SequenceComplete:
-		return (TPM20_TIMEOUT_A);
+		return (tpm->tpm_timeout_a);
 	case TPM_CC_EventSequenceComplete:
-		return (TPM20_TIMEOUT_A);
+		return (tpm->tpm_timeout_a);
 	case TPM_CC_VerifySignature:
-		return (TPM20_TIMEOUT_B);
+		return (tpm->tpm_timeout_b);
 	case TPM_CC_PCR_Extend:
-		return (TPM20_TIMEOUT_A);
+		return (tpm->tpm_timeout_a);
 	case TPM_CC_HierarchyControl:
-		return (TPM20_TIMEOUT_B);
+		return (tpm->tpm_timeout_b);
 	case TPM_CC_HierarchyChangeAuth:
-		return (TPM20_TIMEOUT_B);
+		return (tpm->tpm_timeout_b);
 	case TPM_CC_GetCapability:
-		return (TPM20_TIMEOUT_A);
+		return (tpm->tpm_timeout_a);
 	case TPM_CC_NV_Read:
-		return (TPM20_TIMEOUT_B);
+		return (tpm->tpm_timeout_b);
 	case TPM_CC_Create:
 	case TPM_CC_CreatePrimary:
 	case TPM_CC_CreateLoaded:
@@ -74,14 +79,59 @@ tpm20_get_timeout(uint32_t cmd)
 		 * TCG PC Client Decide Driver Design Principles for TPM 2.0
 		 * Section 10 says these three should use an 180s timeout.
 		 */
-		return ((clock_t)180000);
+		return (drv_usectohz(180 * MICROSEC));
 	default:
 		/*
 		 * Similiarly, it also says commands not explicitly
 		 * mentioned to [PTP] should use a 90s timeout.
 		 */
-		return ((clock_t)90000);
+		return (drv_usectohz(90 * MICROSEC));
 	}
+}
+
+clock_t
+tpm20_get_duration(tpm_t *tpm, const uint8_t *buf)
+{
+	uint32_t cmd = tpm_cmd(buf);
+
+	switch (cmd) {
+	case TPM_CC_Startup:
+		return (tpm->tpm_duration[TPM_SHORT]);
+
+	case TPM_CC_SelfTest:
+		/* XXX: look at fullTest (yes = long, no = short); */
+ 		break;
+
+	case TPM_CC_GetRandom:
+		return (tpm->tpm_duration[TPM_MEDIUM]);
+
+	case TPM_CC_HashSequenceStart:
+	case TPM_CC_SequenceUpdate:
+	case TPM_CC_SequenceComplete:
+	case TPM_CC_EventSequenceComplete:
+		return (tpm->tpm_duration[TPM_SHORT]);
+
+	case TPM_CC_VerifySignature:
+		return (tpm->tpm_duration[TPM_MEDIUM]);
+
+	case TPM_CC_PCR_Extend:
+		return (tpm->tpm_duration[TPM_SHORT]);
+
+	case TPM_CC_HierarchyControl:
+	case TPM_CC_HierarchyChangeAuth:
+		return (tpm->tpm_duration[TPM_MEDIUM]);
+
+	case TPM_CC_GetCapability:
+		return (tpm->tpm_duration[TPM_SHORT]);
+
+	case TPM_CC_NV_Read:
+		return (tpm->tpm_duration[TPM_MEDIUM]);
+
+	default:
+		return (0);
+	}
+
+	return (0);
 }
 
 #define	RNDHDR_SIZE	(TPM_HEADER_SIZE + sizeof (uint16_t))

@@ -23,7 +23,16 @@ extern "C" {
 struct tpm;
 
 /*
- * From 6.5.1.4, Table 18 (all in milliseconds)
+ * From PTP 6.5.1.3 Table 17, note that it doesn't explicitly
+ * label them, but there are three defined durations, so they're interpreted
+ * as short, medium, and long.
+ */
+#define	TPM20_DURATION_SHORT	20
+#define	TPM20_DURATION_MEDIUM	750
+#define	TPM20_DURATION_LONG	1000
+
+/*
+ * PTP 6.5.1.4, Table 18 (all in milliseconds)
  * Unlike TPM1.2, these are fixed values.
  */
 #define	TPM20_TIMEOUT_A	750
@@ -81,7 +90,8 @@ typedef struct {
 bool tpm20_init(struct tpm *);
 int tpm20_seed_random(struct tpm *, uchar_t *, size_t);
 int tpm20_generate_random(struct tpm *, uchar_t *, size_t);
-clock_t tpm20_get_timeout(uint32_t);
+clock_t tpm20_get_duration(tpm_t *, const uint8_t *);
+clock_t tpm20_get_timeout(tpm_t *, const uint8_t *);
 
 #ifdef __cplusplus
 }
