@@ -30,6 +30,8 @@ VPATH = ../common:$(SRC)/common/acpica/utilities
 #
 SMOFF = all_func_returns,macros
 
+CSTD= $(CSTD_GNU99)
+
 CPPFLAGS += -I$(SRC)/uts/intel/sys/acpi -DACPI_XTRACT_APP
 CPPFLAGS += -DACPI_DATE=\"`$(ECHO) $(VERSION) | sed -e 's/ /_/g'`\"
 

@@ -20,7 +20,7 @@ include ../../Makefile.ctf
 OBJS= apmain.o apdump.o apfiles.o getopt.o tbprint.o tbxfroot.o osillumostbl.o \
 	utascii.o utbuffer.o utdebug.o utexcep.o utmath.o utnonansi.o \
 	utxferror.o utglobal.o osunixdir.o osl.o osunixxf.o \
-	uthex.o utstrsuppt.o utstrtoul64.o
+	utcksum.o uthex.o utstrsuppt.o utstrtoul64.o
 SRCS = $(OBJS:.o=.c)
 
 VPATH = ../common:$(SRC)/common/acpica/utilities:$(SRC)/common/acpica/tables
@@ -28,6 +28,8 @@ VPATH = ../common:$(SRC)/common/acpica/utilities:$(SRC)/common/acpica/tables
 CERRWARN += -_gcc=-Wno-unused-function
 
 SMOFF = all_func_returns
+
+CSTD= $(CSTD_GNU99)
 
 CPPFLAGS += -I$(SRC)/uts/intel/sys/acpi -DACPI_DUMP_APP
 CPPFLAGS += -DACPI_DATE=\"`$(ECHO) $(VERSION) | sed -e 's/ /_/g'`\"
