@@ -128,6 +128,10 @@ usr/src/test/util-tests/tests/dis/i386/*.out
 
 usr/src/data/ucode/amd/*
 usr/src/data/ucode/intel/*
+# acpica upstream sources
+usr/src/uts/intel/io/acpica/changes.txt
+usr/src/uts/intel/sys/acpi/acpredef.h
+usr/src/uts/intel/sys/acpi/platform/aczephyr.h
 
 # bhyve sources
 usr/src/cmd/bhyve/acpi.[ch]
