@@ -40,7 +40,6 @@
 /*
  * Copyright (c) 2017 by Delphix. All rights reserved.
  * Copyright 2022 RackTop Systems, Inc.
- * Copyright 2022 Racktop Systems, Inc.
  */
 
 /*
@@ -66,6 +65,9 @@
 #define	curcpu	CPU->cpu_id
 
 #define	VMBUS_GPADL_START		0xe1e10
+
+/* An arbitrary prime number, sorry */
+#define	REFHASH_BUCKET_SIZE 17
 
 #ifdef	DEBUG
 int vmbus_debug = 0;
@@ -592,69 +594,82 @@ vmbus_parse_name(const char *name, char *drv, size_t drvlen, char *addr,
 	return (0);
 }
 
-static struct vmbus_channel *
-vmbus_get_chanbyguid(struct vmbus_softc *sc, const char *guidstr)
-{
-	struct vmbus_channel *chan;
-	struct hyperv_guid guid = { 0 };
-	int rc;
-
-	rc = vmbus_parse_guid(guidstr, &guid);
-	if (rc != DDI_SUCCESS)
-		return (NULL);
-
-	ASSERT(MUTEX_HELD(&vmbus_lock));
-
-	TAILQ_FOREACH(chan, &sc->vmbus_prichans, ch_prilink) {
-		if (memcmp(&guid, &chan->ch_guid_inst, sizeof (guid)) == 0)
-			return (chan);
-	}
-
-	return (NULL);
-}
-
-static struct vmbus_channel *
-vmbus_name2chan(struct vmbus_softc *sc, const char *name)
-{
-	char driver[9 + HYPERV_GUID_STRLEN] = { 0 };
-	char addr[HYPERV_GUID_STRLEN] = { 0 };
-	int rc;
-
-	rc = vmbus_parse_name(name, driver, sizeof (driver), addr,
-	    sizeof (addr));
-	if (rc != 0)
-		return (NULL);
-
-	return (vmbus_get_chanbyguid(sc, addr));
-}
-
 static int
-vmbus_config_one(struct vmbus_softc *sc, dev_info_t *parent, const char *name,
-    dev_info_t **childp)
+vmbus_do_config_one(struct vmbus_channel *chan)
 {
-	struct vmbus_channel *chan;
 	int rc;
-
-	mutex_enter(&vmbus_lock);
-	chan = vmbus_name2chan(sc, name);
-	if (chan == NULL) {
-		mutex_exit(&vmbus_lock);
-		dev_err(parent, CE_CONT, "%s: device %s not found\n",
-		    __func__, name);
-		return (NDI_FAILURE);
-	}
 
 	if (chan->ch_dev == NULL) {
 		rc = vmbus_add_child(chan);
-		if (rc != DDI_SUCCESS)
-			goto done;
 	} else {
 		rc = ndi_devi_online(chan->ch_dev, 0);
 	}
 
-done:
-	mutex_exit(&vmbus_lock);
+	vmbus_chan_refrele(chan);
 	return (rc);
+}
+
+static int
+vmbus_config_one(struct vmbus_softc *sc, const char *name)
+{
+	char driver[HYPERV_GUID_STRLEN + 9] = { 0 }; /* hv_vmbus, + <guid> */
+	char inst[HYPERV_GUID_STRLEN] = { 0 };
+	struct vmbus_channel *chan = NULL;
+	int rc;
+
+	rc = vmbus_parse_name(name, driver, sizeof (driver), inst,
+	    sizeof (inst));
+	if (rc != 0)
+		return (NDI_FAILURE);
+
+	chan = vmbus_chan_getguid(sc, &inst, NULL);
+	if (chan == NULL)
+		return (NDI_FAILURE);
+
+	return (vmbus_do_config_one(chan));
+}
+
+static int
+vmbus_config_all(struct vmbus_softc *sc)
+{
+	struct vmbus_channel **chlist, *chan;
+	uint_t i, nchan;
+
+	/*
+	 * This is ugly, but given the almost total lack of documentation
+	 * surrounding the nexus and dev tree APIs, it's not clear we can do
+	 * any better. Specifically, when onlining a device that is itself
+	 * a nexus driver (e.g. a SCSI HBA), it can cause recursive calls
+	 * into vmbus_config(), which could deadlock. At the same time, it's
+	 * not clear we can rely on our list of channels not changing while
+	 * iterating through them without holding vmbus_chan_lock over the
+	 * entire list of primary channels.
+	 *
+	 * As a result, we allocate an array of primary channels and refhold
+	 * all of them so we can iterate through them without holding
+	 * vmbus_chan_lock.
+	 */
+	mutex_enter(&sc->vmbus_chan_lock);
+	nchan = sc->vmbus_nprichans;
+	chlist = kmem_zalloc(nchan * sizeof (struct vmbus_channel *),
+	    KM_NOSLEEP);
+	if (chlist == NULL) {
+		mutex_exit(&sc->vmbus_chan_lock);
+		return (NDI_FAILURE);
+	}
+
+	for (i = 0; chan = list_head(&sc->vmbus_prichans); chan != NULL;
+	    chan = list_next(&sc->vmbus_prichans, chan), i++) {
+		chlist[i] = chan;
+		refhash_hold(sc->vmbus_chans, chan);
+	}
+	mutex_exit(&sc->vmbus_chan_lock);
+
+	for (i = 0; i < nchan; i++)
+		(void) vmbus_do_config_one(chlist[i]);
+
+	kmem_free(chlist, nchan * sizeof (struct vmbus_channel *));
+	return (NDI_SUCCESS);
 }
 
 static int
@@ -662,8 +677,8 @@ vmbus_config(dev_info_t *parent, uint_t flag, ddi_bus_config_op_t op, void *arg,
     dev_info_t **childp)
 {
 	struct vmbus_softc *sc;
-	struct vmbus_channel *chan;
-	int rc, circ;
+	int rc = NDI_SUCCESS
+	int circ;
 
 	sc = ddi_get_soft_state(vmbus_state, ddi_get_instance(parent));
 
@@ -673,7 +688,7 @@ vmbus_config(dev_info_t *parent, uint_t flag, ddi_bus_config_op_t op, void *arg,
 	case BUS_CONFIG_ONE:
 		VMBUS_DEBUG(sc, "?%s: BUS_CONFIG_ONE %s\n", __func__,
 		    (const char *)arg);
-		rc = vmbus_config_one(sc, parent, arg, childp);
+		rc = vmbus_config_one(sc, arg);
 		break;
 	case BUS_CONFIG_DRIVER:
 	case BUS_CONFIG_ALL:
@@ -681,30 +696,19 @@ vmbus_config(dev_info_t *parent, uint_t flag, ddi_bus_config_op_t op, void *arg,
 
 		rc = vmbus_scan(sc);
 		if (rc != NDI_SUCCESS)
-			goto fail;
+			goto done;
 
-		mutex_enter(&vmbus_lock);
-		TAILQ_FOREACH(chan, &sc->vmbus_prichans, ch_prilink) {
-			if (chan->ch_dev != NULL)
-				continue;
-			(void) vmbus_add_child(chan);
-		}
-		mutex_exit(&vmbus_lock);
-
+		rc = vmbus_config_all(sc);
 		break;
 	default:
 		rc = NDI_FAILURE;
-		ndi_devi_exit(parent, circ);
-		return (NDI_FAILURE);
+		break;
 	}
 
+done:
 	ndi_devi_exit(parent, circ);
-
-	rc = ndi_busop_bus_config(parent, flag, op, arg, childp, 0);
-	return (rc);
-
-fail:
-	ndi_devi_exit(parent, circ);
+	if (rc == NDI_SUCCESS)
+		rc = ndi_busop_bus_config(parent, flag, op, arg, childp, 0);
 	return (rc);
 }
 
@@ -1245,8 +1249,6 @@ vmbus_add_child(struct vmbus_channel *chan)
 	char classid[HYPERV_GUID_STRLEN] = { 0 };
 	char devname[9 + HYPERV_GUID_STRLEN] = { 0 };
 
-	ASSERT(MUTEX_HELD(&vmbus_lock));
-
 	(void) hyperv_guid2str(&chan->ch_guid_type, classid, sizeof (classid));
 
 	/*
@@ -1325,6 +1327,26 @@ vmbus_probe_guid(dev_info_t *dev, const struct hyperv_guid *guid)
 	return (ENXIO);
 }
 
+static int
+vmbus_chan_hash(const void *t)
+{
+	const uint32_t *idp = t;
+	return ((int)*idp);
+}
+
+static int
+vmbus_chan_cmp(const void *a, const void *b)
+{
+	const uint32_t *l = a;
+	const uint32_t *r = b;
+
+	if (*l < *r)
+		return (-1);
+	if (*l > *r)
+		return (1);
+	return (0);
+}
+
 /*
  * @brief Main vmbus driver initialization routine.
  *
@@ -1346,10 +1368,14 @@ vmbus_doattach(struct vmbus_softc *sc)
 		return (DDI_SUCCESS);
 
 	sc->vmbus_gpadl = VMBUS_GPADL_START;
-	mutex_init(&sc->vmbus_prichan_lock, NULL, MUTEX_DEFAULT, NULL);
-	TAILQ_INIT(&sc->vmbus_prichans);
+
 	mutex_init(&sc->vmbus_chan_lock, NULL, MUTEX_DEFAULT, NULL);
-	TAILQ_INIT(&sc->vmbus_chans);
+	list_create(&sc->vmbus_prichans, sizeof (struct vmbus_channel),
+	    offsetof(struct vmbus_channel, ch_lnode));
+	sc->vmbus_chans = refhash_create(REFHASH_BUCKET_SIZE, vmbus_chan_hash,
+	    vmbus_chan_cmp, vmbus_chan_free, sizeof (struct vmbus_channel),
+	    offsetof(struct vmbus_channel, ch_reflink),
+	    offsetof(struct vmbus_channel, ch_id), KM_SLEEP);
 	sc->vmbus_chmap = kmem_zalloc(
 	    sizeof (struct vmbus_channel *) * VMBUS_CHAN_MAX, KM_SLEEP);
 
@@ -1413,7 +1439,7 @@ cleanup:
 	}
 	kmem_free(sc->vmbus_chmap,
 	    sizeof (struct vmbus_channel *) * VMBUS_CHAN_MAX);
-	mutex_destroy(&sc->vmbus_prichan_lock);
+	refhash_destroy(sc->vmbus_chans);
 	mutex_destroy(&sc->vmbus_chan_lock);
 
 	return (DDI_FAILURE);
@@ -1534,10 +1560,10 @@ vmbus_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 		sc->vmbus_xc = NULL;
 	}
 
-	kmem_free(sc->vmbus_chmap,
-	    sizeof (struct vmbus_channel *) * VMBUS_CHAN_MAX);
+	refhash_destroy(sc->vmbus_chhash);
+
 	mutex_destroy(&sc->vmbus_prichan_lock);
-	mutex_destroy(&sc->vmbus_chan_lock);
+	mutex_destroy(&sc->vmbus_hash_lock);
 
 	hypercall_destroy();
 

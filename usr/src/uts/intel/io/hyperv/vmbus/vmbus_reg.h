@@ -51,7 +51,6 @@
 #include <sys/vmbus.h>
 #include <vmbus/hyperv_reg.h>
 
-
 /*
  * Hyper-V SynIC message format.
  */

@@ -43,10 +43,11 @@
 #ifndef _VMBUS_VAR_H_
 #define	_VMBUS_VAR_H_
 
+#include <sys/list.h>
 #include <sys/param.h>
+#include <sys/refhash.h>
 #include <sys/sunddi.h>
 #include <sys/param.h>
-#include <sys/queue.h>
 
 #include <sys/hyperv_busdma.h>
 #include <sys/hyperv_illumos.h>
@@ -131,12 +132,10 @@ struct vmbus_softc {
 	ddi_taskq_t		*vmbus_subchtq;	/* for sub-chan attach/detach */
 
 	/* Primary channels */
-	kmutex_t		vmbus_prichan_lock;
-	TAILQ_HEAD(, vmbus_channel) vmbus_prichans;
-
-	/* Complete channel list */
 	kmutex_t		vmbus_chan_lock;
-	TAILQ_HEAD(, vmbus_channel) vmbus_chans;
+	refhash_t		*vmbus_chans;
+	list_t			vmbus_prichans;
+	uint_t			vmbus_nprichans;
 };
 
 #define	VMBUS_FLAG_ATTACHED	0x0001	/* vmbus was attached */

@@ -45,7 +45,8 @@
 
 #include <sys/param.h>
 #include <sys/mutex.h>
-#include <sys/queue.h>
+#include <sys/refhash.h>
+#include <sys/list.h>
 #include <sys/taskq.h>
 
 #include <sys/hyperv.h>
@@ -128,11 +129,9 @@ struct vmbus_channel {
 	 */
 	kmutex_t			ch_subchan_lock;
 	kcondvar_t			ch_subchan_cv;
-	TAILQ_HEAD(, vmbus_channel)	ch_subchans;
-	int				ch_subchan_cnt;
+	list_t				ch_subchans;
+	uint_t				ch_subchan_cnt;
 
-	/* If this is a sub-channel */
-	TAILQ_ENTRY(vmbus_channel)	ch_sublink;	/* sub-channel link */
 	struct vmbus_channel		*ch_prichan;	/* owner primary chan */
 
 	void				*ch_bufring;	/* TX+RX bufrings */
@@ -140,14 +139,9 @@ struct vmbus_channel {
 	uint32_t			ch_bufring_gpadl;
 
 	/* run in ch_mgmt_tq */
-	task_func_t			*ch_attach_task;
 	task_func_t			*ch_detach_task;
 	ddi_taskq_t			*ch_mgmt_tq;
 
-	/* If this is a primary channel */
-	TAILQ_ENTRY(vmbus_channel)	ch_prilink;	/* primary chan link */
-
-	TAILQ_ENTRY(vmbus_channel)	ch_link;	/* channel link */
 	uint32_t			ch_subidx;	/* subchan index */
 	volatile uint32_t		ch_stflags;	/* atomic-op */
 							/* VMBUS_CHAN_ST_ */
@@ -157,11 +151,11 @@ struct vmbus_channel {
 	kmutex_t			ch_orphan_lock;
 	struct vmbus_xact_ctx		*ch_orphan_xact;
 
-	uint32_t			ch_refs;
-
+	refhash_link_t			ch_reflink;
+	list_node_t			ch_lnode;
 } __aligned(64);
 
-#define	VMBUS_CHAN_ISPRIMARY(chan)	((chan)->ch_subidx == 0)
+#define	VMBUS_CHAN_ISPRIMARY(chan)	(vmbus_chan_subidx(chan) == 0)
 
 /*
  * If this flag is set, this channel's interrupt will be masked in ISR,
@@ -195,5 +189,12 @@ void		vmbus_chan_msgproc(struct vmbus_softc *,
 		    const struct vmbus_message *);
 void		vmbus_chan_destroy_all(struct vmbus_softc *);
 void		vmbus_chan_detach(struct vmbus_channel *chan);
+
+struct vmbus_channel *vmbus_chan_getguid(struct vmbus_softc *,
+    const struct hyperv_guid *, const struct hyperv_guid *);
+struct vmbus_channel *vmbus_chan_getid(struct vmbus_softc *, uint32_t);
+void		vmbus_chan_refhold(struct vmbus_channel *);
+void		vmbus_chan_refrele(struct vmbus_channel *);
+void		vmbus_chan_free(void *);
 
 #endif	/* !_VMBUS_CHANVAR_H_ */
