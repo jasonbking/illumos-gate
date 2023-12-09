@@ -90,7 +90,7 @@ typedef struct {
 bool tpm20_init(struct tpm *);
 int tpm20_seed_random(struct tpm *, uchar_t *, size_t);
 int tpm20_generate_random(struct tpm *, uchar_t *, size_t);
-clock_t tpm20_get_duration(tpm_t *, const uint8_t *);
+tpm_duration_t tpm20_get_duration_type(tpm_t *, const uint8_t *);
 clock_t tpm20_get_timeout(tpm_t *, const uint8_t *);
 
 #ifdef __cplusplus

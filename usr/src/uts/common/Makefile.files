@@ -2256,12 +2256,16 @@ MYRI10GE_OBJS =	myri10ge.o myri10ge_lro.o
 #
 NULLDRIVER_OBJS =	nulldriver.o
 
+#
+# Trusted Platform Module driver
+#
 TPM_OBJS =	tpm.o \
-		tpm12.o \
-		tpm20.o \
 		tpm_crb.o \
+		tpm_ddi.o \
 		tpm_fifo.o \
-		tpm_kcf.o
+		tpm_kcf.o \
+		tpm12.o \
+		tpm20.o
 
 #
 # USB Fast ethernet drivers

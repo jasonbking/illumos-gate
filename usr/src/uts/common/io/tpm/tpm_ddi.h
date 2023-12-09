@@ -204,7 +204,9 @@ typedef enum tpm_attach_seq {
 	TPM_ATTACH_THREAD,
 	TPM_ATTACH_ICLIENT,
 	TPM_ATTACH_MINOR_NODE,
+#ifdef TPM_KCF
 	TPM_ATTACH_KCF,
+#endif
 	TPM_ATTACH_END			/* should always be last */
 } tpm_attach_seq_t;
 #define	TPM_ATTACH_NUM_ENTRIES	(TPM_ATTACH_END)
@@ -368,6 +370,8 @@ tpm_wait_nointr(const tpm_t *tpm)
 	return (tpm->tpm_wait);
 }
 
+extern bool tpm_debug;
+
 uint8_t tpm_get8(tpm_t *, unsigned long);
 uint8_t tpm_get8_loc(tpm_t *, uint8_t, unsigned long);
 uint32_t tpm_get32(tpm_t *, unsigned long);
@@ -378,37 +382,47 @@ void tpm_put32(tpm_t *, unsigned long, uint32_t);
 int tpm_wait(tpm_t *, bool (*)(tpm_t *), clock_t);
 int tpm_wait_cmd(tpm_t *, const uint8_t *, bool(*)(tpm_t *));
 
+tpm_duration_t tpm_get_duration_type(tpm_t *, const uint8_t *);
+clock_t tpm_get_duration(tpm_t *, const uint8_t *);
 clock_t tpm_get_timeout(tpm_t *, const uint8_t *);
 
-void tpm_dbg(const tpm_t *, int, const char *, ...);
+void tpm_client_refhold(tpm_client_t *);
+void tpm_client_refrele(tpm_client_t *);
+void tpm_client_reset(tpm_client_t *);
 
+int tpm_cancel(tpm_client_t *);
+void tpm_dbg(const tpm_t *, int, const char *, ...);
 void tpm_dispatch_cmd(tpm_client_t *);
+void tpm_exec_thread(void *);
+
+int tpm_exec_internal(tpm_t *, uint8_t, uio_t *, uio_t *);
+int tpm_exec_internal_simple(tpm_t *, uint8_t, uint8_t *, size_t);
+
+size_t tpm_uio_size(const uio_t *);
+
+const char *tpm_hwvend_str(uint16_t);
 
 int tpm12_seed_random(tpm_t *, uchar_t *, size_t);
 int tpm12_generate_random(tpm_t *, uchar_t *, size_t);
 bool tpm12_init(tpm_t *);
-clock_t tpm12_get_ordinal_duration(tpm_t *, uint32_t);
+tpm_duration_t tpm12_get_duration_type(tpm_t *, const uint8_t *);
 clock_t tpm12_get_timeout(tpm_t *, uint32_t);
-
-clock_t tpm_get_duration(tpm_t *, const uint8_t *);
-
-void tpm_client_refrele(tpm_client_t *);
-void tpm_client_reset(tpm_client_t *);
 
 bool tpm_tis_init(tpm_t *);
 int tis_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
+void tis_cancel_cmd(tpm_t *, tpm_duration_t);
 void tpm_tis_intr_mgmt(tpm_t *, bool);
 uint_t tpm_tis_intr(caddr_t, caddr_t);
 
 bool crb_init(tpm_t *);
 int crb_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
+void crb_cancel_cmd(tpm_t *, tpm_duration_t);
 void crb_intr_mgmt(tpm_t *, bool);
 uint_t crb_intr(caddr_t, caddr_t);
 
-int tpm_exec_internal(tpm_t *, uint8_t, uio_t *, uio_t *);
-int tpm_exec_internal_simple(tpm_t *, uint8_t, uint8_t *, size_t);
-
+#ifdef TPM_KCF
 int tpm_kcf_register(tpm_t *);
 int tpm_kcf_unregister(tpm_t *);
+#endif
 
 #endif	/* _TPM_DDI_H */
