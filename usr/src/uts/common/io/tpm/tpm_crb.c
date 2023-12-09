@@ -524,6 +524,12 @@ done:
 }
 
 void
+crb_cancel_cmd(tpm_t *tpm, tpm_duration_t to)
+{
+	/* TODO */
+}
+
+void
 crb_intr_mgmt(tpm_t *tpm, bool enable)
 {
 	VERIFY(tpm->tpm_use_interrupts);

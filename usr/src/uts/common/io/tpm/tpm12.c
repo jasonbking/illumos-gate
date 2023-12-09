@@ -368,22 +368,6 @@ static const tpm_duration_t tpm12_ords_duration[TPM_ORDINAL_MAX] = {
 	TPM_MEDIUM,
 };
 
-/* TPM connection ordinals */
-static const tpm_duration_t tsc12_ords_duration[TSC_ORDINAL_MAX] = {
-	TPM_UNDEFINED,		/* 0 */
-	TPM_UNDEFINED,
-	TPM_UNDEFINED,
-	TPM_UNDEFINED,
-	TPM_UNDEFINED,
-	TPM_UNDEFINED,		/* 5 */
-	TPM_UNDEFINED,
-	TPM_UNDEFINED,
-	TPM_UNDEFINED,
-	TPM_UNDEFINED,
-	TPM_SHORT,		/* 10 */
-	TPM_SHORT,
-};
-
 /*
  * Get the actual timeouts supported by the TPM by issuing TPM_GetCapability
  * with the subcommand TPM_CAP_PROP_TIS_TIMEOUT
@@ -587,39 +571,16 @@ tpm12_get_version(tpm_t *tpm, tpm12_vers_info_t *vp)
 	return (0);
 }
 
-clock_t
-tpm12_get_ordinal_duration(tpm_t *tpm, uint32_t ordinal)
+tpm_duration_t
+tpm12_get_duration_type(tpm_t *tpm, const uint8_t *buf)
 {
-	uint8_t index;
+	uint32_t ordinal = tpm_cmd(buf);
 
-	/* Default and failure case for IFX */
-	/* Is it a TSC_ORDINAL? */
-	if (ordinal & TSC_ORDINAL_MASK) {
-		if (ordinal >= TSC_ORDINAL_MAX) {
-			tpm_dbg(tpm, CE_WARN,
-			    "!%s: tsc ordinal: %d exceeds MAX: %d",
-			    __func__, ordinal, TSC_ORDINAL_MAX);
-			return (0);
-		}
-		index = tsc12_ords_duration[ordinal];
-	} else {
-		if (ordinal >= TPM_ORDINAL_MAX) {
-			tpm_dbg(tpm, CE_WARN,
-			    "!%s: ordinal %d exceeds MAX: %d",
-			    __func__, ordinal, TPM_ORDINAL_MAX);
-			return (0);
-		}
-		index = tpm12_ords_duration[ordinal];
+	if (ordinal >= TPM_ORDINAL_MAX) {
+		return (TPM_UNDEFINED);
 	}
 
-	if (index > TPM_DURATION_MAX_IDX) {
-		tpm_dbg(tpm, CE_WARN,
-		    "!%s: duration index '%d' is out of bounds", __func__,
-		    index);
-		return (tpm->tpm_duration[TPM_UNDEFINED]);
-	}
-
-	return (tpm->tpm_duration[index]);
+	return (tpm12_ords_duration[ordinal]);
 }
 
 clock_t

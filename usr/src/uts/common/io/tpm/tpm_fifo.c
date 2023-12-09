@@ -85,7 +85,7 @@ tis_is_ready(tpm_t *tpm)
 }
 
 static int
-tis_fifo_make_ready(tpm_t *tpm)
+tis_fifo_make_ready(tpm_t *tpm, clock_t to)
 {
 	int ret;
 	uint8_t status;
@@ -102,7 +102,7 @@ tis_fifo_make_ready(tpm_t *tpm)
 	 * wait until it is.
 	 */
 	tpm_tis_set_ready(tpm);
-	ret = tpm_wait(tpm, tis_is_ready, tpm->tpm_timeout_b);
+	ret = tpm_wait(tpm, tis_is_ready, to);
 	if (ret != 0) {
 		/* XXX: ereport? */
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: failed to put TPM into "
@@ -158,7 +158,7 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 	VERIFY3U(amt, >, 0);
 
 	/* Make sure the TPM is in the ready state */
-	ret = tis_fifo_make_ready(tpm);
+	ret = tis_fifo_make_ready(tpm, tpm->tpm_timeout_b);
 	if (ret != 0) {
 		return (ret);
 	}
@@ -627,7 +627,8 @@ int
 tis_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 {
 	uint32_t cmdlen;
-	int ret;
+	int ret, ret2;
+	clock_t to;
 
 	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
 	VERIFY(tpm->tpm_iftype == TPM_IF_TIS || tpm->tpm_iftype == TPM_IF_FIFO);
@@ -656,12 +657,41 @@ tis_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 
 done:
 	/*
-	 * Release the locality after completion to allow a lower value
-	 * locality to use the TPM.
+	 * If we were cancelled, we defer putting the TPM into the ready
+	 * state (which will stop any current execution) and release the
+	 * locality until after we've released the client so it's not
+	 * blocking while waiting for the TPM to cancel the operation.
 	 */
-	tpm_tis_set_ready(tpm);
-	tis_release_locality(tpm, loc, false);
+	if (ret != ECANCELED) {
+		tpm_tis_set_ready(tpm);
+
+		/*
+		 * Release the locality after completion to allow a lower value
+		 * locality to use the TPM.
+		 */
+		tis_release_locality(tpm, loc, false);
+	}
+
 	return (ret);
+}
+
+void
+tis_cancel_cmd(tpm_t *tpm, tpm_duration_t dur)
+{
+	clock_t to;
+
+	switch (dur) {
+	case TPM_SHORT:
+	case TPM_MEDIUM:
+		to = tpm->tpm_timeout_a;
+		break;
+	default:
+		to = tpm->tpm_timeout_b;
+		break;
+	}
+
+	(void) tis_fifo_make_ready(tpm, to);
+	tis_release_locality(tpm, tpm->tpm_locality, false);
 }
 
 void

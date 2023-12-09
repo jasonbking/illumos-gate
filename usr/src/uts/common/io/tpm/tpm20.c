@@ -89,49 +89,49 @@ tpm20_get_timeout(tpm_t *tpm, const uint8_t *buf)
 	}
 }
 
-clock_t
-tpm20_get_duration(tpm_t *tpm, const uint8_t *buf)
+tpm_duration_t
+tpm20_get_duration_type(tpm_t *tpm, const uint8_t *buf)
 {
 	uint32_t cmd = tpm_cmd(buf);
 
 	switch (cmd) {
 	case TPM_CC_Startup:
-		return (tpm->tpm_duration[TPM_SHORT]);
+		return (TPM_SHORT);
 
 	case TPM_CC_SelfTest:
 		/* XXX: look at fullTest (yes = long, no = short); */
- 		break;
+		return (TPM_LONG);
 
 	case TPM_CC_GetRandom:
-		return (tpm->tpm_duration[TPM_MEDIUM]);
+		return (TPM_MEDIUM);
 
 	case TPM_CC_HashSequenceStart:
 	case TPM_CC_SequenceUpdate:
 	case TPM_CC_SequenceComplete:
 	case TPM_CC_EventSequenceComplete:
-		return (tpm->tpm_duration[TPM_SHORT]);
+		return (TPM_SHORT);
 
 	case TPM_CC_VerifySignature:
-		return (tpm->tpm_duration[TPM_MEDIUM]);
+		return (TPM_MEDIUM);
 
 	case TPM_CC_PCR_Extend:
-		return (tpm->tpm_duration[TPM_SHORT]);
+		return (TPM_SHORT);
 
 	case TPM_CC_HierarchyControl:
 	case TPM_CC_HierarchyChangeAuth:
-		return (tpm->tpm_duration[TPM_MEDIUM]);
+		return (TPM_MEDIUM);
 
 	case TPM_CC_GetCapability:
-		return (tpm->tpm_duration[TPM_SHORT]);
+		return (TPM_SHORT);
 
 	case TPM_CC_NV_Read:
-		return (tpm->tpm_duration[TPM_MEDIUM]);
+		return (TPM_MEDIUM);
 
 	default:
-		return (0);
+		return (TPM_MEDIUM);
 	}
 
-	return (0);
+	return (TPM_MEDIUM);
 }
 
 #define	RNDHDR_SIZE	(TPM_HEADER_SIZE + sizeof (uint16_t))
