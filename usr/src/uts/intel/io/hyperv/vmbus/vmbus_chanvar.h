@@ -37,7 +37,7 @@
 
 /*
  * Copyright (c) 2017 by Delphix. All rights reserved.
- * Copyright 2022 Racktop Systems, Inc.
+ * Copyright 2023 Racktop Systems, Inc.
  */
 
 #ifndef _VMBUS_CHANVAR_H_
@@ -45,7 +45,6 @@
 
 #include <sys/param.h>
 #include <sys/mutex.h>
-#include <sys/refhash.h>
 #include <sys/list.h>
 #include <sys/taskq.h>
 
@@ -132,6 +131,8 @@ struct vmbus_channel {
 	list_t				ch_subchans;
 	uint_t				ch_subchan_cnt;
 
+	/* If this is a sub-channel */
+	list_node_t			ch_sublink;	/* sub-channel link */
 	struct vmbus_channel		*ch_prichan;	/* owner primary chan */
 
 	void				*ch_bufring;	/* TX+RX bufrings */
@@ -142,6 +143,10 @@ struct vmbus_channel {
 	task_func_t			*ch_detach_task;
 	ddi_taskq_t			*ch_mgmt_tq;
 
+	/* If this is a primary channel */
+	list_node_t			ch_prilink;	/* primary chan link */
+
+	list_node_t			ch_link;	/* channel link */
 	uint32_t			ch_subidx;	/* subchan index */
 	volatile uint32_t		ch_stflags;	/* atomic-op */
 							/* VMBUS_CHAN_ST_ */
@@ -151,8 +156,7 @@ struct vmbus_channel {
 	kmutex_t			ch_orphan_lock;
 	struct vmbus_xact_ctx		*ch_orphan_xact;
 
-	refhash_link_t			ch_reflink;
-	list_node_t			ch_lnode;
+	uint32_t			ch_refs;
 } __aligned(64);
 
 #define	VMBUS_CHAN_ISPRIMARY(chan)	(vmbus_chan_subidx(chan) == 0)

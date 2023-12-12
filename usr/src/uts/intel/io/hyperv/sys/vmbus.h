@@ -215,11 +215,10 @@ void		vmbus_chan_cpu_rr(struct vmbus_channel *chan);
 void		vmbus_chan_set_readbatch(struct vmbus_channel *chan,
 		    boolean_t on);
 
-struct vmbus_channel **
-		vmbus_subchan_get(struct vmbus_channel *pri_chan,
-		    int subchan_cnt);
+struct vmbus_channel **vmbus_subchan_get(struct vmbus_channel *pri_chan,
+		    uint_t subchan_cnt);
 void		vmbus_subchan_rel(struct vmbus_channel **subchan,
-		    int subchan_cnt);
+		    uint_t subchan_cnt);
 void		vmbus_subchan_drain(struct vmbus_channel *pri_chan);
 
 int		vmbus_chan_recv(struct vmbus_channel *chan, void *data,

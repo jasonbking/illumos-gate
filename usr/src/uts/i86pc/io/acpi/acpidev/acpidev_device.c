@@ -254,7 +254,6 @@ acpidev_device_filter_hyperv(acpidev_walk_info_t *infop, ACPI_HANDLE hdl,
 	 */
 	dev_info_t *vmb_dip = NULL;
 	dev_info_t *root_dip = ddi_root_node();
-	int circ;
 	boolean_t is_gen2 = B_FALSE;
 
 	/*
@@ -268,7 +267,7 @@ acpidev_device_filter_hyperv(acpidev_walk_info_t *infop, ACPI_HANDLE hdl,
 	if (ddi_prop_exists(DDI_DEV_T_ANY, root_dip, 0, "efi-version"))
 		is_gen2 = B_TRUE;
 
-	ndi_devi_enter(root_dip, &circ);
+	ndi_devi_enter(root_dip);
 
 	if (is_gen2) {
 		dev_info_t *fb_dip = NULL;
@@ -314,7 +313,7 @@ acpidev_device_filter_hyperv(acpidev_walk_info_t *infop, ACPI_HANDLE hdl,
 	    "Hyper-V Virtual Machine Bus");
 	(void) ndi_devi_bind_driver(vmb_dip, 0);
 
-	ndi_devi_exit(root_dip, circ);
+	ndi_devi_exit(root_dip);
 
 	/*
 	 * Since we're doing our own thing with creating nodes here,

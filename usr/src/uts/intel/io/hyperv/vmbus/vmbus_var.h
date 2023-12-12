@@ -37,7 +37,7 @@
 
 /*
  * Copyright (c) 2017 by Delphix. All rights reserved.
- * Copyright 2022 Racktop Systems, Inc.
+ * Copyright 2023 Racktop Systems, Inc.
  */
 
 #ifndef _VMBUS_VAR_H_
@@ -45,7 +45,6 @@
 
 #include <sys/list.h>
 #include <sys/param.h>
-#include <sys/refhash.h>
 #include <sys/sunddi.h>
 #include <sys/param.h>
 
@@ -129,13 +128,18 @@ struct vmbus_softc {
 	kcondvar_t		vmbus_scandone_cv;
 	struct task		vmbus_scandone_task;
 
+	ddi_taskq_t		*vmbus_devtq;	/* for dev attach/detach */
 	ddi_taskq_t		*vmbus_subchtq;	/* for sub-chan attach/detach */
 
 	/* Primary channels */
-	kmutex_t		vmbus_chan_lock;
-	refhash_t		*vmbus_chans;
+	kmutex_t		vmbus_prichan_lock;
 	list_t			vmbus_prichans;
 	uint_t			vmbus_nprichans;
+
+	/* Complete channel list */
+	kmutex_t		vmbus_chan_lock;
+	list_t			vmbus_chans;
+	uint_t			vmbus_nchans;
 };
 
 #define	VMBUS_FLAG_ATTACHED	0x0001	/* vmbus was attached */

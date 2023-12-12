@@ -31,10 +31,6 @@ INC_PATH +=	-I$(UTSBASE)/i86pc
 CPPFLAGS +=	-D_MACHDEP
 LDFLAGS	+=	-N misc/hyperv
 
-C99MODE=	-xc99=%all
-C99LMODE=	-Xc99=%all
-
-$(OBJS_DIR)/vmbus_chan.o := CERRWARN += -_gcc10=-Wno-address-of-packed-member
 $(OBJS_DIR)/vmbus_chan.o := CERRWARN += -_gcc10=-Wno-address-of-packed-member
 
 .KEEP_STATE:

@@ -66,9 +66,6 @@
 
 #define	VMBUS_GPADL_START		0xe1e10
 
-/* An arbitrary prime number, sorry */
-#define	REFHASH_BUCKET_SIZE 17
-
 #ifdef	DEBUG
 int vmbus_debug = 0;
 #endif
@@ -171,7 +168,6 @@ vmbus_msghc_get(struct vmbus_softc *sc, size_t dsize)
 void
 vmbus_msghc_put(struct vmbus_softc *sc, struct vmbus_msghc *mh)
 {
-
 	vmbus_xact_put(mh->mh_xact);
 }
 
@@ -420,16 +416,6 @@ vmbus_scan(struct vmbus_softc *sc)
 {
 	int error;
 
-	/*
-	 * This taskqueue handles sub-channel detach, so that vmbus
-	 * device's detach running in vmbus_devtq can drain its sub-
-	 * channels.
-	 */
-	if (sc->vmbus_subchtq == NULL) {
-		sc->vmbus_subchtq = ddi_taskq_create(sc->vmbus_dev,
-		    "vmbus_subch", 1, maxclsyspri, 0);
-	}
-
 	VMBUS_DEBUG(sc, "?%s: starting scan\n", __func__);
 
 	mutex_enter(&vmbus_lock);
@@ -485,75 +471,27 @@ vmbus_scan(struct vmbus_softc *sc)
 static void
 vmbus_scan_teardown(struct vmbus_softc *sc)
 {
+	ddi_taskq_t *tq = NULL;
+
 	ASSERT(MUTEX_HELD(&vmbus_lock));
-	if (sc->vmbus_subchtq != NULL) {
+
+	if (sc->vmbus_devtq != NULL) {
+		tq = sc->vmbus_devtq;
+		sc->vmbus_devtq = NULL;
 		mutex_exit(&vmbus_lock);
-		ddi_taskq_destroy(sc->vmbus_subchtq);
+
+		ddi_taskq_destroy(tq);
 		mutex_enter(&vmbus_lock);
+	}
+
+	if (sc->vmbus_subchtq != NULL) {
+		tq = sc->vmbus_subchtq;
 		sc->vmbus_subchtq = NULL;
+		mutex_exit(&vmbus_lock);
+
+		ddi_taskq_destroy(tq);
+		mutex_enter(&vmbus_lock);
 	}
-}
-
-static int
-vmbus_parse_nibble(char nib, uint8_t *valp)
-{
-	if (nib >= 'A' && nib <= 'F') {
-		*valp = nib - 'A' + 10;
-		return (DDI_SUCCESS);
-	}
-	if (nib >= 'a' && nib <= 'f') {
-		*valp = nib - 'a' + 10;
-		return (DDI_SUCCESS);
-	}
-	if (nib >= '0' && nib <= '9') {
-		*valp = nib - '0';
-		return (DDI_SUCCESS);
-	}
-	return (DDI_FAILURE);
-}
-
-static int
-vmbus_parse_guid(const char *guidstr, struct hyperv_guid *guid)
-{
-	/*
-	 * Microsoft GUIDs have an usual byte order -- parts are
-	 * little endian, while others appear to be big endian if
-	 * one assumes each hyphen separated group represents a
-	 * separate value. We just convert a byte at a time and
-	 * then use the following table to put it in the corresponding
-	 * index.
-	 */
-	static const uint_t guidpos[] = {
-		3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15
-	};
-
-	uint_t gidx = 0;
-	uint_t sidx = 0;
-	uint8_t nib[2];
-
-	while (guidstr[sidx] != '\0' && gidx < ARRAY_SIZE(guidpos)) {
-		/*
-		 * Ignore the hyphens -- this means we don't care if
-		 * they're in the expected positions or not. It's not
-		 * necessary for what we're doing.
-		 */
-		if (guidstr[sidx] == '-') {
-			sidx++;
-			continue;
-		}
-
-		/*
-		 * vmbus_parse_nibble() will fail if guidstr[sidx] == '\0',
-		 * so we don't need an extra check here.
-		 */
-		if (vmbus_parse_nibble(guidstr[sidx++], &nib[0]) != DDI_SUCCESS)
-			return (DDI_FAILURE);
-		if (vmbus_parse_nibble(guidstr[sidx++], &nib[1]) != DDI_SUCCESS)
-			return (DDI_FAILURE);
-		guid->hv_guid[guidpos[gidx++]] = nib[0] << 4 | nib[1];
-	}
-
-	return (DDI_SUCCESS);
 }
 
 /*
@@ -605,7 +543,6 @@ vmbus_do_config_one(struct vmbus_channel *chan)
 		rc = ndi_devi_online(chan->ch_dev, 0);
 	}
 
-	vmbus_chan_refrele(chan);
 	return (rc);
 }
 
@@ -614,6 +551,7 @@ vmbus_config_one(struct vmbus_softc *sc, const char *name)
 {
 	char driver[HYPERV_GUID_STRLEN + 9] = { 0 }; /* hv_vmbus, + <guid> */
 	char inst[HYPERV_GUID_STRLEN] = { 0 };
+	struct hyperv_guid inst_guid = { 0 };
 	struct vmbus_channel *chan = NULL;
 	int rc;
 
@@ -622,11 +560,18 @@ vmbus_config_one(struct vmbus_softc *sc, const char *name)
 	if (rc != 0)
 		return (NDI_FAILURE);
 
-	chan = vmbus_chan_getguid(sc, &inst, NULL);
+	if (!hyperv_str2guid(inst, &inst_guid))
+		return (NDI_FAILURE);
+
+	/* This returns a refheld chan */
+	chan = vmbus_chan_getguid(sc, &inst_guid, NULL);
 	if (chan == NULL)
 		return (NDI_FAILURE);
 
-	return (vmbus_do_config_one(chan));
+	rc = vmbus_do_config_one(chan);
+	vmbus_chan_refrele(chan);
+	return (rc);
+
 }
 
 static int
@@ -649,24 +594,22 @@ vmbus_config_all(struct vmbus_softc *sc)
 	 * all of them so we can iterate through them without holding
 	 * vmbus_chan_lock.
 	 */
-	mutex_enter(&sc->vmbus_chan_lock);
+	mutex_enter(&sc->vmbus_prichan_lock);
 	nchan = sc->vmbus_nprichans;
 	chlist = kmem_zalloc(nchan * sizeof (struct vmbus_channel *),
-	    KM_NOSLEEP);
-	if (chlist == NULL) {
-		mutex_exit(&sc->vmbus_chan_lock);
-		return (NDI_FAILURE);
+	    KM_SLEEP);
+	i = 0;
+	for (chan = list_head(&sc->vmbus_prichans); chan != NULL;
+	    chan = list_next(&sc->vmbus_prichans, chan)) {
+		chlist[i++] = chan;
+		vmbus_chan_refhold(chan);
 	}
+	mutex_exit(&sc->vmbus_prichan_lock);
 
-	for (i = 0; chan = list_head(&sc->vmbus_prichans); chan != NULL;
-	    chan = list_next(&sc->vmbus_prichans, chan), i++) {
-		chlist[i] = chan;
-		refhash_hold(sc->vmbus_chans, chan);
-	}
-	mutex_exit(&sc->vmbus_chan_lock);
-
-	for (i = 0; i < nchan; i++)
+	for (i = 0; i < nchan; i++) {
 		(void) vmbus_do_config_one(chlist[i]);
+		vmbus_chan_refrele(chlist[i]);
+	}
 
 	kmem_free(chlist, nchan * sizeof (struct vmbus_channel *));
 	return (NDI_SUCCESS);
@@ -677,12 +620,11 @@ vmbus_config(dev_info_t *parent, uint_t flag, ddi_bus_config_op_t op, void *arg,
     dev_info_t **childp)
 {
 	struct vmbus_softc *sc;
-	int rc = NDI_SUCCESS
-	int circ;
+	int rc = NDI_SUCCESS;
 
 	sc = ddi_get_soft_state(vmbus_state, ddi_get_instance(parent));
 
-	ndi_devi_enter(parent, &circ);
+	ndi_devi_enter(parent);
 
 	switch (op) {
 	case BUS_CONFIG_ONE:
@@ -706,7 +648,7 @@ vmbus_config(dev_info_t *parent, uint_t flag, ddi_bus_config_op_t op, void *arg,
 	}
 
 done:
-	ndi_devi_exit(parent, circ);
+	ndi_devi_exit(parent);
 	if (rc == NDI_SUCCESS)
 		rc = ndi_busop_bus_config(parent, flag, op, arg, childp, 0);
 	return (rc);
@@ -717,7 +659,7 @@ vmbus_unconfig(dev_info_t *parent, uint_t flag, ddi_bus_config_op_t op,
     void *arg)
 {
 	struct vmbus_softc *sc __maybe_unused;
-	int rc, circ;
+	int rc;
 
 	sc = ddi_get_soft_state(vmbus_state, ddi_get_instance(parent));
 
@@ -733,9 +675,9 @@ vmbus_unconfig(dev_info_t *parent, uint_t flag, ddi_bus_config_op_t op,
 		break;
 	}
 
-	ndi_devi_enter(parent, &circ);
+	ndi_devi_enter(parent);
 	rc = ndi_busop_bus_unconfig(parent, flag, op, arg);
-	ndi_devi_exit(parent, circ);
+	ndi_devi_exit(parent);
 
 	return (rc);
 }
@@ -1327,26 +1269,6 @@ vmbus_probe_guid(dev_info_t *dev, const struct hyperv_guid *guid)
 	return (ENXIO);
 }
 
-static int
-vmbus_chan_hash(const void *t)
-{
-	const uint32_t *idp = t;
-	return ((int)*idp);
-}
-
-static int
-vmbus_chan_cmp(const void *a, const void *b)
-{
-	const uint32_t *l = a;
-	const uint32_t *r = b;
-
-	if (*l < *r)
-		return (-1);
-	if (*l > *r)
-		return (1);
-	return (0);
-}
-
 /*
  * @brief Main vmbus driver initialization routine.
  *
@@ -1369,15 +1291,20 @@ vmbus_doattach(struct vmbus_softc *sc)
 
 	sc->vmbus_gpadl = VMBUS_GPADL_START;
 
-	mutex_init(&sc->vmbus_chan_lock, NULL, MUTEX_DEFAULT, NULL);
+	mutex_init(&sc->vmbus_prichan_lock, NULL, MUTEX_DEFAULT, NULL);
 	list_create(&sc->vmbus_prichans, sizeof (struct vmbus_channel),
-	    offsetof(struct vmbus_channel, ch_lnode));
-	sc->vmbus_chans = refhash_create(REFHASH_BUCKET_SIZE, vmbus_chan_hash,
-	    vmbus_chan_cmp, vmbus_chan_free, sizeof (struct vmbus_channel),
-	    offsetof(struct vmbus_channel, ch_reflink),
-	    offsetof(struct vmbus_channel, ch_id), KM_SLEEP);
+	    offsetof(struct vmbus_channel, ch_prilink));
+
+	mutex_init(&sc->vmbus_chan_lock, NULL, MUTEX_DEFAULT, NULL);
+	list_create(&sc->vmbus_chans, sizeof (struct vmbus_channel),
+	    offsetof(struct vmbus_channel, ch_link));
 	sc->vmbus_chmap = kmem_zalloc(
 	    sizeof (struct vmbus_channel *) * VMBUS_CHAN_MAX, KM_SLEEP);
+
+	sc->vmbus_devtq = ddi_taskq_create(sc->vmbus_dev, "vmbus_dev", 1,
+	    maxclsyspri, 0);
+	sc->vmbus_subchtq = ddi_taskq_create(sc->vmbus_dev, "vmbus_subch", 1,
+	    maxclsyspri, 0);
 
 	/*
 	 * Create context for "post message" Hypercalls
@@ -1439,7 +1366,7 @@ cleanup:
 	}
 	kmem_free(sc->vmbus_chmap,
 	    sizeof (struct vmbus_channel *) * VMBUS_CHAN_MAX);
-	refhash_destroy(sc->vmbus_chans);
+	mutex_destroy(&sc->vmbus_prichan_lock);
 	mutex_destroy(&sc->vmbus_chan_lock);
 
 	return (DDI_FAILURE);
@@ -1560,10 +1487,13 @@ vmbus_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 		sc->vmbus_xc = NULL;
 	}
 
-	refhash_destroy(sc->vmbus_chhash);
+	list_destroy(&sc->vmbus_chans);
+	list_destroy(&sc->vmbus_prichans);
 
+	kmem_free(sc->vmbus_chmap,
+	    sizeof (struct vmbus_channel *) * VMBUS_CHAN_MAX);
 	mutex_destroy(&sc->vmbus_prichan_lock);
-	mutex_destroy(&sc->vmbus_hash_lock);
+	mutex_destroy(&sc->vmbus_chan_lock);
 
 	hypercall_destroy();
 
@@ -1680,9 +1610,8 @@ vmbus_ctlops(dev_info_t *dip, dev_info_t *rdip,
 	case DDI_CTLOPS_NREGS:
 		return (DDI_FAILURE);
 
-	case DDI_CTLOPS_POWER: {
+	case DDI_CTLOPS_POWER:
 		return (ddi_ctlops(dip, rdip, ctlop, arg, result));
-	}
 
 	default:
 		return (ddi_ctlops(dip, rdip, ctlop, arg, result));

@@ -39,7 +39,7 @@
 
 /*
  * Copyright (c) 2017 by Delphix. All rights reserved.
- * Copyright 2021 Racktop Systems, Inc.
+ * Copyright 2022 Racktop Systems, Inc.
  */
 
 #ifndef _SYS_HYPERV_H
@@ -69,7 +69,8 @@ struct hyperv_guid {
 
 #define	HYPERV_GUID_STRLEN	40
 
-int		hyperv_guid2str(const struct hyperv_guid *, char *, size_t);
+void		hyperv_guid2str(const struct hyperv_guid *, char *, size_t);
+boolean_t		hyperv_str2guid(const char *s, struct hyperv_guid *);
 
 extern uint_t	hyperv_features;	/* CPUID_HV_MSR_ */
 extern uint_t	hyperv_ver_major;

@@ -52,6 +52,7 @@
 #include <sys/inttypes.h>
 #include <sys/cmn_err.h>
 #include <sys/reboot.h>
+#include <sys/sysmacros.h>
 
 #include <sys/x86_archext.h>
 
@@ -188,17 +189,91 @@ hv_vmbus_get_partitionid(uint64_t part_paddr)
 	return (status);
 }
 
-int
+void
 hyperv_guid2str(const struct hyperv_guid *guid, char *buf, size_t sz)
 {
 	const uint8_t *d = guid->hv_guid;
 
-	return snprintf(buf, sz, "%02x%02x%02x%02x-"
+	(void) snprintf(buf, sz, "%02x%02x%02x%02x-"
 	    "%02x%02x-%02x%02x-%02x%02x-"
 	    "%02x%02x%02x%02x%02x%02x",
 	    d[3], d[2], d[1], d[0],
 	    d[5], d[4], d[7], d[6], d[8], d[9],
 	    d[10], d[11], d[12], d[13], d[14], d[15]);
+}
+
+static int
+hyperv_parse_nibble(char c)
+{
+	if (c >= 'A' && c <= 'F') {
+		return (c - 'A' + 10);
+	}
+	if (c >= 'a' && c <= 'f') {
+		return (c - 'a' + 10);
+	}
+	if (c >= '0' && c <= '9') {
+		return (c - '0');
+	}
+
+	return (-1);
+}
+
+static boolean_t
+hyperv_parse_byte(const char *s, uint8_t *vp)
+{
+	int hi, lo;
+
+	if (s[0] == '\0')
+		return (B_FALSE);
+	hi = hyperv_parse_nibble(s[0]);
+	if (hi == -1)
+		return (B_FALSE);
+
+	if (s[1] == '\0')
+		return (B_FALSE);
+	lo = hyperv_parse_nibble(s[1]);
+	if (lo == -1)
+		return (B_FALSE);
+
+	*vp = (uint8_t)hi << 4 | ((uint8_t)lo & 0x0f);
+	return (B_TRUE);
+}
+
+boolean_t
+hyperv_str2guid(const char *s, struct hyperv_guid *guid)
+{
+	/* This matches the byte order used in hyperv_guid2str. */
+	static const uint_t guidpos[] = {
+		3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15
+	};
+
+	/* How the bytes are grouped */
+	static const uint_t groups[] = { 4, 6, 6 };
+
+	uint_t guidx = 0, sidx = 0, grpidx = 0;
+	uint8_t byte;
+
+	while (s[sidx] != '\0' && guidx < ARRAY_SIZE(guidpos)) {
+		if (s[sidx] == '-') {
+			if (sidx != groups[grpidx])
+			       return (B_FALSE);
+			sidx++;
+			grpidx++;
+			continue;
+		}
+
+		/*
+		 * We expect the hex values are zero padded, so we always
+		 * parse a 2-character hex value into a single byte.
+		 */
+		if (!hyperv_parse_byte(s, &byte))
+			return (B_FALSE);
+		sidx += 2;
+
+		guid->hv_guid[guidpos[guidx++]] = byte;
+	}
+
+	return (B_TRUE);
 }
 
 void
