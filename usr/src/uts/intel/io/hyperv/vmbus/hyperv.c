@@ -276,6 +276,29 @@ hyperv_str2guid(const char *s, struct hyperv_guid *guid)
 	return (B_TRUE);
 }
 
+/*
+ * Based on conversations with Microsoft engineers about Hyper-V, the
+ * way other platforms distinguish between Gen1 and Gen2 VMs is by their
+ * boot method. Gen1 VMs always use BIOS while Gen2 always uses EFI.
+ * Currently, the easiest way for us to tell if we've booted via EFI is
+ * by looking for the presense of the efi-version property on the root
+ * nexus.
+ *
+ * NOTE: This check is also duplicated within the acipica filter code
+ * to cons up the EFI framebuffer and ISA bus (as nothing else will in Gen2
+ * VMs).
+ */
+boolean_t
+hyperv_isgen2(void)
+{
+	if (ddi_prop_exists(DDI_DEV_T_ANY, ddi_root_node(), 0,
+	    "efi-version") != 0) {
+		return (B_TRUE);
+	}
+
+	return (B_FALSE);
+}
+
 void
 do_cpuid(uint32_t eax, struct cpuid_regs *cp)
 {

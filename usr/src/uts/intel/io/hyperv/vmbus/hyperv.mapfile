@@ -36,6 +36,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	hyperv_dmamem_free;
 	hyperv_features;
 	hyperv_guid2str;
+	hyperv_isgen2;
 	hyperv_str2guid;
 
 	# DDI Interfaces
