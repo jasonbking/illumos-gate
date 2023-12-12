@@ -12,6 +12,7 @@
 #
 # Copyright (c) 2017 by Delphix. All rights reserved.
 # Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
+# Copyright 2023 RackTop Systems, Inc.
 #
 
 UTSBASE=	../..
@@ -20,6 +21,7 @@ MODULE=		hv_vmbus
 OBJECTS=	$(HV_VMBUS_OBJS:%=$(OBJS_DIR)/%)
 ROOTMODULE=	$(ROOT_DRV_DIR)/$(MODULE)
 CONF_SRCDIR=	$(UTSBASE)/intel/io/hyperv/vmbus
+MAPFILE=	$(CONF_SRCDIR)/$(MODULE).mapfile
 
 include		$(UTSBASE)/intel/Makefile.intel
 
@@ -30,6 +32,7 @@ INC_PATH +=	-I$(UTSBASE)/intel/io/hyperv
 INC_PATH +=	-I$(UTSBASE)/i86pc
 CPPFLAGS +=	-D_MACHDEP
 LDFLAGS	+=	-N misc/hyperv
+LDFLAGS +=	-M $(MAPFILE)
 
 $(OBJS_DIR)/vmbus_chan.o := CERRWARN += -_gcc10=-Wno-address-of-packed-member
 
