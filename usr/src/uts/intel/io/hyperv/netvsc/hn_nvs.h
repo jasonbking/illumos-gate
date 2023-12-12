@@ -94,7 +94,7 @@ hn_nvs_send_sglist(struct vmbus_channel *chan, struct vmbus_gpa sg[], int sglen,
 
 int		hn_nvs_attach(struct hn_softc *sc, int mtu);
 void		hn_nvs_detach(struct hn_softc *sc);
-int		hn_nvs_alloc_subchans(struct hn_softc *sc, int *nsubch);
+int		hn_nvs_alloc_subchans(struct hn_softc *sc, uint_t *nsubch);
 void		hn_nvs_sent_xact(struct hn_nvs_sendctx *sndc,
 		    struct hn_softc *sc, struct vmbus_channel *chan,
 		    const void *data, int dlen);

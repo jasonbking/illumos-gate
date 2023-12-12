@@ -227,13 +227,13 @@ struct hn_softc {
 	struct vmbus_channel	*hn_prichan;
 	kstat_t			*hn_kstats;
 
-	int			hn_rx_ring_cnt;
-	int			hn_rx_ring_inuse;
+	uint_t			hn_rx_ring_cnt;
+	uint_t			hn_rx_ring_inuse;
 	struct hn_rx_ring	*hn_rx_ring;
 	hn_rx_group_t		hn_rx_group;
 
-	int			hn_tx_ring_cnt;
-	int			hn_tx_ring_inuse;
+	uint_t			hn_tx_ring_cnt;
+	uint_t			hn_tx_ring_inuse;
 	struct hn_tx_ring	*hn_tx_ring;
 
 	caddr_t			hn_chim;

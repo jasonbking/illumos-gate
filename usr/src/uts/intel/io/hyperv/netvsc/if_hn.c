@@ -203,7 +203,7 @@ static void			hn_update_ring_inuse(struct hn_softc *, int);
 static int			hn_synth_attach(struct hn_softc *, int);
 static void			hn_synth_detach(struct hn_softc *);
 static int			hn_synth_alloc_subchans(struct hn_softc *,
-				    int *);
+				    uint_t *);
 static boolean_t		hn_synth_attachable(const struct hn_softc *);
 static void			hn_suspend(struct hn_softc *);
 static void			hn_suspend_data(struct hn_softc *);
@@ -2178,10 +2178,12 @@ static int
 hn_attach_subchans(struct hn_softc *sc)
 {
 	struct vmbus_channel **subchans;
-	int subchan_cnt = sc->hn_rx_ring_inuse - 1;
-	int i, error = 0;
+	uint_t subchan_cnt = sc->hn_rx_ring_inuse - 1;
+	uint_t i;
+	int error = 0;
 
-	ASSERT(subchan_cnt > 0);
+	ASSERT3U(sc->hn_rx_ring_inuse, >, 1);
+	ASSERT3U(subchan_cnt, >, 0);
 
 	/* Attach the sub-channels. */
 	subchans = vmbus_subchan_get(sc->hn_prichan, subchan_cnt);
@@ -2208,8 +2210,10 @@ static void
 hn_detach_allchans(struct hn_softc *sc)
 {
 	struct vmbus_channel **subchans;
-	int subchan_cnt = sc->hn_rx_ring_inuse - 1;
-	int i;
+	uint_t subchan_cnt = sc->hn_rx_ring_inuse - 1;
+	uint_t i;
+
+	ASSERT3U(sc->hn_rx_ring_inuse, >, 0);
 
 	if (subchan_cnt == 0)
 		goto back;
@@ -2238,10 +2242,11 @@ back:
 }
 
 static int
-hn_synth_alloc_subchans(struct hn_softc *sc, int *nsubch)
+hn_synth_alloc_subchans(struct hn_softc *sc, uint_t *nsubch)
 {
 	struct vmbus_channel **subchans;
-	int nchan, rxr_cnt, error;
+	uint_t nchan;
+	int rxr_cnt, error;
 
 	nchan = *nsubch + 1;
 	if (nchan == 1) {
@@ -2257,7 +2262,7 @@ hn_synth_alloc_subchans(struct hn_softc *sc, int *nsubch)
 	 * table entries.
 	 */
 	error = hn_rndis_query_rsscaps(sc, &rxr_cnt);
-	if (error) {
+	if (error != 0) {
 		/* No RSS; this is benign. */
 		*nsubch = 0;
 		return (0);
@@ -2312,7 +2317,8 @@ static int
 hn_synth_attach(struct hn_softc *sc, int mtu)
 {
 	struct ndis_rssprm_toeplitz *rss = &sc->hn_rss;
-	int error, nsubch, nchan, i;
+	uint_t nsubch;
+	int error, nchan, i;
 	uint32_t old_caps;
 	boolean_t attached_nvs = B_FALSE, attached_rndis = B_FALSE;
 

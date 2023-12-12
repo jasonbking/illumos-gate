@@ -654,7 +654,7 @@ hn_nvs_sent_none(struct hn_nvs_sendctx *sndc,
 }
 
 int
-hn_nvs_alloc_subchans(struct hn_softc *sc, int *nsubch0)
+hn_nvs_alloc_subchans(struct hn_softc *sc, uint_t *nsubch0)
 {
 	struct vmbus_xact *xact;
 	struct hn_nvs_subch_req *req;
