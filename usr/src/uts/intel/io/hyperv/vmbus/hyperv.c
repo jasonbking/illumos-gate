@@ -393,7 +393,7 @@ hyperv_str2guid(const char *s, struct hyperv_guid *guid)
 	};
 
 	/* How the bytes are grouped */
-	static const uint_t groups[] = { 4, 6, 6 };
+	static const uint_t groups[] = { 8, 13, 18, 23 };
 
 	uint_t guidx = 0, sidx = 0, grpidx = 0;
 	uint8_t byte;
@@ -411,7 +411,7 @@ hyperv_str2guid(const char *s, struct hyperv_guid *guid)
 		 * We expect the hex values are zero padded, so we always
 		 * parse a 2-character hex value into a single byte.
 		 */
-		if (!hyperv_parse_byte(s, &byte))
+		if (!hyperv_parse_byte(s + sidx, &byte))
 			return (B_FALSE);
 		sidx += 2;
 
