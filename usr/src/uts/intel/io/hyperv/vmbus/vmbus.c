@@ -39,7 +39,7 @@
 
 /*
  * Copyright (c) 2017 by Delphix. All rights reserved.
- * Copyright 2022 RackTop Systems, Inc.
+ * Copyright 2023 RackTop Systems, Inc.
  */
 
 /*
@@ -1409,11 +1409,6 @@ vmbus_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	vmbus_sc->vmbus_dev = dip;
 	vmbus_sc->vmbus_idtvec = -1;
 
-	if (hypercall_create(vmbus_sc->vmbus_dev) != DDI_SUCCESS) {
-		dev_err(dip, CE_WARN, "unable to create hypercall context");
-		return (DDI_FAILURE);
-	}
-
 	/*
 	 * Event processing logic will be configured:
 	 * - After the vmbus protocol version negotiation.
@@ -1492,8 +1487,6 @@ vmbus_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	    sizeof (struct vmbus_channel *) * VMBUS_CHAN_MAX);
 	mutex_destroy(&sc->vmbus_prichan_lock);
 	mutex_destroy(&sc->vmbus_chan_lock);
-
-	hypercall_destroy();
 
 	if (sc->vmbus_flags & VMBUS_FLAG_ATTACHED) {
 		(void) ddi_rele_driver(ddi_name_to_major("hyperv"));

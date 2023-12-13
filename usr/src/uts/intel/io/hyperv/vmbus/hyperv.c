@@ -102,8 +102,13 @@
 		    "%s: Invalid alignment", __func__);		\
 		break;						\
 	case HYPERCALL_STATUS_INSUFFICIENT_BUFFERS:		\
+		/*
+		 * This can happen due to bursty activity.	\
+		 * vmbus will retry, so only log when		\
+		 * verbose is set.				\
+		 */						\
 		hyperv_log(CE_WARN,				\
-		    "%s: Insufficient buffers", __func__);	\
+		    "?%s: Insufficient buffers", __func__);	\
 		break;						\
 	case HYPERCALL_STATUS_INSUFFICIENT_MEMORY:		\
 		hyperv_log(CE_WARN,				\
@@ -220,14 +225,6 @@ static hvbit_t hyperv_recommendations_tbl[] = {
 	{ 18, "NoNonArchitecturalCoreSharing" },
 };
 
-struct hypercall_ctx {
-	caddr_t		hc_addr;
-	hv_dma_t	hc_dma;
-};
-static struct hypercall_ctx	hypercall_context;
-
-uint_t		hyperv_recommends;
-
 uint16_t		hyperv_ver_major;
 uint16_t		hyperv_ver_minor;
 uint32_t		hyperv_build;
@@ -243,8 +240,11 @@ uint32_t		hyperv_max_lcpu;
 uint32_t		hyperv_max_intr;
 uint32_t		hyperv_hw_features;
 
+static boolean_t	hyperv_is_init;
+
+static int		hypercall_create(void);
+static void		hypercall_destroy(void);
 static boolean_t	hyperv_identify(void);
-static void		hypercall_memfree(void);
 static void		hyperv_show_features(uint64_t, const char *,
     const hvbit_t *, size_t);
 
@@ -252,8 +252,8 @@ hv_status_t
 hypercall_post_message(paddr_t msg_paddr)
 {
 	hv_status_t status;
-	status = hypercall_md(hypercall_context.hc_addr,
-	    HYPERCALL_POST_MESSAGE, msg_paddr, 0) & HYPERCALL_STATUS_MASK;
+	status = hypercall_md(HYPERCALL_POST_MESSAGE, msg_paddr, 0);
+	status &= HYPERCALL_STATUS_MASK;
 	HYPERCALL_LOG_STATUS(status);
 	return (status);
 }
@@ -262,8 +262,8 @@ hv_status_t
 hypercall_signal_event(paddr_t monprm_paddr)
 {
 	hv_status_t status;
-	status = hypercall_md(hypercall_context.hc_addr,
-	    HYPERCALL_SIGNAL_EVENT, monprm_paddr, 0) & HYPERCALL_STATUS_MASK;
+	status = hypercall_md(HYPERCALL_SIGNAL_EVENT, monprm_paddr, 0);
+	status &= HYPERCALL_STATUS_MASK;
 	HYPERCALL_LOG_STATUS(status);
 	return (status);
 }
@@ -273,8 +273,8 @@ hv_status_t
 hv_vmbus_get_partitionid(uint64_t part_paddr)
 {
 	hv_status_t status;
-	status = hypercall_md(hypercall_context.hc_addr,
-	    HV_CALL_GET_PARTITIONID, 0, part_paddr) & HYPERCALL_STATUS_MASK;
+	status = hypercall_md(HV_CALL_GET_PARTITIONID, 0, part_paddr);
+	status &= HYPERCALL_STATUS_MASK;
 	HYPERCALL_LOG_STATUS(status);
 	return (status);
 }
@@ -524,16 +524,12 @@ hyperv_init(void)
 
 	/* Set guest id */
 	wrmsr(MSR_HV_GUEST_OS_ID, MSR_HV_GUESTID_ILLUMOS);
+
+	if (hypercall_create() != 0)
+		return (-1);
+
 	return (0);
 }
-
-static void
-hypercall_memfree(void)
-{
-	hyperv_dmamem_free(&hypercall_context.hc_dma);
-	hypercall_context.hc_addr = NULL;
-}
-
 
 /*
  * Enable Hypercall interface
@@ -549,33 +545,36 @@ hypercall_memfree(void)
  *   with the GPA (guest physical address) of the above page.
  */
 int
-hypercall_create(dev_info_t *dip)
+hypercall_create(void)
 {
-	uint64_t hc, hc_orig;
+	/*
+	 * The kernel has a page of text called 'hypercall_page'. Xen
+	 * overlays/populates the page with the specific instructions to
+	 * issue Xen hypercalls/syscalls. Hyper-V does essentially the
+	 * exact same thing (the difference being the register calling
+	 * convention). Since there can be only one Hypervisor, we
+	 * use the hypercall_page for the same purpose.
+	 */
+	extern void *hypercall_page(void);
 
-	if (dip == NULL || (get_hwenv() & HW_MICROSOFT) == 0)
+	uint64_t hc, hc_orig;
+	pfn_t pfn;
+
+	if ((get_hwenv() & HW_MICROSOFT) == 0)
 		return (DDI_FAILURE);
 
-	dev_err(dip, CE_CONT, "?hypercall_create: Enabling Hypercall "
-	    "interface...\n");
+	cmn_err(CE_CONT, "?%s: Enabling Hypercall interface...\n", __func__);
+
+	pfn = hat_getpfnum(kas.a_hat, (caddr_t)hypercall_page);
+	ASSERT3U(pfn, !=, PFN_INVALID);
 
 	/* Get the 'reserved' bits, which requires preservation. */
 	hc_orig = rdmsr(MSR_HV_HYPERCALL);
-	dev_err(dip, CE_CONT,
-	    "?hypercall_create: Current Hypercall MSR: 0x%"PRId64"\n", hc_orig);
+	cmn_err(CE_CONT, "?%s: Current Hypercall MSR: 0x%016" PRIx64 "\n",
+	    __func__, hc_orig);
 
-	/* Create a hypercall page */
-	hypercall_context.hc_addr = hyperv_dmamem_alloc(dip,
-	    PAGE_SIZE, 0, PAGE_SIZE, &hypercall_context.hc_dma, DDI_DMA_RDWR);
-	if (hypercall_context.hc_addr == NULL) {
-		dev_err(dip, CE_WARN,
-		    "hypercall_create: Hypercall Page allocation failed");
-		goto fail;
-	}
-
-	dev_err(dip, CE_CONT,
-	    "?hypercall_create: Hypercall Page allocation done: 0x%p\n",
-	    (void *)hypercall_context.hc_addr);
+	cmn_err(CE_CONT, "?%s: hypercall_page va: 0x%p pa: 0x%p\n",
+	    __func__, hypercall_page, (caddr_t)(pfn << PAGE_SHIFT));
 
 	/*
 	 * Setup the Hypercall page.
@@ -583,14 +582,12 @@ hypercall_create(dev_info_t *dip)
 	 * NOTE: 'reserved' bits (11:1) MUST be preserved.
 	 * And bit 0 must be set to 1 to indicate enable Hypercall Page.
 	 */
-	hc = ((hypercall_context.hc_dma.hv_paddr >> PAGE_SHIFT) <<
-	    MSR_HV_HYPERCALL_PGSHIFT) |
+	hc = (pfn << MSR_HV_HYPERCALL_PGSHIFT) |
 	    (hc_orig & MSR_HV_HYPERCALL_RSVD_MASK) |
 	    MSR_HV_HYPERCALL_ENABLE;
 
-	dev_err(dip, CE_CONT,
-	    "?hypercall_create: Programming Hypercall MSR: 0x%"PRId64"\n", hc);
-
+	cmn_err(CE_CONT, "?%s: Programming Hypercall MSR: 0x%016" PRIx64 "\n",
+	    __func__, hc);
 	wrmsr(MSR_HV_HYPERCALL, hc);
 
 	/*
@@ -599,21 +596,22 @@ hypercall_create(dev_info_t *dip)
 	hc = rdmsr(MSR_HV_HYPERCALL);
 
 	if ((hc & MSR_HV_HYPERCALL_ENABLE) == 0) {
-		dev_err(dip, CE_CONT,
-		    "?hypercall_create: Verify Hypercall MSR: 0x%"PRId64
-		    "failed\n", hc);
-		hypercall_memfree();
+		cmn_err(CE_CONT, "?%s: Verify Hypercall MSR: 0x%016" PRIx64
+		    "failed\n", __func__, hc);
 		goto fail;
 	}
 
-	dev_err(dip, CE_CONT,
-	    "?hypercall_create: Verified Hypercall MSR: 0x%"PRId64"\n", hc);
-	dev_err(dip, CE_CONT,
-	    "?hypercall_create: Enabling Hypercall interface - SUCCESS !\n");
+	cmn_err(CE_CONT, "?%s: Verified Hypercall MSR: 0x%016" PRId64 "\n",
+	    __func__, hc);
+	cmn_err(CE_CONT, "?%s: Enabling Hypercall interface - SUCCESS !\n",
+	    __func__);
+
+	hyperv_is_init = B_TRUE;
 	return (DDI_SUCCESS);
+
 fail:
-	dev_err(dip, CE_WARN,
-	    "hypercall_create: Enabling Hypercall interface - FAILED.");
+	cmn_err(CE_WARN, "%s: Enabling Hypercall interface - FAILED.",
+	    __func__);
 	return (DDI_FAILURE);
 }
 
@@ -621,23 +619,21 @@ fail:
  * Disable Hypercall interface
  */
 void
-hypercall_destroy()
+hypercall_destroy(void)
 {
 	uint64_t hc;
 
-	if (hypercall_context.hc_addr == NULL)
+	if (!hyperv_is_init)
 		return;
 
-	cmn_err(CE_CONT,
-	    "?hypercall_destroy: Disabling Hypercall interface...");
+	cmn_err(CE_CONT, "?%s: Disabling Hypercall interface...\n", __func__);
 
 	/* Disable Hypercall */
 	hc = rdmsr(MSR_HV_HYPERCALL);
 	wrmsr(MSR_HV_HYPERCALL, (hc & MSR_HV_HYPERCALL_RSVD_MASK));
-	hypercall_memfree();
 
-	cmn_err(CE_CONT,
-	    "?hypercall_destroy: Disabling Hypercall interface - done.");
+	cmn_err(CE_CONT, "?%s: Disabling Hypercall interface - done.\n",
+	    __func__);
 }
 
 static void
@@ -693,6 +689,8 @@ int
 _fini(void)
 {
 	int error;
+
+	hypercall_destroy();
 
 	error = mod_remove(&modlinkage);
 	return (error);
