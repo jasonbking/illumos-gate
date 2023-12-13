@@ -69,6 +69,7 @@
 #ifdef	DEBUG
 int vmbus_debug = 1;
 #endif
+int vmbus_ndi_debug = 0;
 
 struct vmbus_msghc {
 	struct vmbus_xact		*mh_xact;
@@ -421,8 +422,6 @@ vmbus_scan(struct vmbus_softc *sc)
 	mutex_enter(&vmbus_lock);
 
 	switch (sc->vmbus_scan_status) {
-	case VMBUS_SCAN_NONE:
-		break;
 	case VMBUS_SCAN_COMPLETE:
 		/*
 		 * Another thread also invoked vmbus_scan(), but we got in
@@ -430,28 +429,25 @@ vmbus_scan(struct vmbus_softc *sc)
 		 */
 		mutex_exit(&vmbus_lock);
 		return (NDI_SUCCESS);
+	case VMBUS_SCAN_NONE:
+		/* Start vmbus scanning. */
+		sc->vmbus_scan_status = VMBUS_SCAN_INPROGRESS;
+
+		error = vmbus_req_channels(sc);
+		if (error != 0) {
+			sc->vmbus_scan_status = VMBUS_SCAN_NONE;
+			mutex_exit(&vmbus_lock);
+			dev_err(sc->vmbus_dev, CE_WARN,
+			    "channel request failed: %d", error);
+			return (error);
+		}
+
+		break;
 	case VMBUS_SCAN_INPROGRESS:
 		VMBUS_DEBUG(sc, "?%s: scan already in progress; waiting\n",
 		    __func__);
 
-		while (sc->vmbus_scan_status == VMBUS_SCAN_INPROGRESS)
-			cv_wait(&sc->vmbus_scandone_cv, &vmbus_lock);
-
-		mutex_exit(&vmbus_lock);
-		return (NDI_SUCCESS);
-	}
-
-	sc->vmbus_scan_status = VMBUS_SCAN_INPROGRESS;
-
-	/*
-	 * Start vmbus scanning.
-	 */
-	error = vmbus_req_channels(sc);
-	if (error) {
-		mutex_exit(&vmbus_lock);
-		dev_err(sc->vmbus_dev, CE_WARN, "channel request failed: %d",
-		    error);
-		return (error);
+		break;
 	}
 
 	/*
@@ -465,7 +461,7 @@ vmbus_scan(struct vmbus_softc *sc)
 	mutex_exit(&vmbus_lock);
 
 	VMBUS_DEBUG(sc, "?%s: device scan done\n", __func__);
-	return (0);
+	return (NDI_SUCCESS);
 }
 
 static void
@@ -533,17 +529,14 @@ vmbus_parse_name(const char *name, char *drv, size_t drvlen, char *addr,
 }
 
 static int
-vmbus_do_config_one(struct vmbus_channel *chan)
+vmbus_config_one_impl(struct vmbus_channel *chan)
 {
-	int rc;
-
-	if (chan->ch_dev == NULL) {
-		rc = vmbus_add_child(chan);
-	} else {
-		rc = ndi_devi_online(chan->ch_dev, 0);
+	if (chan->ch_dev != NULL) {
+		/* node already exists and should be bound */
+		return (NDI_SUCCESS);
 	}
 
-	return (rc);
+	return (vmbus_add_child(chan));
 }
 
 static int
@@ -557,18 +550,26 @@ vmbus_config_one(struct vmbus_softc *sc, const char *name)
 
 	rc = vmbus_parse_name(name, driver, sizeof (driver), inst,
 	    sizeof (inst));
-	if (rc != 0)
+	if (rc != 0) {
+		dev_err(sc->vmbus_dev, CE_NOTE, "%s: invalid device name '%s'",
+		    __func__, name);
 		return (NDI_FAILURE);
+	}
 
-	if (!hyperv_str2guid(inst, &inst_guid))
+	if (!hyperv_str2guid(inst, &inst_guid)) {
+		dev_err(sc->vmbus_dev, CE_NOTE, "%s: invalid instance guid '%s'",
+		    __func__, inst);
 		return (NDI_FAILURE);
+	}
 
 	/* This returns a refheld chan */
 	chan = vmbus_chan_getguid(sc, &inst_guid, NULL);
-	if (chan == NULL)
+	if (chan == NULL) {
+		VMBUS_DEBUG(sc, "?%s: device '%s' not found", __func__, name);
 		return (NDI_FAILURE);
+	}
 
-	rc = vmbus_do_config_one(chan);
+	rc = vmbus_config_one_impl(chan);
 	vmbus_chan_refrele(chan);
 	return (rc);
 
@@ -607,7 +608,7 @@ vmbus_config_all(struct vmbus_softc *sc)
 	mutex_exit(&sc->vmbus_prichan_lock);
 
 	for (i = 0; i < nchan; i++) {
-		(void) vmbus_do_config_one(chlist[i]);
+		(void) vmbus_config_one_impl(chlist[i]);
 		vmbus_chan_refrele(chlist[i]);
 	}
 
@@ -649,8 +650,13 @@ vmbus_config(dev_info_t *parent, uint_t flag, ddi_bus_config_op_t op, void *arg,
 
 done:
 	ndi_devi_exit(parent);
-	if (rc == NDI_SUCCESS)
+	if (rc == NDI_SUCCESS) {
+		flag |= NDI_ONLINE_ATTACH | NDI_CONFIG;
+		if (vmbus_ndi_debug)
+			flag |= NDI_DEVI_DEBUG;
+
 		rc = ndi_busop_bus_config(parent, flag, op, arg, childp, 0);
+	}
 	return (rc);
 }
 
@@ -1213,13 +1219,7 @@ vmbus_add_child(struct vmbus_channel *chan)
 
 	ndi_devi_alloc_sleep(parent, devname, DEVI_SID_NODEID, &chan->ch_dev);
 	ddi_set_parent_data(chan->ch_dev, chan);
-	int err = ndi_devi_online(chan->ch_dev, 0);
-	if (err != NDI_SUCCESS) {
-		dev_err(parent, CE_CONT, "?failed to online: classid %s, "
-		    "devname %s for chan%u, err %d\n", classid, devname,
-		    chan->ch_id, err);
-		return (DDI_FAILURE);
-	}
+	(void) ndi_devi_bind_driver(chan->ch_dev, 0);
 
 	return (DDI_SUCCESS);
 }
@@ -1566,19 +1566,12 @@ vmbus_initchild(dev_info_t *child)
 		return (DDI_FAILURE);
 	}
 
-	VMBUS_DEBUG(vmbus_get_softc(), "?%s: child 0x%p (%s: %s)\n", __func__,
-	    child, classid, deviceid);
+	VMBUS_DEBUG(vmbus_get_softc(), "?%s: child dip 0x%p (%s: %s)\n",
+	    __func__, child, classid, deviceid);
 
 	(void) snprintf(addr, sizeof (addr), "%s", deviceid);
 	ddi_set_name_addr(child, addr);
 
-	return (DDI_SUCCESS);
-}
-
-static int
-vmbus_removechild(dev_info_t *dip)
-{
-	ddi_set_name_addr(dip, NULL);
 	return (DDI_SUCCESS);
 }
 
@@ -1600,7 +1593,8 @@ vmbus_ctlops(dev_info_t *dip, dev_info_t *rdip,
 		return (vmbus_initchild(arg));
 
 	case DDI_CTLOPS_UNINITCHILD:
-		return (vmbus_removechild(arg));
+		ddi_set_name_addr((dev_info_t *)arg, NULL);
+		return (DDI_SUCCESS);
 
 	case DDI_CTLOPS_SIDDEV:
 		return (DDI_SUCCESS);
