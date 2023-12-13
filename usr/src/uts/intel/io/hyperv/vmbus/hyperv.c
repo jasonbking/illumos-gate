@@ -418,6 +418,16 @@ hyperv_str2guid(const char *s, struct hyperv_guid *guid)
 		guid->hv_guid[guidpos[guidx++]] = byte;
 	}
 
+#ifdef DEBUG
+	char check[HYPERV_GUID_STRLEN] = { 0 };
+
+	hyperv_guid2str(guid, check, sizeof (check));
+	if (strcmp(s, check) != 0) {
+		cmn_err(CE_PANIC, "%s parsed '%s' as '%s'", __func__,
+		    s, check);
+	}
+#endif
+
 	return (B_TRUE);
 }
 
