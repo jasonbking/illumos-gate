@@ -629,13 +629,12 @@ vmbus_config(dev_info_t *parent, uint_t flag, ddi_bus_config_op_t op, void *arg,
 
 	switch (op) {
 	case BUS_CONFIG_ONE:
-		VMBUS_DEBUG(sc, "?%s: BUS_CONFIG_ONE %s\n", __func__,
-		    (const char *)arg);
+		VMBUS_DEBUG(sc, "?BUS_CONFIG_ONE %s\n", (const char *)arg);
 		rc = vmbus_config_one(sc, arg);
 		break;
 	case BUS_CONFIG_DRIVER:
 	case BUS_CONFIG_ALL:
-		VMBUS_DEBUG(sc, "?%s: BUS_CONFIG_DRIVER/ALL\n", __func__);
+		VMBUS_DEBUG(sc, "?BUS_CONFIG_DRIVER/ALL\n");
 
 		rc = vmbus_scan(sc);
 		if (rc != NDI_SUCCESS)
@@ -671,11 +670,11 @@ vmbus_unconfig(dev_info_t *parent, uint_t flag, ddi_bus_config_op_t op,
 
 	switch (op) {
 	case BUS_UNCONFIG_ONE:
-		VMBUS_DEBUG(sc, "BUS_UNCONFIG_ONE %s\n", (const char *)arg);
+		VMBUS_DEBUG(sc, "?BUS_UNCONFIG_ONE %s\n", (const char *)arg);
 		break;
 	case BUS_UNCONFIG_DRIVER:
 	case BUS_UNCONFIG_ALL:
-		VMBUS_DEBUG(sc, "BUS_UNCONFIG_DRIVER/ALL\n");
+		VMBUS_DEBUG(sc, "?BUS_UNCONFIG_DRIVER/ALL\n");
 		break;
 	default:
 		break;
