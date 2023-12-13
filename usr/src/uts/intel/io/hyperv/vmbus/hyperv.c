@@ -53,6 +53,7 @@
 #include <sys/cmn_err.h>
 #include <sys/reboot.h>
 #include <sys/sysmacros.h>
+#include <sys/ilstr.h>
 
 #include <sys/x86_archext.h>
 
@@ -127,150 +128,97 @@
 #define	HYPERCALL_LOG_STATUS(status)
 #endif
 
-#define	HYPERV_MSR_ACCESS_STR						\
-	"\020"								\
-	"\001AccessVpRunTimeReg" 	/* MSR_HV_VP_RUNTIME */		\
-	"\002AccessPartitionReferenceCounter"	/* MSR_HV_TIME_REF_COUNT */ \
-	"\003AccessSynicRegs"		/* MSRs for SynIC */		\
-	"\004AccessSyntheticTimerRegs"	/* MSRs for SynTimer */		\
-	"\005AccessIntrCtrlRegs"	/* MSR_HV_{EOI,ICR,TPR} */	\
-	"\006AccessHypercallMsrs"	/* MSR_HV_{GUEST_OS_ID,HYPERCALL} */ \
-	"\007AccessVpIndex"		/* MSR_HV_VP_INDEX */		\
-	"\010AccessResetReg"		/* MSR_HV_RESET */		\
-	"\011AccessStatsReg"		/* MSR_HV_STATS_ */		\
-	"\012AccessPartitionReferenceTsc" /* MSR_HV_REFERENCE_TSC */	\
-	"\013AccessGuestIdleReg"	/* MSR_HV_GUEST_IDLE */		\
-	"\014AccessFrequencyRegs"	/* MSR_HV_{TSC,APIC}_FREQUENCY */ \
-	"\015AccessDebugRegs"		/* MSR_HV_SYNTH_DEBUG_ */	\
-	"\016AccessReenlightenmentControls"
+typedef struct hvbit {
+	uint8_t		hvb_bit;
+	const char	*hvb_desc;
+} hvbit_t;
 
-#define	HYPERV_HYPERCALL_ACCESS_STR		\
-	"\020"					\
-	"\001CreatePartitions"			\
-	"\002AccessPartitionId"			\
-	"\003AccessMemoryPool"			\
-	/* 004 Reserved */			\
-	"\005PostMessages"			\
-	"\006SignalEvents"			\
-	"\007CreatePort"			\
-	"\010ConnectPort"			\
-	"\011AccessStats"			\
-	/* 012 Reserved */			\
-	/* 013 Reserved */			\
-	"\014Debugging"				\
-	"\015CpuManagement"			\
-	/* 016 Reserved */			\
-	/* 017 Reserved */			\
-	/* 020 Reserved */			\
-	"\021AccessVSM"				\
-	"\022AccessVPRegisters"			\
-	/* 023 Reserved */			\
-	/* 024 Reserved */			\
-	"\025EnabledExtendedHypercalls"		\
-	"\026StartVirtualProcessor"
+static hvbit_t hyperv_access_tbl[] = {
+	{ 0, "AccessVpRunTimeReg" },
+	{ 1, "AccessPartitionReferenceCounter" },
+	{ 2, "AccessSynicRegs" },
+	{ 3, "AccessSyntheticTimerRegs" },
+	{ 4, "AccessIntrCtrlRegs" },
+	{ 5, "AccessHypercallMsrs" },
+	{ 6, "AccessVpIndex" },
+	{ 7, "AccessResetReg" },
+	{ 8, "AccessStatsReg" },
+	{ 9, "AccessPartitionReferenceTsc" },
+	{ 10, "AccessGuestIdleReg" },
+	{ 11, "AccessFrequencyRegs" },
+	{ 12, "AccessDebugRegs" },
+	{ 13, "AccessReenlightenmentControls" },
+	/* 14-31 Reserved */
+	{ 32, "CreatePartitions" },
+	{ 33, "AccessPartitionId" },
+	{ 34, "AccessMemoryPool" },
+	/* 35 Reserved */
+	{ 36, "PostMessages" },
+	{ 37, "SignalEvents" },
+	{ 38, "CreatePort" },
+	{ 39, "ConnectPort" },
+	{ 40, "AccessStats" },
+	/* 41-42 Reserved */
+	{ 43, "Debugging" },
+	{ 44, "CpuManagement" },
+	/* 45-47 Reserved */
+	{ 48, "AccessVSM" },
+	{ 49, "AccessVPRegisters" },
+	/* 50-51 Reserved */
+	{ 52, "EnabledExtendedHypercalls" },
+	{ 53, "StartVirtualProcessor" },
+};
 
-#define	HYPERV_FEATURE_STR			\
-	"\020"					\
-	/* 001 Deprecated (previously MWAIT) */	\
-	"\002GuestDebug"			\
-	"\003PerfMon"				\
-	"\004PhysCPUDynamicPartition"		\
-	"\005XMMHypercall"			\
-	"\006GuestIdle"				\
-	"\007HypervisorSleepState"		\
-	"\010NUMADistanceQuery"			\
-	"\011TimerFrequency"			\
-	"\012SynthMCInjection"			\
-	"\013GuestCrashMSR"			\
-	"\014DebugMSR"				\
-	"\015NPIEP"				\
-	"\016DisableHypervisor"			\
-	"\017ExtendGvaRangesForFlushVirtualAddressList" \
-	"\020HypercallXMMReturn"		\
-	/* 021 Reserved */			\
-	"\022SintPollingMode"			\
-	"\023HypercallMsrLock"			\
-	"\024UseDirectSynthTimers"		\
-	"\025PATRegisterVSM"			\
-	"\026bndcfgsRegisterVSM"		\
-	/* 027 Reserved */			\
-	"\030SynthTimeUnhaltedTimer"		\
-	/* 031 Reserved */			\
-	/* 032 Reserved */			\
-	"\033LastBranchRecordSupport"
+static hvbit_t hyperv_features_tbl[] = {
+	/* 0 Deprecated */
+	{ 1, "Guest debugging support" },
+	{ 2, "Performance Monitor support" },
+	{ 3, "Physical CPU dynamic partitioning events" },
+	{ 4, "Hypercall inputs using XMM registers" },
+	{ 5, "Virtual guest idle state" },
+	{ 6, "Hypervisor sleep state" },
+	{ 7, "NUMA distances" },
+	{ 8, "Timer frequencies" },
+	{ 9, "Synthetic machine checks" },
+	{ 10, "Guest crash MSR" },
+	{ 11, "Debug MSR" },
+	{ 12, "NPIEP" },
+	{ 13, "DisableHypervisorAvailable" },
+	{ 14, "ExtendedGvaRangesForFlushVirtualAddressListAvailable" },
+	{ 15, "Hypercall return using XMM registers" },
+	/* 16 Reserved */
+	{ 17, "SintPollingModeAvailable" },
+	{ 18, "HypercallMsrLockAvailable" },
+	{ 19, "Use direct synthetic timers" },
+	{ 20, "PAT register available for VSM" },
+	{ 21, "Sbndcfgs register available for VSM" },
+	/* 22 Reserved */
+	{ 23, "Synthetic time unhalted timer" },
+	/* 24-25 Reserved */
+	{ 26, "Last Branch Record (LBR)" },
+};
 
-#define	HYPERV_RECOMMEND_STR			\
-	"\020"					\
-	"\001HypercallASSwitch"			\
-	"\002HypercallLocalTLBFlush"		\
-	"\003HypercallRemoteTLBFlush"		\
-	"\004UseMSRForAPICEOIICRTPR"		\
-	"\005MSRForReset"			\
-	"\006RelaxedTiming"			\
-	"\007DMARemapping"			\
-	"\010InterruptRemapping"		\
-	/* 011 Reserved */			\
-	"\012DeprecateAutoEOI"			\
-	"\013SyntheticClusterIpi"		\
-	"\014ExProcessorMasks"			\
-	"\015IsNestedVM"			\
-	"\016UseINTForMBEC"			\
-	"\017EnlightenedVMCS"			\
-	"\020UseSyncedTimeline"			\
-	/* 021 Reserved */			\
-	"\022UseDirectLocalFlushEntire"		\
-	"\023NoNonArchitecturalCoreSharing"
-
-#define	HYPERV_IMPL_HW_FEATURES_STR	\
-	"\020"				\
-	"\001APICOverlay"		\
-	"\002MSRBitmaps"		\
-	"\003ArchPerfCounters"		\
-	"\004L2AddressTranslation"	\
-	"\005DMARemapping"		\
-	"\006InterruptRemapping"	\
-	"\007MemoryScrubber"		\
-	"\010DMAProtection"		\
-	"\011HPETRequested"		\
-	"\012VolatileSynthTimers"
-
-#define	HYPERV_CPU_MGMT_STR			\
-	"\020"					\
-	"\001StartLogicalProcessor"		\
-	"\002CreateRootvirtualProcessor"	\
-	"\003PerformanceCounterSync"
-
-#define	HYPERV_SVM_STR				\
-	"\020"					\
-	"\001SvmSupported"
-
-#define	HYPERV_NESTED_ACCESS_MSR_STR		\
-	"\020"					\
-	/* 001 Reserved */			\
-	/* 002 Reserved */			\
-	"\003AccessSynicRegs"			\
-	/* 004 Reserved */			\
-	"\005AccessIntrCtrlRegs"		\
-	"\006AccessHypercallMsrs"		\
-	"\007AccessVpIndex"			\
-	/* 010 - 017 Reserved */		\
-	"\020AccessReenlightenmentControls"
-
-#define	HYPERV_NESTED_ACCESS_HYPERCALL_STR		\
-	"\020"						\
-	/* 001 - 004 Reserved */			\
-	"\005XmmRegistersForFastHypercallAvailable"	\
-	/* 006 - 017 Reserved */			\
-	"\020FastHypercallOutputAvailable"		\
-	/* 021 Reserved */				\
-	"\022SinPollingModeAvailable"
-
-#define	HYPERV_NESTED_OPTIMIZATION_STR			\
-	"\020"						\
-	"\022DirectVirtualFlush"			\
-	"\023HvFlushGuestPhysicalAddress"		\
-	"\024EnlightenedMSRBitmap"			\
-	"\025CombineVirtException"
+static hvbit_t hyperv_recommendations_tbl[] = {
+	{ 0, "Use hypercall for address space switches" },
+	{ 1, "Use hypercall for local TLB flushes" },
+	{ 2, "Use hypercall for remote TLB flushes" },
+	{ 3, "Use MSRs for accessing APIC EOI, ICR, and TPR" },
+	{ 4, "Use MSR for system reset" },
+	{ 5, "Use relaxed timing (no watchdog timeouts)" },
+	{ 6, "Use DMA remapping" },
+	{ 7, "Use interrupt remapping" },
+	/* 8 Reserved */
+	{ 9, "Deprecate AutoEOI" },
+	{ 10, "Use SyntheticClusterIpi hypercall" },
+	{ 11, "Use ExProcessorMasks interface" },
+	{ 12, "Is nested hypervisor" },
+	{ 13, "Use INT for MBEC system calls" },
+	{ 14, "Use enlightened VMCS interface" },
+	{ 15, "UseSyncedTimeline" },
+	/* 16 Reserved */
+	{ 17, "UseDirectLocalFlushEntire" },
+	{ 18, "NoNonArchitecturalCoreSharing" },
+};
 
 struct hypercall_ctx {
 	caddr_t		hc_addr;
@@ -280,28 +228,25 @@ static struct hypercall_ctx	hypercall_context;
 
 uint_t		hyperv_recommends;
 
-/*
- * Hyper-V Feature identification obtained by
- * reading the CPUID_LEAF_HV_FEATURES cpuid.
- * Results are in the following registers:
- * hyperv_features (EAX):
- *   This indicates which features are available to this partition
- *   based upon current partition privileges.
- * hyperv_features1 (EBX):
- *   This indicates which flags were specified at partition creation.
- * hyperv_pm_features (ECX):
- *   This contains power management related information.
- * hyperv_features3 (EDX):
- *   This indicates which miscellaneous features are available to the partition.
- */
-uint_t			hyperv_ver_major;
-uint_t			hyperv_features;
-static uint_t		hyperv_features1;
-static uint_t		hyperv_pm_features;
-static uint_t		hyperv_features3;
+uint16_t		hyperv_ver_major;
+uint16_t		hyperv_ver_minor;
+uint32_t		hyperv_build;
+uint32_t		hyperv_svc_pack;
+uint32_t		hyperv_svc_number;
+uint8_t			hyperv_svc_branch;
 
-static boolean_t		hyperv_identify(void);
-static void			hypercall_memfree(void);
+uint64_t		hyperv_privs_mask;
+uint32_t		hyperv_features;
+uint32_t		hyperv_recommendations;
+uint32_t		hyperv_max_vcpu;
+uint32_t		hyperv_max_lcpu;
+uint32_t		hyperv_max_intr;
+uint32_t		hyperv_hw_features;
+
+static boolean_t	hyperv_identify(void);
+static void		hypercall_memfree(void);
+static void		hyperv_show_features(uint64_t, const char *,
+    const hvbit_t *, size_t);
 
 hv_status_t
 hypercall_post_message(paddr_t msg_paddr)
@@ -515,83 +460,54 @@ hyperv_identify(void)
 		return (B_FALSE);
 	}
 
-	hyperv_features = regs.cp_eax;
-	hyperv_features1 = regs.cp_ebx;
-	hyperv_pm_features = regs.cp_ecx;
-	hyperv_features3 = regs.cp_edx;
+	hyperv_privs_mask = ((uint64_t)regs.cp_ebx << 32) | regs.cp_eax;
+	hyperv_features = regs.cp_edx;
 
 	do_cpuid(CPUID_LEAF_HV_IDENTITY, &regs);
 
 	hyperv_ver_major = regs.cp_ebx >> 16;
-	cmn_err(CE_CONT, "?Hyper-V Version: %d.%d.%d [SP%d]\n",
-	    hyperv_ver_major, regs.cp_ebx & 0xffff,
-	    regs.cp_eax, regs.cp_ecx);
+	hyperv_ver_minor = regs.cp_ebx & 0xffff;
+	hyperv_build = regs.cp_eax;
+	hyperv_svc_pack = regs.cp_ecx;
+	hyperv_svc_number = regs.cp_edx & 0x00ffffff;
+	hyperv_svc_branch = regs.cp_edx >> 24;
+
+	cmn_err(CE_CONT, "Hyper-V Version: %u.%u.%u [SP%u]\n",
+	    hyperv_ver_major, hyperv_ver_minor, hyperv_build, hyperv_svc_pack);
 
 	/*
 	 * Hyper-V version numbering is based on Linux source code, in
 	 * function ms_hyperv_init_platform().
 	 */
-	cmn_err(CE_CONT, "?Hyper-V Host Build: %d-%d.%d-%d-%d.%d\n",
-	    regs.cp_eax, hyperv_ver_major,
-	    regs.cp_ebx & 0xffff, regs.cp_ecx,
-	    regs.cp_edx >> 24, regs.cp_edx & 0xffffff);
+	cmn_err(CE_CONT, "?Hyper-V Host Build: %u-%u.%u-%u-%u.%u\n",
+	    hyperv_build,
+	    hyperv_ver_major, hyperv_ver_minor,
+	    hyperv_svc_pack,
+	    hyperv_svc_branch, hyperv_svc_number);
 
-	cmn_err(CE_CONT, "?Hyper-V guest privileges: 0x%b\n", hyperv_features,
-	    HYPERV_MSR_ACCESS_STR);
-	cmn_err(CE_CONT, "?Hyper-V hypercall access: 0x%b\n", hyperv_features1,
-	    HYPERV_HYPERCALL_ACCESS_STR);
-	cmn_err(CE_CONT, "?Hyper-V available features: 0x%b\n",
-	    hyperv_features3, HYPERV_FEATURE_STR);
+	hyperv_show_features(hyperv_privs_mask, "Hyper-V guest access",
+	    hyperv_access_tbl, ARRAY_SIZE(hyperv_access_tbl));
+	hyperv_show_features(hyperv_features, "Hyper-V features",
+	    hyperv_features_tbl, ARRAY_SIZE(hyperv_features_tbl));
 
 	do_cpuid(CPUID_LEAF_HV_RECOMMENDS, &regs);
-	hyperv_recommends = regs.cp_eax;
-	cmn_err(CE_CONT, "?Hyper-V recommendations: 0x%b\n", hyperv_recommends,
-	    HYPERV_RECOMMEND_STR);
+	hyperv_recommendations = regs.cp_eax;
+
+	hyperv_show_features(hyperv_recommendations,
+	    "Hyper-V guest recommendations", hyperv_recommendations_tbl,
+	    ARRAY_SIZE(hyperv_recommendations_tbl));
 	cmn_err(CE_CONT, "?Hyper-V recommended spinlock retries: %d\n",
 	    (int)regs.cp_ebx);
 	cmn_err(CE_CONT, "?Hyper-V physical address bits implemented: %u\n",
 	    CPU_RECOMMEND_PHYSADDR_BITS(regs.cp_ecx));
 
 	do_cpuid(CPUID_LEAF_HV_LIMITS, &regs);
-	cmn_err(CE_CONT, "?Hyper-V limits: Vcpu: %d Lcpu: %d Intrs: %d\n",
-	    regs.cp_eax, regs.cp_ebx, regs.cp_ecx);
+	hyperv_max_vcpu = regs.cp_eax;
+	hyperv_max_lcpu = regs.cp_ebx;
+	hyperv_max_intr = regs.cp_ecx;
 
-	if (maxleaf >= CPUID_LEAF_HV_HWFEATURES) {
-		do_cpuid(CPUID_LEAF_HV_HWFEATURES, &regs);
-		cmn_err(CE_CONT,
-		    "?Hyper-V implementation HW features: 0x%b\n", regs.cp_eax,
-		    HYPERV_IMPL_HW_FEATURES_STR);
-	}
-
-	if (maxleaf > CPUID_LEAF_HV_CPUMGMT) {
-		do_cpuid(CPUID_LEAF_HV_CPUMGMT, &regs);
-		cmn_err(CE_CONT, "?Hyper-V root partition CPU features: 0x%b\n",
-		    regs.cp_eax, HYPERV_CPU_MGMT_STR);
-	}
-
-	if (maxleaf > CPUID_LEAF_HV_SVM) {
-		do_cpuid(CPUID_LEAF_HV_SVM, &regs);
-		cmn_err(CE_CONT,
-		    "?Hyper-V shared virtual memory (SVM) features: 0x%b "
-		    "MaxPasidSpacePasidCount: %u\n",
-		    regs.cp_eax, HYPERV_SVM_STR, CPUSVM_MAX_PASID(regs.cp_eax));
-	}
-
-	if (maxleaf > CPUID_LEAF_HV_NESTED) {
-		do_cpuid(CPUID_LEAF_HV_NESTED, &regs);
-		cmn_err(CE_CONT, "?Hyper-V nested MSR access: 0x%b\n",
-		    regs.cp_eax, HYPERV_NESTED_ACCESS_MSR_STR);
-		cmn_err(CE_CONT, "?Hyper-V nested hypercall access: 0x%b\n",
-		    regs.cp_edx, HYPERV_NESTED_ACCESS_HYPERCALL_STR);
-	}
-
-	if (maxleaf > CPUID_LEAF_HV_NESTED_FEAT) {
-		do_cpuid(CPUID_LEAF_HV_NESTED_FEAT, &regs);
-		cmn_err(CE_CONT, "?Hyper-V enlightened VMCS version %u.%u\n",
-		    CPUNEST_VMCS_HI(regs.cp_eax), CPUNEST_VMCS_LO(regs.cp_eax));
-		cmn_err(CE_CONT, "?Hyper-V nested optimizations: 0x%b\n",
-		    regs.cp_eax, HYPERV_NESTED_OPTIMIZATION_STR);
-	}
+	cmn_err(CE_CONT, "?Hyper-V limits: Vcpu: %u Lcpu: %u Intrs: %u\n",
+	    hyperv_max_vcpu, hyperv_max_lcpu, hyperv_max_intr);
 
 	return (B_TRUE);
 }
@@ -722,6 +638,34 @@ hypercall_destroy()
 
 	cmn_err(CE_CONT,
 	    "?hypercall_destroy: Disabling Hypercall interface - done.");
+}
+
+static void
+hyperv_show_features(uint64_t val, const char *desc, const hvbit_t *fields,
+    size_t nfields)
+{
+	if ((boothowto & RB_VERBOSE) == 0)
+		return;
+
+	char buf[512] = { 0 };
+	ilstr_t ils;
+	uint_t i;
+
+	ilstr_init_prealloc(&ils, buf, sizeof (buf));
+
+	ilstr_append_str(&ils, desc);
+	ilstr_aprintf(&ils, "%s: 0x%08x\n", desc, val);
+
+	for (i = 0; i < nfields; i++) {
+		uint64_t mask = (uint64_t)1 << fields[i].hvb_bit;
+
+		if ((val & mask) == 0)
+			continue;
+
+		ilstr_aprintf(&ils, "\t%s\n", fields[i].hvb_desc);
+	}
+
+	cmn_err(CE_CONT, "?%s", buf);
 }
 
 static struct modldrv hyperv_modldrv = {

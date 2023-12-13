@@ -73,8 +73,11 @@ void		hyperv_guid2str(const struct hyperv_guid *, char *, size_t);
 boolean_t	hyperv_str2guid(const char *s, struct hyperv_guid *);
 boolean_t	hyperv_isgen2(void);
 
-extern uint_t	hyperv_features;	/* CPUID_HV_MSR_ */
-extern uint_t	hyperv_ver_major;
+extern uint64_t	hyperv_privs_mask;
+extern uint16_t	hyperv_ver_major;
+extern uint16_t hyperv_ver_minor;
+extern uint32_t	hyperv_svc_number;
+extern uint8_t	hyperv_svc_branch;
 
 /*
  * Vmbus version after negotiation with host.

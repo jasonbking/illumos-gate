@@ -847,7 +847,7 @@ vmbus_synic_setup(void *xsc)
 	uint64_t val, orig;
 	uint32_t sint;
 
-	if (hyperv_features & CPUID_HV_MSR_VP_INDEX) {
+	if (hyperv_privs_mask & CPUID_HV_MSR_VP_INDEX) {
 		/* Save virtual processor id. */
 		VMBUS_PCPU_GET(sc, vcpuid, cpu) = rdmsr(MSR_HV_VP_INDEX);
 	} else {
