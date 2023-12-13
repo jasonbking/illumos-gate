@@ -32,6 +32,11 @@ $mapfile_version 2
 SYMBOL_VERSION ILLUMOSprivate {
     global:
 	# Symbols exported for other modules
+	hypercall_create;
+	hypercall_destroy;
+	hypercall_post_message;
+	hypercall_signal_event;
+
 	hyperv_dmamem_alloc;
 	hyperv_dmamem_free;
 	hyperv_features;

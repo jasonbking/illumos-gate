@@ -31,9 +31,11 @@ $mapfile_version 2
 
 SYMBOL_VERSION ILLUMOSprivate {
     global:
+	vmbus_chan_close;
 	vmbus_chan_close_direct;
 	vmbus_chan_cpu_rr;
 	vmbus_chan_cpu_set;
+	vmbus_chan_gpadl_connect;
 	vmbus_chan_gpadl_disconnect;
 	vmbus_chan_id;
 	vmbus_chan_intr_drain;
@@ -45,8 +47,10 @@ SYMBOL_VERSION ILLUMOSprivate {
 	vmbus_chan_recv_pkt;
 	vmbus_chan_rx_empty;
 	vmbus_chan_set_orphan;
+	vmbus_chan_set_readbatch;
 	vmbus_chan_send;
 	vmbus_chan_send_prplist;
+	vmbus_chan_send_sglist;
 	vmbus_chan_subidx;
 	vmbus_chan_tx_empty;
 	vmbus_chan_unset_orphan;
@@ -54,13 +58,24 @@ SYMBOL_VERSION ILLUMOSprivate {
 
 	vmbus_current_version;
 
+	vmbus_ic_attach;
+	vmbus_ic_detach;
+	vmbus_ic_negomsg;
+	vmbus_ic_sendresp;
+
+	vmbus_probe_guid;
+
 	vmbus_subchan_drain;
 	vmbus_subchan_get;
 	vmbus_subchan_rel;
 
+	vmbus_walk_children;
+
 	vmbus_xact_activate;
 	vmbus_xact_ctx_create;
 	vmbus_xact_ctx_destroy;
+	vmbus_xact_ctx_orphan;
+	vmbus_xact_ctx_wakeup;
 	vmbus_xact_deactivate;
 	vmbus_xact_get;
 	vmbus_xact_put;

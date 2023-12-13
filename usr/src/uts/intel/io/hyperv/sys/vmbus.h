@@ -70,8 +70,8 @@
 #define	VMBUS_VERSION_MAJOR(ver)	(((uint32_t)(ver)) >> 16)
 #define	VMBUS_VERSION_MINOR(ver)	(((uint32_t)(ver)) & 0xffff)
 
-#define	VMBUS_DEVICEID		"deviceid"
-#define	VMBUS_CLASSID		"classid"
+#define	VMBUS_DEVICEID		"device-id"
+#define	VMBUS_CLASSID		"class-id"
 #define	VMBUS_VERSION		"version"
 #define	VMBUS_STATE		"state"
 #define	VMBUS_STATE_ONLINE	"online"

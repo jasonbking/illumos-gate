@@ -67,7 +67,7 @@
 #define	VMBUS_GPADL_START		0xe1e10
 
 #ifdef	DEBUG
-int vmbus_debug = 0;
+int vmbus_debug = 1;
 #endif
 
 struct vmbus_msghc {
@@ -1541,7 +1541,7 @@ vmbus_initchild(dev_info_t *child)
 
 	char classid[HYPERV_GUID_STRLEN] = { 0 };
 	(void) hyperv_guid2str(&chan->ch_guid_type, classid, sizeof (classid));
-	if (ddi_prop_update_string(DDI_DEV_T_NONE, child,
+	if (ndi_prop_update_string(DDI_DEV_T_NONE, child,
 	    VMBUS_CLASSID, classid) != DDI_SUCCESS) {
 		dev_err(chan->ch_dev, CE_WARN, "Unable to set \"%s(%s)\" "
 		    "property", VMBUS_CLASSID, classid);
@@ -1551,7 +1551,7 @@ vmbus_initchild(dev_info_t *child)
 	char deviceid[HYPERV_GUID_STRLEN] = { 0 };
 	(void) hyperv_guid2str(&chan->ch_guid_inst, deviceid,
 	    sizeof (deviceid));
-	if (ddi_prop_update_string(DDI_DEV_T_NONE, child,
+	if (ndi_prop_update_string(DDI_DEV_T_NONE, child,
 	    VMBUS_DEVICEID, deviceid) != DDI_SUCCESS) {
 		dev_err(chan->ch_dev, CE_WARN, "Unable to set \"%s(%s)\" "
 		    "property", VMBUS_DEVICEID, deviceid);
