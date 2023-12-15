@@ -50,9 +50,15 @@
 
 /* The TPM1.2 Commands we are using */
 #define	TPM_ORD_GetCapability		0x00000065u
-#define	TPM_ORG_ContinueSelfTest	0x00000053u
+#define	TPM_ORD_ContinueSelfTest	0x00000053u
 #define	TPM_ORD_GetRandom		0x00000046u
 #define	TPM_ORD_StirRandom		0x00000047u
+
+#define	TPM_CAP_Prop			0x00000005u
+#define	TPM_CAP_PROP_TIS_TIMEOUT	0x00000115u
+#define	TPM_CAP_PROP_TIS_DURATION	0x00000120u
+
+#define	TPM_CAP_VERSION_VAL		0x0000001au
 
 /* The maximum amount of bytes allowed for TPM_ORD_StirRandom */
 #define	TPM12_SEED_MAX		255
@@ -376,23 +382,22 @@ static const tpm_duration_t tpm12_ords_duration[TPM_ORDINAL_MAX] = {
 static int
 tpm12_get_timeouts(tpm_t *tpm)
 {
+	tpm_client_t *c = tpm->tpm_internal_client;
+	uint8_t *buf = c->tpmc_buf;
 	int ret;
 	uint32_t timeout;   /* in milliseconds */
 	uint32_t len;
 
-	/* The buffer size (30) needs room for 4 timeout values (uint32_t) */
-	uint8_t buf[30] = {
-		0, 193,		/* TPM_TAG_RQU_COMMAND */
-		0, 0, 0, 22,	/* paramsize in bytes */
-		0, 0, 0, 101,	/* TPM_ORD_GetCapability */
-		0, 0, 0, 5,	/* TPM_CAP_Prop */
-		0, 0, 0, 4,	/* SUB_CAP size in bytes */
-		0, 0, 1, 21	/* TPM_CAP_PROP_TIS_TIMEOUT(0x115) */
-	};
+	mutex_enter(&c->tpmc_lock);
+	tpm_int_newcmd(c, TPM_TAG_RQU_COMMAND, TPM_ORD_GetCapability);
+	tpm_int_put32(c, TPM_CAP_Prop);
+	tpm_int_put32(c, sizeof (uint32_t));
+	tpm_int_put32(c, TPM_CAP_PROP_TIS_TIMEOUT);
 
-	ret = tpm_exec_internal_simple(tpm, DEFAULT_LOCALITY, buf,
-	    sizeof (buf));
+	ret = tpm_exec_internal(tpm, c);
 	if (ret != 0) {
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
 		/* XXX: ereport? */
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: command failed: %d",
 		    __func__, ret);
@@ -407,6 +412,8 @@ tpm12_get_timeouts(tpm_t *tpm)
 	 */
 	len = tpm_getbuf32(buf, TPM_CAP_RESPSIZE_OFFSET);
 	if (len != 4 * sizeof (uint32_t)) {
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: incorrect capability "
 		    "response size: expected %d received %u", __func__,
 		     (int)(4 * sizeof (uint32_t)), len);
@@ -450,6 +457,8 @@ tpm12_get_timeouts(tpm_t *tpm)
 	}
 	tpm->tpm_timeout_d = drv_usectohz(timeout);
 
+	tpm_client_reset(c);
+	mutex_exit(&c->tpmc_lock);
 	return (0);
 }
 
@@ -461,20 +470,18 @@ tpm12_get_timeouts(tpm_t *tpm)
 static int
 tpm12_get_duration(tpm_t *tpm)
 {
+	tpm_client_t *c = tpm->tpm_internal_client;
+	uint8_t *buf = c->tpmc_buf;
 	int ret;
 	uint32_t duration;
 	uint32_t len;
-	uint8_t buf[30] = {
-		0, 193,		/* TPM_TAG_RQU_COMMAND */
-		0, 0, 0, 22,	/* paramsize in bytes */
-		0, 0, 0, 101,	/* TPM_ORD_GetCapability */
-		0, 0, 0, 5,	/* TPM_CAP_Prop */
-		0, 0, 0, 4,	/* SUB_CAP size in bytes */
-		0, 0, 1, 32	/* TPM_CAP_PROP_TIS_DURATION(0x120) */
-	};
 
-	ret = tpm_exec_internal_simple(tpm, DEFAULT_LOCALITY, buf,
-	    sizeof (buf));
+	mutex_enter(&c->tpmc_lock);
+	tpm_int_newcmd(c, TPM_TAG_RQU_COMMAND, TPM_ORD_GetCapability);
+	tpm_int_put32(c, sizeof (uint32_t));
+	tpm_int_put32(c, TPM_CAP_PROP_TIS_DURATION);
+
+	ret = tpm_exec_internal(tpm, c);
 	if (ret != 0) {
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: command failed: %d",
 		    __func__, ret);
@@ -528,21 +535,20 @@ tpm12_get_duration(tpm_t *tpm)
 static int
 tpm12_get_version(tpm_t *tpm, tpm12_vers_info_t *vp)
 {
+	tpm_client_t *c = tpm->tpm_internal_client;
+	uint8_t *buf = c->tpmc_buf;
 	int ret;
 	uint32_t len;
 
-	/* If this buf is too small, the "vendor specific" data won't fit */
-	uint8_t buf[64] = {
-		0, 193,		/* TPM_TAG_RQU_COMMAND */
-		0, 0, 0, 18,	/* paramsize in bytes */
-		0, 0, 0, 101,	/* TPM_ORD_GetCapability */
-		0, 0, 0, 0x1A,	/* TPM_CAP_VERSION_VAL */
-		0, 0, 0, 0,	/* SUB_CAP size in bytes */
-	};
+	mutex_enter(&c->tpmc_lock);
+	tpm_int_newcmd(c, TPM_TAG_RQU_COMMAND, TPM_ORD_GetCapability);
+	tpm_int_put32(c, TPM_CAP_VERSION_VAL);
+	tpm_int_put32(c, 0); /* Sub cap size */
 
-	ret = tpm_exec_internal_simple(tpm, DEFAULT_LOCALITY, buf,
-	    sizeof (buf));
+	ret = tpm_exec_internal(tpm, c);
 	if (ret != DDI_SUCCESS) {
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: command failed: %d",
 		    __func__, ret);
 		return (ret);
@@ -553,6 +559,8 @@ tpm12_get_version(tpm_t *tpm, tpm12_vers_info_t *vp)
 	 */
 	len = tpm_getbuf32(buf, TPM_CAP_RESPSIZE_OFFSET);
 	if (len < TPM_CAP_VERSION_INFO_SIZE) {
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
 		dev_err(tpm->tpm_dip, CE_WARN,
 		    "%s: unexpected response length; expected %d actual %d",
 		    __func__, TPM_CAP_VERSION_INFO_SIZE, len);
@@ -568,6 +576,8 @@ tpm12_get_version(tpm_t *tpm, tpm12_vers_info_t *vp)
 	    vp->tpmcap_rev_major, vp->tpmcap_rev_minor, vp->tpmcap_spec_level,
 	    vp->tpmcap_errata_level, vp->tpmcap_vendorid);
 
+	tpm_client_reset(c);
+	mutex_exit(&c->tpmc_lock);
 	return (0);
 }
 
@@ -599,56 +609,53 @@ tpm12_get_timeout(tpm_t *tpm, uint32_t cmd)
 static int
 tpm12_continue_selftest(tpm_t *tpm)
 {
+	tpm_client_t *c = tpm->tpm_internal_client;
+	uint8_t *buf = c->tpmc_buf;
 	int ret;
-	uint8_t buf[10] = {
-		0, 193,		/* TPM_TAG_RQU COMMAND */
-		0, 0, 0, 10,	/* paramsize in bytes */
-		0, 0, 0, 83	/* TPM_ORD_ContinueSelfTest */
-	};
 
-	/* Need a longer timeout */
-	ret = tpm_exec_internal_simple(tpm, DEFAULT_LOCALITY, buf,
-	    sizeof (buf));
+	mutex_enter(&c->tpmc_lock);
+	tpm_int_newcmd(c, TPM_TAG_RQU_COMMAND, TPM_ORD_ContinueSelfTest);
+	ret = tpm_exec_internal(tpm, c);
+
 	if (ret != DDI_SUCCESS) {
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: command timed out",
 		    __func__);
 		return (ret);
 	}
 
+	tpm_client_reset(c);
+	mutex_exit(&c->tpmc_lock);
 	return (DDI_SUCCESS);
 }
-
-/*
- * Header + length of seed data (as BE32 int) + max amount of seed a TPM12
- * can accept in a single command.
- */
-#define	SEED_BUF_LEN (TPM_HEADER_SIZE + sizeof (uint32_t) + TPM12_SEED_MAX)
 
 int
 tpm12_seed_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 {
+	tpm_client_t *c = tpm->tpm_internal_client;
+	uint8_t *cmdbuf = c->tpmc_buf;
+	int ret;
+
 	if (buflen == 0 || buflen > TPM12_SEED_MAX || buf == NULL)
 		return (CRYPTO_ARGUMENTS_BAD);
 
-	/* Total length = header + seed length + seed data */
-	uint32_t	len = TPM_HEADER_SIZE + sizeof (uint32_t) + buflen;
-	int		ret;
-	uint8_t		cmdbuf[SEED_BUF_LEN] = { 0 };
+	mutex_enter(&c->tpmc_lock);
+	tpm_int_newcmd(c, TPM_TAG_RQU_COMMAND, TPM_ORD_StirRandom);
+	tpm_int_put32(c, buflen);
+	tpm_int_copy(c, buf, buflen);
 
-	BE_OUT16(cmdbuf + TPM_TAG_OFFSET,		TPM_TAG_RQU_COMMAND);
-	BE_OUT16(cmdbuf + TPM_PARAMSIZE_OFFSET,		len);
-	BE_OUT32(cmdbuf + TPM_COMMAND_CODE_OFFSET,	TPM_ORD_StirRandom);
-	BE_OUT32(cmdbuf + TPM_HEADER_SIZE,		buflen);
-	bcopy(cmdbuf + TPM_HEADER_SIZE + sizeof (uint32_t), buf, buflen);
-
-	ret = tpm_exec_internal_simple(tpm, DEFAULT_LOCALITY, cmdbuf, len);
-
+	ret = tpm_exec_internal(tpm, c);
 	/* Timeout reached */
 	if (ret != 0) {
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
 		tpm_dbg(tpm, CE_WARN, "!%s failed", __func__);
 		return (CRYPTO_FAILED);
 	}
 
+	tpm_client_reset(c);
+	mutex_exit(&c->tpmc_lock);
 	return (CRYPTO_SUCCESS);
 }
 
@@ -657,41 +664,23 @@ tpm12_seed_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 int
 tpm12_generate_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 {
+	tpm_client_t	*c = tpm->tpm_internal_client;
+	uint8_t		*cmdbuf = c->tpmc_buf;
+	uint32_t	amt;
+	int		ret;
+
 	if (buflen == 0 || buf == NULL)
 		return (CRYPTO_ARGUMENTS_BAD);
 
-	int		ret;
-	uint32_t	cmdlen = RNDHDR_SIZE;
-	uint8_t		cmdbuf[RNDHDR_SIZE] = { 0 };
-	iovec_t		iov[2] = {
-		[0] = {
-			.iov_base = (char *)cmdbuf,
-			.iov_len = RNDHDR_SIZE,
-		},
-		[1] = {
-			.iov_base = (char *)buf,
-			.iov_len = buflen,
-		}
-	};
-	uio_t		in = {
-		.uio_iov = iov,
-		.uio_iovcnt = 1,
-		.uio_segflg = UIO_SYSSPACE,
-	};
-	uio_t		out = {
-		.uio_iov = iov,
-		.uio_iovcnt = 2,
-		.uio_segflg = UIO_SYSSPACE,
-	};
-
-	BE_OUT16(cmdbuf + TPM_TAG_OFFSET,		TPM_TAG_RQU_COMMAND);
-	BE_OUT32(cmdbuf + TPM_PARAMSIZE_OFFSET,		RNDHDR_SIZE);
-	BE_OUT32(cmdbuf + TPM_COMMAND_CODE_OFFSET,	TPM_ORD_GetRandom);
-	BE_OUT32(cmdbuf + TPM_HEADER_SIZE,		buflen);
-
-	ret = tpm_exec_internal(tpm, DEFAULT_LOCALITY, &in, &out);
+	mutex_enter(&c->tpmc_lock);
+	tpm_int_newcmd(c, TPM_TAG_RQU_COMMAND, TPM_ORD_GetRandom);
+	tpm_int_put32(c, buflen);
+	ret = tpm_exec_internal(tpm, c);
 
 	if (ret != 0) {
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
+
 		switch (ret) {
 		case ETIME:
 			return (CRYPTO_BUSY);
@@ -699,6 +688,17 @@ tpm12_generate_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 			return (CRYPTO_FAILED);
 		}
 	}
+
+	amt = tpm_getbuf32(cmdbuf, TPM_HEADER_SIZE);
+	if (amt < buflen) {
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
+		return (CRYPTO_FAILED);
+	}
+
+	bcopy(cmdbuf + TPM_HEADER_SIZE + sizeof (uint32_t), buf, buflen);
+	tpm_client_reset(c);
+	mutex_exit(&c->tpmc_lock);
 
 	/* XXX: Do we need to check the header for an error? */
 	return (CRYPTO_SUCCESS);

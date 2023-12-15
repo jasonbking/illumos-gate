@@ -54,6 +54,7 @@ struct tpm;
 #define	TPM_CC_Startup			0x00000144
 #define	TPM_CC_SelfTest			0x00000143
 #define	TPM_CC_GetRandom		0x0000017b
+#define	TPM_CC_StirRandom		0x00000146
 #define	TPM_CC_HashSequenceStart	0x00000186
 #define	TPM_CC_SequenceUpdate		0x0000015c
 #define	TPM_CC_SequenceComplete		0x0000013e

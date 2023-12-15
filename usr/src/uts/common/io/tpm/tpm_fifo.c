@@ -69,6 +69,10 @@ tpm_tis_get_burstcount(tpm_t *tpm, uint16_t *burstp)
 
 	ret = tpm_wait(tpm, tis_burst_nonzero, tpm->tpm_timeout_d);
 	if (ret != 0) {
+		if (ret == ETIME) {
+			tpm_ereport_timeout(tpm, TPM_STS, tpm->tpm_timeout_d,
+			    __func__);
+		}
 		return (ret);
 	}
 
@@ -104,7 +108,9 @@ tis_fifo_make_ready(tpm_t *tpm, clock_t to)
 	tpm_tis_set_ready(tpm);
 	ret = tpm_wait(tpm, tis_is_ready, to);
 	if (ret != 0) {
-		/* XXX: ereport? */
+		if (ret == ETIME) {
+			tpm_ereport_timeout(tpm, TPM_STS, to, __func__);
+		}
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: failed to put TPM into "
 		    "ready state", __func__);
 		return (ret);
@@ -133,6 +139,10 @@ tis_expecting_data(tpm_t *tpm, bool *expp)
 	 */
 	ret = tpm_wait(tpm, tis_status_valid, tpm->tpm_timeout_c);
 	if (ret != 0) {
+		if (ret == ETIME) {
+			tpm_ereport_timeout(tpm, TPM_STS, tpm->tpm_timeout_c,
+			    __func__);
+		}
 		return (ret);
 	}
 
@@ -263,7 +273,8 @@ tis_data_avail(tpm_t *tpm)
 }
 
 static int
-tis_recv_chunk(tpm_t *tpm, uint8_t *buf, size_t amt)
+tis_recv_chunk(tpm_t *tpm, uint32_t offset, uint8_t *buf, size_t amt,
+    uint32_t cmd)
 {
 	int size = 0;
 	bool retried = false;
@@ -271,6 +282,8 @@ tis_recv_chunk(tpm_t *tpm, uint8_t *buf, size_t amt)
 
 	/* A number of consecutive bytes that can be written to TPM */
 	uint16_t burstcnt;
+
+	buf += offset;
 
 retry:
 	while (size < amt) {
@@ -283,6 +296,8 @@ retry:
 		case ECANCELED:
 			return (ret);
 		case ETIME:
+			tpm_ereport_timeout(tpm, TPM_STS, tpm->tpm_timeout_c,
+			    __func__);
 			goto check_retry;
 		default:
 			dev_err(tpm->tpm_dip, CE_PANIC, "unexpected return "
@@ -329,6 +344,7 @@ check_retry:
 	}
 
 	if (size != amt) {
+		tpm_ereport_short_read(tpm, cmd, offset, amt, size);
 		dev_err(tpm->tpm_dip, CE_NOTE,
 		    "!short read: expected %lu, read %u", amt, size);
 		/* XXX: Better error value? */
@@ -352,6 +368,7 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
 	int ret;
 	uint32_t expected, status;
 	uint32_t cmdresult;
+	uint32_t cmd;
 
 	/*
 	 * We should always have a buffer large enough for the smallest
@@ -359,8 +376,10 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
 	 */
 	VERIFY3U(bufsiz, >=, TPM_HEADER_SIZE);
 
+	cmd = tpm_getbuf32(buf, TPM_COMMAND_CODE_OFFSET);
+
 	/* Read tag(2 bytes), paramsize(4), and result(4) */
-	ret = tis_recv_chunk(tpm, buf, TPM_HEADER_SIZE);
+	ret = tis_recv_chunk(tpm, 0, buf, TPM_HEADER_SIZE, cmd);
 	if (ret != 0) {
 		goto OUT;
 	}
@@ -380,8 +399,8 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
 	}
 
 	/* Read in the rest of the data from the TPM */
-	ret = tis_recv_chunk(tpm, buf + TPM_HEADER_SIZE,
-	    expected - TPM_HEADER_SIZE);
+	ret = tis_recv_chunk(tpm, TPM_HEADER_SIZE, buf,
+	    expected - TPM_HEADER_SIZE, cmd);
 	if (ret != 0) {
 		goto OUT;
 	}
@@ -475,6 +494,8 @@ tis_request_locality(tpm_t *tpm, uint8_t locality)
 	case 0:
 		break;
 	case ETIME:
+		tpm_ereport_timeout(tpm, TPM_ACCESS, tpm->tpm_timeout_a,
+		    __func__);
 		dev_err(tpm->tpm_dip, CE_NOTE,
 		    "timed out requesting locality %hhu", locality);
 		/*FALLTHRU*/

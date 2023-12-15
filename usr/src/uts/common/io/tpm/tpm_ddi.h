@@ -196,7 +196,8 @@ typedef enum tpm_wait {
 } tpm_wait_t;
 
 typedef enum tpm_attach_seq {
-	TPM_ATTACH_REGS =	0,
+	TPM_ATTACH_FM =		0,
+	TPM_ATTACH_REGS,
 	TPM_ATTACH_DEV_INIT,
 	TPM_ATTACH_INTR_ALLOC,
 	TPM_ATTACH_INTR_HDLRS,
@@ -269,11 +270,16 @@ struct tpm {
 	clock_t			tpm_timeout_poll;	/* WO */
 	clock_t			tpm_duration[TPM_DURATION_MAX]; /* WO */
 
+	size_t			tpm_object_size;	/* WO */
+	size_t			tpm_session_size;	/* WO */
+
 	ddi_intr_handle_t	tpm_isr;
 
 	crypto_kcf_provider_handle_t	tpm_n_prov;
 
 	tpm_client_t		*tpm_internal_client;
+	int			tpm_fm_capabilities;
+	ddi_device_acc_attr_t	tpm_acc_attr;
 };
 
 typedef enum tpm_mode {
@@ -340,6 +346,12 @@ tpm_is_cancelled(tpm_t *tpm)
 #define	TPM_LOCALITY_MAX	4
 #define	TPM_OFFSET_MAX		0x0fff
 
+static inline uint16_t
+tpm_getbuf16(const uint8_t *ptr, uint32_t offset)
+{
+	return (BE_IN16(ptr + offset));
+}
+
 static inline uint32_t
 tpm_getbuf32(const uint8_t *ptr, uint32_t offset)
 {
@@ -395,8 +407,13 @@ void tpm_dbg(const tpm_t *, int, const char *, ...);
 void tpm_dispatch_cmd(tpm_client_t *);
 void tpm_exec_thread(void *);
 
-int tpm_exec_internal(tpm_t *, uint8_t, uio_t *, uio_t *);
-int tpm_exec_internal_simple(tpm_t *, uint8_t, uint8_t *, size_t);
+void tpm_int_newcmd(tpm_client_t *, uint16_t, uint32_t);
+void tpm_int_put8(tpm_client_t *, uint8_t);
+void tpm_int_put16(tpm_client_t *, uint16_t);
+void tpm_int_put32(tpm_client_t *, uint32_t);
+void tpm_int_copy(tpm_client_t *, const void *, size_t);
+
+int tpm_exec_internal(tpm_t *, tpm_client_t *);
 
 size_t tpm_uio_size(const uio_t *);
 
@@ -419,6 +436,9 @@ int crb_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
 void crb_cancel_cmd(tpm_t *, tpm_duration_t);
 void crb_intr_mgmt(tpm_t *, bool);
 uint_t crb_intr(caddr_t, caddr_t);
+
+void tpm_ereport_timeout(tpm_t *, uint16_t, clock_t, const char *);
+void tpm_ereport_short_read(tpm_t *, uint32_t, uint32_t, uint32_t, uint32_t);
 
 #ifdef TPM_KCF
 int tpm_kcf_register(tpm_t *);

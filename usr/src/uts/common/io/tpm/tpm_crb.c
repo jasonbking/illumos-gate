@@ -170,6 +170,10 @@ crb_go_idle(tpm_t *tpm)
 	tpm_put32(tpm, TPM_CRB_CTRL_REQ, TPM_CRB_CTRL_REQ_GO_IDLE);
 	ret = tpm_wait(tpm, crb_is_go_idle_done, tpm->tpm_timeout_c);
 	if (ret != 0) {
+		if (ret == ETIME) {
+			tpm_ereport_timeout(tpm, TPM_CRB_CTRL_REQ,
+			    tpm->tpm_timeout_c, __func__);
+		}
 		return (ret);
 	}
 
