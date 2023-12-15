@@ -176,33 +176,27 @@ tpm_dispatch_cmd(tpm_client_t *c)
 }
 
 int
-tpm_exec_internal(tpm_t *tpm, uint8_t loc, uio_t *in, uio_t *out)
+tpm_exec_internal(tpm_t *tpm, tpm_client_t *c)
 {
-	tpm_client_t *c = tpm->tpm_internal_client;
 	uint32_t inlen, outlen;
 	uint32_t cmdlen;
 
-	inlen = tpm_uio_size(in);
-	outlen = tpm_uio_size(out);
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
+	ASSERT(c->tpmc_iskernel);
+	ASSERT3S(c->tpmc_state, ==, TPM_CLIENT_IDLE);
+	ASSERT3U(c->tpmc_bufused, <=, c->tpmc_buflen);
 
-	VERIFY3U(inlen, >, TPM_HEADER_SIZE);
+	cmdlen = c->tpmc_bufused;
 
-	mutex_enter(&c->tpmc_lock);
+	/* We should always write at least the TPM header */
+	ASSERT3U(cmdlen, >=, TPM_HEADER_SIZE);
 
-	while (c->tpmc_state != TPM_CLIENT_IDLE) {
-		cv_wait(&c->tpmc_cv, &c->tpmc_lock);
-	}
+	/*
+	 * Set the length field of the TPM header to the amount written.
+	 */
+	BE_OUT32(c->tpmc_buf + TPM_PARAMSIZE_OFFSET, cmdlen);
 
 	c->tpmc_state = TPM_CLIENT_CMD_RECEPTION;
-
-	c->tpmc_locality = loc;
-
-	VERIFY0(uiomove(c->tpmc_buf, inlen, UIO_WRITE, in));
-
-	cmdlen = tpm_cmdlen(c->tpmc_buf);
-	VERIFY3U(cmdlen, ==, inlen);
-
-	c->tpmc_bufused = cmdlen;
 
 	tpm_dispatch_cmd(c);
 
@@ -214,41 +208,7 @@ tpm_exec_internal(tpm_t *tpm, uint8_t loc, uio_t *in, uio_t *out)
 		return (c->tpmc_cmdresult);
 	}
 
-	VERIFY0(uiomove(c->tpmc_buf, c->tpmc_bufused, UIO_READ, out));
-
-	tpm_client_reset(c);
-	mutex_exit(&c->tpmc_lock);
-
 	return (0);
-}
-
-int
-tpm_exec_internal_simple(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
-{
-	VERIFY3U(buflen, >=, TPM_HEADER_SIZE);
-
-	iovec_t iov_in = {
-		.iov_base = (char *)buf,
-		.iov_len = tpm_cmdlen(buf),
-	};
-	iovec_t iov_out = {
-		.iov_base = (char *)buf,
-		.iov_len = buflen,
-	};
-	uio_t in = {
-		.uio_iov = &iov_in,
-		.uio_iovcnt = 1,
-		.uio_segflg = UIO_SYSSPACE,
-		.uio_resid = tpm_cmdlen(buf),
-	};
-	uio_t out = {
-		.uio_iov = &iov_out,
-		.uio_iovcnt = 1,
-		.uio_segflg = UIO_SYSSPACE,
-		.uio_resid = buflen,
-	};
-
-	return (tpm_exec_internal(tpm, loc, &in, &out));
 }
 
 static int
@@ -653,6 +613,71 @@ void
 tpm_put32(tpm_t *tpm, unsigned long offset, uint32_t value)
 {
 	ddi_put32(tpm->tpm_handle, tpm_reg_addr(tpm, offset), value);
+}
+
+void
+tpm_int_newcmd(tpm_client_t *c, uint16_t sess, uint32_t cmd)
+{
+	uint8_t *buf = c->tpmc_buf;
+
+	ASSERT3U(c->tpmc_buflen, >=, TPM_HEADER_SIZE);
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
+
+	bzero(buf, c->tpmc_buflen);
+
+	BE_OUT16(buf, sess);
+	buf += sizeof (uint16_t);
+
+	BE_OUT32(buf, cmd);
+	buf += sizeof (uint32_t);
+
+	/* Skip length for now */
+	buf += sizeof (uint32_t);
+
+	c->tpmc_bufused += (size_t)(buf - c->tpmc_buf);
+}
+
+void
+tpm_int_put8(tpm_client_t *c, uint8_t val)
+{
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
+	VERIFY3U(c->tpmc_bufused + sizeof (uint8_t), <=, c->tpmc_buflen);
+	c->tpmc_buf[c->tpmc_bufused] = val;
+	c->tpmc_bufused += sizeof (uint8_t);
+}
+
+void
+tpm_int_put16(tpm_client_t *c, uint16_t val)
+{
+	uint8_t *buf = c->tpmc_buf + c->tpmc_bufused;
+
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
+	VERIFY3U(c->tpmc_bufused + sizeof (uint16_t), <=, c->tpmc_buflen);
+	BE_OUT16(buf, val);
+	c->tpmc_bufused += sizeof (uint16_t);
+}
+
+void
+tpm_int_put32(tpm_client_t *c, uint32_t val)
+{
+	uint8_t *buf = c->tpmc_buf + c->tpmc_bufused;
+
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
+	VERIFY3U(c->tpmc_bufused + sizeof (uint32_t), <=, c->tpmc_buflen);
+	BE_OUT32(buf, val);
+	c->tpmc_bufused += sizeof (uint32_t);
+}
+
+void
+tpm_int_copy(tpm_client_t *c, const void *src, size_t len)
+{
+	uint8_t *buf = c->tpmc_buf + c->tpmc_bufused;
+
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
+	VERIFY3U(c->tpmc_bufused + len, <=, c->tpmc_buflen);
+
+	bcopy(src, buf, len);
+	c->tpmc_bufused += len;
 }
 
 /*

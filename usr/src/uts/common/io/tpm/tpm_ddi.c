@@ -31,6 +31,10 @@
 #include <sys/modctl.h>		/* for _init,_info,_fini,mod_* */
 #include <sys/ddi.h>		/* used by all entry points */
 #include <sys/sunddi.h>		/* used by all entry points */
+#include <sys/sunndi.h>		/* used to set HW properties */
+#include <sys/ddifm.h>		/* fault management */
+#include <sys/fm/io/ddi.h>
+#include <sys/fm/protocol.h>
 #include <sys/cmn_err.h>	/* used for debug outputs */
 #include <sys/types.h>		/* used by prop_op, ddi_prop_op */
 
@@ -98,9 +102,10 @@ static id_space_t		*tpm_minors;
 static void			*tpm_statep = NULL;
 
 static ddi_device_acc_attr_t	tpm_acc_attr = {
-	.devacc_attr_version =		DDI_DEVICE_ATTR_V0,
+	.devacc_attr_version =		DDI_DEVICE_ATTR_V1,
 	.devacc_attr_endian_flags =	DDI_STRUCTURE_LE_ACC,
 	.devacc_attr_dataorder =	DDI_STRICTORDER_ACC,
+	.devacc_attr_access =		DDI_DEFAULT_ACC,
 };
 
 static inline void
@@ -764,6 +769,128 @@ tpm_quiesce(dev_info_t *dip __unused)
 	return (DDI_SUCCESS);
 }
 
+int
+tpm_check_acc_handle(ddi_acc_handle_t handle)
+{
+	ddi_fm_error_t de;
+
+	ddi_fm_acc_err_get(handle, &de, DDI_FME_VERSION);
+	ddi_fm_acc_err_clear(handle, DDI_FME_VERSION);
+	return (de.fme_status);
+}
+
+void
+tpm_ereport_timeout(tpm_t *tpm, uint16_t reg, clock_t to, const char *func)
+{
+	uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
+	uint64_t ms;
+	const char *iftype = "Unknown";
+
+	switch (tpm->tpm_iftype) {
+	case TPM_IF_TIS:
+		iftype = "TIS";
+		break;
+	case TPM_IF_FIFO:
+		iftype = "FIFO";
+		break;
+	case TPM_IF_CRB:
+		iftype = "CRB";
+		break;
+	}
+
+	ms = drv_hztousec(to) / 1000;
+
+	ddi_fm_ereport_post(tpm->tpm_dip,
+	    DDI_FM_DEVICE "." DDI_FM_DEVICE_NO_RESPONSE, ena, DDI_NOSLEEP,
+	    FM_VERSION, DATA_TYPE_UINT8, FM_EREPORT_VERS0,
+	    "tpm_interface", DATA_TYPE_STRING, iftype,
+	    "locality", DATA_TYPE_UINT8, tpm->tpm_locality,
+	    "register", DATA_TYPE_UINT16, reg,
+	    "timeout", DATA_TYPE_UINT64, ms,
+	    "func", DATA_TYPE_STRING, func,
+	    NULL);
+}
+
+void
+tpm_ereport_short_read(tpm_t *tpm, uint32_t cmd, uint32_t offset,
+    uint32_t expected, uint32_t actual)
+{
+	uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
+	const char *iftype = "Unknown";
+
+	switch (tpm->tpm_iftype) {
+	case TPM_IF_TIS:
+		iftype = "TIS";
+		break;
+	case TPM_IF_FIFO:
+		iftype = "FIFO";
+		break;
+	case TPM_IF_CRB:
+		iftype = "CRB";
+		break;
+	}
+
+	ddi_fm_ereport_post(tpm->tpm_dip,
+	    DDI_FM_DEVICE "." DDI_FM_DEVICE_INVAL_STATE, ena, DDI_NOSLEEP,
+	    FM_VERSION, DATA_TYPE_UINT8, FM_EREPORT_VERS0,
+	    "tpm_interface", DATA_TYPE_STRING, iftype,
+	    "locality", DATA_TYPE_UINT8, tpm->tpm_locality,
+	    "command", DATA_TYPE_UINT32, cmd,
+	    "offset", DATA_TYPE_UINT32, offset,
+	    "expected", DATA_TYPE_UINT32, expected,
+	    "actual", DATA_TYPE_UINT32, actual,
+	    NULL);
+}
+
+static int
+tpm_fm_error_cb(dev_info_t *dip, ddi_fm_error_t *errp, const void *arg)
+{
+	/* TODO */
+	return (errp->fme_status);
+}
+
+static bool
+tpm_attach_fm(tpm_t *tpm)
+{
+	ddi_iblock_cookie_t iblk;
+
+	tpm->tpm_fm_capabilities = ddi_prop_get_int(DDI_DEV_T_ANY,
+	    tpm->tpm_dip, DDI_PROP_DONTPASS, "fm_capable",
+	    DDI_FM_EREPORT_CAPABLE | DDI_FM_ACCCHK_CAPABLE |
+	    DDI_FM_ERRCB_CAPABLE);
+
+	if (tpm->tpm_fm_capabilities < 0) {
+		tpm->tpm_fm_capabilities = 0;
+		return (true);
+	}
+
+	if (tpm->tpm_fm_capabilities & DDI_FM_ACCCHK_CAPABLE) {
+		tpm->tpm_acc_attr.devacc_attr_access = DDI_FLAGERR_ACC;
+	}
+
+	ddi_fm_init(tpm->tpm_dip, &tpm->tpm_fm_capabilities, &iblk);
+
+	if (DDI_FM_ERRCB_CAP(tpm->tpm_fm_capabilities)) {
+		ddi_fm_handler_register(tpm->tpm_dip, tpm_fm_error_cb, tpm);
+	}
+
+	return (true);
+}
+
+static void
+tpm_cleanup_fm(tpm_t *tpm)
+{
+	if (tpm->tpm_fm_capabilities == 0) {
+		return;
+	}
+
+	if (DDI_FM_ERRCB_CAP(tpm->tpm_fm_capabilities)) {
+		ddi_fm_handler_unregister(tpm->tpm_dip);
+	}
+
+	ddi_fm_fini(tpm->tpm_dip);		
+}
+
 static bool
 tpm_attach_regs(tpm_t *tpm)
 {
@@ -812,7 +939,7 @@ tpm_attach_regs(tpm_t *tpm)
 	}
 
 	ret = ddi_regs_map_setup(tpm->tpm_dip, idx, (caddr_t *)&tpm->tpm_addr,
-	    0, regsize, &tpm_acc_attr, &tpm->tpm_handle);
+	    0, regsize, &tpm->tpm_acc_attr, &tpm->tpm_handle);
 	if (ret != DDI_SUCCESS) {
 		dev_err(tpm->tpm_dip, CE_WARN,
 		    "failed to map tpm registers: %d", ret);
@@ -831,6 +958,8 @@ tpm_cleanup_regs(tpm_t *tpm)
 static bool
 tpm_attach_dev_init(tpm_t *tpm)
 {
+	char *ifstr = "Unknown";
+	char *famstr = "";
 	uint32_t id;
 	bool ret;
 
@@ -844,6 +973,8 @@ tpm_attach_dev_init(tpm_t *tpm)
 	switch (TPM_INTF_IFTYPE(id)) {
 	case TPM_INTF_IFTYPE_TIS:
 		tpm->tpm_iftype = TPM_IF_TIS;
+		ifstr = "TIS";
+
 		/*
 		 * For TPMs using the TIS 1.3 interface, tpm_tis_init()
 		 * will set tpm_family since both TPM1.2 and TPM2.0
@@ -854,6 +985,8 @@ tpm_attach_dev_init(tpm_t *tpm)
 	case TPM_INTF_IFTYPE_FIFO:
 		tpm->tpm_iftype = TPM_IF_FIFO;
 		tpm->tpm_family = TPM_FAMILY_2_0;
+		ifstr = "FIFO";
+
 		/*
 		 * While the id value can be also be used to determine the
 		 * VID/DID/RID of the TPM module for TPM2.0 devices using
@@ -867,6 +1000,7 @@ tpm_attach_dev_init(tpm_t *tpm)
 	case TPM_INTF_IFTYPE_CRB:
 		tpm->tpm_iftype = TPM_IF_CRB;
 		tpm->tpm_family = TPM_FAMILY_2_0;
+		ifstr = "CRB";
 		ret = crb_init(tpm);
 		break;
 	default:
@@ -878,8 +1012,6 @@ tpm_attach_dev_init(tpm_t *tpm)
 	if (!ret)
 		return (ret);
 
-	char *famstr = "";
-
 	switch (tpm->tpm_family) {
 	case TPM_FAMILY_1_2:
 		famstr = "1.2";
@@ -889,19 +1021,17 @@ tpm_attach_dev_init(tpm_t *tpm)
 		break;
 	}
 
-	/*
-	 * XXX: These are really hardware and firmware properties,
-	 * would it be better to use ndi_prop_update_int() instead?
-	 */
-	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
-	    "tpm-deviceid", tpm->tpm_did);
-	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
-	    "tpm-vendorid", tpm->tpm_vid);
-	(void) ddi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
-	    "tpm-hwvendor", (char *)tpm_hwvend_str(tpm->tpm_vid));
-	(void) ddi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
-	    "tpm-revision", tpm->tpm_rid);
-	(void) ddi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
+	(void) ndi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "device-id", tpm->tpm_did);
+	(void) ndi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "vendor-id", tpm->tpm_vid);
+	(void) ndi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "vendor-name", (char *)tpm_hwvend_str(tpm->tpm_vid));
+	(void) ndi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "revision-id", tpm->tpm_rid);
+	(void) ndi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
+	    "tpm-interface", ifstr);
+	(void) ndi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
 	    "tpm-family", famstr);
 
 	return (true);
@@ -990,6 +1120,7 @@ tpm_attach_intr_alloc(tpm_t *tpm)
 		return (false);
 	}
 
+	tpm->tpm_use_interrupts = true;
 	return (true);
 }
 
@@ -1168,6 +1299,12 @@ tpm_cleanup_kcf(tpm_t *tpm)
 #endif
 
 static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
+	[TPM_ATTACH_FM] = {
+		.tad_seq = TPM_ATTACH_FM,
+		.tad_name = "fault management",
+		.tad_attach = tpm_attach_fm,
+		.tad_cleanup = tpm_cleanup_fm,
+	},
 	[TPM_ATTACH_REGS] = {
 		.tad_seq = TPM_ATTACH_REGS,
 		.tad_name = "registers",
@@ -1293,6 +1430,7 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		tpm = ddi_get_soft_state(tpm_statep, instance);
 		tpm->tpm_dip = dip;
 		tpm->tpm_instance = instance;
+		tpm->tpm_acc_attr = tpm_acc_attr;
 		break;
 	case DDI_RESUME:
 		tpm = ddi_get_soft_state(tpm_statep, instance);

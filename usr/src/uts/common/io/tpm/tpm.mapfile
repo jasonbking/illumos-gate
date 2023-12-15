@@ -47,8 +47,13 @@ SYMBOL_VERSION ILLUMOSprivate {
 	id_free				{ FLAGS = EXTERN };
 	id_space_create			{ FLAGS = EXTERN };
 	id_space_destroy		{ FLAGS = EXTERN };
+
 	p0				{ FLAGS = EXTERN };
 	minclsyspri			{ FLAGS = EXTERN };
+
+	ndi_prop_update_int		{ FLAGS = EXTERN };
+	ndi_prop_update_string		{ FLAGS = EXTERN };
+
 	refhash_create			{ FLAGS = EXTERN };
 	refhash_destroy			{ FLAGS = EXTERN };
 	refhash_hold			{ FLAGS = EXTERN };
@@ -56,6 +61,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	refhash_lookup			{ FLAGS = EXTERN };
 	refhash_remove			{ FLAGS = EXTERN };
 	refhash_rele			{ FLAGS = EXTERN };
+
 	thread_create			{ FLAGS = EXTERN };
 	thread_create			{ FLAGS = EXTERN };
 	thread_join			{ FLAGS = EXTERN };

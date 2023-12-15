@@ -139,51 +139,26 @@ tpm20_get_duration_type(tpm_t *tpm, const uint8_t *buf)
 int
 tpm20_generate_random(tpm_t *tpm, uchar_t *buf, size_t len)
 {
+	tpm_client_t *c = tpm->tpm_internal_client;
+	uint8_t *cmd = c->tpmc_buf;
+	int ret;
+	uint32_t tpmret;
+
 	if (len > UINT16_MAX) {
 		return (CRYPTO_DATA_LEN_RANGE);
 	}
 
-	uint8_t cmd[RNDHDR_SIZE] = {
-		0x80, 0x01,				/* TPM_ST_NO_SESSIONS */
-		0x00, 0x00, 0x00, RNDHDR_SIZE,		/* Param Size */
-		0x00, 0x00, 0x01, 0x7b,			/* TPM_CC_GetRandom */
-		(len >> 8) & 0xff,
-		len & 0xff,				/* bytes requested */
-	};
-	iovec_t iov_in = {
-		.iov_base = (char *)cmd,
-		.iov_len = RNDHDR_SIZE,
-	};
-	iovec_t iov_out[2] = {
-		[0] = {
-			.iov_base = (char *)cmd,
-			.iov_len = RNDHDR_SIZE,
-		},
-		[1] = {
-			.iov_base = (char *)buf,
-			.iov_len = len,
-		},
-	};
-	uio_t in = {
-		.uio_iov = &iov_in,
-		.uio_iovcnt = 1,
-		.uio_segflg = UIO_SYSSPACE,
-		.uio_resid = RNDHDR_SIZE,
-	};
-	uio_t out = {
-		.uio_iov = iov_out,
-		.uio_iovcnt = 2,
-		.uio_segflg = UIO_SYSSPACE,
-		.uio_resid = RNDHDR_SIZE + len,
-	};
-	int ret;
-	uint32_t tpmret;
+	mutex_enter(&c->tpmc_lock);
+	tpm_int_newcmd(c, TPM_ST_NO_SESSIONS, TPM_CC_GetRandom);
+	tpm_int_put16(c, len);
 
-	ret = tpm_exec_internal(tpm, 0, &in, &out);
+	ret = tpm_exec_internal(tpm, c);
 	if (ret != 0) {
 		/* XXX: Can we map to better errors here?
 		 * Maybe CRYPTO_BUSY for timeouts?
 		 */
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
 		return (CRYPTO_FAILED);
 	}
 
@@ -192,9 +167,28 @@ tpm20_generate_random(tpm_t *tpm, uchar_t *buf, size_t len)
 		dev_err(tpm->tpm_dip, CE_NOTE,
 		    "!TPM_CC_GetRandom failed with %u\n", tpmret);
 		/* TODO: Maybe map TPM rc codes to CRYPTO_xxx values */
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
 		return (CRYPTO_FAILED);
 	}
 
+	/*
+	 * The response includes the fixed sized TPM header, followed by
+	 * a 16-bit length, followed by the random data.
+	 *
+	 * Verify we have at least len bytes of random data.
+	 */
+	if (tpm_getbuf16(cmd, TPM_HEADER_SIZE) < len) {
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
+		return (CRYPTO_FAILED);
+	}
+	cmd += TPM_HEADER_SIZE + sizeof (uint16_t);
+
+	bcopy(cmd, buf, len);
+
+	tpm_client_reset(c);
+	mutex_exit(&c->tpmc_lock);
 	return (CRYPTO_SUCCESS);
 }
 
@@ -203,61 +197,26 @@ tpm20_generate_random(tpm_t *tpm, uchar_t *buf, size_t len)
 int
 tpm20_seed_random(tpm_t *tpm, uchar_t *buf, size_t len)
 {
+	tpm_client_t	*c = tpm->tpm_internal_client;
+	uint8_t		*cmd = c->tpmc_buf;
+	int		ret;
+	uint32_t	tpmret;
+
 	/* XXX: Should we maybe just truncate instead? */
 	if (len > TPM_STIR_MAX) {
 		return (CRYPTO_DATA_LEN_RANGE);
 	}
 
-	uint32_t plen = len + TPM_HEADER_SIZE;
-	uint8_t cmd[] = {
-		/* Header */
-		0x80, 0x01,		/* TPM_ST_NO_SESSIONS */
-		(uint8_t)((plen >> 24) & 0xff),	/* Param size */
-		(uint8_t)((plen >> 16) & 0xff),
-		(uint8_t)((plen >> 8) & 0xff),
-		(uint8_t)(plen & 0xff),
-		0x00, 0x00, 0x01, 0x46,	/* TPM_CC_StirRandom */
+	mutex_enter(&c->tpmc_lock);
+	tpm_int_newcmd(c, TPM_ST_NO_SESSIONS, TPM_CC_StirRandom);
+	tpm_int_put16(c, (uint16_t)len);
+	tpm_int_copy(c, buf, len);
 
-		/* Parameters */
-
-		/*
-		 * The data is sent as a TPM2B_SENSITIVE_DATA type which
-		 * includes a 16-bit length followed by the value.
-		 *
-		 * No parameters are returned in the response.
-		 */
-		(uint8_t)((len >> 8) & 0xff),
-		(uint8_t)(len & 0xff),
-	};
-	iovec_t iov[2] = {
-		[0] = {
-			.iov_base = (char *)cmd,
-			.iov_len = sizeof (cmd),
-		},
-		[1] = {
-			.iov_base = (char *)buf,
-			.iov_len = len,
-		}
-	};
-	uio_t in = {
-		.uio_iov = iov,
-		.uio_iovcnt = 2,
-		.uio_segflg = UIO_SYSSPACE,
-		.uio_resid = plen,
-	};
-	/* The TPM just returns a header w/ no data */
-	uio_t out = {
-		.uio_iov = iov,
-		.uio_iovcnt = 1,
-		.uio_segflg = UIO_SYSSPACE,
-		.uio_resid = TPM_HEADER_SIZE,
-	};
-	int	ret;
-	uint32_t tpmret;
-
-	ret = tpm_exec_internal(tpm, 0, &in, &out);
+	ret = tpm_exec_internal(tpm, c);
 	if (ret != 0) {
 		/* XXX: Map to better errors? */
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
 		return (CRYPTO_FAILED);
 	}
 
@@ -266,9 +225,12 @@ tpm20_seed_random(tpm_t *tpm, uchar_t *buf, size_t len)
 		dev_err(tpm->tpm_dip, CE_CONT,
 		    "!TPM_CC_StirRandom failed with %u\n", tpmret);
 		/* TODO: Maybe map TPM return codes to CRYPTO_xxx values */
+		tpm_client_reset(c);
+		mutex_exit(&c->tpmc_lock);
 		return (CRYPTO_FAILED);
 	}
 
-done:
+	tpm_client_reset(c);
+	mutex_exit(&c->tpmc_lock);
 	return (ret);
 }
