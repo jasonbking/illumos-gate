@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2023 Jason King
  */
 
 #ifndef _TPM20_H
@@ -86,7 +86,6 @@ typedef struct {
 	TPM_PT		property;
 	uint32_t	value;
 } TPMS_TAGGED_PROPERTY;
-
 
 bool tpm20_init(struct tpm *);
 int tpm20_seed_random(struct tpm *, uchar_t *, size_t);

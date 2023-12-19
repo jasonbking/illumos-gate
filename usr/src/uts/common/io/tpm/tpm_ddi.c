@@ -63,6 +63,7 @@
 #include "tpm_tis.h"
 #include "tpm_ddi.h"
 #include "tpm20.h"
+#include "tpm_tab.h"
 
 extern pri_t minclsyspri;
 
@@ -260,6 +261,18 @@ tpm_create_client(tpm_t *tpm, int flag, int minor, tpm_client_t **clientp)
 	mutex_init(&c->tpmc_lock, NULL, MUTEX_DRIVER, pri);
 	cv_init(&c->tpmc_cv, NULL, CV_DRIVER, pri);
 
+	if (tpm->tpm_family == TPM_FAMILY_2_0) {
+		int ret;
+
+		ret = tpm_tab_init(c);
+		if (ret != 0) {
+			mutex_destroy(&c->tpmc_lock);
+			cv_destroy(&c->tpmc_cv);
+			kmem_free(c, sizeof (*c));
+			return (ret);
+		}
+	}
+
 	*clientp = c;
 	return (0);
 }
@@ -340,6 +353,8 @@ tpm_client_dtor(void *arg)
 		tpm->tpm_client_count--;
 	}
 	mutex_exit(&tpm->tpm_lock);
+
+	tpm_tab_fini(c);
 
 	bzero(c->tpmc_buf, c->tpmc_buflen);
 	kmem_free(c->tpmc_buf, c->tpmc_buflen);
@@ -1282,12 +1297,17 @@ tpm_cleanup_minor_node(tpm_t *tpm)
 	ddi_remove_minor_node(tpm->tpm_dip, NULL);
 }
 
-#ifdef TPM_KCF
 static bool
 tpm_attach_kcf(tpm_t *tpm)
 {
+	if (ddi_prop_get_int(DDI_DEV_T_ANY, tpm->tpm_dip, DDI_PROP_DONTPASS,
+	    "disable-kcf", 0) != 0) {
+		return (true);
+	}
+
 	if (tpm_kcf_register(tpm) != DDI_SUCCESS)
 		return (false);
+
 	return (true);
 }
 
@@ -1296,7 +1316,6 @@ tpm_cleanup_kcf(tpm_t *tpm)
 {
 	(void) tpm_kcf_unregister(tpm);
 }
-#endif
 
 static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
 	[TPM_ATTACH_FM] = {
@@ -1353,14 +1372,12 @@ static tpm_attach_desc_t tpm_attach_tbl[TPM_ATTACH_NUM_ENTRIES] = {
 		.tad_attach = tpm_attach_minor_node,
 		.tad_cleanup = tpm_cleanup_minor_node,
 	},
-#ifdef TPM_KCF
 	[TPM_ATTACH_KCF] = {
 		.tad_seq = TPM_ATTACH_KCF,
 		.tad_name = "kcf provider",
 		.tad_attach = tpm_attach_kcf,
 		.tad_cleanup = tpm_cleanup_kcf,
 	},
-#endif
 };
 
 static void
@@ -1568,6 +1585,15 @@ tpm_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	case DDI_SUSPEND:
 		return (tpm_suspend(tpm));
 	default:
+		return (DDI_FAILURE);
+	}
+
+	/*
+	 * If we registered with KCF, we can't detach because swrand keeps
+	 * a reference to the KCF handle and KCF doesn't (currently)
+	 * properly handle this (and will cause a panic).
+	 */
+	if (tpm->tpm_n_prov != 0) {
 		return (DDI_FAILURE);
 	}
 

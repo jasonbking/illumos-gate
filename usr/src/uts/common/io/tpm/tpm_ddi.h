@@ -205,9 +205,7 @@ typedef enum tpm_attach_seq {
 	TPM_ATTACH_THREAD,
 	TPM_ATTACH_ICLIENT,
 	TPM_ATTACH_MINOR_NODE,
-#ifdef TPM_KCF
 	TPM_ATTACH_KCF,
-#endif
 	TPM_ATTACH_END			/* should always be last */
 } tpm_attach_seq_t;
 #define	TPM_ATTACH_NUM_ENTRIES	(TPM_ATTACH_END)
@@ -301,6 +299,8 @@ typedef enum tpm_client_state {
 	TPM_CLIENT_CMD_COMPLETION,	/* Write command to client */
 } tpm_client_state_t;
 
+typedef struct tpm_tab tpm_tab_t;
+
 struct tpm_client {
 	refhash_link_t		tpmc_reflink;
 	list_node_t		tpmc_node;
@@ -322,6 +322,8 @@ struct tpm_client {
 	bool			tpmc_cancelled;		/* RW */
 	bool			tpmc_closing;		/* WO */
 	bool			tpmc_iskernel;		/* WO */
+
+	tpm_tab_t		*tpmc_tab;		/* RW */
 };
 
 static inline bool
@@ -440,9 +442,7 @@ uint_t crb_intr(caddr_t, caddr_t);
 void tpm_ereport_timeout(tpm_t *, uint16_t, clock_t, const char *);
 void tpm_ereport_short_read(tpm_t *, uint32_t, uint32_t, uint32_t, uint32_t);
 
-#ifdef TPM_KCF
 int tpm_kcf_register(tpm_t *);
 int tpm_kcf_unregister(tpm_t *);
-#endif
 
 #endif	/* _TPM_DDI_H */

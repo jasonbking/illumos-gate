@@ -2264,6 +2264,7 @@ TPM_OBJS =	tpm.o \
 		tpm_ddi.o \
 		tpm_fifo.o \
 		tpm_kcf.o \
+		tpm_tab.o \
 		tpm12.o \
 		tpm20.o
 
