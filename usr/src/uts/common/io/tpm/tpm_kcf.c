@@ -109,7 +109,7 @@ tpmrng_ext_info(crypto_provider_handle_t prov,
 		return (DDI_FAILURE);
 
 	VERIFY0(ddi_prop_lookup_string(DDI_DEV_T_ANY, tpm->tpm_dip,
-	    DDI_PROP_DONTPASS, "tpm-hwvendor", &s));
+	    DDI_PROP_DONTPASS, "vendor-name", &s));
 	strncpy_spacepad(ext_info->ei_manufacturerID,
 	    s, sizeof (ext_info->ei_manufacturerID));
 
@@ -164,7 +164,6 @@ tpm_kcf_register(tpm_t *tpm)
 	tpmrng_prov_info.pi_provider_handle = tpm;
 
 	ret = crypto_register_provider(&tpmrng_prov_info, &tpm->tpm_n_prov);
-	dev_err(tpm->tpm_dip, CE_NOTE, "%s: tpm = 0x%p", __func__, tpm);
 
 	if (ret != CRYPTO_SUCCESS) {
 		tpm->tpm_n_prov = 0;
