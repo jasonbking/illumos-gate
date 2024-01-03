@@ -52,6 +52,7 @@
 #include <sys/taskq.h>
 #include <sys/cpuvar.h>
 #include <sys/reboot.h>
+#include <sys/sunndi.h>
 
 #include <sys/hyperv_busdma.h>
 #include <sys/vmbus.h>
@@ -193,7 +194,7 @@ vmbus_chan_rem_sublist(struct vmbus_channel *prichan,
 {
 	ASSERT(MUTEX_HELD(&prichan->ch_subchan_lock));
 	ASSERT3P(chan->ch_vmbus, !=, NULL);
-	ASSERT3P(chan->ch_prichan, ==, chan);
+	ASSERT3P(chan->ch_prichan, ==, prichan);
 	ASSERT3U(prichan->ch_subchan_cnt, >, 0);
 
 	VERIFY(list_link_active(&chan->ch_sublink));
@@ -659,30 +660,18 @@ vmbus_chan_gpadl_disconnect(struct vmbus_channel *chan, uint32_t gpadl)
 	return (0);
 }
 
+/* Note: takes a refheld chan */
 void
 vmbus_chan_detach(struct vmbus_channel *chan)
 {
-	uint32_t refs;
-
 	ASSERT3U(chan->ch_refs, >, 0);
-	refs = atomic_dec_uint_nv(&chan->ch_refs);
-
-	IMPLY(VMBUS_CHAN_ISPRIMARY(chan), refs == 0);
-
-	if (refs != 0)
-		return;
 
 	/*
 	 * Detach the target channel.
 	 */
 	VMBUS_DEBUG(chan->ch_vmbus, "?chan%u detached\n", chan->ch_id);
-	if (VMBUS_CHAN_ISPRIMARY(chan)) {
-		(void) vmbus_chan_release(chan);
-		(void) vmbus_chan_free(chan);
-	} else {
-		(void) ddi_taskq_dispatch(chan->ch_mgmt_tq,
-		    chan->ch_detach_task, chan, DDI_SLEEP);
-	}
+	(void) ddi_taskq_dispatch(chan->ch_mgmt_tq, chan->ch_detach_task, chan,
+	    DDI_SLEEP);
 }
 
 static void
@@ -1286,7 +1275,7 @@ vmbus_chan_free(void *arg)
 	ASSERT(!list_link_active(&chan->ch_link));
 	ASSERT(!list_link_active(&chan->ch_prilink));
 	ASSERT(!list_link_active(&chan->ch_sublink));
-	ASSERT((chan->ch_stflags & VMBUS_CHAN_ST_OPENED) == 0);
+	ASSERT3U((chan->ch_stflags & VMBUS_CHAN_ST_OPENED), ==, 0);
 	ASSERT3P(chan->ch_orphan_xact, ==, NULL);
 
 	hyperv_dmamem_free(&chan->ch_monprm_dma);
@@ -1524,19 +1513,14 @@ vmbus_chan_msgproc_chrescind(struct vmbus_softc *sc,
 	/*
 	 * Find and remove the target channel from the channel list.
 	 */
-	mutex_enter(&sc->vmbus_chan_lock);
-	for (chan = list_head(&sc->vmbus_chans); chan != NULL;
-	    chan = list_next(&sc->vmbus_chans, chan)) {
-		if (chan->ch_id == note->chm_chanid)
-			break;
-	}
+	chan = vmbus_chan_getid(sc, note->chm_chanid);
 	if (chan == NULL) {
-		mutex_exit(&sc->vmbus_chan_lock);
 		dev_err(sc->vmbus_dev, CE_WARN, "chan%u is not offered",
 		    note->chm_chanid);
 		return;
 	}
-	vmbus_chan_refhold(chan);
+
+	mutex_enter(&sc->vmbus_chan_lock);
 	vmbus_chan_rem_list(sc, chan);
 	mutex_exit(&sc->vmbus_chan_lock);
 
@@ -1615,9 +1599,13 @@ vmbus_prichan_detach_task(void *xchan)
 
 	ASSERT(VMBUS_CHAN_ISPRIMARY(chan));
 
+	(void) ndi_devi_offline(chan->ch_dev, NDI_DEVI_REMOVE);
+
 	(void) vmbus_delete_child(chan);
-	vmbus_chan_refrele(chan);
 	(void) vmbus_chan_release(chan);
+
+	if (atomic_dec_uint_nv(&chan->ch_refs) == 0)
+		(void) vmbus_chan_free(chan);
 }
 
 static void

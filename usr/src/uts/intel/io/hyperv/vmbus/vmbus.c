@@ -1218,7 +1218,12 @@ vmbus_add_child(struct vmbus_channel *chan)
 
 	ndi_devi_alloc_sleep(parent, devname, DEVI_SID_NODEID, &chan->ch_dev);
 	ddi_set_parent_data(chan->ch_dev, chan);
-	(void) ndi_devi_bind_driver(chan->ch_dev, 0);
+
+	if (ndi_devi_bind_driver(chan->ch_dev, 0) != NDI_SUCCESS) {
+		(void) ndi_devi_offline(chan->ch_dev, NDI_DEVI_REMOVE);
+		chan->ch_dev = NULL;
+		return (DDI_FAILURE);
+	}
 
 	return (DDI_SUCCESS);
 }
