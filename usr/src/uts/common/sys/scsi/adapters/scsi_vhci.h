@@ -76,6 +76,8 @@ int vhci_do_scsi_cmd(struct scsi_pkt *);
 /*PRINTFLIKE3*/
 void vhci_log(int, dev_info_t *, const char *, ...);
 
+int vhci_get_blocksize(dev_info_t *);
+
 /*
  * debugging stuff
  */
