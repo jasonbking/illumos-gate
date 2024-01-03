@@ -662,6 +662,12 @@ hn_rss_ind_fixup(struct hn_softc *sc)
 	}
 }
 
+static void
+hn_remove_cb(dev_info_t *dip, ddi_eventcookie_t cookie, void *a, void *b)
+{
+	struct hn_softc_t *sc __unused = a;
+}
+
 static int
 hn_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 {
@@ -687,6 +693,17 @@ hn_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	sc->hn_prichan = vmbus_get_channel(dip);
 
 	ddi_set_driver_private(dip, sc);
+
+	error = ddi_get_eventcookie(dip, DDI_DEVI_REMOVE_EVENT,
+	    &sc->hn_rm_cookie);
+	if (error == DDI_SUCCESS) {
+		error = ddi_add_event_handler(dip, sc->hn_rm_cookie,
+		    hn_remove_cb, sc, &sc->hn_rm_cb_id);
+		if (error != DDI_SUCCESS)
+			goto failed;
+	} else {
+		sc->hn_rm_cookie = NULL;
+	}
 
 	/*
 	 * NOTE:
@@ -822,6 +839,11 @@ hn_detach_impl(struct hn_softc *sc)
 		(void) vmbus_xact_ctx_orphan(sc->hn_xact);
 	}
 
+	if (sc->hn_rm_cb_id != NULL) {
+		(void) ddi_remove_event_handler(sc->hn_rm_cb_id);
+	}
+	sc->hn_rm_cb_id = NULL;
+
 	HN_LOCK(sc);
 	if (sc->hn_flags & HN_FLAG_SYNTH_ATTACHED) {
 		ASSERT(!sc->hn_running);
@@ -853,6 +875,7 @@ hn_detach_impl(struct hn_softc *sc)
 	mutex_destroy(&sc->hn_mgmt_lock);
 	HN_LOCK_DESTROY(sc);
 
+	
 	kmem_free(sc, sizeof (*sc));
 }
 

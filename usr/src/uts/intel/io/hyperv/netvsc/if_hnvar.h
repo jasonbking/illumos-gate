@@ -37,6 +37,7 @@
 
 /*
  * Copyright (c) 2017 by Delphix. All rights reserved.
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 #ifndef _IF_HNVAR_H_
@@ -46,6 +47,7 @@
 #include <sys/mac.h>
 #include <sys/mutex.h>
 #include <sys/debug.h>
+#include <sys/dditypes.h>
 
 #include <sys/vmbus.h>
 #include <sys/hyperv_busdma.h>
@@ -214,6 +216,8 @@ struct hn_softc {
 	int			hn_instance;
 	boolean_t		hn_running;
 	mac_handle_t		hn_mac_hdl;
+	ddi_eventcookie_t	hn_rm_cookie;
+	ddi_callback_id_t	hn_rm_cb_id;
 	boolean_t		hn_promiscuous;
 	uint8_t			hn_macaddr[ETHERADDRL];
 	boolean_t		hn_mac_addr_set;
