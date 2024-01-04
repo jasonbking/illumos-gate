@@ -1231,28 +1231,26 @@ vmbus_add_child(struct vmbus_channel *chan)
 int
 vmbus_delete_child(struct vmbus_channel *chan)
 {
-	int error = 0;
-
 	ASSERT(MUTEX_HELD(&vmbus_lock));
 
-	if (chan->ch_dev != NULL) {
-		if (ddi_prop_update_string(DDI_DEV_T_NONE, chan->ch_dev,
-		    VMBUS_STATE, VMBUS_STATE_OFFLINE) != DDI_SUCCESS) {
-			dev_err(chan->ch_dev, CE_WARN, "Unable to set "
-			    "\"%s(%s)\" property", VMBUS_STATE,
-			    VMBUS_STATE_OFFLINE);
-			return (DDI_FAILURE);
-		}
+	if (chan->ch_dev == NULL)
+		return (DDI_SUCCESS);
 
-		if (ndi_devi_offline(chan->ch_dev, NDI_DEVI_REMOVE) !=
-		    DDI_SUCCESS) {
-			dev_err(chan->ch_dev, CE_WARN, "Unable to offline "
-			    "device");
-			return (DDI_FAILURE);
-		}
-		chan->ch_dev = NULL;
+	if (ddi_prop_update_string(DDI_DEV_T_NONE, chan->ch_dev,
+	    VMBUS_STATE, VMBUS_STATE_OFFLINE) != DDI_SUCCESS) {
+		dev_err(chan->ch_dev, CE_WARN,
+		    "Unable to set \"%s(%s)\" property", VMBUS_STATE,
+		    VMBUS_STATE_OFFLINE);
+		return (DDI_FAILURE);
 	}
-	return (error);
+
+	if (ndi_devi_offline(chan->ch_dev, NDI_DEVI_REMOVE) != DDI_SUCCESS) {
+		dev_err(chan->ch_dev, CE_WARN, "Unable to offline device");
+		return (DDI_FAILURE);
+	}
+	chan->ch_dev = NULL;
+
+	return (DDI_SUCCESS);
 }
 
 uint32_t
@@ -1661,7 +1659,7 @@ static struct bus_ops vmbus_bus_ops = {
 	NULL,		/* (*bus_fm_access_enter)();    */
 	NULL,		/* (*bus_fm_access_fini)();	*/
 	NULL,		/* (*bus_power)();		*/
-	i_ddi_intr_ops	/* (*bus_intr_op)();		*/
+	i_ddi_intr_ops,	/* (*bus_intr_op)();		*/
 };
 
 static struct dev_ops vmbus_ops = {
