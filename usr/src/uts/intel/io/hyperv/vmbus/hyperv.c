@@ -472,7 +472,7 @@ hyperv_identify(void)
 	hyperv_svc_number = regs.cp_edx & 0x00ffffff;
 	hyperv_svc_branch = regs.cp_edx >> 24;
 
-	cmn_err(CE_CONT, "Hyper-V Version: %u.%u.%u [SP%u]\n",
+	cmn_err(CE_CONT, "?Hyper-V Version: %u.%u.%u [SP%u]\n",
 	    hyperv_ver_major, hyperv_ver_minor, hyperv_build, hyperv_svc_pack);
 
 	/*
