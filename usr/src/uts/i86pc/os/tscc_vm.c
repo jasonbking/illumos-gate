@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2021 Jason King
+ * Copyright 2024 Jason King
  */
 
 #include <sys/x86_archext.h>
@@ -21,17 +21,14 @@
 
 /*
  * From https://lwn.net/Articles/301888/, CPUID leaf 0x40000010 (when present)
- * on VMware will contain the TSC frequency in kHz. While it would have been
- * nice to locate an official bit of documentation from VMware, implementations
- * in both Linux and FreeBSD agree with the above link, so it seems reasonable
- * to use it as well.
+ * on VMs will contain the TSC frequency in kHz.
  */
 #define	CPUID_VM_LEAF_FREQ	0x40000010
 
 static boolean_t
-tsc_calibrate_vmware(uint64_t *freqp)
+tsc_calibrate_vm(uint64_t *freqp)
 {
-	if (get_hwenv() != HW_VMWARE)
+	if ((get_hwenv() & HW_VIRTUAL) == 0)
 		return (B_FALSE);
 
 	struct cpuid_regs regs = { 0 };
@@ -59,9 +56,9 @@ tsc_calibrate_vmware(uint64_t *freqp)
 	return (B_TRUE);
 }
 
-static tsc_calibrate_t tsc_calibration_vmware = {
-	.tscc_source = "VMware",
+static tsc_calibrate_t tsc_calibration_vm = {
+	.tscc_source = "VM",
 	.tscc_preference = 100,
-	.tscc_calibrate = tsc_calibrate_vmware,
+	.tscc_calibrate = tsc_calibrate_vm,
 };
-TSC_CALIBRATION_SOURCE(tsc_calibration_vmware);
+TSC_CALIBRATION_SOURCE(tsc_calibration_vm);
