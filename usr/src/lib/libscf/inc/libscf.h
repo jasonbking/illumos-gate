@@ -23,6 +23,7 @@
  * Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2016 RackTop Systems.
  * Copyright 2020 Joyent, Inc.
+ * Copyright 2024 Jason King
  */
 
 #ifndef	_LIBSCF_H
@@ -329,8 +330,11 @@ typedef struct {
 #define	SCF_PROPERTY_COMMENT			"comment"
 #define	SCF_PROPERTY_CONTRACT			"contract"
 #define	SCF_PROPERTY_COREFILE_PATTERN		"corefile_pattern"
+#define	SCF_PROPERTY_DAY			"day"
+#define	SCF_PROPERTY_DAY_OF_MONTH		"day_of_month"
 #define	SCF_PROPERTY_DEGRADED			"degraded"
 #define	SCF_PROPERTY_DEGRADE_IMMEDIATE		"degrade_immediate"
+#define	SCF_PROPERTY_DELAY			"delay"
 #define	SCF_PROPERTY_DODUMP			"do_dump"
 #define	SCF_PROPERTY_DURATION			"duration"
 #define	SCF_PROPERTY_ENABLED			"enabled"
@@ -338,10 +342,14 @@ typedef struct {
 #define	SCF_PROPERTY_ENTITY_STABILITY		"entity_stability"
 #define	SCF_PROPERTY_ENTITIES			"entities"
 #define	SCF_PROPERTY_EXEC			"exec"
+#define	SCF_PROPERTY_FREQUENCY			"frequency"
 #define	SCF_PROPERTY_GROUP			"group"
 #define	SCF_PROPERTY_GROUPING			"grouping"
+#define	SCF_PROPERTY_HOUR			"hour"
 #define	SCF_PROPERTY_IGNORE			"ignore_error"
 #define	SCF_PROPERTY_INTERNAL_SEPARATORS	"internal_separators"
+#define	SCF_PROPERTY_INTERVAL			"interval"
+#define	SCF_PROPERTY_JITTER			"jitter"
 #define	SCF_PROPERTY_LIMIT_PRIVILEGES		"limit_privileges"
 #define	SCF_PROPERTY_MAINT_OFF			"maint_off"
 #define	SCF_PROPERTY_MAINT_ON			"maint_on"
@@ -350,12 +358,17 @@ typedef struct {
 #define	SCF_PROPERTY_MAINT_ON_TEMPORARY		"maint_on_temporary"
 #define	SCF_PROPERTY_METHOD_PID			"method_pid"
 #define	SCF_PROPERTY_MILESTONE			"milestone"
+#define	SCF_PROPERTY_MINUTE			"minute"
+#define	SCF_PROPERTY_MONTH			"month"
 #define	SCF_PROPERTY_NEED_SESSION		"need_session"
 #define	SCF_PROPERTY_NEXT_STATE			"next_state"
 #define	SCF_PROPERTY_PACKAGE			"package"
+#define	SCF_PROPERTY_PERSISTENT			"persistent"
+#define	SCF_PROPERTY_PERIOD			"period"
 #define	SCF_PROPERTY_PRIVILEGES			"privileges"
 #define	SCF_PROPERTY_PROFILE			"profile"
 #define	SCF_PROPERTY_PROJECT			"project"
+#define	SCF_PROPERTY_RECOVER			"recover"
 #define	SCF_PROPERTY_REFRESH			"refresh"
 #define	SCF_PROPERTY_RESOURCE_POOL		"resource_pool"
 #define	SCF_PROPERTY_ENVIRONMENT		"environment"
@@ -375,12 +388,16 @@ typedef struct {
 #define	SCF_PROPERTY_SUPP_GROUPS		"supp_groups"
 #define	SCF_PROPERTY_TIMEOUT			"timeout_seconds"
 #define	SCF_PROPERTY_TIMEOUT_RETRY		"timeout_retry"
+#define	SCF_PROPERTY_TIMEZONE			"timezone"
 #define	SCF_PROPERTY_TRANSIENT_CONTRACT		"transient_contract"
 #define	SCF_PROPERTY_TYPE			"type"
 #define	SCF_PROPERTY_USE_PROFILE		"use_profile"
 #define	SCF_PROPERTY_USER			"user"
 #define	SCF_PROPERTY_UTMPX_PREFIX		"utmpx_prefix"
+#define	SCF_PROPERTY_WEEK_OF_YEAR		"week_of_year"
+#define	SCF_PROPERTY_WEEKDAY_OF_MONTH		"weekday_of_month"
 #define	SCF_PROPERTY_WORKING_DIRECTORY		"working_directory"
+#define	SCF_PROPERTY_YEAR			"year"
 
 /*
  * Template property names
