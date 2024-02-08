@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
  Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
+ Copyright 2024 Jason King
 
  CDDL HEADER START
 
@@ -581,6 +582,63 @@
 	name		CDATA #REQUIRED
 	exec		CDATA #REQUIRED
 	timeout_seconds	CDATA #REQUIRED
+	delete		( true | false ) "false" >
+
+<!--
+  scheduled_method
+-->
+
+<!ELEMENT scheduled_method
+	( method_context?, stability? ) >
+
+<!ATTLIST scheduled_method
+	interval	( year | month | week | day | hour | minute) #REQUIRED
+	frequency	CDATA "1"
+	timezone	CDATA #IMPLIED
+	year		CDATA #IMPLIED
+	week_of_year	CDATA #IMPLIED
+	month		CDATA #IMPLIED
+	weekday_of_month CDATA #IMPLIED
+	day		CDATA #IMPLIED
+	day_of_month	CDATA #IMPLIED
+	hour		CDATA #IMPLIED
+	minute		CDATA #IMPLIED
+	recover		( true | false ) "false" >
+
+<!--
+  periodic_method
+
+    This element describes a method that is executed periodicially.
+
+    Its attributes are
+
+	period
+	delay
+	jitter
+	exec	The string identifying the actino to take. This is a string
+		suite to pass to exec(2).
+
+	timeout_seconds [integer] Duration, in seconds, to wait for this
+		method to complete.  A '0' or '-1' denotes an infinite
+		timeout.
+
+	persistent
+	recover
+	delete	If in the repository, the property group for this method
+		should be removed.
+-->
+
+<!ELEMENT periodic_method
+	( method_context?, stability? ) >
+
+<!ATTLIST periodic_method
+	period		CDATA #REQUIRED
+	delay		CDATA "0"
+	jitter		CDATA "0"
+	exec		CDATA #REQUIRED
+	timeout_seconds	CDATA #REQUIRED
+	persistent	( true | false ) "false"
+	recover		( true | false ) "false"
 	delete		( true | false ) "false" >
 
 <!--
