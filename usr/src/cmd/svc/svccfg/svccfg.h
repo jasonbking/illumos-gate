@@ -23,6 +23,7 @@
  * Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2015, Joyent, Inc. All rights reserved.
  * Copyright 2023 Oxide Computer Company
+ * Copyright 2024 Jason King
  */
 
 #ifndef	_CMD_SVCCFG_H
@@ -122,6 +123,7 @@ typedef enum element {
 	SC_OPAQUE,
 	SC_PARAMETER,
 	SC_PARAMVAL,
+	SC_PERIODIC_METHOD,
 	SC_PG_PATTERN,
 	SC_PROP_PATTERN,
 	SC_PROPERTY,
@@ -129,6 +131,7 @@ typedef enum element {
 	SC_PROPVAL,
 	SC_RANGE,
 	SC_RESTARTER,
+	SC_SCHEDULED_METHOD,
 	SC_SERVICE,
 	SC_SERVICE_BUNDLE,
 	SC_SERVICE_FMRI,
