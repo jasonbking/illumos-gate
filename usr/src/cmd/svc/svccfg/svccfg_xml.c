@@ -24,6 +24,7 @@
 /*
  * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  * Copyright 2020 Joyent, Inc.
+ * Copyright 2024 Jason King
  */
 
 
@@ -100,6 +101,24 @@ const char * const version_attr = "version";
 const char * const xml_lang_attr = "xml:lang";
 const char * const active_attr = "active";
 
+/* Periodic/scheduled attributes */
+const char * const period_attr = "period";
+const char * const jitter_attr = "jitter";
+const char * const delay_attr = "delay";
+const char * const persistent_attr = "persistent";
+const char * const recover_attr = "recover";
+const char * const interval_attr = "interval";
+const char * const frequency_attr = "frequency";
+const char * const timezone_attr = "timezone";
+const char * const year_attr = "year";
+const char * const week_of_year_attr = "week_of_year";
+const char * const month_attr = "month";
+const char * const weekday_of_month = "weekday_of_month";
+const char * const day = "day";
+const char * const day_of_month = "day_of_month";
+const char * const hour = "hour";
+const char * const minute = "minute";
+
 /* Attribute values */
 const char * const all_value = "all";
 
@@ -148,6 +167,7 @@ static const char *lxml_elements[] = {
 	"opaque_list",			/* SC_OPAQUE */
 	"parameter",			/* SC_PARAMETER */
 	"paramval",			/* SC_PARAMVAL */
+	"periodic_method",		/* SC_PERIODIC_METHOD */
 	"pg_pattern",			/* SC_PG_PATTERN */
 	"prop_pattern",			/* SC_PROP_PATTERN */
 	"property",			/* SC_PROPERTY */
@@ -155,6 +175,7 @@ static const char *lxml_elements[] = {
 	"propval",			/* SC_PROPVAL */
 	"range",			/* SC_RANGE */
 	"restarter",			/* SC_RESTARTER */
+	"scheduled_method",		/* SC_SCHEDULED_METHOD */
 	"service",			/* SC_SERVICE */
 	"service_bundle",		/* SC_SERVICE_BUNDLE */
 	"service_fmri",			/* SC_SERVICE_FMRI */
@@ -215,6 +236,7 @@ static const char *lxml_prop_types[] = {
 	"",				/* SC_NOTIFICATION_PARAMETERS */
 	"opaque",			/* SC_OPAQUE */
 	"",				/* SC_PARAMETER */
+	"",				/* SC_PERIODIC_METHOD */
 	"",				/* SC_PARAMVAL */
 	"",				/* SC_PG_PATTERN */
 	"",				/* SC_PROP_PATTERN */
@@ -223,6 +245,7 @@ static const char *lxml_prop_types[] = {
 	"",				/* SC_PROPVAL */
 	"",				/* SC_RANGE */
 	"",				/* SC_RESTARTER */
+	"",				/* SC_SCHEDULED_METHOD */
 	"",				/* SC_SERVICE */
 	"",				/* SC_SERVICE_BUNDLE */
 	"",				/* SC_SERVICE_FMRI */
@@ -3306,6 +3329,12 @@ lxml_get_instance(entity_t *service, xmlNodePtr inst, bundle_type_t bt,
 		case SC_NOTIFICATION_PARAMETERS:
 			if (lxml_get_notification_parameters(i, cursor) != 0)
 				return (-1);
+			break;
+		case SC_PERIODIC_METHOD:
+			(void) lxml_get_periodic_method(i, cursor);
+			break;
+		case SC_SCHEDULED_METHOD:
+			(void) lxml_get_scheduled_method(i, cursor);
 			break;
 		default:
 			uu_die(gettext(
