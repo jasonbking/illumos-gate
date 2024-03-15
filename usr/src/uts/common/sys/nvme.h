@@ -678,6 +678,15 @@ typedef struct {
 	nvme_lock_ent_t niu_ent;
 } nvme_ioctl_unlock_t;
 
+typedef struct {
+	nvme_ioctl_common_t nis_common;
+	uint8_t nis_proto;
+	uint8_t nis_nvme_specific;
+	uint16_t nis_proto_specific;
+	uint32_t nis_datalen;
+	uintptr_t nis_data;
+} nvme_ioctl_sec_send_recv_t;
+
 /*
  * 32-bit ioctl structures. These must be packed to be 4 bytes to get the proper
  * ILP32 sizing.
@@ -734,6 +743,15 @@ typedef struct {
 	uint64_t fwl_len;
 	uint64_t fwl_off;
 } nvme_ioctl_fw_load32_t;
+
+typedef struct {
+	nvme_ioctl_common_t nis_common;
+	uint8_t nis_proto;
+	uint8_t nis_nvme_specific;
+	uint16_t nis_proto_specific;
+	uint32_t nis_datalen;
+	uintptr32_t nis_data;
+} nvme_ioctl_sec_send_recv32_t;
 #pragma pack()	/* pack(4) */
 #endif	/* _KERNEL && _SYSCALL32 */
 
@@ -1961,19 +1979,6 @@ typedef enum {
 	NVME_CSI_KV,
 	NVME_CSI_ZNS
 } nvme_csi_t;
-
-/*
- * arg value for NVME_IOC_SECURITY_{SEND,RECV}:
- * _proto is the 8-bit security protocol
- * _pspecific is the 16-bit protocol specific value
- * _nvmespecific is the 8-bit NVMe security specific field
- *
- * The resulting value should basically be the value of dword10
- */
-#define	NVME_SECURITY_ARG(_proto, _pspecific, _nvmespecific)	\
-	((((uint32_t)(_proto) & 0xff) << 24) |			\
-	(((uint32_t)(_pspecific) & 0xffff) << 8) |		\
-	((uint32_t)(_nvmespecific) & 0xff))
 
 #ifdef __cplusplus
 }
