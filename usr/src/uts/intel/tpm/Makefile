@@ -54,7 +54,11 @@ INSTALL_TARGET	= $(BINARY) $(ROOTMODULE)
 CPPFLAGS	+= -I$(ROOT)/usr/include
 
 # This is for /usr/include/tss/, which is not built in the ON consolidation
-CPPFLAGS	+= -I$(ADJUNCT_PROTO)/usr/include
+#CPPFLAGS	+= -I$(ADJUNCT_PROTO)/usr/include
+
+# The loader sources include most of the definitions we want, so we
+# use those instead of duplicating them.
+CPPFLAGS	+= -I$(SRC)/boot/efi/include/
 
 MAPFILES	+= ddi
 

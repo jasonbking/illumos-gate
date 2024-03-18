@@ -60,12 +60,8 @@
 
 #include <sys/tpm.h>
 
-#include <tss/platform.h>	/* from SUNWtss */
-#include <tss/tpm.h>		/* from SUNWtss */
-
 #include "tpm_tis.h"
 #include "tpm_ddi.h"
-#include "tpm20.h"
 #include "tpm_tab.h"
 
 extern pri_t minclsyspri;

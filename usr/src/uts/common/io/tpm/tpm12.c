@@ -28,7 +28,13 @@
 
 #include <sys/byteorder.h>
 #include <sys/crypto/api.h>
-
+#define	UINT8 uint8_t
+#define	UINT16 uint16_t
+#define	UINT32 uint32_t
+#define	UINT64 uint64_t
+#define	INT8 int8_t
+#define	BOOLEAN int
+#include <IndustryStandard/Tpm12.h>
 #include "tpm_ddi.h"
 #include "tpm_tis.h"
 
@@ -45,20 +51,6 @@
  * with tssd (or equivalent) arbitrating access between multiple clients.
  */
 #define	TPM12_CLIENT_MAX	1
-
-#define	TPM_TAG_RQU_COMMAND		((uint16_t)0x00c1)
-
-/* The TPM1.2 Commands we are using */
-#define	TPM_ORD_GetCapability		0x00000065u
-#define	TPM_ORD_ContinueSelfTest	0x00000053u
-#define	TPM_ORD_GetRandom		0x00000046u
-#define	TPM_ORD_StirRandom		0x00000047u
-
-#define	TPM_CAP_Prop			0x00000005u
-#define	TPM_CAP_PROP_TIS_TIMEOUT	0x00000115u
-#define	TPM_CAP_PROP_TIS_DURATION	0x00000120u
-
-#define	TPM_CAP_VERSION_VAL		0x0000001au
 
 /* The maximum amount of bytes allowed for TPM_ORD_StirRandom */
 #define	TPM12_SEED_MAX		255
@@ -390,7 +382,7 @@ tpm12_get_timeouts(tpm_t *tpm)
 
 	mutex_enter(&c->tpmc_lock);
 	tpm_int_newcmd(c, TPM_TAG_RQU_COMMAND, TPM_ORD_GetCapability);
-	tpm_int_put32(c, TPM_CAP_Prop);
+	tpm_int_put32(c, TPM_CAP_PROPERTY);
 	tpm_int_put32(c, sizeof (uint32_t));
 	tpm_int_put32(c, TPM_CAP_PROP_TIS_TIMEOUT);
 
@@ -464,7 +456,7 @@ tpm12_get_timeouts(tpm_t *tpm)
 
 /*
  * Get the actual timeouts supported by the TPM by issuing TPM_GetCapability
- * with the subcommand TPM_CAP_PROP_TIS_DURATION
+ * with the subcommand TPM_CAP_PROP_DURATION
  * TPM_GetCapability (TPM Main Part 3 Rev. 94, pg.38)
  */
 static int
@@ -479,7 +471,7 @@ tpm12_get_duration(tpm_t *tpm)
 	mutex_enter(&c->tpmc_lock);
 	tpm_int_newcmd(c, TPM_TAG_RQU_COMMAND, TPM_ORD_GetCapability);
 	tpm_int_put32(c, sizeof (uint32_t));
-	tpm_int_put32(c, TPM_CAP_PROP_TIS_DURATION);
+	tpm_int_put32(c, TPM_CAP_PROP_DURATION);
 
 	ret = tpm_exec_internal(tpm, c);
 	if (ret != 0) {

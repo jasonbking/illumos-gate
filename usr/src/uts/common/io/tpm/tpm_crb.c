@@ -16,7 +16,6 @@
 #include <sys/sysmacros.h>
 #include "tpm_ddi.h"
 #include "tpm_tis.h"
-#include "tpm20.h"
 
 /*
  * CRB Register offsets. From TCG PC Client Platform TPM Profile Specification

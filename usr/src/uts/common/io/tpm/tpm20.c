@@ -15,8 +15,52 @@
 
 #include <sys/debug.h>
 #include <sys/crypto/common.h>
+#include <sys/types.h>
+
+/*
+ * These are taken from Section 5.1 / Table 3 of TPM2.0 Part 2 Base
+ * Structures. The types in Tpm20.h are defined in terms of these.
+ */
+#define	UINT8 uint8_t
+#define	UINT16 uint16_t
+#define	UINT32 uint32_t
+#define	UINT64 uint64_t
+#define	INT8 int8_t
+#define	BOOLEAN int
+#include <IndustryStandard/Tpm20.h>
+
 #include "tpm_ddi.h"
-#include "tpm20.h"
+
+/*
+ * Tpm20.h isn't completely up to date with all of the latest TPM2.0 commands
+ * we need this one because it has a non-default timeout value so
+ * tpm_get_timeout() need to be aware of it.
+ *
+ * Once Tpm20.h is updated to include this, we can remove this bit.
+ */
+#ifndef	TPM_CC_CreatedLoaded
+#define	TPM_CC_CreateLoaded	(TPM_CC)(0x00000198)
+#endif
+
+/*
+ * From PTP 6.5.1.3 Table 17, note that it doesn't explicitly
+ * label them, but there are three defined durations, so they're interpreted
+ * as short, medium, and long.
+ */
+#define	TPM20_DURATION_SHORT	20
+#define	TPM20_DURATION_MEDIUM	750
+#define	TPM20_DURATION_LONG	1000
+
+/*
+ * PTP 6.5.1.4, Table 18 (all in milliseconds)
+ * Unlike TPM1.2, these are fixed values.
+ */
+#define	TPM20_TIMEOUT_A	750
+#define	TPM20_TIMEOUT_B	2000
+#define	TPM20_TIMEOUT_C	200
+#define	TPM20_TIMEOUT_D	30
+
+#define	TPM20_TIMEOUT_CANCEL	TPM20_TIMEOUT_B
 
 bool
 tpm20_init(tpm_t *tpm)
@@ -76,7 +120,7 @@ tpm20_get_timeout(tpm_t *tpm, const uint8_t *buf)
 	case TPM_CC_CreatePrimary:
 	case TPM_CC_CreateLoaded:
 		/*
-		 * TCG PC Client Decide Driver Design Principles for TPM 2.0
+		 * TCG PC Client Device Driver Design Principles for TPM 2.0
 		 * Section 10 says these three should use an 180s timeout.
 		 */
 		return (drv_usectohz(180 * MICROSEC));

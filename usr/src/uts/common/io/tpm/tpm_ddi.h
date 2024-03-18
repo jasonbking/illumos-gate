@@ -428,6 +428,12 @@ bool tpm12_init(tpm_t *);
 tpm_duration_t tpm12_get_duration_type(tpm_t *, const uint8_t *);
 clock_t tpm12_get_timeout(tpm_t *, uint32_t);
 
+bool tpm20_init(struct tpm *);
+int tpm20_seed_random(struct tpm *, uchar_t *, size_t);
+int tpm20_generate_random(struct tpm *, uchar_t *, size_t);
+tpm_duration_t tpm20_get_duration_type(tpm_t *, const uint8_t *);
+clock_t tpm20_get_timeout(tpm_t *, const uint8_t *);
+
 bool tpm_tis_init(tpm_t *);
 int tis_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
 void tis_cancel_cmd(tpm_t *, tpm_duration_t);
