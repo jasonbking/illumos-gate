@@ -577,6 +577,7 @@ tpm_get8_loc(tpm_t *tpm, uint8_t locality, unsigned long offset)
 {
 	uintptr_t eff_off = tpm_locality_offset(locality) + offset;
 
+	ASSERT3U(locality, <, tpm->tpm_n_locality);
 	VERIFY3U(offset, <=, TPM_OFFSET_MAX);
 	return (ddi_get8(tpm->tpm_handle, tpm->tpm_addr + eff_off));
 }
@@ -604,6 +605,7 @@ tpm_put8_loc(tpm_t *tpm, uint8_t locality, unsigned long offset, uint8_t value)
 {
 	uintptr_t eff_off = tpm_locality_offset(locality) + offset;
 
+	ASSERT3U(locality, <, tpm->tpm_n_locality);
 	VERIFY3U(offset, <=, TPM_OFFSET_MAX);
 	ddi_put8(tpm->tpm_handle, tpm->tpm_addr + eff_off, value);
 }

@@ -24,6 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2023 Jason King
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 #include <sys/devops.h>		/* used by dev_ops */
@@ -55,6 +56,8 @@
 #include <sys/mkdev.h>
 #include <sys/sdt.h>
 
+#include <sys/acpica.h>
+
 #include <sys/tpm.h>
 
 #include <tss/platform.h>	/* from SUNWtss */
@@ -83,9 +86,10 @@ typedef struct tpm_attach_desc {
 #define	TPM_CLIENT(_dev)	(getminor(_dev))
 
 #define	TPM_INTF_IFTYPE(x)	((x) & 0xf)
-#define	TPM_INTF_IFTYPE_FIFO	(0x0)
-#define	TPM_INTF_IFTYPE_CRB	(0x1)
-#define	TPM_INTF_IFTYPE_TIS	(0xf)
+#define	TPM_INTF_IFTYPE_FIFO	0x0
+#define	TPM_INTF_IFTYPE_CRB	0x1
+#define	TPM_INTF_IFTYPE_TIS	0xf
+#define	TPM_INTF_CAP_LOC5	0x10
 
 /*
  * Explicitly not static as it is a tunable. Set to true to enable
@@ -703,6 +707,11 @@ tpm_ioctl(dev_t dev, int cmd, intptr_t data, int md, cred_t *cr, int *rv)
 			break;
 		}
 
+		if (val > c->tpmc_tpm->tpm_n_locality) {
+			ret = SET_ERROR(ENOTSUP);
+			break;
+		}
+
 		/*
 		 * For now we only allow access to locality 0.
 		 */
@@ -906,9 +915,159 @@ tpm_cleanup_fm(tpm_t *tpm)
 	ddi_fm_fini(tpm->tpm_dip);		
 }
 
+/*
+ * TPM2.0 devices should have a TPM2 table. If we find one, we assume
+ * the first register set is the one we should use.
+ *
+ * TODO: For eventual ARM support, we'll likely need to abstract the
+ * 'start' (execute a command) method based on the contents of the
+ * ACPI TPM2 table. For x86 TIS, FIFO, or CRB, it's always done by
+ * writing to a register, but for ARM it may be a SMC or HVC call.
+ */
+static int
+tpm_attach_20(tpm_t *tpm)
+{
+	ACPI_TABLE_TPM2 *tpm_tbl;
+	ACPI_STATUS	status;
+	int		nregs;
+	int		ret;
+	off_t		regsize;
+	uint32_t	intf;
+
+	status = AcpiGetTable(ACPI_SIG_TPM2, 1, (ACPI_TABLE_HEADER **)&tpm_tbl);
+	if (ACPI_FAILURE(status)) {
+		tpm_dbg(tpm, CE_CONT, "%s: no TPM2 ACPI table\n", __func__);
+		return (SET_ERROR(ENXIO));
+	}
+
+	tpm_dbg(tpm, CE_CONT, "%s: found TPM2 at 0x%llx via ACPI TPM2 table\n",
+	    __func__, tpm_tbl->ControlAddress);
+
+	switch (tpm_tbl->StartMethod) {
+	case ACPI_TPM2_MEMORY_MAPPED:
+	case ACPI_TPM2_COMMAND_BUFFER:
+		break;
+	default:
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "unsupported TPM2 start method %u", tpm_tbl->StartMethod);
+		return (SET_ERROR(ENOTSUP));
+	}
+
+	ret = ddi_dev_nregs(tpm->tpm_dip, &nregs);
+	if (ret != DDI_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "found TPM2 device with no register sets, device cannot be "
+		    "used");
+		return (SET_ERROR(EIO));
+	}
+
+	/*
+	 * A TPM2.0 device should only have 1 register set. If
+	 * for some reason we've encountered one with more than
+	 * one, we probably want to note it in case there's
+	 * other issues using the device.
+	 */
+	if (nregs != 1) {
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "device has %d register sets; expecting 1", nregs);
+	}
+	ret = ddi_dev_regsize(tpm->tpm_dip, 0, &regsize);
+	if (ret != DDI_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_WARN, "%s: ddi_dev_regsize failed: %d",
+		    __func__, ret);
+		return (SET_ERROR(EIO));
+	}
+
+	/*
+	 * We expect that a TPM2.0 module will have either 1 or 5
+	 * localities. Each locality requires 0x1000 space, make sure the
+	 * register set is large enough for further probing.
+	 */
+	if (regsize < 0x1000) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "%s: register set size is too small (0x%lx)", __func__,
+		    regsize);
+		return (SET_ERROR(EINVAL));
+	}
+
+	ret = ddi_regs_map_setup(tpm->tpm_dip, 0, (caddr_t *)&tpm->tpm_addr,
+	    0, regsize, &tpm->tpm_acc_attr, &tpm->tpm_handle);
+	if (ret != DDI_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "failed to map tpm registers: %d", ret);
+		return (SET_ERROR(EIO));
+	}
+
+	intf = tpm_get32(tpm, TPM_INTERFACE_ID);
+	switch (TPM_INTF_IFTYPE(intf)) {
+	case TPM_INTF_IFTYPE_TIS:
+		if (regsize != 0x5000) {
+			dev_err(tpm->tpm_dip, CE_WARN,
+			    "register set size (0x%lx) is incorrect for TPM TIS"
+			    "interface", regsize);
+			ddi_regs_map_free(&tpm->tpm_handle);
+			return (SET_ERROR(EINVAL));
+		}
+		tpm->tpm_n_locality = 5;
+		return (0);
+	case TPM_INTF_IFTYPE_FIFO:
+	case TPM_INTF_IFTYPE_CRB:
+		break;
+	default:
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "unrecognized interface type 0x%x", TPM_INTF_IFTYPE(intf));
+		ddi_regs_map_free(&tpm->tpm_handle);
+		return (SET_ERROR(ENOTSUP));
+	}
+
+	/*
+	 * Since we know from the earlier check that the register set size
+	 * is at least 0x1000 (large enough for 1 locality), as a sanity
+	 * check, make sure the register set size and what the TPM is
+	 * returning agree.
+	 */
+	if ((intf & TPM_INTF_CAP_LOC5) != 0 && regsize != 0x5000) {
+		dev_err(tpm->tpm_dip, CE_WARN,
+		    "TPM advertises 5 localities but register set size is "
+		    "0x%lx", regsize);
+		ddi_regs_map_free(&tpm->tpm_handle);
+		return (SET_ERROR(EINVAL));
+	}
+
+	tpm->tpm_n_locality = (regsize == 0x5000) ? 5 : 1;
+	return (0);
+}
+
+static int
+tpm_attach_12(tpm_t *tpm)
+{
+	/* TODO */
+	return (ENOTSUP);
+}
+
 static bool
 tpm_attach_regs(tpm_t *tpm)
 {
+	switch (tpm_attach_20(tpm)) {
+	case 0:
+		return (true);
+	case ENXIO:
+		/* Fall back to other methods */
+		break;
+	default:
+		return (false);
+	}
+
+	switch (tpm_attach_12(tpm)) {
+	case 0:
+		return (true);
+	case ENXIO:
+		/* Fall back to searching register set */
+		break;
+	default:
+		return (false);
+	}
+
 	uint_t idx;
 	int nregs;
 	int ret;
@@ -984,6 +1143,7 @@ tpm_attach_dev_init(tpm_t *tpm)
 	 * between interface types.
 	 */
 	id = tpm_get32(tpm, TPM_INTERFACE_ID);
+	tpm_dbg(tpm, CE_NOTE, "%s: tpm_interface_id_0: 0x%08x", __func__, id);
 
 	switch (TPM_INTF_IFTYPE(id)) {
 	case TPM_INTF_IFTYPE_TIS:
@@ -1724,7 +1884,8 @@ _init(void)
 	    offsetof(tpm_client_t, tpmc_reflink),
 	    offsetof(tpm_client_t, tpmc_minor), KM_SLEEP);
 
-	tpm_minors = id_space_create("tpm minor numbers", 1, MAXMIN64);
+	CTASSERT((uint64_t)MAXMIN64 >= (uint64_t)INT_MAX);
+	tpm_minors = id_space_create("tpm minor numbers", 1, INT_MAX);
 	if (tpm_minors == NULL) {
 		cmn_err(CE_WARN, "!%s: failed to create tpm minor id space",
 		    __func__);

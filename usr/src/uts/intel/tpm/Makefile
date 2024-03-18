@@ -59,7 +59,7 @@ CPPFLAGS	+= -I$(ADJUNCT_PROTO)/usr/include
 MAPFILES	+= ddi
 
 LDFLAGS		+= -M $(MAPFILE)
-LDFLAGS		+= -N misc/kcf
+LDFLAGS		+= -N misc/acpica -N misc/kcf
 
 #
 #	Default build targets.
