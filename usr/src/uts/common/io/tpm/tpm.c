@@ -178,7 +178,6 @@ tpm_dispatch_cmd(tpm_client_t *c)
 int
 tpm_exec_internal(tpm_t *tpm, tpm_client_t *c)
 {
-	uint32_t inlen, outlen;
 	uint32_t cmdlen;
 
 	ASSERT(MUTEX_HELD(&c->tpmc_lock));
@@ -483,7 +482,7 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf, bool (*done)(tpm_t *))
 			break;
 		}
 	
-		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, exp_done);
+		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, when);
 		if (tpm->tpm_thr_cancelreq) {
 			tpm->tpm_thr_cancelreq = false;
 			return (ECANCELED);

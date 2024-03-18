@@ -610,7 +610,6 @@ static int
 tpm12_continue_selftest(tpm_t *tpm)
 {
 	tpm_client_t *c = tpm->tpm_internal_client;
-	uint8_t *buf = c->tpmc_buf;
 	int ret;
 
 	mutex_enter(&c->tpmc_lock);
@@ -634,7 +633,6 @@ int
 tpm12_seed_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 {
 	tpm_client_t *c = tpm->tpm_internal_client;
-	uint8_t *cmdbuf = c->tpmc_buf;
 	int ret;
 
 	if (buflen == 0 || buflen > TPM12_SEED_MAX || buf == NULL)
@@ -714,7 +712,6 @@ tpm12_generate_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 bool
 tpm12_init(tpm_t *tpm)
 {
-	tpm_tis_t *tis = &tpm->tpm_u.tpmu_tis;
 	tpm12_vers_info_t vers_info = { 0 };
 	uint32_t intf_caps;
 	int ret;
