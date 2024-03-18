@@ -41,7 +41,6 @@
 #include <sys/crypto/spi.h>
 
 #include "tpm_ddi.h"
-#include "tpm20.h"
 
 /*
  * CSPI information (entry points, provider info, etc.)

@@ -28,7 +28,6 @@
 
 #include "tpm_ddi.h"
 #include "tpm_tis.h"
-#include "tpm20.h"
 
 static void tis_release_locality(tpm_t *, uint8_t, bool);
 
