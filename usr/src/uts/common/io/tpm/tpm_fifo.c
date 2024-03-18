@@ -63,7 +63,6 @@ static int
 tpm_tis_get_burstcount(tpm_t *tpm, uint16_t *burstp)
 {
 	int ret;
-	uint16_t burstcnt;
 
 	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
 
@@ -93,7 +92,6 @@ tis_fifo_make_ready(tpm_t *tpm, clock_t to)
 {
 	int ret;
 	uint8_t status;
-	bool use_intr = tpm->tpm_u.tpmu_tis.ttis_has_cmd_ready_int;
 
 	status = tpm_tis_get_status(tpm);
 
@@ -468,7 +466,6 @@ tis_request_locality(tpm_t *tpm, uint8_t locality)
 {
 	int ret;
 	uint8_t old_locality = tpm->tpm_locality;
-	uint8_t mask;
 
 	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
 	VERIFY3U(locality, <=, TPM_LOCALITY_MAX);
@@ -477,8 +474,6 @@ tis_request_locality(tpm_t *tpm, uint8_t locality)
 		tpm->tpm_locality = locality;
 		return (0);
 	}
-
-	mask = TPM_ACCESS_VALID | TPM_ACCESS_ACTIVE_LOCALITY;
 
 	/*
 	 * Unlike CRB, where the TPM_LOC_STATE_x register can be read from
@@ -648,8 +643,7 @@ int
 tis_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 {
 	uint32_t cmdlen;
-	int ret, ret2;
-	clock_t to;
+	int ret;
 
 	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
 	VERIFY(tpm->tpm_iftype == TPM_IF_TIS || tpm->tpm_iftype == TPM_IF_FIFO);

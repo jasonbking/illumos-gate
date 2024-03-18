@@ -403,7 +403,6 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen)
 static bool
 crb_request_locality_done(tpm_t *tpm)
 {
-	uint32_t val = tpm_get32(tpm, TPM_LOC_STATE);
 	uint32_t mask = TPM_LOC_STATE_REG_VALID | TPM_LOC_STATE_LOC_ASSIGNED |
 	    TPM_LOC_SET(tpm->tpm_locality);
 
