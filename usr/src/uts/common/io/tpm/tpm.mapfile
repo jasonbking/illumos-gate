@@ -35,6 +35,8 @@ SYMBOL_VERSION ILLUMOSprivate {
 	# ddi.mapfile or kernel.mapfile. For now, we define the external
 	# stuff we need here and can move entries as appropriate later.
 
+	AcpiGetTable			{ FLAGS = EXTERN };
+
 	# The crypto ones in particular seem like creating a
 	# crypto.mapfile for crypto providers would be very appropriate.
 	crypto_load_dev_disabled	{ FLAGS = EXTERN };

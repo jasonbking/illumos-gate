@@ -260,6 +260,7 @@ struct tpm {
 	uint32_t		tpm_fw_minor;		/* WO */
 
 	uint8_t			tpm_locality;	/* locality during cmd exec */
+	uint8_t			tpm_n_locality;
 
 	clock_t			tpm_timeout_a;		/* WO */
 	clock_t			tpm_timeout_b;		/* WO */
