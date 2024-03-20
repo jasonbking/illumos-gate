@@ -41,12 +41,13 @@ int
 tpm_tab_init(tpm_client_t *c)
 {
 	tpm_t *tpm = c->tpmc_tpm;
-	struct tpm_tab *tab;
+	tpm_tab_t *tab;
 
 	ASSERT3S(tpm->tpm_family, ==, TPM_FAMILY_2_0);
 
 	tab = kmem_zalloc(sizeof (*tab), KM_SLEEP);
-	tab->tt_session = kmem_zalloc(tpm->tpm_session_size, KM_SLEEP);
+	if (tpm->tpm_session_size > 0)
+		tab->tt_session = kmem_zalloc(tpm->tpm_session_size, KM_SLEEP);
 	tab->tt_session_len = tpm->tpm_session_size;
 
 	tab->tt_hdl_map.thm_next_cid = 1;
