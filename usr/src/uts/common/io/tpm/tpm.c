@@ -632,13 +632,24 @@ tpm_put32(tpm_t *tpm, unsigned long offset, uint32_t value)
 	ddi_put32(tpm->tpm_handle, tpm_reg_addr(tpm, offset), value);
 }
 
+/*
+ * Starts a new command with an internal client.
+ * This blocks until the client is free and returns with
+ * tpmc_lock held.
+ */
 void
 tpm_int_newcmd(tpm_client_t *c, uint16_t sess, uint32_t cmd)
 {
 	uint8_t *buf = c->tpmc_buf;
 
+	mutex_enter(&c->tpmc_lock);
+
+	while (c->tpmc_state != TPM_CLIENT_IDLE)
+		cv_wait(&c->tpmc_cv, &c->tpmc_lock);
+
 	ASSERT3U(c->tpmc_buflen, >=, TPM_HEADER_SIZE);
-	ASSERT(MUTEX_HELD(&c->tpmc_lock));
+
+	c->tpmc_state = TPM_CLIENT_CMD_RECEPTION;
 
 	bzero(buf, c->tpmc_buflen);
 
