@@ -179,7 +179,7 @@ tpm_exec_internal(tpm_t *tpm, tpm_client_t *c)
 
 	ASSERT(MUTEX_HELD(&c->tpmc_lock));
 	ASSERT(c->tpmc_iskernel);
-	ASSERT3S(c->tpmc_state, ==, TPM_CLIENT_IDLE);
+	ASSERT3S(c->tpmc_state, ==, TPM_CLIENT_CMD_RECEPTION);
 	ASSERT3U(c->tpmc_bufused, <=, c->tpmc_buflen);
 
 	cmdlen = c->tpmc_bufused;
@@ -191,8 +191,6 @@ tpm_exec_internal(tpm_t *tpm, tpm_client_t *c)
 	 * Set the length field of the TPM header to the amount written.
 	 */
 	BE_OUT32(c->tpmc_buf + TPM_PARAMSIZE_OFFSET, cmdlen);
-
-	c->tpmc_state = TPM_CLIENT_CMD_RECEPTION;
 
 	if (tpm->tpm_thread != NULL) {
 		tpm_dispatch_cmd(c);

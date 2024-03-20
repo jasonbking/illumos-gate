@@ -465,18 +465,23 @@ crb_data_ready(tpm_t *tpm)
 static int
 crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen)
 {
-	crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
+	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
+	const uint8_t *src = tpm->tpm_addr + crb->tcrb_resp_off;
+
+	VERIFY3U(buflen, >=, TPM_HEADER_SIZE);
+
+	crb_set_state(tpm, TCRB_ST_CMD_COMPLETION);
 
 	/* First, read in the header */
-	bcopy(tpm->tpm_addr, buf, TPM_HEADER_SIZE);
+	bcopy(src, buf, TPM_HEADER_SIZE);
 
 	/* Check for sanity. */
 	uint32_t resp_len = tpm_cmdlen(buf);
 
 	if (resp_len > buflen) {
-		dev_err(tpm->tpm_dip, CE_WARN,
-		    "received excessively large (%lu) sized response",
-		    (unsigned long)resp_len);
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "!received excessively large (%u) sized response",
+		    resp_len);
 
 		/* Try to recover by going idle */
 		(void) crb_go_idle(tpm);
@@ -485,9 +490,21 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen)
 		return (SET_ERROR(ENOSPC));
 	}
 
+	if (resp_len > crb->tcrb_resp_len) {
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "!received response with invalid length (%u)", resp_len);
+
+		/* Try to recover by going idle */
+		(void) crb_go_idle(tpm);
+
+		return (SET_ERROR(EIO));
+	}
+
+	src += TPM_HEADER_SIZE;
+	buf += TPM_HEADER_SIZE;
+
 	/* Read in rest of the response */
-	bcopy(tpm->tpm_addr + TPM_HEADER_SIZE, buf + TPM_HEADER_SIZE,
-	    resp_len - TPM_HEADER_SIZE);
+	bcopy(src, buf, resp_len - TPM_HEADER_SIZE);
 	return (0);
 }
 
