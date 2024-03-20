@@ -175,6 +175,7 @@ int
 tpm_exec_internal(tpm_t *tpm, tpm_client_t *c)
 {
 	uint32_t cmdlen;
+	int ret;
 
 	ASSERT(MUTEX_HELD(&c->tpmc_lock));
 	ASSERT(c->tpmc_iskernel);
@@ -193,20 +194,39 @@ tpm_exec_internal(tpm_t *tpm, tpm_client_t *c)
 
 	c->tpmc_state = TPM_CLIENT_CMD_RECEPTION;
 
-	tpm_dispatch_cmd(c);
+	if (tpm->tpm_thread != NULL) {
+		tpm_dispatch_cmd(c);
 
-	while (c->tpmc_state != TPM_CLIENT_CMD_COMPLETION) {
-		cv_wait(&c->tpmc_cv, &c->tpmc_lock);
+		while (c->tpmc_state != TPM_CLIENT_CMD_COMPLETION) {
+			cv_wait(&c->tpmc_cv, &c->tpmc_lock);
+		}
+	} else {
+		/*
+		 * If the kernel thread doesn't exist, the client
+		 * should be the internal client (so it can issue
+		 * commands during startup).
+		 */
+		VERIFY3P(tpm->tpm_internal_client, ==, c);
+
+		/*
+		 * The return value of tpm_exec_client() is the same as
+		 * c->tpmc_cmdresult, so we don't need to care about it.
+		 */
+		(void) tpm_exec_client(c);
 	}
 
-	if (c->tpmc_cmdresult != 0) {
-		return (c->tpmc_cmdresult);
-	}
+	ret = c->tpmc_cmdresult;
+	if (ret != 0)
+		tpm_client_reset(c);
 
-	return (0);
+	return (ret);
 }
 
-static int
+/*
+ * Transmit the command to the TPM. This should only be used by the
+ * tpm exec thread and during attach.
+ */
+int
 tpm_exec_client(tpm_client_t *c)
 {
 	tpm_t *tpm = c->tpmc_tpm;
@@ -631,7 +651,7 @@ tpm_int_newcmd(tpm_client_t *c, uint16_t sess, uint32_t cmd)
 	/* Skip length for now */
 	buf += sizeof (uint32_t);
 
-	c->tpmc_bufused += (size_t)(buf - c->tpmc_buf);
+	c->tpmc_bufused = (size_t)(buf - c->tpmc_buf);
 }
 
 void
@@ -675,6 +695,13 @@ tpm_int_copy(tpm_client_t *c, const void *src, size_t len)
 
 	bcopy(src, buf, len);
 	c->tpmc_bufused += len;
+}
+
+uint32_t
+tpm_int_rc(tpm_client_t *c)
+{
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
+	return (tpm_getbuf32(c->tpmc_buf, TPM_RETURN_OFFSET));
 }
 
 /*
