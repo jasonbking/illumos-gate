@@ -209,8 +209,6 @@ tpm20_get_property(tpm_t *tpm, TPM_PT prop, uint32_t *valp)
 	int ret;
 	TPM_RC trc;
 
-	mutex_enter(&c->tpmc_lock);
-
 	tpm_int_newcmd(c, TPM_ST_NO_SESSIONS, TPM_CC_GetCapability);
 	tpm_int_put32(c, TPM_CAP_TPM_PROPERTIES);
 	tpm_int_put32(c, prop);
@@ -218,6 +216,7 @@ tpm20_get_property(tpm_t *tpm, TPM_PT prop, uint32_t *valp)
 
 	ret = tpm_exec_internal(tpm, c);
 	if (ret != 0) {
+		tpm_client_reset(c);
 		mutex_exit(&c->tpmc_lock);
 		return (ret);
 	}
@@ -293,7 +292,6 @@ tpm20_generate_random(tpm_t *tpm, uchar_t *buf, size_t len)
 		return (CRYPTO_DATA_LEN_RANGE);
 	}
 
-	mutex_enter(&c->tpmc_lock);
 	tpm_int_newcmd(c, TPM_ST_NO_SESSIONS, TPM_CC_GetRandom);
 	tpm_int_put16(c, len);
 
@@ -302,6 +300,7 @@ tpm20_generate_random(tpm_t *tpm, uchar_t *buf, size_t len)
 		/* XXX: Can we map to better errors here?
 		 * Maybe CRYPTO_BUSY for timeouts?
 		 */
+		tpm_client_reset(c);
 		mutex_exit(&c->tpmc_lock);
 		return (CRYPTO_FAILED);
 	}
@@ -351,7 +350,6 @@ tpm20_seed_random(tpm_t *tpm, uchar_t *buf, size_t len)
 		return (CRYPTO_DATA_LEN_RANGE);
 	}
 
-	mutex_enter(&c->tpmc_lock);
 	tpm_int_newcmd(c, TPM_ST_NO_SESSIONS, TPM_CC_StirRandom);
 	tpm_int_put16(c, (uint16_t)len);
 	tpm_int_copy(c, buf, len);
@@ -402,8 +400,6 @@ tpm20_get_cmd_attr(tpm_t *tpm)
 	uint32_t	val;
 
 	VERIFY3U(tpm->tpm20_num_cc, >, 0);
-
-	mutex_enter(&c->tpmc_lock);
 
 	tpm_int_newcmd(c, TPM_ST_NO_SESSIONS, TPM_CC_GetCapability);
 	tpm_int_put32(c, TPM_CAP_COMMANDS);
