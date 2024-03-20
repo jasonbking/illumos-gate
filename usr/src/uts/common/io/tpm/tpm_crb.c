@@ -37,8 +37,7 @@
 
 #define	TPM_LOC_STS		0x0c
 #define	TPM_CRB_INTF_ID		0x30
-#define	TPM_CRB_INTF_XFER(x)	\
-    ((tpm_crb_xfer_size_t)(BE_16(((x) >> 11) & 0x3)))
+#define	TPM_CRB_INTF_XFER(x)	((tpm_crb_xfer_size_t)(((x) >> 11) & 0x3))
 #define	TPM_CRB_INTF_RID(x)	(((x) >> 24) & 0xff)
 #define	TPM_CRB_INTF_VID(x)	(((x) >> 32) & 0xffff)
 #define	TPM_CRB_INTF_DID(x)	(((x) >> 48) & 0xffff)
