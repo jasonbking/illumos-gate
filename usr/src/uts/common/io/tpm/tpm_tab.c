@@ -41,7 +41,7 @@ int
 tpm_tab_init(tpm_client_t *c)
 {
 	tpm_t *tpm = c->tpmc_tpm;
-	tpm_tab_t *tab;
+	struct tpm_tab *tab;
 
 	ASSERT3S(tpm->tpm_family, ==, TPM_FAMILY_2_0);
 
@@ -57,7 +57,7 @@ tpm_tab_init(tpm_client_t *c)
 void
 tpm_tab_fini(tpm_client_t *c)
 {
-	tpm_tab_t *tab = c->tpmc_tab;
+	struct tpm_tab *tab = c->tpmc_tab;
 
 	if (tab == NULL) {
 		return;
