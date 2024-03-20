@@ -36,6 +36,8 @@ SYMBOL_VERSION ILLUMOSprivate {
 	# stuff we need here and can move entries as appropriate later.
 
 	AcpiGetTable			{ FLAGS = EXTERN };
+	AcpiWalkResources		{ FLAGS = EXTERN };
+	acpica_get_handle		{ FLAGS = EXTERN };
 
 	# The crypto ones in particular seem like creating a
 	# crypto.mapfile for crypto providers would be very appropriate.
