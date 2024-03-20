@@ -269,8 +269,11 @@ struct tpm {
 	clock_t			tpm_timeout_poll;	/* WO */
 	clock_t			tpm_duration[TPM_DURATION_MAX]; /* WO */
 
-	size_t			tpm_object_size;	/* WO */
-	size_t			tpm_session_size;	/* WO */
+	uint32_t		tpm_object_size;	/* WO */
+	uint32_t		tpm_session_size;	/* WO */
+
+	uint32_t		*tpm20_cca;		/* WO */
+	uint32_t		tpm20_num_cc;		/* WO */
 
 	ddi_intr_handle_t	tpm_isr;
 
@@ -415,11 +418,14 @@ void tpm_int_put8(tpm_client_t *, uint8_t);
 void tpm_int_put16(tpm_client_t *, uint16_t);
 void tpm_int_put32(tpm_client_t *, uint32_t);
 void tpm_int_copy(tpm_client_t *, const void *, size_t);
+uint32_t tpm_int_rc(tpm_client_t *);
 
+int tpm_exec_client(tpm_client_t *);
 int tpm_exec_internal(tpm_t *, tpm_client_t *);
 
 size_t tpm_uio_size(const uio_t *);
 
+const char *tpm_iftype_str(tpm_if_t);
 const char *tpm_hwvend_str(uint16_t);
 
 int tpm12_seed_random(tpm_t *, uchar_t *, size_t);
@@ -429,6 +435,7 @@ tpm_duration_t tpm12_get_duration_type(tpm_t *, const uint8_t *);
 clock_t tpm12_get_timeout(tpm_t *, uint32_t);
 
 bool tpm20_init(struct tpm *);
+int tpm20_get_property(struct tpm *, uint32_t, uint32_t *);
 int tpm20_seed_random(struct tpm *, uchar_t *, size_t);
 int tpm20_generate_random(struct tpm *, uchar_t *, size_t);
 tpm_duration_t tpm20_get_duration_type(tpm_t *, const uint8_t *);

@@ -207,7 +207,7 @@ tpm_create_client(tpm_t *tpm, int flag, int minor, tpm_client_t **clientp)
 		return (SET_ERROR(EINVAL));
 	}
 
-	/* We do allow O_RDONLY for things like obtaining TPM version */
+	/* We allow O_RDONLY for things like obtaining TPM version */
 	if ((flag & FWRITE) == FWRITE) {
 		mode = TPM_MODE_WRITE;
 	} else {
@@ -226,7 +226,7 @@ tpm_create_client(tpm_t *tpm, int flag, int minor, tpm_client_t **clientp)
 	}
 
 	if ((flag & FEXCL) == FEXCL) {
-		/* It really doesn't make sense to support exclusive access */
+		/* It doesn't make sense to support exclusive access */
 		return (SET_ERROR(EINVAL));
 	}
 
@@ -261,7 +261,13 @@ tpm_create_client(tpm_t *tpm, int flag, int minor, tpm_client_t **clientp)
 	mutex_init(&c->tpmc_lock, NULL, MUTEX_DRIVER, pri);
 	cv_init(&c->tpmc_cv, NULL, CV_DRIVER, pri);
 
-	if (tpm->tpm_family == TPM_FAMILY_2_0) {
+	/*
+	 * We cannot initialize the internal client's TAB instance until we
+	 * query the TPM for the necessary parameters, but we would like
+	 * to use the internal client to use during the initial setup.
+	 */
+	if (tpm->tpm_family == TPM_FAMILY_2_0 &&
+	    clientp != &tpm->tpm_internal_client) {
 		int ret;
 
 		ret = tpm_tab_init(c);
@@ -804,26 +810,13 @@ tpm_ereport_timeout(tpm_t *tpm, uint16_t reg, clock_t to, const char *func)
 {
 	uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
 	uint64_t ms;
-	const char *iftype = "Unknown";
-
-	switch (tpm->tpm_iftype) {
-	case TPM_IF_TIS:
-		iftype = "TIS";
-		break;
-	case TPM_IF_FIFO:
-		iftype = "FIFO";
-		break;
-	case TPM_IF_CRB:
-		iftype = "CRB";
-		break;
-	}
 
 	ms = drv_hztousec(to) / 1000;
 
 	ddi_fm_ereport_post(tpm->tpm_dip,
 	    DDI_FM_DEVICE "." DDI_FM_DEVICE_NO_RESPONSE, ena, DDI_NOSLEEP,
 	    FM_VERSION, DATA_TYPE_UINT8, FM_EREPORT_VERS0,
-	    "tpm_interface", DATA_TYPE_STRING, iftype,
+	    "tpm_interface", DATA_TYPE_STRING, tpm_iftype_str(tpm->tpm_iftype),
 	    "locality", DATA_TYPE_UINT8, tpm->tpm_locality,
 	    "register", DATA_TYPE_UINT16, reg,
 	    "timeout", DATA_TYPE_UINT64, ms,
@@ -836,24 +829,11 @@ tpm_ereport_short_read(tpm_t *tpm, uint32_t cmd, uint32_t offset,
     uint32_t expected, uint32_t actual)
 {
 	uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
-	const char *iftype = "Unknown";
-
-	switch (tpm->tpm_iftype) {
-	case TPM_IF_TIS:
-		iftype = "TIS";
-		break;
-	case TPM_IF_FIFO:
-		iftype = "FIFO";
-		break;
-	case TPM_IF_CRB:
-		iftype = "CRB";
-		break;
-	}
 
 	ddi_fm_ereport_post(tpm->tpm_dip,
 	    DDI_FM_DEVICE "." DDI_FM_DEVICE_INVAL_STATE, ena, DDI_NOSLEEP,
 	    FM_VERSION, DATA_TYPE_UINT8, FM_EREPORT_VERS0,
-	    "tpm_interface", DATA_TYPE_STRING, iftype,
+	    "tpm_interface", DATA_TYPE_STRING, tpm_iftype_str(tpm->tpm_iftype),
 	    "locality", DATA_TYPE_UINT8, tpm->tpm_locality,
 	    "command", DATA_TYPE_UINT32, cmd,
 	    "offset", DATA_TYPE_UINT32, offset,
@@ -917,8 +897,8 @@ tpm_cleanup_fm(tpm_t *tpm)
  *
  * TODO: For eventual ARM support, we'll likely need to abstract the
  * 'start' (execute a command) method based on the contents of the
- * ACPI TPM2 table. For x86 TIS, FIFO, or CRB, it's always done by
- * writing to a register, but for ARM it may be a SMC or HVC call.
+ * ACPI TPM2 table. For x86 (TIS, FIFO, or CRB) a command is always
+ * started by writing to a register. For ARM, it may be a HVC or SMC.
  */
 static int
 tpm_attach_20(tpm_t *tpm)
@@ -1128,7 +1108,6 @@ tpm_cleanup_regs(tpm_t *tpm)
 static bool
 tpm_attach_dev_init(tpm_t *tpm)
 {
-	char *ifstr = "Unknown";
 	char *famstr = "";
 	uint32_t id;
 	bool ret;
@@ -1144,7 +1123,6 @@ tpm_attach_dev_init(tpm_t *tpm)
 	switch (TPM_INTF_IFTYPE(id)) {
 	case TPM_INTF_IFTYPE_TIS:
 		tpm->tpm_iftype = TPM_IF_TIS;
-		ifstr = "TIS";
 
 		/*
 		 * For TPMs using the TIS 1.3 interface, tpm_tis_init()
@@ -1156,7 +1134,6 @@ tpm_attach_dev_init(tpm_t *tpm)
 	case TPM_INTF_IFTYPE_FIFO:
 		tpm->tpm_iftype = TPM_IF_FIFO;
 		tpm->tpm_family = TPM_FAMILY_2_0;
-		ifstr = "FIFO";
 
 		/*
 		 * While the id value can be also be used to determine the
@@ -1171,7 +1148,6 @@ tpm_attach_dev_init(tpm_t *tpm)
 	case TPM_INTF_IFTYPE_CRB:
 		tpm->tpm_iftype = TPM_IF_CRB;
 		tpm->tpm_family = TPM_FAMILY_2_0;
-		ifstr = "CRB";
 		ret = crb_init(tpm);
 		break;
 	default:
@@ -1201,7 +1177,7 @@ tpm_attach_dev_init(tpm_t *tpm)
 	(void) ndi_prop_update_int(DDI_DEV_T_NONE, tpm->tpm_dip,
 	    "revision-id", tpm->tpm_rid);
 	(void) ndi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
-	    "tpm-interface", ifstr);
+	    "tpm-interface", (char *)tpm_iftype_str(tpm->tpm_iftype));
 	(void) ndi_prop_update_string(DDI_DEV_T_NONE, tpm->tpm_dip,
 	    "tpm-family", famstr);
 
@@ -1859,6 +1835,28 @@ tpm_client_cmp(const void *a, const void *b)
 		return (1);
 	return (0);
 }
+
+const char *
+tpm_iftype_str(tpm_if_t iftype)
+{
+	switch (iftype) {
+	case TPM_IF_TIS:
+		return ("TIS");
+	case TPM_IF_FIFO:
+		return ("FIFO");
+	case TPM_IF_CRB:
+		return ("CRB");
+	default:
+		/* We were passed an undefined value, not possible */
+		cmn_err(CE_PANIC, "invalid iftype %d", iftype);
+
+#ifndef __CHECKER__
+		/* smatch understands this is unreachable, gcc does not */
+		return (NULL);
+#endif
+	}
+}
+
 
 /* An arbitrary prime */
 #define	TPM_CLIENT_BUCKETS	7
