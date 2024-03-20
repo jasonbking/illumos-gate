@@ -645,10 +645,10 @@ tpm_int_newcmd(tpm_client_t *c, uint16_t sess, uint32_t cmd)
 	BE_OUT16(buf, sess);
 	buf += sizeof (uint16_t);
 
-	BE_OUT32(buf, cmd);
+	/* Skip length for now */
 	buf += sizeof (uint32_t);
 
-	/* Skip length for now */
+	BE_OUT32(buf, cmd);
 	buf += sizeof (uint32_t);
 
 	c->tpmc_bufused = (size_t)(buf - c->tpmc_buf);
