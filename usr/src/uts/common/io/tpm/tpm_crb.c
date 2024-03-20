@@ -271,7 +271,7 @@ crb_addr_to_offset(ACPI_RESOURCE *res, void *arg)
 	VERIFY3U(len, >=, 0x1000);
 
 	if (crb->tcrb_cmd_off < base ||
-	    crb->tcrb_cmd_off + crb->tcrb_cmd_size >= base + 0x1000) {
+	    crb->tcrb_cmd_off + crb->tcrb_cmd_size > base + 0x1000) {
 		dev_err(tpm->tpm_dip, CE_NOTE,
 		    "!TPM CRB command buffer [0x%lx, 0x%lx) is outside of "
 		    "register range [0x%x, 0x%x) of device.",
@@ -281,7 +281,7 @@ crb_addr_to_offset(ACPI_RESOURCE *res, void *arg)
 	}
 
 	if (crb->tcrb_resp_off < base ||
-	    crb->tcrb_resp_off + crb->tcrb_resp_size >= base + 0x1000) {
+	    crb->tcrb_resp_off + crb->tcrb_resp_size > base + 0x1000) {
 		dev_err(tpm->tpm_dip, CE_NOTE,
 		    "!TPM CRB response buffer [0x%lx, 0x%lx) is outside of "
 		    "register range [0x%x, 0x%x) of device.",
