@@ -14,6 +14,7 @@
  */
 
 #include <sys/sysmacros.h>
+#include <sys/acpica.h>
 #include "tpm_ddi.h"
 #include "tpm_tis.h"
 
@@ -222,11 +223,91 @@ crb_go_ready(tpm_t *tpm)
 	return (ret);
 }
 
+/*
+ * The location of the command and response buffer are given as physical
+ * addresses by the TPM_CRB_CTRL_{CMD,RSP}_ADDR registers. The PC Client
+ * Specific Platform TPM Profile Specification says a compliant implementation
+ * should return the address of TPM_CRB_DATA_BUFFER_x (e.g. base + 0x80),
+ * implying that the command and response buffer should share the same
+ * address. At the same time, it allows for two different addresses and
+ * reserves a large portion of the register space for it.
+ *
+ * To be as accomidating as possible, we will accept any physical address
+ * for the cmd and resp buffer whose physical address is in the range
+ * [base + TPM_CRB_DATA_BUFFER, base + 0x1000). We will reject any
+ * TPM that presents addresses outside of this range.
+ *
+ * For conveinence, we store the address as the offset from the base using
+ * the physical base address provided by ACPI.
+ */
+static ACPI_STATUS
+crb_addr_to_offset(ACPI_RESOURCE *res, void *arg)
+{
+	tpm_t *tpm = arg;
+	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
+	uint32_t base, len, end;
+
+	if (res->Type != ACPI_RESOURCE_TYPE_FIXED_MEMORY32)
+		return (AE_OK);
+
+	base = res->Data.FixedMemory32.Address;
+	len = res->Data.FixedMemory32.AddressLength;
+
+	/*
+	 * Sanity check. This is supposed to be with the 32-bit address
+	 * range.
+	 */
+	if (__builtin_uadd_overflow(base, len, &end)) {
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "!TPM memory resource length (0x%x) is too large for "
+		    "base physical address (0x%x)", base, len);
+		return (AE_BAD_ADDRESS);
+	}
+
+	/*
+	 * We've already checked the register size by now, so the length
+	 * of the address resource should be sane.
+	 */
+	VERIFY3U(len, >=, 0x1000);
+
+	if (crb->tcrb_cmd_off < base ||
+	    crb->tcrb_cmd_off + crb->tcrb_cmd_size >= base + 0x1000) {
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "!TPM CRB command buffer [0x%lx, 0x%lx) is outside of "
+		    "register range [0x%x, 0x%x) of device.",
+		    crb->tcrb_cmd_off, crb->tcrb_cmd_off + crb->tcrb_cmd_size,
+		    base, base + len);
+		return (AE_BAD_ADDRESS);
+	}
+
+	if (crb->tcrb_resp_off < base ||
+	    crb->tcrb_resp_off + crb->tcrb_resp_size >= base + 0x1000) {
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "!TPM CRB response buffer [0x%lx, 0x%lx) is outside of "
+		    "register range [0x%x, 0x%x) of device.",
+		    crb->tcrb_resp_off,
+		    crb->tcrb_resp_off + crb->tcrb_resp_size,
+		    base, base + len);
+		return (AE_BAD_ADDRESS);
+	}
+
+	crb->tcrb_cmd_off -= base;
+	crb->tcrb_resp_off -= base;
+
+	/*
+	 * Don't need to walk any more resources, successfully terminate
+	 * the walk.
+	 */
+	return (AE_CTRL_TERMINATE);
+}
+
 bool
 crb_init(tpm_t *tpm)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 	uint64_t id;
+	ACPI_HANDLE handle;
+	ACPI_STATUS status;
 
 	id = tpm_get64(tpm, TPM_CRB_INTF_ID);
 	tpm->tpm_did = TPM_CRB_INTF_DID(id);
@@ -251,16 +332,28 @@ crb_init(tpm_t *tpm)
 	crb->tcrb_resp_size = tpm_get32(tpm, TPM_CRB_CTRL_RSP_SIZE);
 
 	/*
-	 * The command and response buffer may be the same offset. If they are,
+	 * The command and response buffer may be the same address. If they are,
 	 * the buffer sizes SHALL be the same (Table 25).
 	 */
 	if (crb->tcrb_cmd_off == crb->tcrb_resp_off &&
 	    crb->tcrb_cmd_size != crb->tcrb_resp_size) {
-		cmn_err(CE_WARN, "!%s: tpm shared command and response buffer "
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "!%s: tpm shared command and response buffer "
 		    "have different sizes (cmd size %lu != resp size %lu)",
 		    __func__, crb->tcrb_cmd_size, crb->tcrb_resp_size);
 		return (false);
 	}
+
+	status = acpica_get_handle(tpm->tpm_dip, &handle);
+	if (ACPI_FAILURE(status)) {
+		dev_err(tpm->tpm_dip, CE_NOTE,
+		    "!%s: failed to get ACPI handle for device", __func__);
+		return (false);
+	}
+
+	status = AcpiWalkResources(handle, "_CRS", crb_addr_to_offset, tpm);
+	if (ACPI_FAILURE(status))
+		return (false);
 
 	/* CRB always implies a TPM 2.0 device */
 	return (tpm20_init(tpm));
