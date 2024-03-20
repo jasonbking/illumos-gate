@@ -85,7 +85,7 @@ typedef struct tpm_attach_desc {
 #define	TPM_INTF_IFTYPE_FIFO	0x0
 #define	TPM_INTF_IFTYPE_CRB	0x1
 #define	TPM_INTF_IFTYPE_TIS	0xf
-#define	TPM_INTF_CAP_LOC5	0x10
+#define	TPM_INTF_CAP_LOC5	0x00000100
 
 /*
  * Explicitly not static as it is a tunable. Set to true to enable
