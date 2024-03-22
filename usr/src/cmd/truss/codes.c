@@ -27,6 +27,7 @@
  * Copyright (c) 2014, OmniTI Computer Consulting, Inc. All rights reserved.
  * Copyright 2021 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2022 Garrett D'Amore <garrett@damore.org>
+ * Copyright 2023 Jason King
  */
 
 /*	Copyright (c) 1984, 1986, 1987, 1988, 1989 AT&T	*/
@@ -105,6 +106,7 @@
 #include <sys/pm.h>
 #include <sys/soundcard.h>
 #include <sys/cpuid_drv.h>
+#include <sys/tpm.h>
 
 #include "ramdata.h"
 #include "proto.h"
@@ -1675,6 +1677,11 @@ const struct ioc {
 #if defined(__i386) || defined(__amd64)
 	{ (uint_t)CPUID_RDMSR,			"CPUID_RDMSR", NULL },
 #endif
+
+	{ (uint_t)TPMIOC_GETVERSION,		"TPMIOC_GETVERSION", NULL },
+	{ (uint_t)TPMIOC_SETLOCALITY,		"TPMIOC_SETLOCALITY", NULL },
+	{ (uint_t)TPMIOC_CANCEL,		"TPMIOC_CANCEL", NULL },
+	{ (uint_t)TPMIOC_MAKESTICKY,		"TPMIOC_MAKESTICKY", NULL },
 
 	{ (uint_t)0, NULL, NULL	}
 };
