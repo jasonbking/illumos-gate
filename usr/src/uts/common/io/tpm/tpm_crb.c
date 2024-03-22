@@ -490,7 +490,7 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, size_t buflen)
 		return (SET_ERROR(ENOSPC));
 	}
 
-	if (resp_len > crb->tcrb_resp_len) {
+	if (resp_len > crb->tcrb_resp_size) {
 		dev_err(tpm->tpm_dip, CE_NOTE,
 		    "!received response with invalid length (%u)", resp_len);
 
@@ -615,6 +615,17 @@ crb_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 
 	ret = crb_recv_data(tpm, buf, buflen);
 
+done:
+	/*
+	 * If we were cancelled, we defer putting the TPM into the
+	 * ready state (which stops any current execution) and releasing
+	 * the locality until after we've released the client to prevent
+	 * it from blocking while waiting for the TPM to stop execution.
+	 */
+	if (ret == ECANCELED) {
+		return (ret);
+	}
+
 	/*
 	 * PTP 6.5.3.9.2 The TPM shall maintin the respone in the buffer
 	 * until a receipt of write of 1 to TPM_CRB_CTRL_REQ_x.goIdle.
@@ -625,7 +636,6 @@ crb_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 	 */
 	(void) crb_go_idle(tpm);
 
-done:
 	/*
 	 * Release the locality after completion to allow a lower value
 	 * locality to use the TPM.
@@ -637,7 +647,33 @@ done:
 void
 crb_cancel_cmd(tpm_t *tpm, tpm_duration_t to)
 {
-	/* TODO */
+	int ret;
+
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+
+	/*
+	 * Cancelling a command should cause the TPM to transition
+	 * to the completion state. While the driver does not utilize this,
+	 * the TPM will either return a response with a result code of
+	 * TPM_RC_CANCELED or if the cancel request arrived after the
+	 * command was complete, the actual results.
+	 */
+	tpm_put32(tpm, TPM_CRB_CTRL_CANCEL, 1);
+	ret = tpm_wait(tpm, crb_data_ready, tpm->tpm_timeout_c);
+	if (ret != 0) {
+		dev_err(tpm->tpm_dip, CE_NOTE, "!timed out cancelling command");
+		return;
+	}
+
+	crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
+
+	/* Clear the cancel request so new requests will be processed */
+	tpm_put32(tpm, TPM_CRB_CTRL_CANCEL, 0);
+
+	/* Ignore the output from the TPM and get ready for the next command */
+	(void) crb_go_idle(tpm);
+
+	(void) crb_release_locality(tpm, tpm->tpm_locality);
 }
 
 void

@@ -28,6 +28,8 @@
 
 #include <sys/byteorder.h>
 #include <sys/crypto/api.h>
+
+#if 0
 #define	UINT8 uint8_t
 #define	UINT16 uint16_t
 #define	UINT32 uint32_t
@@ -35,6 +37,8 @@
 #define	INT8 int8_t
 #define	BOOLEAN int
 #include <IndustryStandard/Tpm12.h>
+#endif
+
 #include "tpm_ddi.h"
 #include "tpm_tis.h"
 
@@ -51,6 +55,20 @@
  * with tssd (or equivalent) arbitrating access between multiple clients.
  */
 #define	TPM12_CLIENT_MAX	1
+
+#define        TPM_TAG_RQU_COMMAND             ((uint16_t)0x00c1)
+
+/* The TPM1.2 Commands we are using */
+#define		TPM_ORD_GetCapability		0x00000065u
+#define		TPM_ORD_ContinueSelfTest	0x00000053u
+#define		TPM_ORD_GetRandom		0x00000046u
+#define		TPM_ORD_StirRandom		0x00000047u
+
+#define		TPM_CAP_PROPERTY		0x00000005u
+#define		TPM_CAP_PROP_TIS_TIMEOUT	0x00000115u
+#define		TPM_CAP_PROP_DURATION		0x00000120u
+
+#define		TPM_CAP_VERSION_VAL		0x0000001au
 
 /* The maximum amount of bytes allowed for TPM_ORD_StirRandom */
 #define	TPM12_SEED_MAX		255

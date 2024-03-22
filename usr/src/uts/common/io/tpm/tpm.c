@@ -151,6 +151,7 @@ tpm_cancel(tpm_client_t *c)
 		}
 	}
 
+	tpm_client_reset(c);
 	return (0);
 }
 

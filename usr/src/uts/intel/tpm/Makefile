@@ -58,7 +58,7 @@ CPPFLAGS	+= -I$(ROOT)/usr/include
 
 # The loader sources include most of the definitions we want, so we
 # use those instead of duplicating them.
-CPPFLAGS	+= -I$(SRC)/boot/efi/include/
+#CPPFLAGS	+= -I$(SRC)/boot/efi/include/
 
 MAPFILES	+= ddi
 
