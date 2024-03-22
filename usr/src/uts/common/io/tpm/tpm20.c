@@ -17,6 +17,7 @@
 #include <sys/crypto/common.h>
 #include <sys/types.h>
 
+#if 0
 /*
  * These are taken from Section 5.1 / Table 3 of TPM2.0 Part 2 Base
  * Structures. The types in Tpm20.h are defined in terms of these.
@@ -28,19 +29,10 @@
 #define	INT8 int8_t
 #define	BOOLEAN int
 #include <IndustryStandard/Tpm20.h>
+#endif
 
 #include "tpm_ddi.h"
-
-/*
- * Tpm20.h isn't completely up to date with all of the latest TPM2.0 commands
- * we need this one because it has a non-default timeout value so
- * tpm_get_timeout() need to be aware of it.
- *
- * Once Tpm20.h is updated to include this, we can remove this bit.
- */
-#ifndef	TPM_CC_CreatedLoaded
-#define	TPM_CC_CreateLoaded	(TPM_CC)(0x00000198)
-#endif
+#include "tpm20.h"
 
 /*
  * From PTP 6.5.1.3 Table 17, note that it doesn't explicitly
