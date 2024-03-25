@@ -333,7 +333,6 @@ int
 tpm20_seed_random(tpm_t *tpm, uchar_t *buf, size_t len)
 {
 	tpm_client_t	*c = tpm->tpm_internal_client;
-	uint8_t		*cmd = c->tpmc_buf;
 	int		ret;
 	TPM_RC		trc;
 
