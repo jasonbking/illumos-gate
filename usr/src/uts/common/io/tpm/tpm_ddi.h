@@ -259,7 +259,7 @@ struct tpm {
 	uint32_t		tpm_fw_major;		/* WO */
 	uint32_t		tpm_fw_minor;		/* WO */
 
-	uint8_t			tpm_locality;	/* locality during cmd exec */
+	int8_t			tpm_locality;	/* locality during cmd exec */
 	uint8_t			tpm_n_locality;
 
 	clock_t			tpm_timeout_a;		/* WO */
@@ -321,9 +321,8 @@ struct tpm_client {
 	size_t			tpmc_bufused;		/* RW */
 	size_t			tpmc_bufread;		/* RW */
 	int			tpmc_instance;		/* WO */
-	uint8_t			tpmc_locality;		/* RW */
+	int8_t			tpmc_locality;		/* RW */
 	int			tpmc_cmdresult;		/* RW */
-	bool			tpmc_cancelled;		/* RW */
 	bool			tpmc_closing;		/* WO */
 	bool			tpmc_iskernel;		/* WO */
 
@@ -336,16 +335,14 @@ tpm_client_nonblock(const tpm_client_t *c)
 	return ((c->tpmc_mode & TPM_MODE_NONBLOCK) != 0 ? true : false);
 }
 
+/*
+ * We can access the TPM device (read/write registers) if we haven't
+ * started the TPM thread yet or if we're executing on the TPM thread.
+ */
 static inline bool
-tpm_is_cancelled(tpm_t *tpm)
+tpm_can_access(const tpm_t *tpm)
 {
-	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
-
-	if (tpm->tpm_active == NULL) {
-		return (false);
-	}
-
-	return (tpm->tpm_active->tpmc_cancelled);
+	return (tpm->tpm_thread == NULL || curthread == tpm->tpm_thread);
 }
 
 #define	TPM12_ORDINAL_MAX	243
@@ -397,8 +394,10 @@ uint64_t tpm_get64(tpm_t *, unsigned long);
 void tpm_put8(tpm_t *, unsigned long, uint8_t);
 void tpm_put32(tpm_t *, unsigned long, uint32_t);
 
-int tpm_wait(tpm_t *, bool (*)(tpm_t *), clock_t);
-int tpm_wait_cmd(tpm_t *, const uint8_t *, bool(*)(tpm_t *));
+int tpm_wait(tpm_t *, bool (*)(tpm_t *, bool, clock_t, const char *), clock_t,
+    const char *);
+int tpm_wait_cmd(tpm_t *, const uint8_t *,
+    bool(*)(tpm_t *, bool, uint16_t, clock_t, const char *), const char *);
 
 tpm_duration_t tpm_get_duration_type(tpm_t *, const uint8_t *);
 clock_t tpm_get_duration(tpm_t *, const uint8_t *);
@@ -454,6 +453,7 @@ void crb_intr_mgmt(tpm_t *, bool);
 uint_t crb_intr(caddr_t, caddr_t);
 
 void tpm_ereport_timeout(tpm_t *, uint16_t, clock_t, const char *);
+void tpm_ereport_timeout_cmd(tpm_t *, uint16_t, clock_t, const char *);
 void tpm_ereport_short_read(tpm_t *, uint32_t, uint32_t, uint32_t, uint32_t);
 
 int tpm_kcf_register(tpm_t *);

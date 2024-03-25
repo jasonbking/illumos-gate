@@ -94,18 +94,19 @@ tpm_cancel(tpm_client_t *c)
 		tpm_client_reset(c);
 		return (0);
 	case TPM_CLIENT_CMD_DISPATCH:
+		mutex_enter(&tpm->tpm_lock);
 		if (list_link_active(&c->tpmc_node)) {
 			/*
 			 * If we're still on the pending list, the tpm thread
 			 * has not started processing our request. We can
 			 * merely remove ourself from the list and reset.
 			 */
-			mutex_enter(&tpm->tpm_lock);
 			list_remove(&tpm->tpm_pending, c);
 			mutex_exit(&tpm->tpm_lock);
 
 			/* Release reference from list */
 			tpm_client_refrele(c);
+
 			tpm_client_reset(c);
 			return (0);
 		}
@@ -126,31 +127,33 @@ tpm_cancel(tpm_client_t *c)
 		 * This way a non-blocking client can cancel and
 		 * have it processed in the background.
 		 */
-		c->tpmc_cancelled = true;
+		tpm->tpm_thr_cancelreq = true;
 		break;
 	case TPM_CLIENT_CMD_EXECUTION:
-		c->tpmc_cancelled = true;
 
 		/* The tpm thread is busy, so we have to signal it */
 		mutex_enter(&tpm->tpm_lock);
 		tpm->tpm_thr_cancelreq = true;
 		cv_signal(&tpm->tpm_thr_cv);
-		mutex_exit(&tpm->tpm_lock);
 
 		break;
 	default:
 		cmn_err(CE_PANIC, "unexpected tpm connection state 0x%x",
 		    c->tpmc_state);
 	}
+	mutex_exit(&c->tpmc_lock);
 
-	while (c->tpmc_cancelled) {
-		ret = cv_wait_sig(&c->tpmc_cv, &c->tpmc_lock);
+	while (tpm->tpm_thr_cancelreq) {
+		ret = cv_wait_sig(&tpm->tpm_thr_cv, &tpm->tpm_lock);
 
 		if (ret == 0) {
+			mutex_exit(&tpm->tpm_lock);
 			return (SET_ERROR(EINTR));
 		}
 	}
+	mutex_exit(&tpm->tpm_lock);
 
+	mutex_enter(&c->tpmc_lock);
 	tpm_client_reset(c);
 	return (0);
 }
@@ -266,7 +269,6 @@ tpm_exec_client(tpm_client_t *c)
 
 	switch (ret) {
 	case ECANCELED:
-		c->tpmc_cancelled = false;
 		c->tpmc_bufused = 0;
 		c->tpmc_bufread = 0;
 		break;
@@ -320,6 +322,8 @@ tpm_exec_thread(void *arg)
 		}
 
 		mutex_enter(&c->tpmc_lock);
+		mutex_enter(&tpm->tpm_lock);
+
 		/*
 		 * This is somewhat subtle. We remove the client from the
 		 * list, but there is a small window of opportunity between
@@ -329,11 +333,14 @@ tpm_exec_thread(void *arg)
 		 * releasing the client lock, and wait for us to acknowledge
 		 * the cancellation by signaling tpmc_cv.
 		 */
-		if (c->tpmc_cancelled) {
-			c->tpmc_cancelled = false;
-			cv_signal(&c->tpmc_cv);
+		if (tpm->tpm_thr_cancelreq) {
+			tpm->tpm_thr_cancelreq = false;
+			cv_signal(&tpm->tpm_thr_cv);
+
+			mutex_exit(&tpm->tpm_lock);
 			mutex_exit(&c->tpmc_lock);
 
+			tpm_client_refrele(c);
 			continue;
 		}
 
@@ -350,6 +357,12 @@ tpm_exec_thread(void *arg)
 		if (ret == ECANCELED) {
 			mutex_enter(&tpm->tpm_lock);
 
+			VERIFY(tpm->tpm_thr_cancelreq);
+			tpm->tpm_thr_cancelreq = false;
+			cv_signal(&tpm->tpm_thr_cv);
+
+			mutex_exit(&tpm->tpm_lock);
+
 			switch (tpm->tpm_iftype) {
 			case TPM_IF_TIS:
 			case TPM_IF_FIFO:
@@ -359,8 +372,6 @@ tpm_exec_thread(void *arg)
 				crb_cancel_cmd(tpm, dur);
 				break;
 			}
-
-			mutex_exit(&tpm->tpm_lock);
 		}
 	}
 }
@@ -371,11 +382,11 @@ tpm_exec_thread(void *arg)
  * Basically anything but waiting for a command to complete.
  */
 int
-tpm_wait(tpm_t *tpm, bool (*cond)(tpm_t *), clock_t timeout)
+tpm_wait(tpm_t *tpm, bool (*cond)(tpm_t *, bool, clock_t, const char *),
+    clock_t timeout, const char *func)
 {
 	clock_t deadline, now;
-
-	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+	int ret = 0;
 
 	/*
 	 * We should never be called in a context where we can receive a
@@ -384,24 +395,25 @@ tpm_wait(tpm_t *tpm, bool (*cond)(tpm_t *), clock_t timeout)
 	VERIFY(!ddi_can_receive_sig());
 
 	deadline = ddi_get_lbolt() + timeout;
-	while ((now = ddi_get_lbolt()) <= deadline) {
-		if (cond(tpm)) {
-			return (0);
+
+	mutex_enter(&tpm->tpm_lock);
+	while ((now = ddi_get_lbolt()) <= deadline && !tpm->tpm_thr_cancelreq) {
+		if (cond(tpm, false, timeout, func)) {
+			goto done;
 		}
 
 		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, deadline);
-
-		if (tpm->tpm_thr_cancelreq) {
-			tpm->tpm_thr_cancelreq = false;
-			return (SET_ERROR(ECANCELED));
-		}
 	}
 
-	if (!cond(tpm)) {
-		return (SET_ERROR(ETIME));
+	if (tpm->tpm_thr_cancelreq) {
+		ret = SET_ERROR(ECANCELED);
+	} else if (!cond(tpm, true, timeout, func)) {
+		ret = SET_ERROR(ETIME);
 	}
 
-	return (0);
+done:
+	mutex_exit(&tpm->tpm_lock);
+	return (ret);
 }
 
 /*
@@ -414,11 +426,12 @@ tpm_wait(tpm_t *tpm, bool (*cond)(tpm_t *), clock_t timeout)
  * are a bit different than tpm_wait().
  */
 int
-tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf, bool (*done)(tpm_t *))
+tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
+    bool (*done)(tpm_t *, bool, uint16_t, clock_t, const char *),
+    const char *func)
 {
-	clock_t exp_done, deadline, now;
-
-	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
+	clock_t exp_done, deadline, now, to;
+	uint16_t cmd = tpm_cmd(buf);
 
 	/*
 	 * We should never be called in a context where we can receive
@@ -450,10 +463,10 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf, bool (*done)(tpm_t *))
 	 * TPM_WAIT_POLLONCE.  In this instance, we check exactly one time --
 	 * after the command timeout.
 	 */
-	deadline = now + tpm_get_timeout(tpm, buf);
+	to = tpm_get_timeout(tpm, buf);
+	deadline = now + to;
 
-	exp_done = (tpm->tpm_wait != TPM_WAIT_POLLONCE) ?
-	    now + tpm_get_duration(tpm, buf) : 0;
+	exp_done = (tpm->tpm_wait != TPM_WAIT_POLLONCE) ?  now + to : 0;
 	VERIFY3S(exp_done, <=, deadline);
 
 	/*
@@ -461,12 +474,12 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf, bool (*done)(tpm_t *))
 	 * interrupted due to cancellation or receiving a 'command done'
 	 * interrupt.
 	 */
-	while ((now = ddi_get_lbolt()) <= exp_done) {
+	mutex_enter(&tpm->tpm_lock);
+	while ((now = ddi_get_lbolt()) <= exp_done && !tpm->tpm_thr_cancelreq) {
 		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, exp_done);
 
 		if (tpm->tpm_thr_cancelreq) {
-			/* We were cancelled */
-			tpm->tpm_thr_cancelreq = false;
+			mutex_exit(&tpm->tpm_lock);
 			return (ECANCELED);
 		}
 
@@ -474,7 +487,8 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf, bool (*done)(tpm_t *))
 		 * We either received an interrupt or reached the expected
 		 * command duration, check if the command is finished.
 		 */
-		if (done(tpm)) {
+		if (done(tpm, false, cmd, to, func)) {
+			mutex_exit(&tpm->tpm_lock);
 			return (0);
 		}
 	}
@@ -499,7 +513,7 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf, bool (*done)(tpm_t *))
 	
 		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, when);
 		if (tpm->tpm_thr_cancelreq) {
-			tpm->tpm_thr_cancelreq = false;
+			mutex_exit(&tpm->tpm_lock);
 			return (ECANCELED);
 		}
 
@@ -507,16 +521,13 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf, bool (*done)(tpm_t *))
 			continue;
 		}
 
-		if (done(tpm)) {
+		if (done(tpm, false, cmd, to, __func__)) {
+			mutex_exit(&tpm->tpm_lock);
 			return (0);
 		}
 	}
 
-	if (!done(tpm)) {
-		dev_err(tpm->tpm_dip, CE_NOTE,
-		    "timeout waiting for command completion (cmd=0x%x)",
-		    tpm_cmd(buf));
-		/* XXX: post ereport? */
+	if (!done(tpm, true, cmd, to, func)) {
 		return (SET_ERROR(ETIME));
 	}
 

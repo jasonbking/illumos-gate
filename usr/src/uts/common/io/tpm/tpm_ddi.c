@@ -825,6 +825,25 @@ tpm_ereport_timeout(tpm_t *tpm, uint16_t reg, clock_t to, const char *func)
 }
 
 void
+tpm_ereport_timeout_cmd(tpm_t *tpm, uint16_t cmd, clock_t to, const char *func)
+{
+	uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
+	uint64_t ms;
+
+	ms = drv_hztousec(to) / 1000;
+
+	ddi_fm_ereport_post(tpm->tpm_dip,
+	    DDI_FM_DEVICE "." DDI_FM_DEVICE_NO_RESPONSE, ena, DDI_NOSLEEP,
+	    FM_VERSION, DATA_TYPE_UINT8, FM_EREPORT_VERS0,
+	    "tpm_interface", DATA_TYPE_STRING, tpm_iftype_str(tpm->tpm_iftype),
+	    "locality", DATA_TYPE_UINT8, tpm->tpm_locality,
+	    "command", DATA_TYPE_UINT16, cmd,
+	    "timeout", DATA_TYPE_UINT64, ms,
+	    "func", DATA_TYPE_STRING, func,
+	    NULL);
+}
+
+void
 tpm_ereport_short_read(tpm_t *tpm, uint32_t cmd, uint32_t offset,
     uint32_t expected, uint32_t actual)
 {
@@ -1594,7 +1613,7 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		return (DDI_FAILURE);
 	}
 
-	tpm->tpm_locality = DEFAULT_LOCALITY;
+	tpm->tpm_locality = -1;
 
 	/*
 	 * We default to polling. Once everything has been initialized,
