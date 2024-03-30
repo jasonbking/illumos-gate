@@ -11,7 +11,7 @@
 
 #
 # Copyright 2020 Joyent, Inc.
-# Copyright 2020 RackTop Systems, Inc.
+# Copyright 2024 RackTop Systems, Inc.
 # Copyright 2021 Oxide Computer Company
 # Copyright 2023 Jason King
 #
@@ -236,6 +236,7 @@ SYMBOL_SCOPE {
 	pci_ereport_setup		{ FLAGS = EXTERN };
 	pci_ereport_teardown		{ FLAGS = EXTERN };
 	pci_lcap_locate			{ FLAGS = EXTERN };
+	pollhead_clean			{ FLAGS = EXTERN };
 	pollwakeup			{ FLAGS = EXTERN };
 	qreply				{ FLAGS = EXTERN };
 	rw_destroy			{ FLAGS = EXTERN };

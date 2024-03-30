@@ -218,8 +218,9 @@ tpm_exec_internal(tpm_t *tpm, tpm_client_t *c)
 	}
 
 	ret = c->tpmc_cmdresult;
-	if (ret != 0)
+	if (ret != 0) {
 		tpm_client_reset(c);
+	}
 
 	return (ret);
 }
@@ -232,9 +233,13 @@ int
 tpm_exec_client(tpm_client_t *c)
 {
 	tpm_t *tpm = c->tpmc_tpm;
+	uint32_t len;
+	int8_t locality;
 	int ret = 0;
 
 	VERIFY(MUTEX_HELD(&c->tpmc_lock));
+
+	len = tpmc_bufused;
 
 	/* We should have the full command, and should be a valid size. */
 	VERIFY3U(c->tpmc_bufused, >=, TPM_HEADER_SIZE);
@@ -242,27 +247,35 @@ tpm_exec_client(tpm_client_t *c)
 
 	c->tpmc_state = TPM_CLIENT_CMD_EXECUTION;
 
-	mutex_enter(&tpm->tpm_lock);
+	locality = c->tpmc_locality;
+	tpm->tpm_cmd = tpm_cmd(c->tpmc_buf);
+	bcopy(c->tpmc_buf, tpm->tpm_buf, len);
+
 	mutex_exit(&c->tpmc_lock);
+
+	DTRACE_PROBE4(cmd__exec, tpm_client_t *, c, uint32_t, tpm->tpm_cmd,
+	    uint8_t *, tpm->tpm_buf, uint32_t, len);
 
 	switch (tpm->tpm_iftype) {
 	case TPM_IF_TIS:
 	case TPM_IF_FIFO:
-		ret = tis_exec_cmd(tpm, c->tpmc_locality, c->tpmc_buf,
-		    c->tpmc_buflen);
+		ret = tis_exec_cmd(tpm, locality, tpm->tpm_buf,
+		    sizeof (tpm->tpm_buf));
 		break;
 	case TPM_IF_CRB:
-		ret = crb_exec_cmd(tpm, c->tpmc_locality, c->tpmc_buf,
-		    c->tpmc_buflen);
+		ret = crb_exec_cmd(tpm, locality, tpm->tpm_buf,
+		    sizeof (tpm->tpm_buf));
 		break;
 	default:
 		dev_err(tpm->tpm_dip, CE_PANIC, "%s: invalid iftype %d",
 		    __func__, tpm->tpm_iftype);
 	}
 
-	mutex_exit(&tpm->tpm_lock);
-
 	mutex_enter(&c->tpmc_lock);
+
+	DTRACE_PROBE5(cmd__done, tpm_client_t *, c, uint32_t, ret,
+	    uint32_t, tpm_cmd(c->tpmc_buf), uint8_t *, c->tpmc_buf,
+	    uint32_t, tpm_cmdlen(c->tpmc_buf));
 
 	c->tpmc_cmdresult = ret;
 	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
@@ -277,14 +290,13 @@ tpm_exec_client(tpm_client_t *c)
 		 * If we succeeded, the amount of output will be in the
 		 * returned header.
 		 */
-		c->tpmc_bufused = tpm_getbuf32(c->tpmc_buf,
+		c->tpmc_bufused = tpm_getbuf32(tpm->tpm_buf,
 		    TPM_PARAMSIZE_OFFSET);
 		c->tpmc_bufread = 0;
+		bzero(c->tpmc_buf, c->tpmc_buflen);
+		bcopy(tpm->tpm_buf, c->tpmc_buf, c->tpmc_bufused);
 		break;
 	}
-
-	cv_signal(&c->tpmc_cv);
-	pollwakeup(&c->tpmc_pollhead, POLLIN);
 
 	/* We were called with tpmc_lock held, return with tpmc_lock held */
 	return (ret);
@@ -322,7 +334,6 @@ tpm_exec_thread(void *arg)
 		}
 
 		mutex_enter(&c->tpmc_lock);
-		mutex_enter(&tpm->tpm_lock);
 
 		/*
 		 * This is somewhat subtle. We remove the client from the
@@ -333,6 +344,7 @@ tpm_exec_thread(void *arg)
 		 * releasing the client lock, and wait for us to acknowledge
 		 * the cancellation by signaling tpmc_cv.
 		 */
+		mutex_enter(&tpm->tpm_lock);
 		if (tpm->tpm_thr_cancelreq) {
 			tpm->tpm_thr_cancelreq = false;
 			cv_signal(&tpm->tpm_thr_cv);
@@ -343,6 +355,7 @@ tpm_exec_thread(void *arg)
 			tpm_client_refrele(c);
 			continue;
 		}
+		mutex_exit(&tpm->tpm_lock);
 
 		/*
 		 * We need the duration type in case we're cancelled.
@@ -351,8 +364,6 @@ tpm_exec_thread(void *arg)
 
 		ret = tpm_exec_client(c);
 		mutex_exit(&c->tpmc_lock);
-
-		tpm_client_refrele(c);
 
 		if (ret == ECANCELED) {
 			mutex_enter(&tpm->tpm_lock);
@@ -372,7 +383,13 @@ tpm_exec_thread(void *arg)
 				crb_cancel_cmd(tpm, dur);
 				break;
 			}
+		} else {
+			cv_signal(&c->tpmc_cv);
+
+			pollwakeup(&c->tpmc_pollhead, POLLIN|POLLRDNORM);
 		}
+
+		tpm_client_refrele(c);
 	}
 }
 
@@ -398,11 +415,21 @@ tpm_wait(tpm_t *tpm, bool (*cond)(tpm_t *, bool, clock_t, const char *),
 
 	mutex_enter(&tpm->tpm_lock);
 	while ((now = ddi_get_lbolt()) <= deadline && !tpm->tpm_thr_cancelreq) {
+		clock_t to = now + tpm->tpm_poll_interval;
+
 		if (cond(tpm, false, timeout, func)) {
 			goto done;
 		}
 
-		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, deadline);
+		/*
+		 * TODO: If hardware with interrupt support is found,
+		 * we probably want to take a parameter to indicate if
+		 * we're waiting for something that will post an interrupt
+		 * on completion or not. For those things that post an
+		 * interrupt, we can just wait the entire timeout (and assume
+		 * the interrupt will wake us) instead of polling.
+		 */
+		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, to);
 	}
 
 	if (tpm->tpm_thr_cancelreq) {
@@ -430,7 +457,7 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
     bool (*done)(tpm_t *, bool, uint16_t, clock_t, const char *),
     const char *func)
 {
-	clock_t exp_done, deadline, now, to;
+	clock_t exp_done, deadline, now, to, dur;
 	uint16_t cmd = tpm_cmd(buf);
 
 	/*
@@ -466,7 +493,9 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 	to = tpm_get_timeout(tpm, buf);
 	deadline = now + to;
 
-	exp_done = (tpm->tpm_wait != TPM_WAIT_POLLONCE) ?  now + to : 0;
+	dur = tpm_get_duration(tpm, buf);
+	exp_done = (tpm->tpm_wait != TPM_WAIT_POLLONCE) ? now + to : dur;
+
 	VERIFY3S(exp_done, <=, deadline);
 
 	/*
@@ -476,7 +505,15 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 	 */
 	mutex_enter(&tpm->tpm_lock);
 	while ((now = ddi_get_lbolt()) <= exp_done && !tpm->tpm_thr_cancelreq) {
-		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, exp_done);
+		clock_t to;
+
+		if (tpm->tpm_wait == TPM_WAIT_POLL) {
+			to = now + tpm->tpm_poll_interval;
+		} else {
+			to = exp_done;
+		}
+
+		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, to);
 
 		if (tpm->tpm_thr_cancelreq) {
 			mutex_exit(&tpm->tpm_lock);
@@ -569,77 +606,94 @@ tpm_get_timeout(tpm_t *tpm, const uint8_t *buf)
 /*
  * TPM accessor functions
  */
-static inline uintptr_t
-tpm_locality_offset(uint8_t locality)
-{
-	VERIFY3U(locality, <=, TPM_LOCALITY_MAX);
-
-	/*
-	 * Each locality (0-4) is a block of 0x1000 start at the base address.
-	 * E.g. locality 0 is addr + (0x0000-0x0FFF), locality 1 is
-	 * addr + (0x1000 - 0x1FFF), etc. This is the same for both the
-	 * TIS/FIFO and CRB interfaces.
-	 */
-	return (0x1000 * locality);
-}
-
 static inline void *
-tpm_reg_addr(const tpm_t *tpm, unsigned long offset)
+tpm_reg_addr(const tpm_t *tpm, int8_t locality, unsigned long offset)
 {
 	VERIFY3U(offset, <=, TPM_OFFSET_MAX);
+	VERIFY3S(locality, >=, 0);
+	VERIFY3S(locality, <=, tpm->tpm_n_locality);
 
-	return (tpm->tpm_addr + tpm_locality_offset(tpm->tpm_locality)
-	    + offset);
+ 	/*
+	 * Each locality uses a block of 0x1000 addresses starting at the
+	 * base address. E.g., locality 0 registers are at
+	 * [tpm->tpm_addr + 0, tpm->tpm_addr + 0x1fff] and
+	 * locality 1 registers are at
+	 * [tpm->tpm_addr + 0x1000, tpm->tpm->tpm_addr + 0x1fff] and so on.
+	 *
+	 * With in each locality (except locality 4), the layout of the
+	 * registers is identical (i.e. the offsets from the starting address
+	 * of each block are the same). Locality 4 is rather special and
+	 * appears to be intended for the system firmware and not the
+	 * running OS, so we don't use it.
+	 */
+	offset += 0x1000 * locality;
+	return (tpm->tpm_addr + offset);
+}
+
+uint8_t
+tpm_get8_loc(tpm_t *tpm, int8_t locality, unsigned long offset)
+{
+	uint8_t *addr = tpm_reg_addr(tpm, locality, offset);
+
+	return (ddi_get8(tpm->tpm_handle, addr));
 }
 
 uint8_t
 tpm_get8(tpm_t *tpm, unsigned long offset)
 {
-	return (ddi_get8(tpm->tpm_handle, tpm_reg_addr(tpm, offset)));
+	return (tpm_get8_loc(tpm, tpm->tpm_locality, offset));
 }
 
-uint8_t
-tpm_get8_loc(tpm_t *tpm, uint8_t locality, unsigned long offset)
+uint32_t
+tpm_get32_loc(tpm_t *tpm, int8_t locality, unsigned long offset)
 {
-	uintptr_t eff_off = tpm_locality_offset(locality) + offset;
-
-	ASSERT3U(locality, <, tpm->tpm_n_locality);
-	VERIFY3U(offset, <=, TPM_OFFSET_MAX);
-	return (ddi_get8(tpm->tpm_handle, tpm->tpm_addr + eff_off));
+	uint32_t *addr = tpm_reg_addr(tpm, locality, offset);
+	return (ddi_get32(tpm->tpm_handle, addr));
 }
 
 uint32_t
 tpm_get32(tpm_t *tpm, unsigned long offset)
 {
-	return (ddi_get32(tpm->tpm_handle, tpm_reg_addr(tpm, offset)));
+	return (tpm_get32_loc(tpm, tpm->tpm_locality, offset));
+}
+
+uint64_t
+tpm_get64_loc(tpm_t *tpm, int8_t locality, unsigned long offset)
+{
+	uint64_t *addr = tpm_reg_addr(tpm, locality, offset);
+	return (ddi_get64(tpm->tpm_handle, addr));
 }
 
 uint64_t
 tpm_get64(tpm_t *tpm, unsigned long offset)
 {
-	return (ddi_get64(tpm->tpm_handle, tpm_reg_addr(tpm, offset)));
+	return (tpm_get64_loc(tpm, tpm->tpm_locality, offset));
+}
+
+void
+tpm_put8_loc(tpm_t *tpm, int8_t locality, unsigned long offset, uint8_t value)
+{
+	uint8_t *addr = tpm_reg_addr(tpm, locality, offset);
+	ddi_put8(tpm->tpm_handle, addr, value);
 }
 
 void
 tpm_put8(tpm_t *tpm, unsigned long offset, uint8_t value)
 {
-	ddi_put8(tpm->tpm_handle, tpm_reg_addr(tpm, offset), value);
+	tpm_put8_loc(tpm, tpm->tpm_locality, offset, value);
 }
 
 void
-tpm_put8_loc(tpm_t *tpm, uint8_t locality, unsigned long offset, uint8_t value)
+tpm_put32_loc(tpm_t *tpm, int8_t locality, unsigned long offset, uint32_t value)
 {
-	uintptr_t eff_off = tpm_locality_offset(locality) + offset;
-
-	ASSERT3U(locality, <, tpm->tpm_n_locality);
-	VERIFY3U(offset, <=, TPM_OFFSET_MAX);
-	ddi_put8(tpm->tpm_handle, tpm->tpm_addr + eff_off, value);
+	uint32_t *addr = tpm_reg_addr(tpm, locality, offset);
+	ddi_put32(tpm->tpm_handle, addr, value);
 }
 
 void
 tpm_put32(tpm_t *tpm, unsigned long offset, uint32_t value)
 {
-	ddi_put32(tpm->tpm_handle, tpm_reg_addr(tpm, offset), value);
+	tpm_put32_loc(tpm, tpm->tpm_locality, offset, value);
 }
 
 /*
@@ -759,6 +813,9 @@ static struct {
 	{ 0x025E, "Solidigm" },
 	{ 0x104A, "STMicroelectronics" },
 	{ 0x104C, "Texas Instruments" },
+
+	/* This isn't in the registry, but from observation */
+	{ 0x0ec2, "Amazon" },
 };
 
 const char *
