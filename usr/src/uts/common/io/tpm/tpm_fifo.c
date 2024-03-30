@@ -509,8 +509,6 @@ tis_request_locality(tpm_t *tpm, uint8_t locality)
 
 	VERIFY3U(locality, <=, TPM_LOCALITY_MAX);
 
-	mutex_enter(&tpm->tpm_lock);
-
 	if (tis_locality_active(tpm, locality)) {
 		tpm->tpm_locality = locality;
 		mutex_exit(&tpm->tpm_lock);
@@ -525,7 +523,6 @@ tis_request_locality(tpm_t *tpm, uint8_t locality)
 	 */
 	tpm->tpm_locality = locality;
 	tpm_put8(tpm, TPM_ACCESS, TPM_ACCESS_REQUEST_USE);
-	mutex_exit(&tpm->tpm_lock);
 
 	ret = tpm_wait(tpm, tis_is_locality_active, tpm->tpm_timeout_a,
 	    __func__);
@@ -549,8 +546,6 @@ tis_release_locality(tpm_t *tpm, uint8_t locality, bool force)
 {
 	VERIFY3U(locality, <=, TPM_LOCALITY_MAX);
 
-	mutex_enter(&tpm->tpm_lock);
-
 	tpm->tpm_locality = locality;
 	if (force ||
 	    (tpm_get8(tpm, TPM_ACCESS) &
@@ -563,8 +558,6 @@ tis_release_locality(tpm_t *tpm, uint8_t locality, bool force)
 		tpm_put8(tpm, TPM_ACCESS, TPM_ACCESS_ACTIVE_LOCALITY);
 	}
 	tpm->tpm_locality = -1;
-
-	mutex_exit(&tpm->tpm_lock);
 }
 
 uint_t

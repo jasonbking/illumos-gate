@@ -91,22 +91,16 @@ typedef uint32_t TPM_PT;
 #define	TPM_PT_MAX_SESSION_CONTEXT	(PT_FIXED + 34)
 #define	TPM_PT_TOTAL_COMMANDS		(PT_FIXED + 41)
 
-typedef struct {
-	TPM_PT		property;
-	uint32_t	value;
-} TPMS_TAGGED_PROPERTY;
-
-typedef struct {
-	uint32_t	commandIndex	: 16;
-	uint32_t	reserved16_21	: 6;
-	uint32_t	nv		: 1;
-	uint32_t	extensive	: 1;
-	uint32_t	flushed		: 1;
-	uint32_t	cHandles	: 1;
-	uint32_t	rHandle		: 1;
-	uint32_t	V		: 1;
-	uint32_t	Res		: 2;
-} TPMA_CC;
+/* TPM2.0 Command attributes */
+#define	TPM_CCA_IDX(cc)		((cc) & 0xffff)
+#define	TPM_CCA_CHDL(cc)	(((cc) >> 25) & 0x7)	/* # handles in req */
+#define	TPM_CCA_RHDL(cc)	(((cc) >> 28) & 0x1)	/* # handles in resp */
+#define	TPM_CCA_VEND(cc)	((cc) & (1U << 29))	/* is vendor cmd */
+#define	TPM_CCA_NV(cc)		((cc) & (1U << 22))	/* may write to NV */
+/* May flush arbitrary # of contexts */
+#define	TPM_CCA_EXTENSIVE(cc)	((cc) & (1U << 23))
+/* Any transient handle in cmd is flushed at completion */
+#define	TPM_CCA_FLUSHED(cc)	((cc) & (1U << 24))
 
 bool tpm20_init(struct tpm *);
 int tpm20_seed_random(struct tpm *, uchar_t *, size_t);
