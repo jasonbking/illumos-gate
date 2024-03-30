@@ -97,6 +97,8 @@ bool				tpm_debug = true;
 bool				tpm_debug = false;
 #endif
 
+uint32_t			tpm_poll_interval = 1; /* ms */
+
 static kmutex_t			tpm_clients_lock;
 static refhash_t		*tpm_clients;
 static id_space_t		*tpm_minors;
@@ -415,6 +417,9 @@ tpm_close(dev_t dev, int flag, int otyp, cred_t *cred)
 
 	mutex_exit(&c->tpmc_lock);
 
+	pollwakeup(&c->tpmc_pollhead, POLLERR);
+	pollhead_clean(&c->tpmc_pollhead);
+
 	mutex_enter(&tpm_clients_lock);
 	refhash_remove(tpm_clients, c);
 	refhash_rele(tpm_clients, c);
@@ -454,6 +459,7 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	size_t amt_needed = 0;
 	size_t to_copy = 0;
 	int ret = 0;
+	bool more = false;
 
 	if ((c->tpmc_mode & TPM_MODE_WRITE) == 0) {
 		ret = SET_ERROR(EBADF);
@@ -573,10 +579,13 @@ done:
 		}
 	}
 
-	if (tpmc_is_writemode(c)) {
+	more = tpmc_is_writemode(c);
+	mutex_exit(&c->tpmc_lock);
+
+	if (more) {
 		pollwakeup(&c->tpmc_pollhead, POLLOUT);
 	}
-	mutex_exit(&c->tpmc_lock);
+
 	tpm_client_refrele(c);
 	return (ret);
 
@@ -592,6 +601,7 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 {
 	tpm_client_t *c;
 	int ret = 0;
+	bool more = false;
 
 	c = tpm_client_get(dev);
 	if (c == NULL) {
@@ -604,6 +614,9 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	switch (c->tpmc_state) {
 	case TPM_CLIENT_IDLE:
+		mutex_exit(&c->tpmc_lock);
+		tpm_client_refrele(c);
+		return (0);
 	case TPM_CLIENT_CMD_RECEPTION:
 	case TPM_CLIENT_CMD_DISPATCH:
 	case TPM_CLIENT_CMD_EXECUTION:
@@ -647,10 +660,15 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	if (c->tpmc_bufread == c->tpmc_bufused) {
 		/* Entire response has been read, switch back to idle */
 		tpm_client_reset(c);
+	} else {
+		more = true;
 	}
 
 done:
 	mutex_exit(&c->tpmc_lock);
+	if (more) {
+		pollwakeup(&c->tpmc_pollhead, POLLIN);
+	}
 	tpm_client_refrele(c);
 	return (ret);
 }
@@ -768,22 +786,23 @@ tpm_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 
 	tpm_enter(c->tpmc_tpm);
 
-	mutex_enter(&c->tpmc_lock);
-
 	*reventsp = 0;
+
+	mutex_enter(&c->tpmc_lock);
 
 	if (tpmc_is_writemode(c)) {
 		*reventsp |= POLLOUT;
 	}
 	if (tpmc_is_readmode(c)) {
-		*reventsp |= POLLIN;
+		*reventsp |= POLLIN | POLLRDNORM;
 	}
+	mutex_exit(&c->tpmc_lock);
+
 	*reventsp &= events;
 
 	if ((*reventsp == 0 && !anyyet) || (events & POLLET)) {
 		*phpp = &c->tpmc_pollhead;
 	}
-	mutex_exit(&c->tpmc_lock);
 
 	tpm_client_refrele(c);
 	return (0);
@@ -935,9 +954,6 @@ tpm_attach_20(tpm_t *tpm)
 		return (SET_ERROR(ENXIO));
 	}
 
-	tpm_dbg(tpm, CE_CONT, "%s: found TPM2 at 0x%llx via ACPI TPM2 table\n",
-	    __func__, tpm_tbl->ControlAddress);
-
 	switch (tpm_tbl->StartMethod) {
 	case ACPI_TPM2_MEMORY_MAPPED:
 	case ACPI_TPM2_COMMAND_BUFFER:
@@ -993,7 +1009,17 @@ tpm_attach_20(tpm_t *tpm)
 		return (SET_ERROR(EIO));
 	}
 
-	intf = tpm_get32(tpm, TPM_INTERFACE_ID);
+	/*
+	 * This should be the same across every locality. We assume that the
+	 * firmware and bootloader have relinquished any localities that might
+	 * have been in use (every other driver assumes this as well, so it
+	 * seems reasonable).
+	 */
+	intf = ddi_get32(tpm->tpm_handle,
+	    (uint32_t *)(tpm->tpm_addr + TPM_INTERFACE_ID));
+
+	tpm->tpm_family = TPM_FAMILY_2_0;
+
 	switch (TPM_INTF_IFTYPE(intf)) {
 	case TPM_INTF_IFTYPE_TIS:
 		if (regsize != 0x5000) {
@@ -1004,9 +1030,13 @@ tpm_attach_20(tpm_t *tpm)
 			return (SET_ERROR(EINVAL));
 		}
 		tpm->tpm_n_locality = 5;
+		tpm->tpm_iftype = TPM_IF_TIS;
 		return (0);
 	case TPM_INTF_IFTYPE_FIFO:
+		tpm->tpm_iftype = TPM_IF_FIFO;
+		break;
 	case TPM_INTF_IFTYPE_CRB:
+		tpm->tpm_iftype = TPM_IF_CRB;
 		break;
 	default:
 		dev_err(tpm->tpm_dip, CE_NOTE,
@@ -1030,6 +1060,8 @@ tpm_attach_20(tpm_t *tpm)
 	}
 
 	tpm->tpm_n_locality = (regsize == 0x5000) ? 5 : 1;
+
+	tpm->tpm_locality = DEFAULT_LOCALITY;
 	return (0);
 }
 
@@ -1128,50 +1160,19 @@ static bool
 tpm_attach_dev_init(tpm_t *tpm)
 {
 	char *famstr = "";
-	uint32_t id;
 	bool ret;
 
-	/*
-	 * The lower 32 bits of the interface id register are identical
-	 * between the FIFO and CRB interfaces to facilitate distinguishing
-	 * between interface types.
-	 */
-	id = tpm_get32(tpm, TPM_INTERFACE_ID);
-	tpm_dbg(tpm, CE_NOTE, "%s: tpm_interface_id_0: 0x%08x", __func__, id);
-
-	switch (TPM_INTF_IFTYPE(id)) {
-	case TPM_INTF_IFTYPE_TIS:
-		tpm->tpm_iftype = TPM_IF_TIS;
-
-		/*
-		 * For TPMs using the TIS 1.3 interface, tpm_tis_init()
-		 * will set tpm_family since both TPM1.2 and TPM2.0
-		 * devices can use this interface.
-		 */
+	switch (tpm->tpm_iftype) {
+	case TPM_IF_TIS:
+	case TPM_IF_FIFO:
 		ret = tpm_tis_init(tpm);
 		break;
-	case TPM_INTF_IFTYPE_FIFO:
-		tpm->tpm_iftype = TPM_IF_FIFO;
-		tpm->tpm_family = TPM_FAMILY_2_0;
-
-		/*
-		 * While the id value can be also be used to determine the
-		 * VID/DID/RID of the TPM module for TPM2.0 devices using
-		 * the FIFO interface, it can also be read from specific
-		 * registers that will also work for TPM1.2 and TPM2.0
-		 * modules using the TIS interface, so tpm_tis_init()
-		 * will set the properties for both TIS and FIFO.
-		 */
-		ret = tpm_tis_init(tpm);
-		break;
-	case TPM_INTF_IFTYPE_CRB:
-		tpm->tpm_iftype = TPM_IF_CRB;
-		tpm->tpm_family = TPM_FAMILY_2_0;
+	case TPM_IF_CRB:
 		ret = crb_init(tpm);
 		break;
 	default:
 		dev_err(tpm->tpm_dip, CE_NOTE,
-		    "Unsupported interface type %d", TPM_INTF_IFTYPE(id));
+		    "Unsupported interface type %d", tpm->tpm_iftype);
 		return (false);
 	}
 
@@ -1620,6 +1621,9 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	 * we may then switch to using interrupts.
 	 */
 	tpm->tpm_wait = TPM_WAIT_POLL;
+
+	tpm->tpm_poll_interval = 
+	    drv_usectohz(NSEC2USEC(MSEC2NSEC(tpm_poll_interval)));
 
 	use_intr = ddi_prop_get_int(DDI_DEV_T_ANY, dip, DDI_PROP_DONTPASS,
 	    "use-interrupts", 1);

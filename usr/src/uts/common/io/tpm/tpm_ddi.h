@@ -131,22 +131,15 @@ typedef enum tpm_crb_state {
 	TCRB_ST_MAX			/* Must be last */
 } tpm_crb_state_t;
 
-typedef enum tpm_crb_xfer_size {
-	TPM_CRB_XFER_4,
-	TPM_CRB_XFER_8,
-	TPM_CRB_XFER_32,
-	TPM_CRB_XFER_64,
-} tpm_crb_xfer_size_t;
-
 /* CRB Interface specific data, protected by tpm_t.tpm_lock */
 typedef struct tpm_crb {
 	tpm_crb_state_t		tcrb_state;		/* RW */
 
 	uint64_t		tcrb_cmd_off;		/* WO */
-	size_t			tcrb_cmd_size;		/* WO */
 	uint64_t		tcrb_resp_off;		/* WO */
-	size_t			tcrb_resp_size;		/* WO */
-	tpm_crb_xfer_size_t	tcrb_xfer_size;		/* WO */
+	uint32_t		tcrb_cmd_size;		/* WO */
+	uint32_t		tcrb_resp_size;		/* WO */
+	uint32_t		tcrb_xfer_size;		/* WO */
 	bool			tcrb_idle_bypass;	/* WO */
 } tpm_crb_t;
 
@@ -198,12 +191,12 @@ typedef enum tpm_wait {
 typedef enum tpm_attach_seq {
 	TPM_ATTACH_FM =		0,
 	TPM_ATTACH_REGS,
-	TPM_ATTACH_DEV_INIT,
 	TPM_ATTACH_INTR_ALLOC,
 	TPM_ATTACH_INTR_HDLRS,
 	TPM_ATTACH_SYNC,
 	TPM_ATTACH_THREAD,
 	TPM_ATTACH_ICLIENT,
+	TPM_ATTACH_DEV_INIT,
 	TPM_ATTACH_MINOR_NODE,
 	TPM_ATTACH_KCF,
 	TPM_ATTACH_END			/* should always be last */
@@ -259,8 +252,10 @@ struct tpm {
 	uint32_t		tpm_fw_major;		/* WO */
 	uint32_t		tpm_fw_minor;		/* WO */
 
+	uint32_t		tpm_cmd;		/* during exec */
 	int8_t			tpm_locality;	/* locality during cmd exec */
 	uint8_t			tpm_n_locality;
+	uint8_t			tpm_buf[TPM_IO_BUF_SIZE];
 
 	clock_t			tpm_timeout_a;		/* WO */
 	clock_t			tpm_timeout_b;		/* WO */
@@ -268,6 +263,7 @@ struct tpm {
 	clock_t			tpm_timeout_d;		/* WO */
 	clock_t			tpm_timeout_poll;	/* WO */
 	clock_t			tpm_duration[TPM_DURATION_MAX]; /* WO */
+	clock_t			tpm_poll_interval;	/* WO */
 
 	uint32_t		tpm_object_size;	/* WO */
 	uint32_t		tpm_session_size;	/* WO */
@@ -317,9 +313,9 @@ struct tpm_client {
 	tpm_client_state_t	tpmc_state;		/* RW */
 	pollhead_t		tpmc_pollhead;		/* RW */
 	uint8_t			*tpmc_buf;		/* RW */
-	size_t			tpmc_buflen;		/* WO */
-	size_t			tpmc_bufused;		/* RW */
-	size_t			tpmc_bufread;		/* RW */
+	uint32_t		tpmc_buflen;		/* WO */
+	uint32_t		tpmc_bufused;		/* RW */
+	uint32_t		tpmc_bufread;		/* RW */
 	int			tpmc_instance;		/* WO */
 	int8_t			tpmc_locality;		/* RW */
 	int			tpmc_cmdresult;		/* RW */
@@ -388,11 +384,13 @@ tpm_wait_nointr(const tpm_t *tpm)
 extern bool tpm_debug;
 
 uint8_t tpm_get8(tpm_t *, unsigned long);
-uint8_t tpm_get8_loc(tpm_t *, uint8_t, unsigned long);
+uint8_t tpm_get8_loc(tpm_t *, int8_t, unsigned long);
 uint32_t tpm_get32(tpm_t *, unsigned long);
+uint32_t tpm_get32_loc(tpm_t *, int8_t, unsigned long);
 uint64_t tpm_get64(tpm_t *, unsigned long);
 void tpm_put8(tpm_t *, unsigned long, uint8_t);
 void tpm_put32(tpm_t *, unsigned long, uint32_t);
+void tpm_put32_loc(tpm_t *, int8_t, unsigned long, uint32_t);
 
 int tpm_wait(tpm_t *, bool (*)(tpm_t *, bool, clock_t, const char *), clock_t,
     const char *);
@@ -434,6 +432,8 @@ tpm_duration_t tpm12_get_duration_type(tpm_t *, const uint8_t *);
 clock_t tpm12_get_timeout(tpm_t *, uint32_t);
 
 bool tpm20_init(struct tpm *);
+int tpm20_get_properties(tpm_t *, uint32_t, uint32_t,
+    bool (*)(uint32_t, bool, uint32_t, uint32_t, void *), void *);
 int tpm20_get_property(struct tpm *, uint32_t, uint32_t *);
 int tpm20_seed_random(struct tpm *, uchar_t *, size_t);
 int tpm20_generate_random(struct tpm *, uchar_t *, size_t);

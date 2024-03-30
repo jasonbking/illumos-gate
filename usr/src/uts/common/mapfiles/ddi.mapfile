@@ -250,6 +250,7 @@ SYMBOL_SCOPE {
 	pci_ereport_setup		{ FLAGS = EXTERN };
 	pci_ereport_teardown		{ FLAGS = EXTERN };
 	pci_lcap_locate			{ FLAGS = EXTERN };
+	pollhead_clean			{ FLAGS = EXTERN };
 	pollwakeup			{ FLAGS = EXTERN };
 	qreply				{ FLAGS = EXTERN };
 	rw_destroy			{ FLAGS = EXTERN };
