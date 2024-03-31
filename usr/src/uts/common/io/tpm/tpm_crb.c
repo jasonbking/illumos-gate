@@ -340,6 +340,8 @@ crb_init(tpm_t *tpm)
 	ACPI_HANDLE handle;
 	ACPI_STATUS status;
 
+	VERIFY(tpm_can_access(tpm));
+
 	id = tpm_get64(tpm, TPM_CRB_INTF_ID);
 	tpm->tpm_did = TPM_CRB_INTF_DID(id);
 	tpm->tpm_vid = TPM_CRB_INTF_VID(id);
