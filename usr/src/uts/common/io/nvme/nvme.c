@@ -7473,8 +7473,8 @@ nvme_sec_send_recv_cmd(const nvme_ioctl_sec_send_recv_t *sr)
 	 * 7:0		NMVe security specific field.
 	 */
 	p[0] = sr->nis_proto;
-	p[1] = (sr->ni_proto_specific >> 8) & 0xff;
-	p[2] = sr->ni_proto_specific & 0xff;
+	p[1] = (sr->nis_proto_specific >> 8) & 0xff;
+	p[2] = sr->nis_proto_specific & 0xff;
 	p[3] = sr->nis_nvme_specific;
 
 	return (val);
