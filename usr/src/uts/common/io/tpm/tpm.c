@@ -239,7 +239,7 @@ tpm_exec_client(tpm_client_t *c)
 
 	VERIFY(MUTEX_HELD(&c->tpmc_lock));
 
-	len = tpmc_bufused;
+	len = c->tpmc_bufused;
 
 	/* We should have the full command, and should be a valid size. */
 	VERIFY3U(c->tpmc_bufused, >=, TPM_HEADER_SIZE);
