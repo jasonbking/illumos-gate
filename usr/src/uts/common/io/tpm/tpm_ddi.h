@@ -63,6 +63,10 @@
 #define	TPM_RETURN_OFFSET		6
 #define	TPM_COMMAND_CODE_OFFSET		6
 
+#define	TPM12_ORDINAL_MAX	243
+#define	TPM_LOCALITY_MAX	4
+#define	TPM_OFFSET_MAX		0x0fff
+
 #define	DEFAULT_LOCALITY	0
 
 /*
@@ -135,11 +139,10 @@ typedef enum tpm_crb_state {
 typedef struct tpm_crb {
 	tpm_crb_state_t		tcrb_state;		/* RW */
 
-	uint64_t		tcrb_cmd_off;		/* WO */
-	uint64_t		tcrb_resp_off;		/* WO */
-	uint32_t		tcrb_cmd_size;		/* WO */
-	uint32_t		tcrb_resp_size;		/* WO */
-	uint32_t		tcrb_xfer_size;		/* WO */
+	uint64_t		tcrb_cmd_off[TPM_LOCALITY_MAX];	/* WO */
+	uint64_t		tcrb_resp_off[TPM_LOCALITY_MAX]; /* WO */
+	uint32_t		tcrb_cmd_size[TPM_LOCALITY_MAX]; /* WO */
+	uint32_t		tcrb_resp_size[TPM_LOCALITY_MAX]; /* WO */
 	bool			tcrb_idle_bypass;	/* WO */
 } tpm_crb_t;
 
@@ -341,10 +344,6 @@ tpm_can_access(const tpm_t *tpm)
 	return (tpm->tpm_thread == NULL || curthread == tpm->tpm_thread);
 }
 
-#define	TPM12_ORDINAL_MAX	243
-#define	TPM_LOCALITY_MAX	4
-#define	TPM_OFFSET_MAX		0x0fff
-
 static inline uint16_t
 tpm_getbuf16(const uint8_t *ptr, uint32_t offset)
 {
@@ -383,6 +382,7 @@ tpm_wait_nointr(const tpm_t *tpm)
 
 extern bool tpm_debug;
 
+void *tpm_reg_addr(const tpm_t *, int8_t, unsigned long);
 uint8_t tpm_get8(tpm_t *, unsigned long);
 uint8_t tpm_get8_loc(tpm_t *, int8_t, unsigned long);
 uint32_t tpm_get32(tpm_t *, unsigned long);
@@ -393,7 +393,7 @@ void tpm_put32(tpm_t *, unsigned long, uint32_t);
 void tpm_put32_loc(tpm_t *, int8_t, unsigned long, uint32_t);
 
 int tpm_wait(tpm_t *, bool (*)(tpm_t *, bool, clock_t, const char *), clock_t,
-    const char *);
+    bool, const char *);
 int tpm_wait_cmd(tpm_t *, const uint8_t *,
     bool(*)(tpm_t *, bool, uint16_t, clock_t, const char *), const char *);
 
@@ -453,8 +453,8 @@ void crb_intr_mgmt(tpm_t *, bool);
 uint_t crb_intr(caddr_t, caddr_t);
 
 void tpm_ereport_timeout(tpm_t *, uint16_t, clock_t, const char *);
-void tpm_ereport_timeout_cmd(tpm_t *, uint16_t, clock_t, const char *);
-void tpm_ereport_short_read(tpm_t *, uint32_t, uint32_t, uint32_t, uint32_t);
+void tpm_ereport_timeout_cmd(tpm_t *, clock_t, const char *);
+void tpm_ereport_short_read(tpm_t *, uint32_t, uint32_t, uint32_t);
 
 int tpm_kcf_register(tpm_t *);
 int tpm_kcf_unregister(tpm_t *);
