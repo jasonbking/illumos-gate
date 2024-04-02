@@ -31,6 +31,9 @@
 #include <sys/modctl.h>		/* for _init,_info,_fini,mod_* */
 #include <sys/ddi.h>		/* used by all entry points */
 #include <sys/sunddi.h>		/* used by all entry points */
+#include <sys/ddifm.h>		/* various fm definitions */
+#include <sys/fm/io/ddi.h>
+#include <sys/fm/protocol.h>
 #include <sys/cmn_err.h>	/* used for debug outputs */
 #include <sys/types.h>		/* used by prop_op, ddi_prop_op */
 
@@ -55,6 +58,8 @@
 
 #include "tpm_tis.h"
 #include "tpm_ddi.h"
+
+#define	TPM_RC_FAILURE	(uint32_t)0x0101
 
 extern bool tpm_debug;
 
@@ -298,6 +303,29 @@ tpm_exec_client(tpm_client_t *c)
 		break;
 	}
 
+	/*
+	 * If the TPM ever returns TPM_RC_FAILURE, it's dead at least
+	 * until it's been reset which means a reboot. Mark it as failed.
+	 */
+	if (tpm_cmd(c->tpmc_buf) == TPM_RC_FAILURE) {
+		uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
+
+		ddi_fm_ereport_post(tpm->tpm_dip,
+		    DDI_FM_DEVICE "." DDI_FM_DEVICE_INTERN_UNCORR, ena,
+		    DDI_SLEEP,
+		    FM_VERSION, DATA_TYPE_UINT8, FM_EREPORT_VERS0,
+		    "tpm_interface", DATA_TYPE_STRING,
+		    tpm_iftype_str(tpm->tpm_iftype),
+		    "locality", DATA_TYPE_UINT8, locality,
+		    "command", DATA_TYPE_UINT32, tpm->tpm_cmd,
+		    "detailed error message", DATA_TYPE_STRING,
+		    "TPM returned TPM_RC_FAILURE",
+		    NULL);
+
+		ddi_fm_service_impact(tpm->tpm_dip, DDI_SERVICE_LOST);
+		return (EIO);
+	}
+
 	/* We were called with tpmc_lock held, return with tpmc_lock held */
 	return (ret);
 }
@@ -365,10 +393,16 @@ tpm_exec_thread(void *arg)
 		ret = tpm_exec_client(c);
 		mutex_exit(&c->tpmc_lock);
 
+		/*
+		 * If the request has been cancelled by the caller (either
+		 * explicitly via ioctl() or by closing their fd), or we're
+		 * in the process of quitting, we want to abort the running
+		 * command on the TPM and clean up before we proceed.
+		 */
 		if (ret == ECANCELED) {
 			mutex_enter(&tpm->tpm_lock);
 
-			VERIFY(tpm->tpm_thr_cancelreq);
+			VERIFY(tpm->tpm_thr_cancelreq || tpm->tpm_thr_quit);
 			tpm->tpm_thr_cancelreq = false;
 			cv_signal(&tpm->tpm_thr_cv);
 
@@ -396,14 +430,16 @@ tpm_exec_thread(void *arg)
 /*
  * Wait up to timeout ticks for cond(tpm) to be true. This should be used
  * for conditions where there's no potential concern about the timing used.
- * Basically anything but waiting for a command to complete.
+ * Basically anything except waiting for a command to complete.
+ *
+ * If 'intr' is set, this indicates a condition whose completion is
+ * signaled by an interrupt.
  */
 int
 tpm_wait(tpm_t *tpm, bool (*cond)(tpm_t *, bool, clock_t, const char *),
-    clock_t timeout, const char *func)
+    clock_t timeout, bool intr, const char *func)
 {
 	clock_t deadline, now;
-	int ret = 0;
 
 	/*
 	 * We should never be called in a context where we can receive a
@@ -411,36 +447,45 @@ tpm_wait(tpm_t *tpm, bool (*cond)(tpm_t *, bool, clock_t, const char *),
 	 */
 	VERIFY(!ddi_can_receive_sig());
 
+	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
+
 	deadline = ddi_get_lbolt() + timeout;
 
-	mutex_enter(&tpm->tpm_lock);
-	while ((now = ddi_get_lbolt()) <= deadline && !tpm->tpm_thr_cancelreq) {
-		clock_t to = now + tpm->tpm_poll_interval;
+	/*
+	 * If interrupts are not enabled, we treat it like the conditions
+	 * where completion is not signaled by an interrupt.
+	 */
+	if (tpm->tpm_wait != TPM_WAIT_INTR) {
+		intr = false;
+	}
+
+	while ((now = ddi_get_lbolt()) <= deadline &&
+	    !tpm->tpm_thr_cancelreq && !tpm->tpm_thr_quit) {
+		/*
+		 * If we're expecting an interrupt to signal completion,
+		 * we wait the entire timeout value and let the interrupt
+		 * handler cv_signal() us. Otherwise, we have to check
+		 * periodically.
+		 */
+		clock_t to = intr ? deadline : now + tpm->tpm_poll_interval;
 
 		if (cond(tpm, false, timeout, func)) {
-			goto done;
+			return (0);
 		}
 
-		/*
-		 * TODO: If hardware with interrupt support is found,
-		 * we probably want to take a parameter to indicate if
-		 * we're waiting for something that will post an interrupt
-		 * on completion or not. For those things that post an
-		 * interrupt, we can just wait the entire timeout (and assume
-		 * the interrupt will wake us) instead of polling.
-		 */
 		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, to);
 	}
 
-	if (tpm->tpm_thr_cancelreq) {
-		ret = SET_ERROR(ECANCELED);
-	} else if (!cond(tpm, true, timeout, func)) {
-		ret = SET_ERROR(ETIME);
+	if (tpm->tpm_thr_cancelreq || tpm->tpm_thr_quit) {
+		return (SET_ERROR(ECANCELED));
 	}
 
-done:
-	mutex_exit(&tpm->tpm_lock);
-	return (ret);
+	/* Check one final time */
+	if (!cond(tpm, true, timeout, func)) {
+		return (SET_ERROR(ETIME));
+	}
+
+	return (0);
 }
 
 /*
@@ -466,7 +511,8 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 	 * thread.
 	 */
 	VERIFY(!ddi_can_receive_sig());
-	VERIFY3P(curthread, ==, tpm->tpm_thread);
+	VERIFY(tpm_can_access(tpm));
+	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
 
 	now = ddi_get_lbolt();
 
@@ -503,8 +549,8 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 	 * interrupted due to cancellation or receiving a 'command done'
 	 * interrupt.
 	 */
-	mutex_enter(&tpm->tpm_lock);
-	while ((now = ddi_get_lbolt()) <= exp_done && !tpm->tpm_thr_cancelreq) {
+	while ((now = ddi_get_lbolt()) <= exp_done &&
+	    !tpm->tpm_thr_cancelreq && !tpm->tpm_thr_quit) {
 		clock_t to;
 
 		if (tpm->tpm_wait == TPM_WAIT_POLL) {
@@ -515,8 +561,7 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 
 		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, to);
 
-		if (tpm->tpm_thr_cancelreq) {
-			mutex_exit(&tpm->tpm_lock);
+		if (tpm->tpm_thr_cancelreq || tpm->tpm_thr_quit) {
 			return (ECANCELED);
 		}
 
@@ -525,7 +570,6 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 		 * command duration, check if the command is finished.
 		 */
 		if (done(tpm, false, cmd, to, func)) {
-			mutex_exit(&tpm->tpm_lock);
 			return (0);
 		}
 	}
@@ -535,7 +579,8 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 	 * polling (if allowed), or wait until the timeout is reached
 	 * (and check again).
 	 */
-	while ((now = ddi_get_lbolt()) <= deadline) {
+	while ((now = ddi_get_lbolt()) <= deadline &&
+	    !tpm->tpm_thr_cancelreq && !tpm->tpm_thr_quit) {
 		clock_t when = 0;
 
 		switch (tpm->tpm_wait) {
@@ -549,8 +594,7 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 		}
 	
 		(void) cv_timedwait(&tpm->tpm_thr_cv, &tpm->tpm_lock, when);
-		if (tpm->tpm_thr_cancelreq) {
-			mutex_exit(&tpm->tpm_lock);
+		if (tpm->tpm_thr_cancelreq || tpm->tpm_thr_quit) {
 			return (ECANCELED);
 		}
 
@@ -559,7 +603,6 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 		}
 
 		if (done(tpm, false, cmd, to, __func__)) {
-			mutex_exit(&tpm->tpm_lock);
 			return (0);
 		}
 	}
@@ -606,7 +649,8 @@ tpm_get_timeout(tpm_t *tpm, const uint8_t *buf)
 /*
  * TPM accessor functions
  */
-static inline void *
+
+void *
 tpm_reg_addr(const tpm_t *tpm, int8_t locality, unsigned long offset)
 {
 	VERIFY3U(offset, <=, TPM_OFFSET_MAX);

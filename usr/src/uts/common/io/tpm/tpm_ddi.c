@@ -64,6 +64,159 @@
 #include "tpm_ddi.h"
 #include "tpm_tab.h"
 
+/*
+ * tpm - Trusted Platform Module driver
+ *
+ * The TPM driver supports both TPM 1.2 and TPM2.0 chipsets. The driver itself
+ * is divided into several parts:
+ *
+ * - TIS/FIFO interface. The TIS interface is used by TPM 1.2 chips and may
+ *   also be utilized by TPM2.0 modules. As the FIFO bit implies, this works
+ *   by sending requests one byte at a time to the chip as well as reading
+ *   the response from the TPM one byte at a time. FIFO is essentially an
+ *   extention to TIS that TPM2.0 modules can use that can allow larger
+ *   transfer sizes (the tpm driver currently does not utilize this due to
+ *   lack of available hardware to test). Traditionally, the TIS/FIFO interface
+ *   is used by hardware TPM modules. This is implemented in tpm_fifo.c
+ *
+ * - CRB interface. This interface is used exclusively by TPM2.0 modules.
+ *   Unlike TIS/FIFO, this interface uses a portion of the register space of
+ *   the device to support writing commands in larger chunks (i.e. you can
+ *   bcopy() the command and bcopy() the result). This is often found with
+ *   virtual and firmware based TPMs (though there is no hard and fast rule
+ *   for which interface is used by a particular type of TPM). This is
+ *   implemented in tpm_crb.c
+ *
+ * Details on the both the TIS/FIFO and CRB interface can be found in
+ * the TCG PC Client Platform TPM Profile Specification for TPM 2.0.
+ *
+ * Both of these interfaces provide a way to send, receive, and (as desired)
+ * cancel commands. TPM commands themselves always start with a fixed 10
+ * byte header that includes some flags (the meaning varies between TPM 1.2
+ * and TPM 2.0), the total size of the request (including header), and the
+ * specific command to execute. Command specific data then follows the header.
+ * The specifics of these commands can be found in the relevant standards for
+ * TPM 1.2 and TPM 2.0 modules.
+ *
+ * For both TPM 1.2 and TPM 2.0 commands, each command has an associated
+ * expected duration and timeout. The tpm12.c and tpm20.c files deal with
+ * these as well as provide implementations to submit TPM commands on behalf
+ * of the driver (and kernel) itself. Currently this is only used to utilize
+ * the TPM's RNG.
+ *
+ * Additionally, TPM 1.2 and TPM 2.0 modules have the concept of localities.
+ * These are essentially just a mechanism to separate objects and sessions.
+ * All TPM modules should support at least 1 locality (locality 0) others may
+ * support 5 localities (it's either 1 or 5, there is support for a TPM to have
+ * exactly 3 localities for example). Generally, virtual TPMs only support a
+ * single locality while hardware TPMs often support 5. The relevant TCG specs
+ * on TPM don't provide any guidance on how to utilize multiple localities
+ * (aside from locality 4 which is rather special, and is largely intended for use
+ * by platform firmware, so it is not of concern) -- usage is largely something
+ * to be determined by the OS. In other words, locality usage is largely a question
+ * of OS policy. Inititally, the driver restricts usage to only locality 0 (the
+ * default locality) as it should be easier to loosen restrictions in the future
+ * if desired than to later restrict them. However the driver should be fully
+ * capable of utilizing any available localities by removing the explicit
+ * restriction in tpm_ioctl() preventing the change of locality for anyone that
+ * wishes to experiment.
+ *
+ * There is unfortunately no compatibility at the command level between
+ * TPM 1.2 and TPM 2.0 modules. That is TPM 1.2 commands are distinct from
+ * TPM 2.0 commands (there is no overlap between the two). Unfortunately
+ * this puts the burden on the consumer of the TPM to decide to support 1.2,
+ * 2.0. While the TPM1.2 and TPM 2.0 provide a number of C APIs for using
+ * the TPM modules, one area that is completely ignored is how a consumer
+ * is expected to determine what TPM version is present on the system.
+ * At best, one might try a TPM2.0 command and see if it errors or not.
+ * Since the driver does however know what version it is talking to, we
+ * do provide an TPMIOC_GETVERSION ioctl that returns the version of the
+ * TPM on the system (though this is an illumos specific addition).
+ *
+ * In terms of command execution, this file (tpm_ddi.c) provides the
+ * OS entry points (read(2), write(2), etc) as well as the _init, _fini,
+ * attach and deatch routines. A client can open(2) /dev/tpm0, write(2)
+ * a TPM command and then read(2) the result. The driver only allows a
+ * client to send one command at a time (though this can be done via
+ * an arbitrary number of write(2) calls). If a client attempts to write
+ * additional data beyond a single command it is not processed (i.e. write(2)
+ * will return a value > 0).
+ *
+ * TPM modules are not expected to be particularly fast. A main design goal
+ * was to keep the cost of a TPM module low, so high performance was not a
+ * requirement. For example, generating a large RSA key pair could potentially
+ * take several seconds. At the same time, leaving a user land process blocked
+ * on read(2) in the kernel in an unkillable state while the process waits for
+ * a response or a timeout from the TPM is rather unfriendly. As a result, the
+ * driver uses a model where each client that open(2)s /dev/tpm0 gets
+ * allocated a tpm_client_t instance.
+ *
+ * As the client calls write(2) to send a command, the results are accumulated
+ * in a per-client buffer within tpm_client_t. Once the full command has been
+ * received (as noted earlier, there's a fixed sized header, so once the first
+ * 10 bytes have been received, the driver knows how many bytes are required),
+ * the tpm_client_t is placed on a FIFO queue (basically inserted in the tail
+ * of a list_t -- tpm_t.tpm_pending).
+ *
+ * A worker thread pulls the queued requests off the head of tpm.tpm_pending
+ * and does the actual job of writing the request to the TPM, telling the
+ * TPM to execute the command, and receive the results and then copy the
+ * results to the tpm_client_t to allow the consumer to read the results at
+ * their leisure. This worker thread model is used instead of a taskq as it
+ * makes cancellation of a request simpler. A client can issue a TPMIOC_CANCEL
+ * ioctl, and any pending command is cancelled. Depending on the state of
+ * the client, this may involve flushing any accumulated but incomplete
+ * command, or it may involve cancelling a currently executing command, or
+ * it may mean flushing any un-read(2) results from a command.
+ *
+ * This model also makes the locking relatively simple. There are basically
+ * two types of lock -- the per tpm_client_t tpmc_lock, and the tpm_lock
+ * on the tpm_t. The tpm client lock is always acquired prior to the tpm_lock.
+ * In general, the tpm_lock is held by the tpm worker thread while it writes
+ * to the TPM's registers. This is mostly for the situation where the
+ * worker thread is writing to a register to trigger a state transition
+ * in the TPM and expects an interrupt to signal that the transition is
+ * complete. This allows the worker thread to (very) briefly block the
+ * interrupt thread until it is ready to be signaled by the interrupt
+ * thread to check for the transition completion (see tpm_wait() and
+ * tpm_wait_cmd() in tpm.c). For TPMs that don't support interrupts (or
+ * more correctly, where it's interrupts have not been wired up on the platform
+ * -- all TPM modules are required to support interrupts, however it appears
+ * many platforms either do not wire it up, or don't advertise it as a part
+ * of the TPM's resource usage in the ACPI DSDT table), we just poll the
+ * registers until the transition is complete or we time out.
+ *
+ * Currently the driver only allows one client to open the TPM device at a
+ * time (ignoring the internal/kernel client due it's limited use of the TPM).
+ * While the driver model ensures that only one command at a time can be
+ * executed by the TPM, this is merely a necessary but not sufficient
+ * requirement to share access to the TPM.
+ *
+ * For both TPM 1.2 and TPM2.0 devices, certain operations may require state
+ * that is shared across multiple commands. For example, one may need to
+ * submit a command to load a wrapped key into the TPM's RAM (where it can be
+ * unwrapped) and then submit a command to sign data using that key. If another
+ * client submitted a request inbetween the loading and the sign request, it
+ * may fail because the TPM doesn't have enough RAM to process the command.
+ * Instead of a complicated client locking or transactional protocol, the TPM
+ * device supports the ability to swap contexts in and out of the TPM in a
+ * manner that protects the context state from inspection or tampering when
+ * swapped out of the TPM module.
+ *
+ * On TPM1.2 modules, this management is done by the tcsd daemon. For TPM2.0
+ * modules, this can be done in userland or by the kernel. Given the experience
+ * with other userland arbitration schemes (e.g. pcscd), the kernel is the
+ * far more appropriate (and reliable) place to do this. The TCG TSS TAB and
+ * Resource Manager Specification details how to do this for TPM2.0 modules.
+ * While pieces of this are in place, the work is not yet complete in the
+ * driver. Once complete, the artifical 1 client restrction on TPM 2.0 devices can
+ * be safely lifted.
+ *
+ * As one other note, the original TPM 1.2 driver only created a /dev/tpm device.
+ * The TPM2.0 driver creates /dev/tpm as a symlink to /dev/tpm0 as most other
+ * platforms (e.g. Linux and FreeBSD) use tpm0 as the device name.
+ */
+
 extern pri_t minclsyspri;
 
 typedef bool (*tpm_attach_fn_t)(tpm_t *);
@@ -97,6 +250,14 @@ bool				tpm_debug = true;
 bool				tpm_debug = false;
 #endif
 
+/*
+ * This is somewhat arbitrary. When transitioning the state of the TPM
+ * we need to poll various registers to determine when the transition
+ * has completed. Waiting too long (such as the full timeout value)
+ * will cause some utilities (e.g. tpm2 utils) to timeout.
+ * Linux and FreeBSD appear to use this value, and seems to work well
+ * enough, but can be changed if too low or high.
+ */
 uint32_t			tpm_poll_interval = 1; /* ms */
 
 static kmutex_t			tpm_clients_lock;
@@ -844,7 +1005,7 @@ tpm_ereport_timeout(tpm_t *tpm, uint16_t reg, clock_t to, const char *func)
 }
 
 void
-tpm_ereport_timeout_cmd(tpm_t *tpm, uint16_t cmd, clock_t to, const char *func)
+tpm_ereport_timeout_cmd(tpm_t *tpm, clock_t to, const char *func)
 {
 	uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
 	uint64_t ms;
@@ -856,15 +1017,15 @@ tpm_ereport_timeout_cmd(tpm_t *tpm, uint16_t cmd, clock_t to, const char *func)
 	    FM_VERSION, DATA_TYPE_UINT8, FM_EREPORT_VERS0,
 	    "tpm_interface", DATA_TYPE_STRING, tpm_iftype_str(tpm->tpm_iftype),
 	    "locality", DATA_TYPE_UINT8, tpm->tpm_locality,
-	    "command", DATA_TYPE_UINT16, cmd,
+	    "command", DATA_TYPE_UINT32, tpm->tpm_cmd,
 	    "timeout", DATA_TYPE_UINT64, ms,
 	    "func", DATA_TYPE_STRING, func,
 	    NULL);
 }
 
 void
-tpm_ereport_short_read(tpm_t *tpm, uint32_t cmd, uint32_t offset,
-    uint32_t expected, uint32_t actual)
+tpm_ereport_short_read(tpm_t *tpm, uint32_t offset, uint32_t expected,
+    uint32_t actual)
 {
 	uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
 
@@ -873,11 +1034,17 @@ tpm_ereport_short_read(tpm_t *tpm, uint32_t cmd, uint32_t offset,
 	    FM_VERSION, DATA_TYPE_UINT8, FM_EREPORT_VERS0,
 	    "tpm_interface", DATA_TYPE_STRING, tpm_iftype_str(tpm->tpm_iftype),
 	    "locality", DATA_TYPE_UINT8, tpm->tpm_locality,
-	    "command", DATA_TYPE_UINT32, cmd,
+	    "command", DATA_TYPE_UINT32, tpm->tpm_cmd,
 	    "offset", DATA_TYPE_UINT32, offset,
 	    "expected", DATA_TYPE_UINT32, expected,
 	    "actual", DATA_TYPE_UINT32, actual,
 	    NULL);
+}
+
+void
+tpm_fm_fatal(dev_info_t *dip)
+{
+
 }
 
 static int
@@ -1614,7 +1781,16 @@ tpm_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		return (DDI_FAILURE);
 	}
 
-	tpm->tpm_locality = -1;
+	/*
+	 * Use locality 0 during the initial setup. Locality 0 should always
+	 * exist, so it's the easiest thing to use, as all the relevant
+	 * information we gather during the setup is not locality specific
+	 * (i.e. we'd read the same values from the registers of other
+	 * localities). Both the TIS/FIFO and CRB interfaces will correctly
+	 * set tpm_locality while executing commands to indicate which
+	 * locality is in use.
+	 */
+	tpm->tpm_locality = DEFAULT_LOCALITY;
 
 	/*
 	 * We default to polling. Once everything has been initialized,
