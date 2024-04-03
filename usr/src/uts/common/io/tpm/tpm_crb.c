@@ -476,7 +476,6 @@ crb_send_data(tpm_t *tpm, const uint8_t *buf, uint32_t buflen)
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 	uint8_t *dest;
 	uint32_t cmdlen;
-	int ret;
 
 	mutex_enter(&tpm->tpm_lock);
 
