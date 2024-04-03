@@ -271,11 +271,24 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, uint32_t amt)
 			}
 
 			if (!expecting) {
+				uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
+
 				mutex_exit(&tpm->tpm_lock);
-				/* XXX: ereport */
-				dev_err(tpm->tpm_dip, CE_NOTE,
-				    "TPM not expecting data before entire "
-				    "command has been sent.");
+
+				ddi_fm_ereport_post(tpm->tpm_dip,
+				    DDI_FM_DEVICE "." DDI_FM_DEVICE_INVAL_STATE,
+				    ena, DDI_NOSLEEP,
+				    FM_VERSION, DATA_TYPE_UINT8,
+				    FM_EREPORT_VERS0,
+				    "tpm_interface", DATA_TYPE_STRING,
+				    tpm_iftype_str(tpm->tpm_iftype),
+				    "locality", DATA_TYPE_UINT8,
+				    tpm->tpm_locality,
+				    "cmd", DATA_TYPE_UINT32, tpm->tpm_cmd,
+				    "detailed error message", DATA_TYPE_STRING,
+				    "TPM not expecting data with unsent data",
+				    NULL);
+
 				return (SET_ERROR(EIO));
 			}
 		}
@@ -291,11 +304,22 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, uint32_t amt)
 		return (ret);
 	}
 	if (expecting) {
+		uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
+
 		mutex_exit(&tpm->tpm_lock);
-		/* XXX: ereport */
-		dev_err(tpm->tpm_dip, CE_WARN,
-		    "!%s: TPM still expecting data after writing last byte",
-		    __func__);
+
+		ddi_fm_ereport_post(tpm->tpm_dip,
+		    DDI_FM_DEVICE "." DDI_FM_DEVICE_INVAL_STATE, ena,
+		    DDI_NOSLEEP,
+		    FM_VERSION, DATA_TYPE_UINT8, FM_EREPORT_VERS0,
+		    "tpm_interface", DATA_TYPE_STRING,
+		    tpm_iftype_str(tpm->tpm_iftype),
+		    "locality", DATA_TYPE_UINT8, tpm->tpm_locality,
+		    "cmd", DATA_TYPE_UINT32, tpm->tpm_cmd,
+		    "detailed error message", DATA_TYPE_STRING,
+		    "TPM expecting data after request sent",
+		    NULL);
+
 		return (SET_ERROR(EIO));
 	}
 
