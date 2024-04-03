@@ -1050,7 +1050,7 @@ tpm_fm_fatal(dev_info_t *dip)
 static int
 tpm_fm_error_cb(dev_info_t *dip, ddi_fm_error_t *errp, const void *arg)
 {
-	/* TODO */
+	/* For now there's not much we to do */
 	return (errp->fme_status);
 }
 
