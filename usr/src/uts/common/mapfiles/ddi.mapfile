@@ -155,6 +155,8 @@ SYMBOL_SCOPE {
 	ddi_regs_map_setup		{ FLAGS = EXTERN };
 	ddi_remove_minor_node		{ FLAGS = EXTERN };
 	ddi_report_dev			{ FLAGS = EXTERN };
+	ddi_rep_get8			{ FLAGS = EXTERN };
+	ddi_rep_put8			{ FLAGS = EXTERN };
 	ddi_set_driver_private		{ FLAGS = EXTERN };
 	ddi_soft_state_fini		{ FLAGS = EXTERN };
 	ddi_soft_state_free		{ FLAGS = EXTERN };
