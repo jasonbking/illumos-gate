@@ -24,11 +24,14 @@
  * Use is subject to license terms.
  *
  * Copyright 2023 Jason King
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
+#include <sys/sysmacros.h>
 #include <sys/ddifm.h>
 #include <sys/fm/io/ddi.h>
 #include <sys/fm/protocol.h>
+
 #include "tpm_ddi.h"
 #include "tpm_tis.h"
 
@@ -191,9 +194,10 @@ tis_expecting_data(tpm_t *tpm, bool *expp)
 }
 	
 static int
-tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
+tis_send_data(tpm_t *tpm, uint8_t *buf, uint32_t amt)
 {
-	size_t count = 0;
+	uint8_t *dest;
+	uint32_t chunk;
 	int ret;
 	uint16_t burstcnt;
 	bool expecting;
@@ -202,13 +206,15 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 
 	mutex_enter(&tpm->tpm_lock);
 
+	dest = tpm_reg_addr(tpm, tpm->tpm_locality, TPM_DATA_FIFO);
+
 	/*
 	 * Send the command. The TPM's burst count determines how many
 	 * how many bytes to write at one time. Once we write burstcount
 	 * bytes, we must wait for the TPM to report a burstcount > 0
 	 * before writing more bytes.
 	 */
-	while (count < amt) {
+	do {
 		/*
 		 * tpm_tis_get_burstcount() will check for cancellation
 		 * by virtue of callign tpm_wait(), so we don't need to
@@ -229,7 +235,21 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 			    "tpm_tis_get_burstcount: %d", ret);
 		}
 
-		if (count > 0) {
+		/*
+		 * If tpm_tis_get_burstcount() succeeds, burstcnt should be
+		 * a positive value.
+		 */
+		VERIFY3U(burstcnt, >, 0);
+
+		chunk = MIN(burstcnt, amt);
+
+		ddi_rep_put8(tpm->tpm_handle, buf, dest, chunk,
+		    DDI_DEV_NO_AUTOINCR);
+
+		buf += chunk;
+		amt -= chunk;
+
+		if (amt > 0) {
 			/*
 			 * Once the first byte is written to the TPM,
 			 * Expect is set, and remains set until the
@@ -259,13 +279,7 @@ tis_send_data(tpm_t *tpm, uint8_t *buf, size_t amt)
 				return (SET_ERROR(EIO));
 			}
 		}
-
-		while (burstcnt > 0 && count < amt) {
-			tpm_put8(tpm, TPM_DATA_FIFO, buf[count]);
-			count++;
-			burstcnt--;
-		}
-	}
+	} while (amt > 0);
 
 	/*
 	 * Verify that the TPM agrees that it's received the entire
@@ -336,88 +350,51 @@ tis_more_data_avail(tpm_t *tpm, bool final, clock_t to, const char *func)
 }
 
 static int
-tis_recv_chunk(tpm_t *tpm, uint32_t offset, uint8_t *buf, size_t amt)
+tis_recv_chunk(tpm_t *tpm, uint8_t *buf, uint32_t len)
 {
-	int size = 0;
-	bool retried = false;
-	uint8_t stsbits;
-
-	/* A number of consecutive bytes that can be written to TPM */
+	uint8_t *src;
+	uint32_t amt, chunk;
+	int ret;
 	uint16_t burstcnt;
 
-	buf += offset;
+	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
 
-retry:
-	while (size < amt) {
-		int ret;
+	src = tpm_reg_addr(tpm, tpm->tpm_locality, TPM_DATA_FIFO);
 
+	while (len > 0) {
 		ret = tpm_wait(tpm, tis_more_data_avail, false,
 		    tpm->tpm_timeout_c, __func__);
-		switch (ret) {
-		case 0:
-			break;
-		case ECANCELED:
+		if (ret != 0) {
 			return (ret);
-		case ETIME:
-			goto check_retry;
-		default:
-			dev_err(tpm->tpm_dip, CE_PANIC, "unexpected return "
-			    "value from tpm_tis_wait_for_stat: %d", ret);
 		}
 
 		/*
-		 * Burstcount should be available within TIMEOUT_D
-		 * after STS is set to valid
-		 * burstcount is dynamic, so have to get it each time
+		 * The burst count may be dynamic, so we have to
+		 * check each time.
 		 */
 		ret = tpm_tis_get_burstcount(tpm, &burstcnt);
-		switch (ret) {
-		case 0:
-			break;
-		case ECANCELED:
+		if (ret != 0) {
 			return (ret);
-		case ETIME:
-			goto check_retry;
-		default:
-			dev_err(tpm->tpm_dip, CE_PANIC, "unexpected return "
-			    "value from tpm_tis_get_burstcount: %d", ret);
 		}
 
-		for (; burstcnt > 0 && size < amt; burstcnt--) {
-			buf[size++] = tpm_get8(tpm, TPM_DATA_FIFO);
-		}
-	}
+		chunk = MIN(burstcnt, len);
+		ddi_rep_get8(tpm->tpm_handle, buf, src, chunk,
+		    DDI_DEV_NO_AUTOINCR);
 
-check_retry:
-	stsbits = tpm_tis_get_status(tpm);
-
-	/* check to see if we need to retry (just once) */
-	if (size < amt && !(stsbits & TPM_STS_DATA_AVAIL) && !retried) {
-		/* issue responseRetry (TIS 1.2 pg 54) */
-		tpm_put8(tpm, TPM_STS, TPM_STS_RESPONSE_RETRY);
-
-		/* update the retry counter so we only retry once */
-		retried = true;
-
-		/* reset the size to 0 and reread the entire response */
-		size = 0;
-		goto retry;
-	}
-
-	if (size != amt) {
-		tpm_ereport_short_read(tpm, offset, amt, size);
-		return (SET_ERROR(EIO));
+		buf += chunk;
+		len -= chunk;
 	}
 
 	return (0);
 }
 
 static int
-tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
+tis_recv_data(tpm_t *tpm, uint8_t *buf, uint32_t bufsiz)
 {
 	int ret;
 	uint32_t expected, status;
 	uint32_t cmdresult;
+	bool is_retry = false;
 
 	/*
 	 * We should always have a buffer large enough for the smallest
@@ -427,10 +404,13 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
 
 	mutex_enter(&tpm->tpm_lock);
 
-	/* Read tag(2 bytes), paramsize(4), and result(4) */
-	ret = tis_recv_chunk(tpm, 0, buf, TPM_HEADER_SIZE);
+retry:
+	bzero(buf, bufsiz);
+
+	/* Read header */
+	ret = tis_recv_chunk(tpm, buf, TPM_HEADER_SIZE);
 	if (ret != 0) {
-		goto done;
+		goto check_retry;
 	}
 
 	/* If we succeeded, we have TPM_HEADER_SIZE bytes in buf */
@@ -459,18 +439,18 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
 	}
 
 	/* Read in the rest of the data from the TPM */
-	ret = tis_recv_chunk(tpm, TPM_HEADER_SIZE, buf,
+	ret = tis_recv_chunk(tpm, buf + TPM_HEADER_SIZE,
 	    expected - TPM_HEADER_SIZE);
 	if (ret != 0) {
-		goto done;
+		goto check_retry;
 	}
 
-	/* The TPM MUST set the state to stsValid within TIMEdone_C */
+	/* The TPM MUST set the state to stsValid within TIMEOUT_C */
 	ret = tpm_wait(tpm, tis_status_valid, false, tpm->tpm_timeout_c,
 	    __func__);
 
 	status = tpm_tis_get_status(tpm);
-	if (ret != DDI_SUCCESS) {
+	if (ret != 0) {
 		uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
 
 		ddi_fm_ereport_post(tpm->tpm_dip,
@@ -492,6 +472,7 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
 	if (status & TPM_STS_DATA_AVAIL) {
 		uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
 
+		/* We'll note it but go ahead and return what we have */
 		ddi_fm_ereport_post(tpm->tpm_dip,
 		    DDI_FM_DEVICE "." DDI_FM_DEVICE_INVAL_STATE, ena,
 		    DDI_NOSLEEP,
@@ -508,6 +489,16 @@ tis_recv_data(tpm_t *tpm, uint8_t *buf, size_t bufsiz)
 done:
 	mutex_exit(&tpm->tpm_lock);
 	return (ret);
+
+check_retry:
+	if (ret != ETIME || is_retry) {
+		goto done;
+	}
+
+	/* Retry reading the entire response again */
+	is_retry = true;
+	tpm_put8(tpm, TPM_STS, TPM_STS_RESPONSE_RETRY);
+	goto retry;
 }
 
 /*
