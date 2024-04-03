@@ -495,7 +495,9 @@ crb_send_data(tpm_t *tpm, const uint8_t *buf, uint32_t buflen)
 	 */
 	crb_set_state(tpm, TCRB_ST_CMD_RECEPTION);
 
-	bcopy(buf, dest, cmdlen);
+	ddi_rep_put8(tpm->tpm_handle, (uint8_t *)buf, dest, cmdlen,
+	    DDI_DEV_AUTOINCR);
+
 	mutex_exit(&tpm->tpm_lock);
 
 	return (0);
@@ -562,7 +564,7 @@ static int
 crb_recv_data(tpm_t *tpm, uint8_t *buf, uint32_t buflen)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
-	const uint8_t *src;
+	uint8_t *src;
 	uint32_t resplen;
 
 	mutex_enter(&tpm->tpm_lock);
@@ -583,7 +585,10 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, uint32_t buflen)
 
 	bzero(buf, buflen);
 
-	bcopy(src, buf, TPM_HEADER_SIZE);
+	/* First read in the header */
+	ddi_rep_get8(tpm->tpm_handle, buf, src, TPM_HEADER_SIZE,
+	    DDI_DEV_AUTOINCR);
+
 	resplen = tpm_cmdlen(buf);
 
 	/* Any response should fit in the TPM's own response buffer */
@@ -629,8 +634,9 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, uint32_t buflen)
 		return (SET_ERROR(EINVAL));
 	}
 
-	bcopy(src + TPM_HEADER_SIZE, buf + TPM_HEADER_SIZE,
-	    resplen - TPM_HEADER_SIZE);
+	/* Read in remainder of response */
+	ddi_rep_get8(tpm->tpm_handle, buf + TPM_HEADER_SIZE,
+	    src + TPM_HEADER_SIZE, resplen - TPM_HEADER_SIZE, DDI_DEV_AUTOINCR);
 
 	mutex_exit(&tpm->tpm_lock);
 	return (0);
