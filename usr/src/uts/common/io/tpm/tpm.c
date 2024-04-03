@@ -441,12 +441,6 @@ tpm_wait(tpm_t *tpm, bool (*cond)(tpm_t *, bool, clock_t, const char *),
 {
 	clock_t deadline, now;
 
-	/*
-	 * We should never be called in a context where we can receive a
-	 * signal.
-	 */
-	VERIFY(!ddi_can_receive_sig());
-
 	ASSERT(MUTEX_HELD(&tpm->tpm_lock));
 
 	deadline = ddi_get_lbolt() + timeout;
@@ -505,12 +499,6 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 	clock_t exp_done, deadline, now, to, dur;
 	uint16_t cmd = tpm_cmd(buf);
 
-	/*
-	 * We should never be called in a context where we can receive
-	 * a signal. In fact, we should only be called from the worker
-	 * thread.
-	 */
-	VERIFY(!ddi_can_receive_sig());
 	VERIFY(tpm_can_access(tpm));
 	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
 
