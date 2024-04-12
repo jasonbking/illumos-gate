@@ -23,6 +23,7 @@
 # Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
+# Copyright 2024 Jason King
 #
 
 #
@@ -44,6 +45,10 @@ MODULE		= si3124
 OBJECTS		= $(SI3124_OBJS:%=$(OBJS_DIR)/%)
 ROOTMODULE	= $(ROOT_DRV_DIR)/$(MODULE)
 CONF_SRCDIR     = $(UTSBASE)/common/io/sata/adapters/si3124
+
+MAPFILE		= $(CONF_SRCDIR)/$(MODULE).mapfile
+
+MAPFILES	+= ddi sata
 
 #
 #	Include common rules.
@@ -71,6 +76,8 @@ CERRWARN	+= $(CNOWARN_UNINIT)
 #
 CFLAGS		+= $(CCVERBOSE)
 
+LDFLAGS += -M $(MAPFILE)
+
 #
 #
 # we depend on the sata module
@@ -94,4 +101,5 @@ install:	$(INSTALL_DEPS)
 #
 #	Include common targets.
 #
+include $(UTSBASE)/Makefile.mapfile
 include $(UTSBASE)/intel/Makefile.targ

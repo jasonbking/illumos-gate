@@ -161,6 +161,7 @@ SYMBOL_SCOPE {
 	ddi_ptob			{ FLAGS = EXTERN };
 	ddi_put16			{ FLAGS = EXTERN };
 	ddi_put32			{ FLAGS = EXTERN };
+	ddi_put64			{ FLAGS = EXTERN };
 	ddi_put8			{ FLAGS = EXTERN };
 	ddi_quiesce_not_supported	{ FLAGS = EXTERN };
 	ddi_regs_map_free		{ FLAGS = EXTERN };
@@ -253,6 +254,12 @@ SYMBOL_SCOPE {
 	pci_ereport_setup		{ FLAGS = EXTERN };
 	pci_ereport_teardown		{ FLAGS = EXTERN };
 	pci_lcap_locate			{ FLAGS = EXTERN };
+	pci_restore_config_regs		{ FLAGS = EXTERN };
+	pci_save_config_regs		{ FLAGS = EXTERN };
+	pm_busy_component		{ FLAGS = EXTERN };
+	pm_idle_component		{ FLAGS = EXTERN };
+	pm_power_has_changed		{ FLAGS = EXTERN };
+	pm_raise_power			{ FLAGS = EXTERN };
 	qreply				{ FLAGS = EXTERN };
 	rw_destroy			{ FLAGS = EXTERN };
 	rw_enter			{ FLAGS = EXTERN };
