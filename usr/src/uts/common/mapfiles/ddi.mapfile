@@ -75,6 +75,7 @@ SYMBOL_SCOPE {
 	cv_reltimedwait			{ FLAGS = EXTERN };
 	cv_signal			{ FLAGS = EXTERN };
 	cv_wait				{ FLAGS = EXTERN };
+	cv_wait_sig			{ FLAGS = EXTERN };
 	ddi_cb_register			{ FLAGS = EXTERN };
 	ddi_cb_unregister		{ FLAGS = EXTERN };
 	ddi_copyin			{ FLAGS = EXTERN };
@@ -100,6 +101,7 @@ SYMBOL_SCOPE {
 	ddi_dma_sync			{ FLAGS = EXTERN };
 	ddi_dma_unbind_handle		{ FLAGS = EXTERN };
 	ddi_driver_name			{ FLAGS = EXTERN };
+	ddi_ffs				{ FLAGS = EXTERN };
 	ddi_fls				{ FLAGS = EXTERN };
 	ddi_fm_acc_err_clear		{ FLAGS = EXTERN };
 	ddi_fm_acc_err_get		{ FLAGS = EXTERN };
@@ -118,6 +120,7 @@ SYMBOL_SCOPE {
 	ddi_get_lbolt64			{ FLAGS = EXTERN };
 	ddi_get_name			{ FLAGS = EXTERN };
 	ddi_get_parent			{ FLAGS = EXTERN };
+	ddi_get_soft_state		{ FLAGS = EXTERN };
 	ddi_get16			{ FLAGS = EXTERN };
 	ddi_get32			{ FLAGS = EXTERN };
 	ddi_get64			{ FLAGS = EXTERN };
@@ -129,6 +132,7 @@ SYMBOL_SCOPE {
 	ddi_intr_enable			{ FLAGS = EXTERN };
 	ddi_intr_free			{ FLAGS = EXTERN };
 	ddi_intr_get_cap		{ FLAGS = EXTERN };
+	ddi_intr_get_hilevel_pri	{ FLAGS = EXTERN };
 	ddi_intr_get_navail		{ FLAGS = EXTERN };
 	ddi_intr_get_nintrs		{ FLAGS = EXTERN };
 	ddi_intr_get_pri		{ FLAGS = EXTERN };
@@ -160,10 +164,15 @@ SYMBOL_SCOPE {
 	ddi_regs_map_setup		{ FLAGS = EXTERN };
 	ddi_remove_minor_node		{ FLAGS = EXTERN };
 	ddi_set_driver_private		{ FLAGS = EXTERN };
+	ddi_soft_state_fini		{ FLAGS = EXTERN };
+	ddi_soft_state_free		{ FLAGS = EXTERN };
+	ddi_soft_state_init		{ FLAGS = EXTERN };
+	ddi_soft_state_zalloc		{ FLAGS = EXTERN };
 	ddi_strtol			{ FLAGS = EXTERN };
 	ddi_taskq_create		{ FLAGS = EXTERN };
 	ddi_taskq_destroy		{ FLAGS = EXTERN };
 	ddi_taskq_dispatch		{ FLAGS = EXTERN };
+	ddi_taskq_wait			{ FLAGS = EXTERN };
 	ddi_ufm_fini			{ FLAGS = EXTERN };
 	ddi_ufm_image_set_desc		{ FLAGS = EXTERN };
 	ddi_ufm_image_set_misc		{ FLAGS = EXTERN };
