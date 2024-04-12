@@ -24,6 +24,7 @@
 # Use is subject to license terms.
 #
 # Copyright (c) 2018, Joyent, Inc.
+# Copyright 2024 Jason King
 
 #
 #	Path to the base of the uts directory tree (usually /usr/src/uts).
@@ -37,6 +38,11 @@ MODULE		= nv_sata
 OBJECTS		= $(NV_SATA_OBJS:%=$(OBJS_DIR)/%)
 ROOTMODULE	= $(ROOT_DRV_DIR)/$(MODULE)
 CONF_SRCDIR     = $(UTSBASE)/common/io/sata/adapters/nv_sata
+
+MAPFILE		= $(CONF_SRCDIR)/$(MODULE).mapfile
+
+# kernel needed for servicing_interrupt
+MAPFILES	+= ddi kernel sata
 
 #
 #	Include common rules.
@@ -55,6 +61,8 @@ INSTALL_TARGET	= $(BINARY) $(ROOTMODULE) $(ROOT_CONFFILE)
 DEBUG_FLGS	=
 DEBUG_DEFS	+= $(DEBUG_FLGS)
 CPPFLAGS	+= -DSGPIO_SUPPORT
+
+LDFLAGS += -M $(MAPFILE)
 
 #
 # dependency on sata module
@@ -90,4 +98,5 @@ install:	$(INSTALL_DEPS)
 #
 #	Include common targets.
 #
+include $(UTSBASE)/Makefile.mapfile
 include $(UTSBASE)/intel/Makefile.targ

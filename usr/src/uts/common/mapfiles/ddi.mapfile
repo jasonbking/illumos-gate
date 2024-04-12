@@ -113,6 +113,7 @@ SYMBOL_SCOPE {
 	ddi_fm_handler_unregister	{ FLAGS = EXTERN };
 	ddi_fm_init			{ FLAGS = EXTERN };
 	ddi_fm_service_impact		{ FLAGS = EXTERN };
+	ddi_getlongprop			{ FLAGS = EXTERN };
 	ddi_getprop			{ FLAGS = EXTERN };
 	ddi_get_driver_private		{ FLAGS = EXTERN };
 	ddi_get_instance		{ FLAGS = EXTERN };
@@ -124,6 +125,7 @@ SYMBOL_SCOPE {
 	ddi_get16			{ FLAGS = EXTERN };
 	ddi_get32			{ FLAGS = EXTERN };
 	ddi_get64			{ FLAGS = EXTERN };
+	ddi_get8			{ FLAGS = EXTERN };
 	ddi_intr_add_handler		{ FLAGS = EXTERN };
 	ddi_intr_alloc			{ FLAGS = EXTERN };
 	ddi_intr_block_disable		{ FLAGS = EXTERN };
@@ -159,10 +161,13 @@ SYMBOL_SCOPE {
 	ddi_ptob			{ FLAGS = EXTERN };
 	ddi_put16			{ FLAGS = EXTERN };
 	ddi_put32			{ FLAGS = EXTERN };
+	ddi_put8			{ FLAGS = EXTERN };
 	ddi_quiesce_not_supported	{ FLAGS = EXTERN };
 	ddi_regs_map_free		{ FLAGS = EXTERN };
 	ddi_regs_map_setup		{ FLAGS = EXTERN };
 	ddi_remove_minor_node		{ FLAGS = EXTERN };
+	ddi_rep_get16			{ FLAGS = EXTERN };
+	ddi_rep_put16			{ FLAGS = EXTERN };
 	ddi_set_driver_private		{ FLAGS = EXTERN };
 	ddi_soft_state_fini		{ FLAGS = EXTERN };
 	ddi_soft_state_free		{ FLAGS = EXTERN };
@@ -262,6 +267,7 @@ SYMBOL_SCOPE {
 	strlcpy				{ FLAGS = EXTERN };
 	strlen				{ FLAGS = EXTERN };
 	strncmp				{ FLAGS = EXTERN };
+	strncpy				{ FLAGS = EXTERN };
 	strrchr				{ FLAGS = EXTERN };
 	swab				{ FLAGS = EXTERN };
 	timeout				{ FLAGS = EXTERN };
