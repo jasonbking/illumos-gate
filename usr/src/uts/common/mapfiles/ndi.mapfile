@@ -1,0 +1,51 @@
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+#
+
+#
+# Copyright 2024 Jason King
+#
+
+#
+# MAPFILE HEADER START
+#
+# WARNING:  STOP NOW.  DO NOT MODIFY THIS FILE.
+# Object scoping must comply with the rules detailed in
+#
+#	usr/src/uts/common/mapfiles/README
+#
+# You should not be making modifications here until you've read the most current
+# copy of that file. If you need help, contact a gatekeeper for guidance.
+#
+# MAPFILE HEADER END
+#
+
+$mapfile_version 2
+
+SYMBOL_SCOPE {
+    global:
+	ndi_dc_allochdl                 { FLAGS = EXTERN };
+	ndi_dc_freehdl                  { FLAGS = EXTERN };
+	ndi_dc_get_ap_data              { FLAGS = EXTERN };
+	ndi_dc_return_ap_state          { FLAGS = EXTERN };
+	ndi_devctl_ioctl                { FLAGS = EXTERN };
+	ndi_devi_alloc_sleep            { FLAGS = EXTERN };
+	ndi_devi_enter                  { FLAGS = EXTERN };
+	ndi_devi_exit                   { FLAGS = EXTERN };
+	ndi_devi_free                   { FLAGS = EXTERN };
+	ndi_devi_offline                { FLAGS = EXTERN };
+	ndi_devi_online                 { FLAGS = EXTERN };
+	ndi_dev_is_persistent_node      { FLAGS = EXTERN };
+	ndi_merge_node                  { FLAGS = EXTERN };
+	ndi_prop_remove                 { FLAGS = EXTERN };
+	ndi_prop_update_int             { FLAGS = EXTERN };
+	ndi_prop_update_string          { FLAGS = EXTERN };
+	ndi_prop_update_string_array    { FLAGS = EXTERN };
+};

@@ -1,0 +1,47 @@
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+#
+
+#
+# Copyright 2024 Jason King
+#
+
+#
+# MAPFILE HEADER START
+#
+# WARNING:  STOP NOW.  DO NOT MODIFY THIS FILE.
+# Object scoping must comply with the rules detailed in
+#
+#	usr/src/uts/common/mapfiles/README
+#
+# You should not be making modifications here until you've read the most current
+# copy of that file. If you need help, contact a gatekeeper for guidance.
+#
+# MAPFILE HEADER END
+#
+
+$mapfile_version 2
+
+SYMBOL_SCOPE {
+    global:
+	scsi_alloc_consistent_buf	{ FLAGS = EXTERN };
+	scsi_free_consistent_buf	{ FLAGS = EXTERN };
+	scsi_hba_attach_setup		{ FLAGS = EXTERN };
+	scsi_hba_detach			{ FLAGS = EXTERN };
+	scsi_hba_fini			{ FLAGS = EXTERN };
+	scsi_hba_init			{ FLAGS = EXTERN };
+	scsi_hba_lookup_capstr		{ FLAGS = EXTERN };
+	scsi_hba_pkt_alloc		{ FLAGS = EXTERN };
+	scsi_hba_pkt_comp		{ FLAGS = EXTERN };
+	scsi_hba_pkt_free		{ FLAGS = EXTERN };
+	scsi_hba_probe			{ FLAGS = EXTERN };
+	scsi_hba_tran_alloc		{ FLAGS = EXTERN };
+	scsi_hba_tran_free		{ FLAGS = EXTERN };
+};

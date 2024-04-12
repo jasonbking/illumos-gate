@@ -24,7 +24,7 @@
 # Use is subject to license terms.
 #
 # Copyright (c) 2018, Joyent, Inc.
-# Copyright 2023 Jason King
+# Copyright 2024 Jason King
 
 
 #
@@ -47,6 +47,11 @@ UTSBASE	= ../..
 MODULE		= sata
 OBJECTS		= $(SATA_OBJS:%=$(OBJS_DIR)/%)
 ROOTMODULE	= $(ROOT_MISC_DIR)/$(MODULE)
+CONF_SRCDIR	= $(UTSBASE)/common/io/sata/impl
+
+MAPFILE		= $(CONF_SRCDIR)/$(MODULE).mapfile
+
+MAPFILES	+= ddi kernel ndi scsi
 
 #
 #	Include common rules.
@@ -68,6 +73,7 @@ DEBUG_DEFS	+= $(DEBUG_FLGS)
 #
 # dependency on scsi module
 #
+LDFLAGS += -M $(MAPFILE)
 LDFLAGS += -Nmisc/scsi
 
 CFLAGS		+= $(CCVERBOSE)
@@ -90,4 +96,5 @@ install:	$(INSTALL_DEPS)
 #
 #	Include common targets.
 #
+include $(UTSBASE)/Makefile.mapfile
 include $(UTSBASE)/intel/Makefile.targ

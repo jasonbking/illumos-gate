@@ -1,0 +1,86 @@
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+#
+
+#
+# Copyright 2024 Jason King
+#
+
+#
+# MAPFILE HEADER START
+#
+# WARNING:  STOP NOW.  DO NOT MODIFY THIS FILE.
+# Object versioning must comply with the rules detailed in
+#
+#	usr/src/lib/README.mapfiles
+#
+# You should not be making modifications here until you've read the most current
+# copy of that file. If you need help, contact a gatekeeper for guidance.
+#
+# MAPFILE HEADER END
+#
+
+$mapfile_version 2
+
+SYMBOL_VERSION ILLUMOSprivate {
+    global:
+	# DDI Interfaces
+	_fini;
+	_init;
+	_info;
+
+	# SATA HBA Api
+	sata_free_dma_resources;
+	sata_free_error_retrieval_pkt;
+	sata_free_rdwr_pmult_pkt;
+	sata_get_error_retrieval_pkt;
+	sata_get_rdwr_pmult_pkt;
+	sata_hba_attach;
+	sata_hba_detach;
+	sata_hba_init;
+	sata_hba_fini;
+	sata_hba_event_notify;
+	sata_register_pmult;
+	sata_split_model;
+	sata_trace_debug;
+	sata_vtrace_debug;
+
+	# Other interfaces
+
+	# Despite having the ddi_ prefix, these don't appear to be documented
+	# as a part of the DDI
+	ddi_get_child				{ FLAGS = EXTERN };
+	ddi_get_next				{ FLAGS = EXTERN };
+	ddi_get_next_sibling			{ FLAGS = EXTERN };
+	ddi_pathname				{ FLAGS = EXTERN };
+	ddi_set_name_addr			{ FLAGS = EXTERN };
+
+	devcnt					{ FLAGS = EXTERN };
+	devnamesp				{ FLAGS = EXTERN };
+	gethrestime				{ FLAGS = EXTERN };
+	minclsyspri				{ FLAGS = EXTERN };
+	p0					{ FLAGS = EXTERN };
+
+	# These aren't document as a part of the SCSI DDI
+	scsi_cdb_size				{ FLAGS = EXTERN };
+	scsi_device_prop_update_inqstring	{ FLAGS = EXTERN };
+	scsi_hba_nodename_compatible_get	{ FLAGS = EXTERN };
+	scsi_hba_nodename_compatible_free	{ FLAGS = EXTERN };
+
+	taskq_create				{ FLAGS = EXTERN };
+	taskq_destroy				{ FLAGS = EXTERN };
+	taskq_dispatch				{ FLAGS = EXTERN };
+
+	thread_create				{ FLAGS = EXTERN };
+	thread_exit				{ FLAGS = EXTERN };
+
+    local:
+	*;
+};
