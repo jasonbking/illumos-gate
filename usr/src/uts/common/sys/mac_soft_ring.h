@@ -24,6 +24,7 @@
  * Use is subject to license terms.
  * Copyright 2017 Joyent, Inc.
  * Copyright 2026 Oxide Computer Company
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 #ifndef	_SYS_MAC_SOFT_RING_H
@@ -925,6 +926,12 @@ struct mac_soft_ring_set_s {
 	mac_srs_rx_t	srs_rx;
 	mac_srs_tx_t	srs_tx;
 	kstat_t		*srs_ksp;
+
+	/* Packet disturb parameters */
+	uint32_t	srs_delay;	/* usec */
+	uint8_t		srs_corrupt;	/* percent */
+	uint8_t		srs_drop;	/* percent */
+	long		srs_rand;	/* disturb rng state */
 };
 
 static inline boolean_t
@@ -1084,6 +1091,9 @@ extern mac_tx_cookie_t mac_tx_srs_no_desc(mac_soft_ring_set_t *, mblk_t *,
 
 /* Subflow specific stuff */
 extern void mac_srs_update_bwlimit(flow_entry_t *, mac_resource_props_t *);
+extern void mac_srs_adjust_subflow_bwlimit(struct mac_client_impl_s *);
+extern void mac_srs_update_disturb(flow_entry_t *, mac_resource_props_t *);
+extern void mac_srs_update_drv(struct mac_client_impl_s *);
 extern void mac_update_srs_priority(mac_soft_ring_set_t *, pri_t);
 extern void mac_client_update_classifier(mac_client_impl_t *, boolean_t);
 extern void mac_rx_srs_subflow_process(void *, mac_resource_handle_t, mblk_t *,
@@ -1124,6 +1134,9 @@ extern void mac_tx_srs_drain(mac_soft_ring_set_t *,
 
 extern void mac_tx_srs_restart(mac_soft_ring_set_t *);
 extern void mac_rx_srs_remove(mac_soft_ring_set_t *);
+
+extern void mac_srs_disturb(mac_soft_ring_set_t *, mblk_t **, int *, size_t *,
+    int *, int *);
 
 #ifdef	__cplusplus
 }

@@ -27,6 +27,7 @@
  * Copyright 2020 Peter Tribble.
  * Copyright 2022 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2023 Oxide Computer Company
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 #include <unistd.h>
@@ -1325,6 +1326,56 @@ dladm_list2range(void *elem, uint_t nelem, mac_propval_type_t type,
 	*range = rangep;
 
 	return (status);
+}
+
+dladm_status_t
+dladm_str2pct(char *oarg, uint8_t *pct)
+{
+	long	val;
+	char	*endp = NULL;
+
+	errno = 0;
+	val = strtol(oarg, &endp, 10);
+	if (errno != 0 || *endp != '\0')
+		return (DLADM_STATUS_BADARG);
+
+	if (val < 0 || val > 100)
+		return (DLADM_STATUS_BADVAL);
+
+	*pct = (uint8_t)val;
+	return (DLADM_STATUS_OK);
+}
+
+const char *
+dladm_pct2str(uint8_t pct, char *buf)
+{
+	(void) snprintf(buf, DLADM_STRSIZE, "%" PRIu8, pct);
+	return (buf);
+}
+
+dladm_status_t
+dladm_str2delay(char *oarg, uint32_t *usec)
+{
+	long	val;
+	char	*endp = NULL;
+
+	errno = 0;
+	val = strtol(oarg, &endp, 10);
+	if (errno != 0 || *endp != '\0')
+		return (DLADM_STATUS_BADARG);
+
+	if (val < 0 || val > MRP_MAX_DELAY)
+		return (DLADM_STATUS_BADVAL);
+
+	*usec = (uint32_t)val;
+	return (DLADM_STATUS_OK);
+}
+
+const char *
+dladm_delay2str(uint32_t delay, char *buf)
+{
+	(void) snprintf(buf, DLADM_STRSIZE, "%" PRIu32, delay);
+	return (buf);
 }
 
 void

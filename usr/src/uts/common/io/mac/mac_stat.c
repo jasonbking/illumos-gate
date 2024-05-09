@@ -23,6 +23,7 @@
  * Use is subject to license terms.
  * Copyright 2018 Joyent, Inc.
  * Copyright 2026 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -51,12 +52,17 @@ enum mac_stat {
 	MAC_STAT_POLLS,
 	MAC_STAT_POLLBYTES,
 	MAC_STAT_RXSDROPS,
+	MAC_STAT_RXADMDROPS,
+	MAC_STAT_RXADMDELAYS,
+	MAC_STAT_RXADMCORRUPTS,
 	MAC_STAT_CHU10,
 	MAC_STAT_CH10T50,
 	MAC_STAT_CHO50,
 	MAC_STAT_BLOCK,
 	MAC_STAT_UNBLOCK,
 	MAC_STAT_TXSDROPS,
+	MAC_STAT_TXADMDELAYS,
+	MAC_STAT_TXADMCORRUPTS,
 	MAC_STAT_TX_ERRORS,
 	MAC_STAT_MACSPOOFED,
 	MAC_STAT_IPSPOOFED,
@@ -139,7 +145,9 @@ static mac_stat_info_t  i_mac_tx_swlane_si[] = {
 	{ MAC_STAT_OERRORS,	"oerrors",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_BLOCK,	"blockcnt",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_UNBLOCK,	"unblockcnt",	KSTAT_DATA_UINT64,	0},
-	{ MAC_STAT_TXSDROPS,	"txsdrops",	KSTAT_DATA_UINT64,	0}
+	{ MAC_STAT_TXSDROPS,	"txsdrops",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_TXADMDELAYS,	"txadmdelays",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_TXADMCORRUPTS, "txadmcorrupts", KSTAT_DATA_UINT64, 0}
 };
 #define	MAC_TX_SWLANE_NKSTAT \
 	(sizeof (i_mac_tx_swlane_si) / sizeof (mac_stat_info_t))
@@ -154,7 +162,10 @@ static mac_stat_info_t  i_mac_rx_swlane_si[] = {
 	{ MAC_STAT_LCLBYTES,	"localbytes",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_INTRS,	"intrs",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_INTRBYTES,	"intrbytes",	KSTAT_DATA_UINT64,	0},
-	{ MAC_STAT_RXSDROPS,	"rxsdrops",	KSTAT_DATA_UINT64,	0}
+	{ MAC_STAT_RXSDROPS,	"rxsdrops",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXADMDROPS,	"rxadmdrops",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXADMDELAYS,	"rxadmdelays",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXADMCORRUPTS, "rxadmcorrupts", KSTAT_DATA_UINT64, 0}
 };
 #define	MAC_RX_SWLANE_NKSTAT \
 	(sizeof (i_mac_rx_swlane_si) / sizeof (mac_stat_info_t))
@@ -170,6 +181,9 @@ static mac_stat_info_t  i_mac_rx_hwlane_si[] = {
 	{ MAC_STAT_POLLS,	"polls",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_POLLBYTES,	"pollbytes",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_RXSDROPS,	"rxsdrops",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXADMDROPS,	"rxadmdrops",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXADMDELAYS,	"rxadmdelays",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXADMCORRUPTS, "rxadmcorrupts", KSTAT_DATA_UINT64, 0},
 	{ MAC_STAT_CHU10,	"chainunder10",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_CH10T50,	"chain10to50",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_CHO50,	"chainover50",	KSTAT_DATA_UINT64,	0}
@@ -204,6 +218,9 @@ static mac_stat_info_t  i_mac_misc_si[] = {
 	{ MAC_STAT_POLLS,	"polls",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_POLLBYTES,	"pollbytes",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_RXSDROPS,	"rxsdrops",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXADMDROPS,	"rxadmdrops",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXADMDELAYS,	"rxadmdelays",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXADMCORRUPTS, "rxadmcorrupts", KSTAT_DATA_UINT64, 0},
 	{ MAC_STAT_CHU10,	"chainunder10",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_CH10T50,	"chain10to50",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_CHO50,	"chainover50",	KSTAT_DATA_UINT64,	0},
@@ -212,7 +229,9 @@ static mac_stat_info_t  i_mac_misc_si[] = {
 	{ MAC_STAT_OERRORS,	"oerrors",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_BLOCK,	"blockcnt",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_UNBLOCK,	"unblockcnt",	KSTAT_DATA_UINT64,	0},
-	{ MAC_STAT_TXSDROPS,	"txsdrops",	KSTAT_DATA_UINT64,	0}
+	{ MAC_STAT_TXSDROPS,	"txsdrops",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_TXADMDELAYS,	"txadmdelays",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_TXADMCORRUPTS, "txadmcorrupts", KSTAT_DATA_UINT64, 0}
 };
 #define	MAC_SUMMARY_NKSTAT \
 	(sizeof (i_mac_misc_si) / sizeof (mac_stat_info_t))
@@ -258,6 +277,9 @@ static stat_info_t rx_srs_stats_list[] = {
 	{RX_SRS_STAT_OFF(mrs_intrcnt)},
 	{RX_SRS_STAT_OFF(mrs_intrbytes)},
 	{RX_SRS_STAT_OFF(mrs_sdrops)},
+	{RX_SRS_STAT_OFF(mrs_admdrops)},
+	{RX_SRS_STAT_OFF(mrs_admdelays)},
+	{RX_SRS_STAT_OFF(mrs_admcorrupts)},
 	{RX_SRS_STAT_OFF(mrs_chaincntundr10)},
 	{RX_SRS_STAT_OFF(mrs_chaincnt10to50)},
 	{RX_SRS_STAT_OFF(mrs_chaincntover50)},
@@ -274,6 +296,8 @@ static stat_info_t tx_softring_stats_list[] = {
 	{TX_SOFTRING_STAT_OFF(mts_blockcnt)},
 	{TX_SOFTRING_STAT_OFF(mts_unblockcnt)},
 	{TX_SOFTRING_STAT_OFF(mts_sdrops)},
+	{TX_SOFTRING_STAT_OFF(mts_admdelays)},
+	{TX_SOFTRING_STAT_OFF(mts_admcorrupts)},
 };
 #define	TX_SOFTRING_STAT_SIZE		\
 	(sizeof (tx_softring_stats_list) / sizeof (stat_info_t))
@@ -518,6 +542,12 @@ i_mac_tx_swlane_stat_get(void *handle, uint_t stat)
 	case MAC_STAT_TXSDROPS:
 		return (mac_tx_stat->mts_sdrops);
 
+	case MAC_STAT_TXADMDELAYS:
+		return (mac_tx_stat->mts_admdelays);
+
+	case MAC_STAT_TXADMCORRUPTS:
+		return (mac_tx_stat->mts_admcorrupts);
+
 	default:
 		return (0);
 	}
@@ -575,6 +605,15 @@ i_mac_rx_swlane_stat_get(void *handle, uint_t stat)
 
 	case MAC_STAT_RXSDROPS:
 		return (mac_rx_stat->mrs_sdrops);
+
+	case MAC_STAT_RXADMDROPS:
+		return (mac_rx_stat->mrs_admdrops);
+
+	case MAC_STAT_RXADMDELAYS:
+		return (mac_rx_stat->mrs_admdelays);
+
+	case MAC_STAT_RXADMCORRUPTS:
+		return (mac_rx_stat->mrs_admcorrupts);
 
 	default:
 		return (0);
@@ -634,6 +673,15 @@ i_mac_rx_hwlane_stat_get(void *handle, uint_t stat)
 
 	case MAC_STAT_RXSDROPS:
 		return (mac_rx_stat->mrs_sdrops);
+
+	case MAC_STAT_RXADMDROPS:
+		return (mac_rx_stat->mrs_admdrops);
+
+	case MAC_STAT_RXADMDELAYS:
+		return (mac_rx_stat->mrs_admdelays);
+
+	case MAC_STAT_RXADMCORRUPTS:
+		return (mac_rx_stat->mrs_admcorrupts);
 
 	case MAC_STAT_CHU10:
 		return (mac_rx_stat->mrs_chaincntundr10);
@@ -761,6 +809,15 @@ i_mac_misc_stat_get(void *handle, uint_t stat)
 	case MAC_STAT_RXSDROPS:
 		return (mac_rx_stat->mrs_sdrops);
 
+	case MAC_STAT_RXADMDROPS:
+		return (mac_rx_stat->mrs_admdrops);
+
+	case MAC_STAT_RXADMDELAYS:
+		return (mac_rx_stat->mrs_admdelays);
+
+	case MAC_STAT_RXADMCORRUPTS:
+		return (mac_rx_stat->mrs_admcorrupts);
+
 	case MAC_STAT_CHU10:
 		return (mac_rx_stat->mrs_chaincntundr10);
 
@@ -787,6 +844,12 @@ i_mac_misc_stat_get(void *handle, uint_t stat)
 
 	case MAC_STAT_TXSDROPS:
 		return (mac_tx_stat->mts_sdrops);
+
+	case MAC_STAT_TXADMDELAYS:
+		return (mac_tx_stat->mts_admdelays);
+
+	case MAC_STAT_TXADMCORRUPTS:
+		return (mac_tx_stat->mts_admcorrupts);
 
 	default:
 		return (0);

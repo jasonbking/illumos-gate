@@ -21,7 +21,7 @@
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2018 Joyent, Inc.
- * Copyright 2020 RackTop Systems.
+ * Copyright 2020-2026 RackTop Systems.
  * Copyright 2026 Oxide Computer Company
  */
 
@@ -1696,6 +1696,32 @@ mac_srs_update_bwlimit(flow_entry_t *flent, mac_resource_props_t *mrp)
 	mac_tx_srs_update_bwlimit_state(flent->fe_tx_srs, enable);
 }
 
+static void
+mac_srs_update_one_disturb(mac_soft_ring_set_t *srs, mac_resource_props_t *mrp)
+{
+	mutex_enter(&srs->srs_lock);
+	if (mrp->mrp_mask & MRP_DELAY)
+		srs->srs_delay = mrp->mrp_delay;
+	if (mrp->mrp_mask & MRP_CORRUPT)
+		srs->srs_corrupt = mrp->mrp_corrupt;
+	if (mrp->mrp_mask & MRP_DROP)
+		srs->srs_drop = mrp->mrp_drop;
+	mutex_exit(&srs->srs_lock);
+}
+
+void
+mac_srs_update_disturb(flow_entry_t *flent, mac_resource_props_t *mrp)
+{
+	int	count;
+
+	for (count = 0; count < flent->fe_rx_srs_cnt; count++) {
+		mac_soft_ring_set_t *srs = flent->fe_rx_srs[count];
+
+		mac_srs_update_one_disturb(srs, mrp);
+	}
+	mac_srs_update_one_disturb(flent->fe_tx_srs, mrp);
+}
+
 /*
  * When the first sub-flow is added to a link, we disable polling on the
  * link and also modify the entry point to mac_rx_srs_subflow_process().
@@ -2251,6 +2277,7 @@ mac_srs_create(mac_client_impl_t *mcip, flow_entry_t *flent,
 	mac_srs->srs_worker_cpuid = mac_srs->srs_worker_cpuid_save = -1;
 	mac_srs->srs_poll_cpuid = mac_srs->srs_poll_cpuid_save = -1;
 	mac_srs->srs_mcip = mcip;
+	mac_srs->srs_rand = gethrtime();
 	mac_srs_fanout_list_alloc(mac_srs);
 
 	/*
@@ -2259,6 +2286,7 @@ mac_srs_create(mac_client_impl_t *mcip, flow_entry_t *flent,
 	 * client we use the MAC client's maximum priority as the value.
 	 */
 	mrp = &flent->fe_effective_props;
+	mac_srs_update_one_disturb(mac_srs, mrp);
 	if ((mac_srs->srs_type & SRST_FLOW) != 0) {
 		mac_srs->srs_pri = FLOW_PRIORITY(mcip->mci_min_pri,
 		    mcip->mci_max_pri, mrp->mrp_priority);

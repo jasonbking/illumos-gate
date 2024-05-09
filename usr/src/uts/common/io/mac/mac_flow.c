@@ -24,6 +24,7 @@
  * Use is subject to license terms.
  * Copyright 2018 Joyent, Inc.
  * Copyright 2026 Oxide Computer Company
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 #include <sys/strsun.h>
@@ -723,6 +724,43 @@ mac_flow_modify_props(flow_entry_t *flent, mac_resource_props_t *mrp)
 			fmrp->mrp_mask |= MRP_POOL;
 		(void) strncpy(fmrp->mrp_pool, mrp->mrp_pool, MAXPATHLEN);
 	}
+
+	if ((mrp->mrp_mask & MRP_DELAY) != 0) {
+		if (mrp->mrp_delay != fmrp->mrp_delay)
+			changed_mask |= MRP_DELAY;
+
+		fmrp->mrp_delay = mrp->mrp_delay;
+
+		if (mrp->mrp_delay == 0)
+			fmrp->mrp_mask &= ~MRP_DELAY;
+		else
+			fmrp->mrp_mask |= MRP_DELAY;
+	}
+
+	if ((mrp->mrp_mask & MRP_CORRUPT) != 0) {
+		if (mrp->mrp_corrupt != fmrp->mrp_corrupt)
+			changed_mask |= MRP_CORRUPT;
+
+		fmrp->mrp_corrupt = mrp->mrp_corrupt;
+
+		if (mrp->mrp_corrupt == 0)
+			fmrp->mrp_mask &= ~MRP_CORRUPT;
+		else
+			fmrp->mrp_mask |= MRP_CORRUPT;
+	}
+
+	if ((mrp->mrp_mask & MRP_DROP) != 0) {
+		if (mrp->mrp_drop != fmrp->mrp_drop)
+			changed_mask |= MRP_DROP;
+
+		fmrp->mrp_drop = mrp->mrp_drop;
+
+		if (mrp->mrp_drop == 0)
+			fmrp->mrp_mask &= ~MRP_DROP;
+		else
+			fmrp->mrp_mask |= MRP_DROP;
+	}
+
 	return (changed_mask);
 }
 
@@ -777,6 +815,10 @@ mac_flow_modify(flow_tab_t *ft, flow_entry_t *flent, mac_resource_props_t *mrp)
 		    cpupart);
 		mac_set_pool_effective(use_default, cpupart, mrp, emrp);
 		pool_unlock();
+	}
+
+	if (mrp->mrp_mask & (MRP_DISTURB)) {
+		mac_srs_update_disturb(flent, mrp);
 	}
 }
 

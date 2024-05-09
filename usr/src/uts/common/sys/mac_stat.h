@@ -22,6 +22,7 @@
 /*
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #ifndef	_MAC_STAT_H
@@ -47,6 +48,9 @@ typedef struct mac_rx_stats_s {
 	uint64_t	mrs_intrcnt;
 	uint64_t	mrs_intrbytes;
 	uint64_t	mrs_sdrops;
+	uint64_t	mrs_admdrops;
+	uint64_t	mrs_admdelays;
+	uint64_t	mrs_admcorrupts;
 	uint64_t	mrs_chaincntundr10;
 	uint64_t	mrs_chaincnt10to50;
 	uint64_t	mrs_chaincntover50;
@@ -68,6 +72,8 @@ typedef struct mac_tx_stats_s {
 	uint64_t	mts_blockcnt;	/* times blocked for Tx descs */
 	uint64_t	mts_unblockcnt;	/* unblock calls from driver */
 	uint64_t	mts_sdrops;
+	uint64_t	mts_admdelays;
+	uint64_t	mts_admcorrupts;
 } mac_tx_stats_t;
 
 typedef struct mac_misc_stats_s {

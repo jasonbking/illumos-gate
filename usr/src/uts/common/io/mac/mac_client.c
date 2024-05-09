@@ -22,7 +22,7 @@
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2019 Joyent, Inc.
- * Copyright 2017 RackTop Systems.
+ * Copyright 2024 RackTop Systems.
  * Copyright 2022 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2026 Oxide Computer Company
  */
@@ -3594,6 +3594,20 @@ mac_tx(mac_client_handle_t mch, mblk_t *mp_chain, uintptr_t hint,
 		goto done;
 	}
 
+	if (MAC_FLOW_DISTURB(flent)) {
+		int delay_cnt = 0;
+		int corrupt_cnt = 0;
+
+		mutex_enter(&srs->srs_lock);
+		mac_srs_disturb(srs, &mp_chain, NULL, NULL, &delay_cnt,
+		    &corrupt_cnt);
+		SRS_TX_STAT_UPDATE(srs, admdelays, delay_cnt);
+		SRS_TX_STAT_UPDATE(srs, admcorrupts, corrupt_cnt);
+		mutex_exit(&srs->srs_lock);
+		if (mp_chain == NULL)
+			goto done;
+	}
+
 	srs_tx = &srs->srs_tx;
 	if (srs_tx->st_mode == SRS_TX_DEFAULT &&
 	    (srs->srs_state & SRS_ENQUEUED) == 0 &&
@@ -4613,6 +4627,32 @@ mac_update_resources(mac_resource_props_t *nmrp, mac_resource_props_t *cmrp,
 
 		}
 
+		if (nmrp->mrp_mask & MRP_DELAY) {
+			if (nmrp->mrp_delay == 0)
+				cmrp->mrp_mask &= ~MRP_DELAY;
+			else
+				cmrp->mrp_mask |= MRP_DELAY;
+
+			cmrp->mrp_delay = nmrp->mrp_delay;
+		}
+
+		if (nmrp->mrp_mask & MRP_CORRUPT) {
+			if (nmrp->mrp_corrupt == 0)
+				cmrp->mrp_mask &= ~MRP_CORRUPT;
+			else
+				cmrp->mrp_mask |= MRP_CORRUPT;
+
+			cmrp->mrp_corrupt = nmrp->mrp_corrupt;
+		}
+
+		if (nmrp->mrp_mask & MRP_DROP) {
+			if (nmrp->mrp_drop == 0)
+				cmrp->mrp_mask &= ~MRP_DROP;
+			else
+				cmrp->mrp_mask |= MRP_DROP;
+			cmrp->mrp_drop = nmrp->mrp_drop;
+		}
+
 		if (nmrp->mrp_mask & MRP_PROTECT)
 			mac_protect_update(nmrp, cmrp);
 
@@ -5278,6 +5318,21 @@ mac_validate_props(mac_impl_t *mip, mac_resource_props_t *mrp)
 		int err = mac_protect_validate(mrp);
 		if (err != 0)
 			return (err);
+	}
+
+	if (mrp->mrp_mask & MRP_DELAY) {
+		if (mrp->mrp_delay > MRP_MAX_DELAY)
+			return (EINVAL);
+	}
+
+	if (mrp->mrp_mask & MRP_CORRUPT) {
+		if (mrp->mrp_corrupt > MRP_MAX_CORRUPT)
+			return (EINVAL);
+	}
+
+	if (mrp->mrp_mask & MRP_DROP) {
+		if (mrp->mrp_drop > MRP_MAX_DROP)
+			return (EINVAL);
 	}
 
 	if (!(mrp->mrp_mask & MRP_RX_RINGS) &&

@@ -23,7 +23,7 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  * Copyright 2013 Joyent, Inc.  All rights reserved.
- * Copyright 2020 RackTop Systems, Inc.
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 #ifndef	_MAC_FLOW_H
@@ -200,8 +200,15 @@ typedef struct mac_protect_s {
 #define	MRP_TXRINGS_UNSPEC	0x00000100	/* unspecified rings */
 #define	MRP_RINGS_RESET		0x00000200	/* resetting rings */
 #define	MRP_POOL		0x00000400	/* CPU pool */
+#define	MRP_DELAY		0x00000800	/* delay */
+#define	MRP_CORRUPT		0x00001000	/* corrupt %age of packets */
+#define	MRP_DROP		0x00002000	/* drop %age of packets */
 
 #define	MRP_THROTTLE		MRP_MAXBW
+#define	MRP_DISTURB		(MRP_DELAY|MRP_CORRUPT|MRP_DROP)
+
+#define	MAC_FLOW_DISTURB(fle)		\
+	(((fle)->fe_effective_props.mrp_mask & MRP_DISTURB) != 0)
 
 /* 3 levels - low, medium, high */
 #define	MRP_PRIORITY_LEVELS		3
@@ -215,6 +222,10 @@ typedef struct mac_protect_s {
  */
 #define	MRP_MAXBW_MINVAL		1200000
 
+#define	MRP_MAX_DELAY			10000 /* 10ms in us */
+#define	MRP_MAX_CORRUPT			100 /* Percent */
+#define	MRP_MAX_DROP			100 /* Percent */
+
 typedef	struct mac_resource_props_s {
 	/*
 	 * Bit-mask for the network resource control types types
@@ -226,6 +237,9 @@ typedef	struct mac_resource_props_s {
 	mac_protect_t		mrp_protect;
 	uint32_t		mrp_nrxrings;
 	uint32_t		mrp_ntxrings;
+	uint32_t		mrp_delay;	/* usec */
+	uint8_t			mrp_corrupt;	/* percent */
+	uint8_t			mrp_drop;	/* percent */
 	char			mrp_pool[MAXPATHLEN];	/* CPU pool */
 } mac_resource_props_t;
 
