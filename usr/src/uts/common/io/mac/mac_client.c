@@ -3595,8 +3595,14 @@ mac_tx(mac_client_handle_t mch, mblk_t *mp_chain, uintptr_t hint,
 	}
 
 	if (MAC_FLOW_DISTURB(flent)) {
+		int delay_cnt = 0;
+		int corrupt_cnt = 0;
+
 		mutex_enter(&srs->srs_lock);
-		mac_srs_disturb(srs, &mp_chain, NULL, NULL);
+		mac_srs_disturb(srs, &mp_chain, NULL, NULL, &delay_cnt,
+		    &corrupt_cnt);
+		SRS_TX_STAT_UPDATE(srs, admdelays, delay_cnt);
+		SRS_TX_STAT_UPDATE(srs, admcorrupts, corrupt_cnt);
 		mutex_exit(&srs->srs_lock);
 		if (mp_chain == NULL)
 			goto done;

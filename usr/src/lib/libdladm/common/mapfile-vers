@@ -70,6 +70,10 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	dladm_str2interval;
 	dladm_bw2str;
 	dladm_str2bw;
+	dladm_pct2str;
+	dladm_str2pct;
+	dladm_delay2str;
+	dladm_str2delay;
 	dladm_secobjclass2str;
 	dladm_str2secobjclass;
 	dladm_aggr_up;

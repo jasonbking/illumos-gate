@@ -21,7 +21,7 @@
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2018 Joyent, Inc.
- * Copyright 2020-2024 RackTop Systems.
+ * Copyright 2020-2026 RackTop Systems.
  * Copyright 2026 Oxide Computer Company
  */
 
@@ -1700,9 +1700,12 @@ static void
 mac_srs_update_one_disturb(mac_soft_ring_set_t *srs, mac_resource_props_t *mrp)
 {
 	mutex_enter(&srs->srs_lock);
-	srs->srs_delay = mrp->mrp_delay;
-	srs->srs_corrupt = mrp->mrp_corrupt;
-	srs->srs_drop = mrp->mrp_drop;
+	if (mrp->mrp_mask & MRP_DELAY)
+		srs->srs_delay = mrp->mrp_delay;
+	if (mrp->mrp_mask & MRP_CORRUPT)
+		srs->srs_corrupt = mrp->mrp_corrupt;
+	if (mrp->mrp_mask & MRP_DROP)
+		srs->srs_drop = mrp->mrp_drop;
 	mutex_exit(&srs->srs_lock);
 }
 
@@ -2283,6 +2286,7 @@ mac_srs_create(mac_client_impl_t *mcip, flow_entry_t *flent,
 	 * client we use the MAC client's maximum priority as the value.
 	 */
 	mrp = &flent->fe_effective_props;
+	mac_srs_update_one_disturb(mac_srs, mrp);
 	if ((mac_srs->srs_type & SRST_FLOW) != 0) {
 		mac_srs->srs_pri = FLOW_PRIORITY(mcip->mci_min_pri,
 		    mcip->mci_max_pri, mrp->mrp_priority);

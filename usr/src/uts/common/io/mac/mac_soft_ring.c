@@ -23,7 +23,7 @@
  * Use is subject to license terms.
  * Copyright 2018 Joyent, Inc.
  * Copyright 2026 Oxide Computer Company
- * Copyright 2024 RackTop Systems, Inc.
+ * Copyright 2024-2026 RackTop Systems, Inc.
  */
 
 /*
@@ -77,6 +77,7 @@
 
 #include <sys/types.h>
 #include <sys/callb.h>
+#include <sys/disp.h>
 #include <sys/sdt.h>
 #include <sys/strsubr.h>
 #include <sys/strsun.h>
@@ -850,19 +851,48 @@ mac_srs_nextrand(mac_soft_ring_set_t *srs)
  * should be retained, B_FALSE if it should be dropped.
  */
 static boolean_t
-mac_srs_disturb_pkt(mac_soft_ring_set_t *srs, mblk_t *mp)
+mac_srs_disturb_pkt(mac_soft_ring_set_t *srs, mblk_t **mpp,
+    boolean_t *corruptedp)
 {
+	mblk_t *mp = *mpp;
+	mblk_t *bp;
 	int rand;
 
 	ASSERT(MUTEX_HELD(&srs->srs_lock));
+	*corruptedp = B_FALSE;
 
-	rand = mac_srs_nextrand(srs);
-
-	if (srs->srs_drop != 0 && rand % 100 < srs->srs_drop)
+	if (srs->srs_drop != 0 &&
+	    mac_srs_nextrand(srs) % 100 < srs->srs_drop)
 		return (B_FALSE);
 
-	if (srs->srs_corrupt == 0 || rand % 100 >= srs->srs_corrupt)
+	if (srs->srs_corrupt == 0)
 		return (B_TRUE);
+
+	rand = mac_srs_nextrand(srs);
+	if (rand % 100 >= srs->srs_corrupt)
+		return (B_TRUE);
+
+	/*
+	 * If an mblk_t is shared, we need to clone it so we can
+	 * modify our local copy without impacting shared owners.
+	 */
+	for (bp = mp; bp != NULL; bp = bp->b_cont) {
+		if (DB_TYPE(bp) == M_DATA && MBLKL(bp) != 0 &&
+		    DB_REF(bp) > 1)
+			break;
+	}
+
+	if (bp != NULL) {
+		mblk_t *newmp = copymsg(mp);
+
+		if (newmp == NULL)
+			return (B_TRUE);
+
+		newmp->b_next = mp->b_next;
+		mp->b_next = NULL;
+		freemsg(mp);
+		mp = *mpp = newmp;
+	}
 
 	unsigned char *dp;
 	uint_t off, len;
@@ -888,6 +918,7 @@ mac_srs_disturb_pkt(mac_soft_ring_set_t *srs, mblk_t *mp)
 		dp = mp->b_rptr + off;
 		off = rand % 8;
 		*dp = *dp ^ (1 << off);
+		*corruptedp = B_TRUE;
 	}
 
 	return (B_TRUE);
@@ -899,14 +930,22 @@ mac_srs_disturb_pkt(mac_soft_ring_set_t *srs, mblk_t *mp)
  */
 void
 mac_srs_disturb(mac_soft_ring_set_t *srs, mblk_t **mp_chainp, int *drop_cntp,
-    size_t *drop_bytesp)
+    size_t *drop_bytesp, int *delay_cntp, int *corrupt_cntp)
 {
+	mblk_t *drop_chain;
+	mblk_t *mp, *mp_prev, *mp_next;
+
 	ASSERT(MUTEX_HELD(&srs->srs_lock));
 
+	drop_chain = NULL;
 	if (drop_cntp != NULL)
 		*drop_cntp = 0;
 	if (drop_bytesp != NULL)
 		*drop_bytesp = 0;
+	if (delay_cntp != NULL)
+		*delay_cntp = 0;
+	if (corrupt_cntp != NULL)
+		*corrupt_cntp = 0;
 
 	/*
 	 * We should only be invoked when one of the disturb parameters
@@ -914,51 +953,79 @@ mac_srs_disturb(mac_soft_ring_set_t *srs, mblk_t **mp_chainp, int *drop_cntp,
 	 */
 	ASSERT(srs->srs_delay > 0 || srs->srs_corrupt > 0 || srs->srs_drop > 0);
 
-	if (srs->srs_drop > 0 || srs->srs_corrupt > 0) {
-		mblk_t *mp_prev = NULL;
-		mblk_t *mp = *mp_chainp;
-		mblk_t *mp_next;
+	if (srs->srs_delay != 0) {
+		uint32_t delay_usec = srs->srs_delay;
 
-		while (mp != NULL) {
-			mp_next = mp->b_next;
-
-			if (mac_srs_disturb_pkt(srs, mp)) {
-				/* keep packet and move on */
-				mp_prev = mp;
-				mp = mp_next;
-				continue;
-			}
-
-			/*
-			 * need to drop this packet, remove from chain and add
-			 * to drop_chain
-			 */
-			if (mp_prev != NULL) {
-				mp_prev->b_next = mp_next;
-			} else {
-				/* mblk to drop is at the head of the chain */
-				*mp_chainp = mp_next;
-			}
-
-			if (drop_cntp != NULL)
-				(*drop_cntp)++;
-			if (drop_bytesp != NULL)
-				*drop_bytesp += msgdsize(mp);
-
-			mp->b_next = NULL;
-			freemsg(mp);
-			mp = mp_next;
+		if (delay_cntp != NULL) {
+			for (mp = *mp_chainp; mp != NULL; mp = mp->b_next)
+				(*delay_cntp)++;
 		}
-	}
 
-	if (srs->srs_delay != 0 && *mp_chainp != NULL) {
 		DTRACE_PROBE1(disturb__delay, mac_soft_ring_set_t *, srs);
 
-		if (srs->srs_delay < TICK_TO_USEC(1)) {
-			drv_usecwait(srs->srs_delay);
+		mutex_exit(&srs->srs_lock);
+		if (servicing_interrupt() ||
+		    delay_usec < TICK_TO_USEC(1)) {
+			drv_usecwait(delay_usec);
 		} else {
-			/* XXX: should we drop srs_lock during the delay? */
-			delay(drv_usectohz(srs->srs_delay));
+			delay(drv_usectohz(delay_usec));
 		}
+		mutex_enter(&srs->srs_lock);
 	}
+
+	if (srs->srs_drop == 0 && srs->srs_corrupt == 0) {
+		return;
+	}
+
+	mp_prev = NULL;
+	mp = *mp_chainp;
+	while (mp != NULL) {
+		boolean_t corrupted;
+		mblk_t *old_mp = mp;
+
+		mp_next = mp->b_next;
+
+		if (mac_srs_disturb_pkt(srs, &mp, &corrupted)) {
+			if (mp != old_mp) {
+				if (mp_prev != NULL)
+					mp_prev->b_next = mp;
+				else
+					*mp_chainp = mp;
+			}
+			if (corrupted && corrupt_cntp != NULL)
+				(*corrupt_cntp)++;
+
+			/* keep packet and move on */
+			mp_prev = mp;
+			mp = mp_next;
+			continue;
+		}
+
+		/*
+		 * need to drop this packet, remove from chain and add
+		 * to drop_chain
+		 */
+		if (mp_prev != NULL) {
+			mp_prev->b_next = mp_next;
+		} else {
+			/* mblk to drop is at the head of the chain */
+			*mp_chainp = mp_next;
+		}
+
+		if (drop_cntp != NULL)
+			(*drop_cntp)++;
+		if (drop_bytesp != NULL)
+			*drop_bytesp += msgdsize(mp);
+
+		/*
+		 * we don't care about preserving the order of mblk_ts
+		 * we are going to drop, so just head insert into drop_chain
+		 */
+		mp->b_next = drop_chain;
+		drop_chain = mp;
+		mp = mp_next;
+	}
+
+	if (drop_chain != NULL)
+		freemsgchain(drop_chain);
 }

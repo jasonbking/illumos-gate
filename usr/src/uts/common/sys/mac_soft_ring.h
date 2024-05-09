@@ -23,6 +23,7 @@
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  * Copyright 2017 Joyent, Inc.
+ * Copyright 2024-2026 RackTop Systems, Inc.
  * Copyright 2026 Oxide Computer Company
  * Copyright 2024 RackTop Systems, Inc.
  */
@@ -1135,7 +1136,8 @@ extern void mac_tx_srs_drain(mac_soft_ring_set_t *,
 extern void mac_tx_srs_restart(mac_soft_ring_set_t *);
 extern void mac_rx_srs_remove(mac_soft_ring_set_t *);
 
-extern void mac_srs_disturb(mac_soft_ring_set_t *, mblk_t **, int *, size_t *);
+extern void mac_srs_disturb(mac_soft_ring_set_t *, mblk_t **, int *, size_t *,
+    int *, int *);
 
 #ifdef	__cplusplus
 }
