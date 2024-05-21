@@ -26,6 +26,7 @@
 /*
  * Copyright 2015, Joyent, Inc.
  * Copyright 2022 OmniOS Community Edition (OmniOSce) Association
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 #ifndef _LIBDLADM_H
@@ -283,6 +284,10 @@ extern dladm_status_t	dladm_str2ipv4addr(char *, void *);
 extern const char	*dladm_ipv4addr2str(void *, char *);
 extern dladm_status_t	dladm_str2ipv6addr(char *, void *);
 extern const char	*dladm_ipv6addr2str(void *, char *);
+extern dladm_status_t	dladm_str2pct(char *, uint8_t *);
+extern const char	*dladm_pct2str(uint8_t, char *);
+extern dladm_status_t	dladm_str2delay(char *, uint32_t *);
+extern const char	*dladm_delay2str(uint32_t, char *);
 
 extern dladm_status_t	dladm_parse_flow_props(char *, dladm_arg_list_t **,
 			    boolean_t);

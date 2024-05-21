@@ -1,10 +1,11 @@
 '\" te
+.\" Copyright 2024 RackTop Systems, Inc.
 .\" Copyright 2020 Peter Tribble
 .\" Copyright (c) 2009, Sun Microsystems, Inc. All Rights Reserved
 .\" The contents of this file are subject to the terms of the Common Development and Distribution License (the "License").  You may not use this file except in compliance with the License.
 .\" You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE or http://www.opensolaris.org/os/licensing.  See the License for the specific language governing permissions and limitations under the License.
 .\" When distributing Covered Code, include this CDDL HEADER in each file and include the License file at usr/src/OPENSOLARIS.LICENSE.  If applicable, add the following below this CDDL HEADER, with the fields enclosed by brackets "[]" replaced with your own identifying information: Portions Copyright [yyyy] [name of copyright owner]
-.TH FLOWADM 8 "February 5, 2022"
+.TH FLOWADM 8 "May 23, 2024"
 .SH NAME
 flowadm \- administer bandwidth resource control and priority for protocols,
 services, containers, and virtual machines
@@ -654,6 +655,50 @@ deletion of the flow.
 .SS "Flow Properties"
 The following flow properties are supported. Note that the ability to set a
 given property to a given value depends on the driver and hardware.
+.sp
+.ne 2
+.na
+\fB\fBcorrupt\fR\fR
+.ad
+.sp .6
+.RS 4n
+The percent chance a packet is corrupted on send or receive. The percent must
+be an integer between 0 and 100. Setting a percent of 0 disables packet
+corruption. When enabled, a random byte will have a single bit flipped. This is
+intended to aid in simulating pathological network conditions. The
+default is to disable artifical packet corruption.
+.sp
+.RE
+
+.sp
+.ne 2
+.na
+\fB\fBdelay\fR\fR
+.ad
+.sp .6
+.RS 4n
+The delay when transmitting or receiving a packet. The delay is a value
+between 0 - 10000 microseconds. Setting a delay of 0 disables any delay.
+This is intended to aid in simulating pathological network conditions. The
+default is to not introduce any artifical delay when sending or receiving
+packets (i.e. the property is disabled).
+.sp
+.RE
+
+.sp
+.ne 2
+.na
+\fB\fBdrop\fR\Fr
+.ad
+.sp .6
+.RS 4n
+Randomly drop a packet on send or receive. The percentage of packets to drop
+is an integer between 0 and 100. Setting a percentage of 0 disables packet
+dropping. This is intended to aid in simulating pathological network
+conditions. The default is to not artifically drop any packets.
+.sp
+.RE
+
 .sp
 .ne 2
 .na

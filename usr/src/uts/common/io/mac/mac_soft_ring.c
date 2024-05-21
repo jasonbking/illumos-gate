@@ -23,6 +23,7 @@
  * Use is subject to license terms.
  * Copyright 2018 Joyent, Inc.
  * Copyright 2026 Oxide Computer Company
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 /*
@@ -829,4 +830,135 @@ mac_tx_soft_ring_drain(mac_soft_ring_t *ringp)
 	}
 	ringp->s_ring_state &= ~S_RING_PROC;
 	ringp->s_ring_run = NULL;
+}
+
+/*
+ * This is the same RNG used by ipd, which based on the old BSD 4.1 rand.
+ * It's currently good enough for flow disturbance.
+ */
+static inline int
+mac_srs_nextrand(mac_soft_ring_set_t *srs)
+{
+	ASSERT(MUTEX_HELD(&srs->srs_lock));
+
+	srs->srs_rand = srs->srs_rand * 1103515245L + 12345;
+	return (srs->srs_rand & 0x7fffffff);
+}
+
+/*
+ * Disturb a SRS associated with a flow. Returns B_TRUE if packet
+ * should be retained, B_FALSE if it should be dropped.
+ */
+static boolean_t
+mac_srs_disturb_pkt(mac_soft_ring_set_t *srs, mblk_t *mp)
+{
+	int rand;
+
+	ASSERT(MUTEX_HELD(&srs->srs_lock));
+
+	rand = mac_srs_nextrand(srs);
+
+	if (srs->srs_drop != 0 && rand % 100 < srs->srs_drop)
+		return (B_FALSE);
+
+	if (srs->srs_corrupt == 0 || rand % 100 >= srs->srs_corrupt)
+		return (B_TRUE);
+
+	unsigned char *dp;
+	uint_t off, len;
+
+	/*
+	 * Changing one byte in each segment of a packet should be
+	 * good enough.
+	 */
+	for (; mp != NULL; mp = mp->b_cont) {
+		len = MBLKL(mp);
+
+		if (len == 0)
+			continue;
+
+		/*
+		 * Avoid touching any control messages out of an abundance
+		 * of caution.
+		 */
+		if (DB_TYPE(mp) != M_DATA)
+			continue;
+
+		off = rand % len;
+		dp = mp->b_rptr + off;
+		off = rand % 8;
+		*dp = *dp ^ (1 << off);
+	}
+
+	return (B_TRUE);
+}
+
+/*
+ * This largely mirrors the logic in ipd (see ipd_hook()), just done
+ * per flow.
+ */
+void
+mac_srs_disturb(mac_soft_ring_set_t *srs, mblk_t **mp_chainp, int *drop_cntp,
+    size_t *drop_bytesp)
+{
+	ASSERT(MUTEX_HELD(&srs->srs_lock));
+
+	if (drop_cntp != NULL)
+		*drop_cntp = 0;
+	if (drop_bytesp != NULL)
+		*drop_bytesp = 0;
+
+	/*
+	 * We should only be invoked when one of the disturb parameters
+	 * has been set.
+	 */
+	ASSERT(srs->srs_delay > 0 || srs->srs_corrupt > 0 || srs->srs_drop > 0);
+
+	if (srs->srs_drop > 0 || srs->srs_corrupt > 0) {
+		mblk_t *mp_prev = NULL;
+		mblk_t *mp = *mp_chainp;
+		mblk_t *mp_next;
+
+		while (mp != NULL) {
+			mp_next = mp->b_next;
+
+			if (mac_srs_disturb_pkt(srs, mp)) {
+				/* keep packet and move on */
+				mp_prev = mp;
+				mp = mp_next;
+				continue;
+			}
+
+			/*
+			 * need to drop this packet, remove from chain and add
+			 * to drop_chain
+			 */
+			if (mp_prev != NULL) {
+				mp_prev->b_next = mp_next;
+			} else {
+				/* mblk to drop is at the head of the chain */
+				*mp_chainp = mp_next;
+			}
+
+			if (drop_cntp != NULL)
+				(*drop_cntp)++;
+			if (drop_bytesp != NULL)
+				*drop_bytesp += msgdsize(mp);
+
+			mp->b_next = NULL;
+			freemsg(mp);
+			mp = mp_next;
+		}
+	}
+
+	if (srs->srs_delay != 0 && *mp_chainp != NULL) {
+		DTRACE_PROBE1(disturb__delay, mac_soft_ring_set_t *, srs);
+
+		if (srs->srs_delay < TICK_TO_USEC(1)) {
+			drv_usecwait(srs->srs_delay);
+		} else {
+			/* XXX: should we drop srs_lock during the delay? */
+			delay(drv_usectohz(srs->srs_delay));
+		}
+	}
 }

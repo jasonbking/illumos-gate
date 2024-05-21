@@ -21,6 +21,8 @@
 /*
  * Copyright 2010 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 #include <stdlib.h>
@@ -38,6 +40,7 @@
 #include <libdlflow.h>
 #include <libdlflow_impl.h>
 #include <libintl.h>
+#include <sys/sysmacros.h>
 
 #include <dlfcn.h>
 #include <link.h>
@@ -60,16 +63,43 @@ static fpd_getf_t	do_get_priority;
 static fpd_setf_t	do_set_priority;
 static fpd_checkf_t	do_check_priority;
 
+/* Used for both txdelay and rxdelay */
+static fpd_checkf_t	do_check_delay;
+
+/* Used for both corrupt and drop */
+static fpd_checkf_t	do_check_percent;
+
+static fpd_getf_t	do_get_delay;
+static fpd_setf_t	do_set_delay;
+static rp_extractf_t	extract_delay;
+
+static fpd_getf_t	do_get_corrupt;
+static fpd_setf_t	do_set_corrupt;
+static rp_extractf_t	extract_corrupt;
+
+static fpd_getf_t	do_get_drop;
+static fpd_setf_t	do_set_drop;
+static rp_extractf_t	extract_drop;
+
 static fprop_desc_t	prop_table[] = {
 	{ "maxbw",	{ "", 0 }, NULL, 0, B_FALSE,
 	    do_set_maxbw, NULL,
-	    do_get_maxbw, do_check_maxbw},
+	    do_get_maxbw, do_check_maxbw },
 	{ "priority",	{ "", MPL_RESET }, NULL, 0, B_FALSE,
 	    do_set_priority, NULL,
-	    do_get_priority, do_check_priority}
+	    do_get_priority, do_check_priority },
+	{ "delay",	{ "", 0 }, NULL, 0, B_FALSE,
+	    do_set_delay, NULL,
+	    do_get_delay, do_check_delay },
+	{ "corrupt",	{ "", 0 }, NULL, 0, B_FALSE,
+	    do_set_corrupt, NULL,
+	    do_get_corrupt, do_check_percent },
+	{ "drop",	{ "", 0 }, NULL, 0, B_FALSE,
+	    do_set_drop, NULL,
+	    do_get_drop, do_check_percent },
 };
 
-#define	DLADM_MAX_FLOWPROPS	(sizeof (prop_table) / sizeof (fprop_desc_t))
+#define	DLADM_MAX_FLOWPROPS	(ARRAY_SIZE(prop_table))
 
 static prop_table_t	prop_tbl = {
 	prop_table,
@@ -77,11 +107,13 @@ static prop_table_t	prop_tbl = {
 };
 
 static resource_prop_t rsrc_prop_table[] = {
-	{"maxbw",	extract_maxbw},
-	{"priority",	extract_priority}
+	{ "maxbw",	extract_maxbw },
+	{ "priority",	extract_priority },
+	{ "delay",	extract_delay },
+	{ "corrupt",	extract_corrupt },
+	{ "drop",	extract_drop },
 };
-#define	DLADM_MAX_RSRC_PROP (sizeof (rsrc_prop_table) / \
-	sizeof (resource_prop_t))
+#define	DLADM_MAX_RSRC_PROP (ARRAY_SIZE(rsrc_prop_table))
 
 static dladm_status_t	flow_proplist_check(dladm_arg_list_t *);
 
@@ -260,7 +292,6 @@ dladm_flow_info(dladm_handle_t handle, const char *flow,
 	return (DLADM_STATUS_OK);
 }
 
-/* ARGSUSED */
 static dladm_status_t
 do_get_maxbw(dladm_handle_t handle, const char *flow, char **prop_val,
     uint_t *val_cnt)
@@ -285,7 +316,6 @@ do_get_maxbw(dladm_handle_t handle, const char *flow, char **prop_val,
 	return (DLADM_STATUS_OK);
 }
 
-/* ARGSUSED */
 static dladm_status_t
 do_set_maxbw(dladm_handle_t handle, const char *flow, val_desc_t *vdp,
     uint_t val_cnt)
@@ -353,7 +383,6 @@ do_check_maxbw(fprop_desc_t *pdp __unused, char **prop_val, uint_t val_cnt,
 	return (DLADM_STATUS_OK);
 }
 
-/* ARGSUSED */
 static dladm_status_t
 do_get_priority(dladm_handle_t handle, const char *flow, char **prop_val,
     uint_t *val_cnt)
@@ -379,7 +408,6 @@ do_get_priority(dladm_handle_t handle, const char *flow, char **prop_val,
 	return (DLADM_STATUS_OK);
 }
 
-/* ARGSUSED */
 static dladm_status_t
 do_set_priority(dladm_handle_t handle, const char *flow, val_desc_t *vdp,
     uint_t val_cnt)
@@ -430,6 +458,266 @@ do_check_priority(fprop_desc_t *pdp __unused, char **prop_val, uint_t val_cnt,
 
 	vdp->vd_val = (uint_t)pri;
 	*vdpp = vdp;
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+do_check_delay(fprop_desc_t *pdp __unused, char **prop_val, uint_t val_cnt,
+    val_desc_t **vdpp)
+{
+	uint32_t	*delay;
+	val_desc_t	*vdp = NULL;
+	dladm_status_t	status = DLADM_STATUS_OK;
+
+	if (val_cnt != 1)
+		return (DLADM_STATUS_BADVALCNT);
+
+	delay = malloc(sizeof (uint32_t));
+	if (delay == NULL)
+		return (DLADM_STATUS_NOMEM);
+
+	status = dladm_str2delay(*prop_val, delay);
+	if (status != DLADM_STATUS_OK) {
+		free(delay);
+		return (status);
+	}
+
+	vdp = malloc(sizeof (val_desc_t));
+	if (vdp == NULL) {
+		free(delay);
+		return (DLADM_STATUS_NOMEM);
+	}
+
+	vdp->vd_val = (uintptr_t)delay;
+	*vdpp = vdp;
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+do_check_percent(fprop_desc_t *pdp __unused, char **prop_val, uint_t val_cnt,
+    val_desc_t **vdpp)
+{
+	uint8_t		*pct;
+	val_desc_t	*vdp = NULL;
+	dladm_status_t	status = DLADM_STATUS_OK;
+
+	if (val_cnt != 1)
+		return (DLADM_STATUS_BADVALCNT);
+
+	pct = malloc(sizeof (uint8_t));
+	if (pct == NULL)
+		return (DLADM_STATUS_NOMEM);
+
+	status = dladm_str2pct(*prop_val, pct);
+	if (status != DLADM_STATUS_OK) {
+		free(pct);
+		return (status);
+	}
+
+	vdp = malloc(sizeof (val_desc_t));
+	if (vdp == NULL) {
+		free(pct);
+		return (DLADM_STATUS_NOMEM);
+	}
+
+	vdp->vd_val = (uintptr_t)pct;
+	*vdpp = vdp;
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+do_get_delay(dladm_handle_t handle, const char *flow, char **prop_val,
+    uint_t *val_cnt)
+{
+	mac_resource_props_t	*mrp;
+	char			buf[DLADM_STRSIZE];
+	dladm_flow_attr_t	fa;
+	dladm_status_t		status;
+
+	bzero(&fa, sizeof (dladm_flow_attr_t));
+	status = dladm_flow_info(handle, flow, &fa);
+	if (status != DLADM_STATUS_OK)
+		return (status);
+	mrp = &(fa.fa_resource_props);
+
+	*val_cnt = 1;
+	if (mrp->mrp_mask & MRP_DELAY) {
+		(void) snprintf(prop_val[0], DLADM_STRSIZE, "%s",
+		    dladm_delay2str(mrp->mrp_delay, buf));
+	} else {
+		return (DLADM_STATUS_NOTSUP);
+	}
+
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+do_set_delay(dladm_handle_t handle, const char *flow, val_desc_t *vdp,
+    uint_t val_cnt)
+{
+	dld_ioc_modifyflow_t	attr;
+	mac_resource_props_t	mrp;
+	void			*val;
+
+	if (val_cnt != 1)
+		return (DLADM_STATUS_BADVALCNT);
+
+	bzero(&mrp, sizeof (mrp));
+	if (vdp != NULL && (val = (void *)vdp->vd_val) != NULL) {
+		bcopy(val, &mrp.mrp_delay, sizeof (uint32_t));
+		free(val);
+	} else {
+		mrp.mrp_delay = 0;
+	}
+	mrp.mrp_mask = MRP_DELAY;
+
+	bzero(&attr, sizeof (attr));
+	(void) strlcpy(attr.mf_name, flow, sizeof (attr.mf_name));
+	bcopy(&mrp, &attr.mf_resource_props, sizeof (mac_resource_props_t));
+
+	if (ioctl(dladm_dld_fd(handle), DLDIOC_MODIFYFLOW, &attr) < 0)
+		return (dladm_errno2status(errno));
+
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+extract_delay(val_desc_t *vdp, uint_t cnt __unused, void *arg)
+{
+	mac_resource_props_t *mrp = arg;
+
+	bcopy((void *)vdp->vd_val, &mrp->mrp_delay, sizeof (uint32_t));
+	mrp->mrp_mask |= MRP_DELAY;
+
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+do_get_corrupt(dladm_handle_t handle, const char *flow, char **prop_val,
+    uint_t *val_cnt)
+{
+	mac_resource_props_t	*mrp;
+	char			buf[DLADM_STRSIZE];
+	dladm_flow_attr_t	fa;
+	dladm_status_t		status;
+
+	bzero(&fa, sizeof (dladm_flow_attr_t));
+	status = dladm_flow_info(handle, flow, &fa);
+	if (status != DLADM_STATUS_OK)
+		return (status);
+	mrp = &(fa.fa_resource_props);
+
+	*val_cnt = 1;
+	if (mrp->mrp_mask & MRP_CORRUPT) {
+		(void) snprintf(prop_val[0], DLADM_STRSIZE, "%s",
+		    dladm_pct2str(mrp->mrp_corrupt, buf));
+	} else {
+		return (DLADM_STATUS_NOTSUP);
+	}
+
+	return (DLADM_STATUS_OK);
+}
+
+
+static dladm_status_t
+do_set_corrupt(dladm_handle_t handle, const char *flow, val_desc_t *vdp,
+    uint_t val_cnt)
+{
+	dld_ioc_modifyflow_t	attr;
+	mac_resource_props_t	mrp;
+	void			*val;
+
+	bzero(&mrp, sizeof (mrp));
+	if (vdp != NULL && (val = (void *)vdp->vd_val) != NULL) {
+		bcopy(val, &mrp.mrp_corrupt, sizeof (uint8_t));
+		free(val);
+	} else {
+		mrp.mrp_corrupt = 0;
+	}
+	mrp.mrp_mask = MRP_CORRUPT;
+
+	bzero(&attr, sizeof (attr));
+	(void) strlcpy(attr.mf_name, flow, sizeof (attr.mf_name));
+	bcopy(&mrp, &attr.mf_resource_props, sizeof (mac_resource_props_t));
+
+	if (ioctl(dladm_dld_fd(handle), DLDIOC_MODIFYFLOW, &attr) < 0)
+		return (dladm_errno2status(errno));
+
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+extract_corrupt(val_desc_t *vdp, uint_t cnt __unused, void *arg)
+{
+	mac_resource_props_t *mrp = arg;
+
+	bcopy((void *)vdp->vd_val, &mrp->mrp_corrupt, sizeof (uint8_t));
+	mrp->mrp_mask |= MRP_CORRUPT;
+
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+do_get_drop(dladm_handle_t handle, const char *flow, char **prop_val,
+    uint_t *val_cnt)
+{
+	mac_resource_props_t	*mrp;
+	char			buf[DLADM_STRSIZE];
+	dladm_flow_attr_t	fa;
+	dladm_status_t		status;
+
+	bzero(&fa, sizeof (dladm_flow_attr_t));
+	status = dladm_flow_info(handle, flow, &fa);
+	if (status != DLADM_STATUS_OK)
+		return (status);
+	mrp = &(fa.fa_resource_props);
+
+	*val_cnt = 1;
+	if (mrp->mrp_mask & MRP_DROP) {
+		(void) snprintf(prop_val[0], DLADM_STRSIZE, "%s",
+		    dladm_delay2str(mrp->mrp_drop, buf));
+	} else {
+		return (DLADM_STATUS_NOTSUP);
+	}
+
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+do_set_drop(dladm_handle_t handle, const char *flow, val_desc_t *vdp,
+    uint_t val_cnt)
+{
+	dld_ioc_modifyflow_t	attr;
+	mac_resource_props_t	mrp;
+	void			*val;
+
+	bzero(&mrp, sizeof (mrp));
+	if (vdp != NULL && (val = (void *)vdp->vd_val) != NULL) {
+		bcopy(val, &mrp.mrp_drop, sizeof (uint8_t));
+		free(val);
+	} else {
+		mrp.mrp_drop = 0;
+	}
+	mrp.mrp_mask = MRP_DROP;
+
+	bzero(&attr, sizeof (attr));
+	(void) strlcpy(attr.mf_name, flow, sizeof (attr.mf_name));
+	bcopy(&mrp, &attr.mf_resource_props, sizeof (mac_resource_props_t));
+
+	if (ioctl(dladm_dld_fd(handle), DLDIOC_MODIFYFLOW, &attr) < 0)
+		return (dladm_errno2status(errno));
+
+	return (DLADM_STATUS_OK);
+}
+
+static dladm_status_t
+extract_drop(val_desc_t *vdp, uint_t cnt __unused, void *arg)
+{
+	mac_resource_props_t *mrp = arg;
+
+	bcopy((void *)vdp->vd_val, &mrp->mrp_drop, sizeof (uint8_t));
+	mrp->mrp_mask |= MRP_DROP;
+
 	return (DLADM_STATUS_OK);
 }
 
@@ -558,6 +846,14 @@ dladm_flow_proplist_extract(dladm_arg_list_t *proplist,
 	status = i_dladm_flow_proplist_extract_one(proplist, "priority", mrp);
 	if (status != DLADM_STATUS_OK)
 		return (status);
+	status = i_dladm_flow_proplist_extract_one(proplist, "delay", mrp);
+	if (status != DLADM_STATUS_OK)
+		return (status);
+	status = i_dladm_flow_proplist_extract_one(proplist, "corrupt", mrp);
+	if (status != DLADM_STATUS_OK)
+		return (status);
+	status = i_dladm_flow_proplist_extract_one(proplist, "drop", mrp);
+
 	return (status);
 }
 

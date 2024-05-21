@@ -24,6 +24,7 @@
  * Copyright 2018 Joyent, Inc.
  * Copyright 2013 Nexenta Systems, Inc. All rights reserved.
  * Copyright 2026 Oxide Computer Company
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 /*
@@ -3450,8 +3451,11 @@ mac_rx_srs_subflow_process(void *arg, mac_resource_handle_t srs,
 			    (mac_resource_handle_t)mac_srs, mp_chain,
 			    loopback);
 		} else {
-			(prev_flent->fe_cb_fn)(prev_flent->fe_cb_arg1,
-			    prev_flent->fe_cb_arg2, mp_chain, loopback);
+			if (mp_chain != NULL) {
+				(prev_flent->fe_cb_fn)(prev_flent->fe_cb_arg1,
+				    prev_flent->fe_cb_arg2, mp_chain, loopback);
+			}
+
 			FLOW_REFRELE(prev_flent);
 		}
 		prev_flent = flent;
@@ -3466,8 +3470,10 @@ mac_rx_srs_subflow_process(void *arg, mac_resource_handle_t srs,
 		mac_rx_srs_process(arg,
 		    (mac_resource_handle_t)mac_srs, mp_chain, loopback);
 	} else {
-		(prev_flent->fe_cb_fn)(prev_flent->fe_cb_arg1,
-		    prev_flent->fe_cb_arg2, mp_chain, loopback);
+		if (mp_chain != NULL) {
+			(prev_flent->fe_cb_fn)(prev_flent->fe_cb_arg1,
+			    prev_flent->fe_cb_arg2, mp_chain, loopback);
+		}
 		FLOW_REFRELE(prev_flent);
 	}
 }
@@ -3515,6 +3521,21 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 	} else {
 		SRS_RX_STAT_UPDATE(mac_srs, intrbytes, sz);
 		SRS_RX_STAT_UPDATE(mac_srs, intrcnt, count);
+	}
+
+	if (mac_srs->srs_delay > 0 || mac_srs->srs_corrupt > 0 ||
+	    mac_srs->srs_drop > 0) {
+		size_t drop_bytes = 0;
+		int drop_cnt = 0;
+
+		mac_srs_disturb(mac_srs, &mp_chain, &drop_cnt, &drop_bytes);
+		count -= drop_cnt;
+		sz -= drop_bytes;
+
+		if (mp_chain == NULL) {
+			mutex_exit(&mac_srs->srs_lock);
+			return;
+		}
 	}
 
 	/*
