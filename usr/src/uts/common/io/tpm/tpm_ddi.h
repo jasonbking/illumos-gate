@@ -271,6 +271,7 @@ struct tpm {
 	uint32_t		tpm_object_size;	/* WO */
 	uint32_t		tpm_session_size;	/* WO */
 
+	uint32_t		tpm20_object_max;	/* WO */
 	uint32_t		*tpm20_cca;		/* WO */
 	uint32_t		tpm20_num_cc;		/* WO */
 
