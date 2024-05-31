@@ -91,6 +91,21 @@ tpm20_get_prop_cb(uint32_t rc, bool more, uint32_t tag, uint32_t val, void *arg)
 	case TPM_PT_TOTAL_COMMANDS:
 		tpm->tpm20_num_cc = val;
 		break;
+	case TPM_PT_HR_TRANSIENT_MIN:
+		/*
+		 * For now, we'll use the TPM's physical value for the maximum
+		 * number of transient objects that can be loaded.
+		 *
+		 * Any application that cares when the value is greater
+		 * than the platform minimum has to inquire about this
+		 * property, so we can always increase this in the future
+		 * without breaking clients. The only requirement (beyond
+		 * supporting the platform minimum) is that this value
+		 * cannot change for the duration of a clients connection
+		 * (e.g. while the device is open).
+		 */
+		tpm->tpm20_object_max = val;
+		break;
 	default:
 		/* Ignore other properties */
 		break;

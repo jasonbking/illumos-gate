@@ -10,7 +10,8 @@
  */
 
 /*
- * Copyright 2023 Jason King
+ * Copyright 2024 Jason King
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 #ifndef _TPM20_H
@@ -85,6 +86,7 @@ typedef uint32_t TPM_PT;
 #define	PT_FIXED			(PT_GROUP * 1)
 #define	TPM_PT_FIRMWARE_VERSION_1	(PT_FIXED + 11)
 #define	TPM_PT_FIRMWARE_VERSION_2	(PT_FIXED + 12)
+#define	TPM_PT_HR_TRANSIENT_MIN		(PT_FIXED + 14)
 #define	TPM_PT_MAX_COMMAND_SIZE		(PT_FIXED + 30)
 #define	TPM_PT_MAX_RESPONSE_SIZE	(PT_FIXED + 31)
 #define	TPM_PT_MAX_OBJECT_CONTEXT	(PT_FIXED + 33)
