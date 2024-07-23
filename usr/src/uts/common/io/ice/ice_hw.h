@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2019, Joyent, Inc.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #ifndef _ICE_HW_H
@@ -32,7 +33,7 @@
 extern "C" {
 #endif
 
-static inline uint8_t 
+static inline uint8_t
 ice_bitset8(uint8_t reg, uint_t high, uint_t low, uint8_t val)
 {
 	uint8_t mask;
@@ -60,7 +61,6 @@ ice_bitx16(uint16_t reg, uint_t high, uint_t low)
 	return (BITX(reg, high, low));
 }
 
-
 static inline uint32_t
 ice_bitx32(uint32_t reg, uint_t high, uint_t low)
 {
@@ -71,7 +71,17 @@ ice_bitx32(uint32_t reg, uint_t high, uint_t low)
 	return (BITX(reg, high, low));
 }
 
-static inline uint16_t 
+static inline uint64_t
+ice_bitx64(uint64_t reg, uint_t high, uint_t low)
+{
+	ASSERT3U(high, >=, low);
+	ASSERT3U(high, <, 64);
+	ASSERT3U(low, <, 64);
+
+	return (BITX(reg, high, low));
+}
+
+static inline uint16_t
 ice_bitset16(uint16_t reg, uint_t high, uint_t low, uint16_t val)
 {
 	uint16_t mask;
@@ -89,7 +99,7 @@ ice_bitset16(uint16_t reg, uint_t high, uint_t low, uint16_t val)
 	return (reg);
 }
 
-static inline uint32_t 
+static inline uint32_t
 ice_bitset32(uint32_t reg, uint_t high, uint_t low, uint32_t val)
 {
 	uint32_t mask;
@@ -99,6 +109,29 @@ ice_bitset32(uint32_t reg, uint_t high, uint_t low, uint32_t val)
 	ASSERT3U(low, <, 32);
 
 	mask = (1LU << (high - low + 1)) - 1;
+	ASSERT0(~mask & val);
+
+	reg &= ~(mask << low);
+	reg |= val << low;
+
+	return (reg);
+}
+
+/*
+ * Note that we don't do any 64-bit access of registers, though we
+ * follow the same argument naming convention. This turns out to be helpful
+ * when constructing the 64-bit Tx/Rx descriptor values.
+ */
+static inline uint64_t
+ice_bitset64(uint64_t reg, uint_t high, uint_t low, uint64_t val)
+{
+	uint64_t mask;
+
+	ASSERT3U(high, >=, low);
+	ASSERT3U(high, <, 64);
+	ASSERT3U(low, <, 64);
+
+	mask = (1ULL << (high - low + 1)) - 1;
 	ASSERT0(~mask & val);
 
 	reg &= ~(mask << low);
@@ -148,6 +181,46 @@ ice_bitset32(uint32_t reg, uint_t high, uint_t low, uint32_t val)
 #define	ICE_REG_PF_FUNC_RID_BUS(x)	BITX(x, 15, 8)
 
 /*
+ * The ICE_REG_GLGEN_STAT is the global status register. No values are defined
+ * but it appears reading it is used to push changes to the hardware
+ * (ice_flush() from the FreeBSD driver.
+ */
+#define	ICE_REG_GLGEN_STAT	0x000B612C
+
+/*
+ * The ICE_REG_GLGEN_RSTCTL contains global reset parameters
+ */
+#define	ICE_REG_GLGEN_RSTCTL	0x000B8180
+/* The reset delay is in units of 100ms */
+#define	ICE_REG_GLGEN_RSTCTL_GRSTDEL		BITX(x, 5, 0)
+
+/*
+ * The ICE_REG_GLGEN_RSTAT register contains the global reset
+ * status.
+ */
+#define	ICE_REG_GLGEN_RSTAT	0x000B8188
+#define	ICE_REG_GLGEN_RSTAT_DEVSTATE(x)		BITX(x, 1, 0)
+#define	ICE_REG_GLGEN_RSTAT_DEVSTATE_ACTIVE		0
+#define	ICE_REG_GLGEN_RSTAT_DEVSTATE_REQUSTED		1
+#define	ICE_REG_GLGEN_RSTAT_DEVSTATE_INPROGRESS		2
+/*
+ * The reset type field indicates the most recently observed type of global
+ * reset (see ice_reset_type_t). Note this is only meaningful for the global
+ * reset types (CORER/GLOBR/EMPR/POR); it is not updated for a PF reset since
+ * that is scoped to a single PF instead of the whole device.
+ */
+#define	ICE_REG_GLGEN_RSTAT_RESET_TYPE(x)		BITX(x, 3, 2)
+
+/*
+ * The ICE_REG_GLGEN_RTRIG register is used to request a CORE or GLOBAL
+ * reset of the device. See datasheet section 4.1.3 for a description of the
+ * different reset flows.
+ */
+#define	ICE_REG_GLGEN_RTRIG	0x000B8190
+#define	ICE_REG_GLGEN_RTRIG_CORER	(1U << 0)
+#define	ICE_REG_GLGEN_RTRIG_GLOBR	(1U << 1)
+
+/*
  * The ICE_REG_GL_UFUSE_SOC provides information about the hardware chip that
  * we're working with. This is important for properly identifying the hardware
  * for things like ITRs.
@@ -178,20 +251,20 @@ ice_bitset32(uint32_t reg, uint_t high, uint_t low, uint32_t val)
 #define	ICE_REG_GLINT_CTL	0x0016CC54
 
 #define	ICE_REG_GLINT_VECT2FUNC_BASE	0x00162000
-#define	ICE_REG_GLINT_VECT2FUNC_VF_NUM_SET(r, v)	ice_bitset32(r, 7, 0, v)
-#define	ICE_REG_GLINT_VECT2FUNC_PF_NUM_SET(r, v)	ice_bitset32(r, 14, 12, v)
-#define	ICE_REG_GLINT_VECT2FUNC_IS_PF_SET(r, v)		ice_bitset32(r, 16, 16, v)
+#define	ICE_REG_GLINT_VECT2FUNC_VF_NUM_SET(r, v) ice_bitset32(r, 7, 0, v)
+#define	ICE_REG_GLINT_VECT2FUNC_PF_NUM_SET(r, v) ice_bitset32(r, 14, 12, v)
+#define	ICE_REG_GLINT_VECT2FUNC_IS_PF_SET(r, v)	ice_bitset32(r, 16, 16, v)
 
 #define	ICE_REG_GLINT_DYN_CTL_BASE	0x00160000
 #define	ICE_REG_GLINT_DYN_CTL_INTENA_SET(r)	ice_bitset32(r, 0, 0, 1)
 #define	ICE_REG_GLINT_DYN_CTL_CLEARPBA_SET(r)	ice_bitset32(r, 1, 1, 1)
 #define	ICE_REG_GLINT_DYN_CTL_SWINT_TRIG_SET(r)	ice_bitset32(r, 2, 2, 1)
-#define	ICE_REG_GLINT_DYN_CTL_ITR_INDX_SET(r, v)	ice_bitset32(r, 4, 3, v)
-#define	ICE_REG_GLINT_DYN_CTL_INTERVAL_SET(r, v)	ice_bitset32(r, 16, 6, v)
-#define	ICE_REG_GLINT_DYN_CTL_SW_ITR_INDX_ENA_SET(r)	ice_bitset32(r, 24, 24, 1)
-#define	ICE_REG_GLINT_DYN_CTL_SW_ITR_INDXA_SET(r, v)	ice_bitset32(r, 26, 25, v)
-#define	ICE_REG_GLINT_DYN_CTL_SW_WB_ON_ITR_SET(r)	ice_bitset32(r, 30, 30, 1)
-#define	ICE_REG_GLINT_DYN_CTL_INTENA_MSK_SET(r)		ice_bitset32(r, 31, 31, 1)
+#define	ICE_REG_GLINT_DYN_CTL_ITR_INDX_SET(r, v) ice_bitset32(r, 4, 3, v)
+#define	ICE_REG_GLINT_DYN_CTL_INTERVAL_SET(r, v) ice_bitset32(r, 16, 6, v)
+#define	ICE_REG_GLINT_DYN_CTL_SW_ITR_INDX_ENA_SET(r) ice_bitset32(r, 24, 24, 1)
+#define	ICE_REG_GLINT_DYN_CTL_SW_ITR_INDXA_SET(r, v) ice_bitset32(r, 26, 25, v)
+#define	ICE_REG_GLINT_DYN_CTL_SW_WB_ON_ITR_SET(r) ice_bitset32(r, 30, 30, 1)
+#define	ICE_REG_GLINT_DYN_CTL_INTENA_MSK_SET(r)	ice_bitset32(r, 31, 31, 1)
 
 
 #define	ICE_REG_GLINT_ITR_BASE	0x00154000
@@ -208,8 +281,12 @@ ice_bitset32(uint32_t reg, uint_t high, uint_t low, uint32_t val)
 #define	ICE_REG_PFINT_CAUSE_ENA(r)		ice_bitx32(r, 30, 30)
 #define	ICE_REG_PFINT_CAUSE_ENA_SET(r, v)	ice_bitset32(r, 30, 30, v)
 
+#define	ICE_REG_QINT_TQCTL_BASE	0x00140000
+#define	ICE_REG_QINT_TQCTL(n)	(ICE_REG_QINT_TQCTL_BASE + (n) * 4)
+
 #define	ICE_REG_QINT_RQCTL_BASE	0x00150000
-#define	ICE_REG_QINT_TQCTL_BASE	0x00150000
+#define	ICE_REG_QINT_RQCTL(n)	(ICE_REG_QINT_RQCTL_BASE + (n) * 4)
+
 #define	ICE_REG_PFINT_FW_CTL	0x0016C800
 
 #define	ICE_REG_PFINT_OICR	0x0016CA00
@@ -226,8 +303,9 @@ ice_bitset32(uint32_t reg, uint_t high, uint_t low, uint32_t val)
 #define	ICE_REG_OICR_HLP_RDY		14
 #define	ICE_REG_OICR_CPM_RDY		15
 #define	ICE_REG_OICR_ECC_ERR		16
-#define	ICE_REG_OICR_MAL_DETECT	19
+#define	ICE_REG_OICR_MAL_DETECT		19
 #define	ICE_REG_OICR_GRST		20
+#define	ICE_REG_OICR_PCI_EXCEPTION	21
 #define	ICE_REG_OICR_GPIO		22
 #define	ICE_REG_OICR_STORM_DETECT	24
 #define	ICE_REG_OICR_HMC_ERR		26
@@ -236,10 +314,72 @@ ice_bitset32(uint32_t reg, uint_t high, uint_t low, uint32_t val)
 #define	ICE_REG_OICR_XLR_HW_DONE	30
 #define	ICE_REG_OICR_SWINT		31
 
+/*
+ * PFHMC_ERRORINFO provides details on an HMC error, as indicated by
+ * ICE_REG_OICR_HMC_ERR in PFINT_OICR. PFHMC_ERRORDATA holds additional
+ * error-specific data.
+ */
+#define	ICE_REG_PFHMC_ERRORINFO	0x00520400
+#define	ICE_REG_PFHMC_ERRORINFO_PMF_INDEX_GET(r)	ice_bitx32(r, 4, 0)
+#define	ICE_REG_PFHMC_ERRORINFO_PMF_ISVF_GET(r)	ice_bitx32(r, 7, 7)
+#define	ICE_REG_PFHMC_ERRORINFO_HMC_ERROR_TYPE_GET(r)	ice_bitx32(r, 11, 8)
+#define	ICE_REG_PFHMC_ERRORINFO_HMC_OBJECT_TYPE_GET(r)	ice_bitx32(r, 20, 16)
+#define	ICE_REG_PFHMC_ERRORINFO_ERROR_DETECTED_GET(r)	ice_bitx32(r, 31, 31)
+
+#define	ICE_REG_PFHMC_ERRORDATA	0x00520500
+#define	ICE_REG_PFHMC_ERRORDATA_HMC_ERROR_DATA_GET(r)	ice_bitx32(r, 29, 0)
+
+/*
+ * HMC error types, as decoded from ICE_REG_PFHMC_ERRORINFO_HMC_ERROR_TYPE.
+ */
+#define	ICE_HMC_ERR_PMF_INVALID				0
+#define	ICE_HMC_ERR_VF_IDX_INVALID			1
+#define	ICE_HMC_ERR_VF_PARENT_PF_INVALID		2
+#define	ICE_HMC_ERR_INDEX_TOO_BIG			4
+#define	ICE_HMC_ERR_ADDRESS_TOO_LARGE			5
+#define	ICE_HMC_ERR_SEGMENT_DESC_INVALID		6
+#define	ICE_HMC_ERR_SEGMENT_DESC_TOO_SMALL		7
+#define	ICE_HMC_ERR_PAGE_DESC_INVALID			8
+#define	ICE_HMC_ERR_UNSUPPORTED_REQUEST_COMPLETION	9
+#define	ICE_HMC_ERR_INVALID_OBJECT_TYPE			11
 
 /*
  * NVM related registers.
- *
+ */
+
+/*
+ * The GLNVM_ULD register provodes the status of loading the
+ * shadow RAM and alternate module
+ */
+#define	ICE_REG_GLNVM_ULD	0x000B6008
+#define	ICE_REG_GLNVM_ULD_PCIER_DONE(x)		BITX(x, 0, 0)
+#define	ICE_REG_GLNVM_ULD_PCIER_DONE1(x)	BITX(x, 1, 1)
+#define	ICE_REG_GLNVM_ULD_CORER_DONE(x)		BITX(x, 3, 3)
+#define	ICE_REG_GLNVM_ULD_GLOBR_DONE(x)		BITX(x, 4, 4)
+#define	ICE_REG_GLNVM_ULD_POR_DONE(x)		BITX(x, 5, 5)
+#define	ICE_REG_GLNVM_ULD_POR_DONE1(x)		BITX(x, 8, 8)
+#define	ICE_REG_GLNVM_ULD_PCIER_DONE2(x)	BITX(x, 9, 9)
+#define	ICE_REG_GLNVM_ULD_PE_DONE(x)		BITX(x, 10, 10)
+
+#define	ICE_REG_GLNVM_ULD_STR "\020" \
+	"\013PE" \
+	"\012PCIER_DONE_2" \
+	"\011POR_DONE_1" \
+	"\006POR_DONE" \
+	"\005GLOBR_DONE" \
+	"\004CORER_DONE" \
+	"\002PCIER_DONE_1" \
+	"\001PCIER_DONE"
+
+#define	ICE_GLNVM_RESET_WAIT	5000	/* ms */
+
+/*
+ * Convienence mask of all the done bits except PE done. PE done appears
+ * to only be relevant when iWARP is being used.
+ */
+#define	ICE_REG_GLNVM_ULD_DONE			0x0000033B
+
+/*
  * GLNVM_GENS contains information about the size of the NVM and its presence.
  */
 #define	ICE_REG_GLNVM_GENS	0x000B6100
@@ -271,6 +411,80 @@ ice_bitset32(uint32_t reg, uint_t high, uint_t low, uint32_t val)
 #define	ICE_NVM_EETRACK_ORIG_2		0x35
 
 /*
+ * The NVM's "dev starter" version word encodes the user-visible NVM version
+ * as a major.minor pair, split across a high nibble and a low byte.
+ */
+#define	ICE_NVM_VER_LO(v)		ice_bitx32(v, 7, 0)
+#define	ICE_NVM_VER_HI(v)		ice_bitx32(v, 15, 12)
+
+/*
+ * Shadow RAM control word, and the words used to locate the (up to two)
+ * flash banks used to store each of the NVM, Option ROM (OROM), and Netlist
+ * modules. The control word's bits indicate which bank of each module is
+ * currently active; the pointer/size words give that module's location,
+ * expressed in either NVM words or 4 KiB sectors (see
+ * ICE_SR_NVM_PTR_4KB_UNITS below). These are used for flat (non-shadow-RAM)
+ * reads of the OROM and Netlist modules, which live outside of the Shadow
+ * RAM's addressable range.
+ */
+#define	ICE_SR_NVM_CTRL_WORD		0x00
+#define	ICE_SR_CTRL_WORD_1(v)		ice_bitx32(v, 7, 6)
+#define	ICE_SR_CTRL_WORD_VALID		0x1
+#define	ICE_SR_CTRL_WORD_OROM_BANK	(0x1 << 3)
+#define	ICE_SR_CTRL_WORD_NETLIST_BANK	(0x1 << 4)
+#define	ICE_SR_CTRL_WORD_NVM_BANK	(0x1 << 5)
+
+#define	ICE_SR_1ST_NVM_BANK_PTR		0x42
+#define	ICE_SR_NVM_BANK_SIZE		0x43
+#define	ICE_SR_1ST_OROM_BANK_PTR	0x44
+#define	ICE_SR_OROM_BANK_SIZE		0x45
+#define	ICE_SR_NETLIST_BANK_PTR		0x46
+#define	ICE_SR_NETLIST_BANK_SIZE	0x47
+
+#define	ICE_SR_NVM_PTR_4KB_UNITS	(0x1 << 15)
+
+/*
+ * Offsets (in words) into the CSS header found at the start of the active
+ * NVM and OROM flash modules, used to extract the security revision (SREV).
+ */
+#define	ICE_NVM_CSS_HDR_LEN_L		0x02
+#define	ICE_NVM_CSS_HDR_LEN_H		0x03
+#define	ICE_NVM_CSS_SREV_L		0x14
+#define	ICE_NVM_CSS_SREV_H		0x15
+#define	ICE_NVM_AUTH_HEADER_LEN		0x08
+
+/*
+ * The Option ROM combo image version, found in the '$CIV' (CIVD) data block
+ * within the active Option ROM flash bank.
+ */
+#define	ICE_OROM_VER_PATCH(v)		ice_bitx32(v, 7, 0)
+#define	ICE_OROM_VER_BUILD(v)		ice_bitx32(v, 23, 8)
+#define	ICE_OROM_VER_MAJOR(v)		ice_bitx32(v, 31, 24)
+
+/*
+ * The Link Topology Netlist module, and the Netlist ID Block within it that
+ * holds the netlist version information.
+ */
+#define	ICE_NETLIST_LINK_TOPO_MOD_ID		0x011b
+#define	ICE_NETLIST_TYPE_OFFSET		0x0000
+#define	ICE_LINK_TOPO_MODULE_LEN	0x0002
+#define	ICE_LINK_TOPO_NODE_COUNT	0x0003
+#define	ICE_LINK_TOPO_NODE_COUNT_MASK	0x3ff
+
+#define	ICE_NETLIST_ID_BLK_SIZE			0x30
+#define	ICE_NETLIST_ID_BLK_OFFSET(n)		(0x0006 + 2 * (n))
+#define	ICE_NETLIST_ID_BLK_MAJOR_VER_LOW	0x02
+#define	ICE_NETLIST_ID_BLK_MAJOR_VER_HIGH	0x03
+#define	ICE_NETLIST_ID_BLK_MINOR_VER_LOW	0x04
+#define	ICE_NETLIST_ID_BLK_MINOR_VER_HIGH	0x05
+#define	ICE_NETLIST_ID_BLK_TYPE_LOW		0x06
+#define	ICE_NETLIST_ID_BLK_TYPE_HIGH		0x07
+#define	ICE_NETLIST_ID_BLK_REV_LOW		0x08
+#define	ICE_NETLIST_ID_BLK_REV_HIGH		0x09
+#define	ICE_NETLIST_ID_BLK_SHA_HASH_WORD(n)	(0x000a + (n))
+#define	ICE_NETLIST_ID_BLK_CUST_VER		0x002f
+
+/*
  * NVM offsets for the PBA, printed board assembly. This assumes that you're
  * using the PBA module type.
  */
@@ -280,6 +494,16 @@ ice_bitset32(uint32_t reg, uint_t high, uint_t low, uint32_t val)
 #define	ICE_NVM_PBA_WORD3	0x03
 #define	ICE_NVM_PBA_WORD4	0x04
 #define	ICE_NVM_PBA_WORD5	0x05
+
+/*
+ * Manageability Registers
+ */
+#define	ICE_REG_MNG_FWSM		0x000B6134
+#define	ICE_REG_MNG_FWSM_FW_MODES(x)		BITX(x, 1, 0)
+#define	ICE_REG_MNG_FWSM_NORMAL			0
+#define	ICE_REG_MNG_FWSM_DEBUG			1
+#define	ICE_REG_MNG_FWSM_RECOVERY		2
+#define	ICE_REG_MNG_FWSM_DEBUG_RECOVERY		3
 
 /*
  * Capability structure defined by hardware and the various capability IDs.
@@ -296,9 +520,9 @@ typedef struct ice_capability {
 } ice_capability_t;
 
 typedef enum {
-	ICE_CAP_SWITCH_MODE 		= 0x1,
+	ICE_CAP_SWITCH_MODE		= 0x1,
 	ICE_CAP_MANAGEABILITY_MODE	= 0x2,
-	ICE_CAP_OS2BMC 			= 0x4,
+	ICE_CAP_OS2BMC			= 0x4,
 	ICE_CAP_FUNCTIONS_VALID		= 0x5,
 	ICE_CAP_ALTERNAME_RAM		= 0x6,
 	ICE_CAP_WOL			= 0x8,
@@ -347,6 +571,7 @@ typedef struct ice_phy_module {
 	uint8_t ipm_rev[4];
 	uint8_t ipm_rsvd1[8];
 } ice_phy_module_t;
+CTASSERT(sizeof (ice_phy_module_t) == 32);
 
 typedef struct ice_phy_abilities {
 	uint8_t	ipa_type[16];
@@ -360,9 +585,13 @@ typedef struct ice_phy_abilities {
 	uint8_t ipa_cmte;
 	uint8_t ipa_ext_code;
 	uint8_t ipa_mod_type;
+	uint8_t	ipa_mod_tech;
+	uint8_t ipa_mod_code;
 	uint8_t ipa_qual_mod_count;
+	uint8_t ipa_resv[7];
 	ice_phy_module_t ipa_modules[16];
 } ice_phy_abilities_t;
+CTASSERT(sizeof (ice_phy_abilities_t) == 560);
 
 #define	ICE_PHY_CAP_TX_PAUSE_ENABLED	0x01
 #define	ICE_PHY_CAP_RX_PAUSE_ENABLED	0x02
@@ -542,13 +771,11 @@ typedef struct ice_link_status {
  * This structure represents an instance of the VSI software configuration that
  * is returned from hardware.
  */
-#pragma pack(1)
 typedef struct ice_hw_switch_config {
 	uint16_t	isc_vsi_info;
 	uint16_t	isc_swid;
 	uint16_t	isc_pfid;
-} ice_hw_switch_config_t;
-#pragma pack()
+} __packed ice_hw_switch_config_t;
 
 #define	ICE_SWITCH_ELT_NUMBER(x)	ice_bitx16(x, 9, 0)
 #define	ICE_SWITCH_ELT_TYPE(x)		ice_bitx16(x, 15, 14)
@@ -559,19 +786,18 @@ typedef struct ice_hw_switch_config {
 #define	ICE_SWITCH_FUNC_NUMBER(x)	ice_bitx16(x, 14, 0)
 #define	ICE_SWITCH_FUNC_VF(x)		ice_bitx16(x, 15, 15)
 
-#pragma pack(1)
 typedef struct ice_hw_vsi_context {
 	uint16_t	ihvc_sections;
 	/*
 	 * Switching information
 	 */
 	uint8_t		ihvc_switch_id;
-	uint8_t 	ihvc_switch_flags;
-	uint8_t 	ihvc_switch_flags2;
+	uint8_t		ihvc_switch_flags;
+	uint8_t		ihvc_switch_flags2;
 	uint8_t		ihvc_switch_veb_stats;
 	/* Security */
-	uint8_t 	ihvc_sec_flags;
-	uint8_t 	ihvc_sec_rsvd;
+	uint8_t		ihvc_sec_flags;
+	uint8_t		ihvc_sec_rsvd;
 	/* VLAN Handling */
 	uint16_t	ihvc_vlan_id;
 	uint8_t		ihvc_vlan_rsvd[2];
@@ -609,8 +835,8 @@ typedef struct ice_hw_vsi_context {
 	uint32_t	ihvc_pasid;
 	/* Reserved */
 	uint8_t		ihvc_reserved[24];
-} ice_hw_vsi_context_t;
-#pragma pack()
+} __packed ice_hw_vsi_context_t;
+CTASSERT(sizeof (ice_hw_vsi_context_t) == 128);
 
 #define	ICE_HW_VSI_SECTION_SWITCHING	(1 << 0)
 #define	ICE_HW_VSI_SECTION_SECURITY	(1 << 1)
@@ -677,15 +903,19 @@ typedef struct ice_hw_vsi_context {
 #define	ICE_HW_VSI_RSS_SCHEME_TOEPLITZ		0x00
 #define	ICE_HW_VSI_RSS_SCHEME_SYMTOEPLITZ	0x01
 #define	ICE_HW_VSI_RSS_SCHEME_SIMPLE_XOR	0x02
-#define	ICE_HW_VSI_RSS_SET_HASH_SCHEME(reg, val)	ice_bitset8(reg, 7, 6, val)
+#define	ICE_HW_VSI_RSS_SET_HASH_SCHEME(reg, val) ice_bitset8(reg, 7, 6, val)
 #define	ICE_HW_VSI_TC_SET_OVERRIDE(reg, val)	ice_bitset8(reg, 4, 0, val)
 #define	ICE_HW_VSI_TC_PROFILE_OVERRIDE		(1 << 7)
 #define	ICE_HW_VSI_PE_FILTER_ENABLE	(1 << 0)
 
-#define	ICE_HW_VSI_ACL_SET_RX_PROFILE_MISS(reg, val)	ice_bitset16(reg, 3, 0, val)
-#define	ICE_HW_VSI_ACL_SET_RX_TABLE_MISS(reg, val)	ice_bitset16(reg, 7, 4, val)
-#define	ICE_HW_VSI_ACL_SET_TX_PROFILE_MISS(reg, val)	ice_bitset16(reg, 11, 8, val)
-#define	ICE_HW_VSI_ACL_SET_TX_TABLE_MISS(reg, val)	ice_bitset16(reg, 15, 12, val)
+#define	ICE_HW_VSI_ACL_SET_RX_PROFILE_MISS(reg, val) \
+	ice_bitset16(reg, 3, 0, val)
+#define	ICE_HW_VSI_ACL_SET_RX_TABLE_MISS(reg, val) \
+	ice_bitset16(reg, 7, 4, val)
+#define	ICE_HW_VSI_ACL_SET_TX_PROFILE_MISS(reg, val) \
+	ice_bitset16(reg, 11, 8, val)
+#define	ICE_HW_VSI_ACL_SET_TX_TABLE_MISS(reg, val) \
+	ice_bitset16(reg, 15, 12, val)
 
 #define	ICE_HW_VSI_FD_ENABLE		(1 << 0)
 #define	ICE_HW_VSI_FD_TX_AUTO_EVICT	(1 << 1)
@@ -696,7 +926,7 @@ typedef struct ice_hw_vsi_context {
 #define	ICE_HW_VSI_FD_SET_DEF_PRIO(reg, val)	ice_bitset16(reg, 14, 12, val)
 #define	ICE_HW_VSI_FD_DEFAULT_DROP	(1 << 15)
 
-#define	ICE_HW_VSI_PASID_SET(reg, val)	ice_bitset32(reg, 19, 0)
+#define	ICE_HW_VSI_PASID_SET(reg, val)	ice_bitset32(reg, 19, 0, val)
 #define	ICE_HW_VSI_PASID_VALID		(1 << 31)
 
 /*
@@ -706,8 +936,11 @@ typedef struct ice_hw_vsi_context {
  * used.
  */
 #define	ICE_RSS_KEY_LENGTH		0x34
-#define	ICE_RSS_KEY_STANDARD_LENGTH	0x28	
+#define	ICE_RSS_KEY_STANDARD_LENGTH	0x28
 #define	ICE_RSS_LUT_SIZE_VSI		64
+#define	ICE_RSS_LUT_SIZE_PF_128		128
+#define	ICE_RSS_LUT_SIZE_PF_512		512
+#define	ICE_RSS_LUT_SIZE_PF_2K		2048
 
 /*
  * RX and TX Queue context structures
@@ -764,6 +997,87 @@ typedef struct ice_hw_rxq_context {
 #define	ICE_HW_RXQ_CTX_PHYSICAL_SIZE	32
 
 #define	ICE_REG_RXQ_CONTEXT_BASE	0x00280000
+#define	ICE_REG_RXQ_BASE		0x00290000
+
+#define	ICE_RING_WAIT_NTRIES		10
+
+#define	ICE_REG_RXQ_CTRL_BASE		0x00120000
+#define	ICE_QRX_CTRL_QENA_REQ(v)	ice_bitx32(v, 0, 0)
+#define	ICE_QRX_CTRL_SET_QENA_REQ(r, v)	ice_bitset32(r, 0, 0, v)
+#define	ICE_QRX_CTRL_FAST_QDIS(v)	ice_bitx32(v, 1, 1)
+#define	ICE_QRX_CTRL_QENA_STAT(v)	ice_bitx32(v, 2, 2)
+#define	ICE_QRX_CTRL_CDE(v)		ice_bitx32(v, 3, 3)
+#define	ICE_QRX_CTRL_SET_CDE(r, v)	ice_bitset32(r, 3, 3, v)
+#define	ICE_QRX_CTRL_CDS(v)		ice_bitx32(v, 4, 4)
+#define	ICE_QRX_CTRL_SET_CDS(r, v)	ice_bitx32(r, 4, 4, v)
+
+#define	ICE_QRX_CTRL_ENABLED \
+	(ICE_QRX_CTRL_QENA_REQ|ICE_QRX_CTRL_QENA_STAT)
+
+/* The QRXFLXP_CNTXT[] registers control the RX flex queue extension */
+#define	ICE_REG_QRXFLXP_CNTXT_BASE	0x00480000
+#define	ICE_REG_QRXFLXP_CNTXT(qrx) \
+	(ICE_REG_QRXFLXP_CNTXT_BASE + 4 * (qrx))
+#define	ICE_REG_QRXFLXP_CNTXT_SET_RXDID_IDX(r, v) ice_bitset32(r, 5, 0, v)
+#define	ICE_QRXFLXP_CNTXT_RXDID_16B	0
+#define	ICE_QRXFLXP_CNTXT_RXDID_32B	1
+
+#define	ICE_REG_QRXFLXP_CNTX_SET_RXDID_PRI(r, v) ice_bitset32(r, 10, 8, v)
+#define	ICE_REG_QRXFLXP_CNTX_SET_RXDID_TS(r, v) ice_bitset32(r, 11, 11, v)
+
+/*
+ * Like i40e, ice supports both a 16 byte and 32 byte receive descriptor.
+ * We use the 32 byte descriptor in case we want to utilize the additional
+ * information in the future.
+ */
+typedef struct ice_rx_desc {
+	uint64_t	irxd_qw0;
+	uint64_t	irxd_qw1;
+	uint64_t	irxd_qw2;
+	uint64_t	irxd_qw3;
+} ice_rx_desc_t;
+
+/* RDX qword0 bits */
+#define	ICE_RXD_RXDID(qw0)		ice_bitx64(qw0, 7, 0)
+#define	ICE_RXD_MIRR(qw0)		ice_bitx64(qw0, 13, 8)
+#define	ICE_RXD_L2TAG1(qw0)		ice_bitx64(qw0, 31, 16)
+#define	ICE_RXD_FILTER_STATUS(qw0)	ice_bitx64(qw0, 63, 32)
+
+/* RXD qword1 bits */
+#define	ICE_RXD_STATUS(v)	ice_bitx64(v, 18, 0)
+#define	ICE_RXD_DONE			(1ULL << 0)
+#define	ICE_RXD_EOP			(1ULL << 1)
+#define	ICE_RXD_L3L4P			(1ULL << 3)
+#define	ICE_RXD_CRCP			(1ULL << 4)
+#define	ICE_RXD_EXT_UDP_0		(1ULL << 8)
+#define	ICE_RXD_UMBCAST(v)		ice_bitx64(v, 10, 9)
+#define	ICE_RXD_UMBCAST_UNICAST			0
+#define	ICE_RXD_UMBCAST_MCAST			1
+#define	ICE_RXD_UMBCAST_BCAST			2
+#define	ICE_RXD_UMBCAST_MIRROR			3
+#define	ICE_RXD_FLM			(1ULL << 11)
+#define	ICE_RXD_FLTSTAT(v)		ice_bitx64(v, 13, 12)
+#define	ICE_RXD_FLTSTAT_NODATA			0
+#define	ICE_RXD_FLTSTAT_FDID			1
+#define	ICE_RXD_FLTSTAT_RSS_HASH		3
+#define	ICE_RXD_LPBK			(1ULL << 14)
+#define	ICE_RXD_IPV6EXADD		(1ULL << 15)
+#define	ICE_RXD_INT_UDP_0		(1ULL << 18)
+
+#define	ICE_RXD_ERROR(v)	ice_bitx64(v, 26, 19)
+#define	ICE_RXD_RXE			(1ULL << 0)
+#define	ICE_RXD_HBO			(1ULL << 2)
+#define	ICE_RXD_IPERR			(1ULL << 3)
+#define	ICE_RXD_L4ERR			(1ULL << 4)
+#define	ICE_RXD_EIPERR			(1ULL << 5)
+#define	ICE_RXD_OVERSIZE		(1ULL << 6)
+
+#define	ICE_RXD_PTYPE(qw1)	ice_bitx64(qw1, 37, 30)
+
+#define	ICE_RXD_LEN(qw1)	ice_bitx64(qw1, 63, 38)
+#define	ICE_RXD_PKTL(qw1)		ice_bitx64(qw1, 13, 0)
+#define	ICE_RXD_HLEN(qw1)		ice_bitx64(qw1, 24, 14)
+#define	ICE_RXD_SPH(qw1)		ice_bitx64(qw1, 25, 25)
 
 typedef struct ice_hw_txq_context {
 	uint64_t	ihtc_base;
@@ -779,6 +1093,7 @@ typedef struct ice_hw_txq_context {
 	uint8_t		ihtc_wb_mode;
 	uint8_t		ihtc_tphrdesc;
 	uint8_t		ihtc_tphdrdata;
+	uint8_t		ihtc_tphwrdesc;
 	uint16_t	ihtc_compq_id;
 	uint16_t	ihtc_func_qnum;
 	uint8_t		ihtc_itr_mode;
@@ -814,10 +1129,150 @@ typedef struct ice_hw_txq_context {
 
 #define	ICE_HW_TXQ_CTX_PHYSICAL_SIZE	22
 
+#define	ICE_QTX_TAIL(idx)		(0x002C0000 + ((idx) * 4))
+
+typedef struct ice_hw_txq_perq {
+	/* Per queue */
+	uint16_t	ihtp_qid;
+	uint16_t	ihtp_rsvd;
+	uint32_t	ihtp_qteid;
+	uint8_t		ihtp_ctx[22];
+	uint16_t	ihtp_rsvd2;
+
+	/* TX Scheduler Leaf Node Config */
+	uint8_t		ihtp_rsvd3;
+	uint8_t		ihtp_valid_sect;
+	uint8_t		ihtp_generic;
+	uint8_t		ihtp_rsvd4;
+	uint16_t	ihtp_cir_bw_id;
+	uint16_t	ihtp_cir_bw_wfq_weights;
+	uint16_t	ihtp_eir_bw_id;
+	uint16_t	ihtp_eir_bw_wfq_weights;
+	uint16_t	ihtp_shared_profile_id;
+	uint16_t	ihtp_rsvd5;
+} __packed ice_hw_txq_perq_t;
+CTASSERT(sizeof (ice_hw_txq_perq_t) == 48);
+#define	ICE_HW_TXQ_PERQ_VALID_SECT_GENERIC	(1 << 0)
+#define	ICE_HW_TXQ_PERQ_VALID_SECT_CIR		(1 << 1)
+#define	ICE_HW_TXQ_PERQ_VALID_SECT_EIR		(1 << 2)
+#define	ICE_HW_TXQ_PERQ_VALID_SECT_SHARED	(1 << 3)
+
+#define	ICE_SCHED_DEFAULT_PROFILE_ID	0
+#define	ICE_SCHED_DEFAULT_WEIGHT	4
+
+typedef struct ice_hw_txq_group {
+	uint32_t		ihtg_teid;
+	uint8_t			ihtg_nqueue;
+	uint8_t			ihtg_rsvd[3];
+	ice_hw_txq_perq_t	ihtg_perq[];
+} __packed ice_hw_txq_group_t;
+CTASSERT(sizeof (ice_hw_txq_group_t) == 8);
+
+/* Note the total buffer must be 32-bit aligned */
+typedef struct ice_hw_txq_disable_grp {
+	uint32_t	txqd_pteid;
+	uint8_t		txqd_nqueue;
+	uint8_t		txqd_resv;
+	uint16_t	txqd_qids[];
+} __packed ice_hw_txq_disable_grp_t;
+CTASSERT(sizeof (ice_hw_txq_disable_grp_t) == 6);
+
+#define	ICE_TX_TXQ_SET_QUID(r, v)	ice_bitset16(r, 14, 0, v)
+#define	ICE_TX_TXQ_SET_QTYPE(r, t)	ice_bitset16(r, 15, 15, t)
+#define	ICE_TX_TXQ_QID_LAN		0
+#define	ICE_TX_TXQ_QID_RDMA		1
+
+typedef struct ice_tx_desc {
+	uint64_t	itxd_qw0;
+	uint64_t	itxd_qw1;
+} ice_tx_desc_t;
+
+#define	ICE_TX_DESC_DTYPE(v)		ice_bitx64(v, 3, 0)
+#define	ICE_TX_DESC_SET_DTYPE(r, v)	ice_bitset64(r, 3, 0, v)
+
+#define	ICE_TX_DESC_DTYPE_DATA		0x0
+#define	ICE_TX_DESC_DTYPE_NOP		0x1
+#define	ICE_TX_DESC_DTYPE_TCTX		0x1 /* Is same as NOP */
+#define	ICE_TX_DESC_DTYPE_FILTER	0x8
+#define	ICE_TX_DESC_DTYPE_DONE		0xf
+
+#define	ICE_TX_DESC_CMD(v)		ice_bitx64(15, 4)
+#define	ICE_TX_DESC_SET_CMD(r, v)	ice_bitset64(r, 15, 4, v)
+#define	ICE_TX_DESC_CMD_EOP			(1ULL << 0)
+#define	ICE_TX_DESC_CMD_RS			(1Ull << 1)
 /*
- * Scheduler Structures returned by hardware.
+ * On the 700-series chips, this was the ICRC flag, on the 800-series
+ * chips it's marked as 'Reserved must be 1b' (10.5.3.1.1)
  */
-#pragma pack(1)
+#define	ICE_TX_DESC_CMD_RESV			(1ULL << 2)
+#define	ICE_TX_DESC_CMD_IL2TAG1			(1ULL << 3)
+#define	ICE_TX_DESC_CMD_DUMMY			(1ULL << 4)
+#define	ICE_TX_DESC_CMD_IIPT(v)			ice_bitx64(v, 6, 5)
+#define	ICE_TX_DESC_CMD_SET_IIPT(r, v)		ice_bitset64(r, 6, 5, v)
+#define	ICE_TX_DESC_CMD_IIPT_NONIP			0
+#define	ICE_TX_DESC_CMD_IIPT_IPV6			1
+#define	ICE_TX_DESC_CMD_IIPT_IPV4_NOCKSUM		2
+#define	ICE_TX_DESC_CMD_IIPT_IPV4_CKSUM			3
+#define	ICE_TX_DESC_CMD_L4T(v)			ice_bitx64(v, 9, 8)
+#define	ICE_TX_DESC_CMD_SET_L4T(r, v)		ice_bitset64(r, 9, 8, v)
+#define	ICE_TX_DESC_CMD_L4T_UNKNOWN			0
+#define	ICE_TX_DESC_CMD_L4T_TCP				1
+#define	ICE_TX_DESC_CMD_L4T_SCTP			2
+#define	ICE_TX_DESC_CMD_L4T_UDP				3
+#define	ICE_TX_DESC_CMD_RE			(1ULL << 10)
+#define	ICE_TX_DESC_CMD_BT_HDR			(1ULL << 11)
+
+#define	ICE_TX_DESC_OFFSET(v)			ice_bitx64(v, 33, 16)
+#define	ICE_TX_DESC_SET_OFFSET(r, v)		ice_bitset64(r, 33, 16, v)
+#define	ICE_TX_DESC_OFFSET_MACLEN(v)		ice_bitx64(v, 6, 0)
+#define	ICE_TX_DESC_OFFSET_SET_MACLEN(r, v)	ice_bitset64(r, 6, 0, v)
+#define	ICE_TX_DESC_OFFSET_IPLEN(v)		ice_bitx64(v, 13, 7)
+#define	ICE_TX_DESC_OFFSET_SET_IPLEN(r, v)	ice_bitset64(r, 13, 7, v)
+#define	ICE_TX_DESC_OFFSET_L4LEN(v)		ice_bitx64(v, 17, 14)
+#define	ICE_TX_DESC_OFFSET_SET_L4LEN(r, v)	ice_bitset64(r, 17, 14, v)
+
+#define	ICE_TX_DESC_BSIZE(v)			ice_bitx64(v, 47, 34)
+#define	ICE_TX_DESC_SET_BSIZE(r, v)		ice_bitset64(r, 47, 34, v)
+#define	ICE_TX_DESC_L2TAG1(v)			ice_bitx64(v, 63, 48)
+#define	ICE_TX_DESC_SET_L2TAG1(r, v)		ice_bitset64(r, 63, 48, v)
+
+/* CTXD Quad Word 1 */
+#define	ICE_TX_CTXD_CMD(v)			ice_bitx64(v, 10, 4)
+#define	ICE_TX_CTXD_SET_CMD(r, v)		ice_bitset64(r, 10, 4, v)
+#define	ICE_TX_CTXD_CMD_TSO			(1ULL << 0)
+#define	ICE_TX_CTXD_CMD_TSYN			(1ULL << 1)
+#define	ICE_TX_CTXD_CMD_IL2TAG2			(1ULL << 2)
+#define	ICE_TX_CTXD_CMD_IL2TAG2_IL2H		(1ULL << 3)
+#define	ICE_TX_CTXD_SWTCH(v)			ice_bitx64(v, 5, 4)
+#define	ICE_TX_CTXD_CMD_SET_SWTCH(r, v)		ice_bitset64(r, 5, 4, v)
+#define	ICE_TX_CTXD_TLEN(v)			ice_bitx64(v, 47, 30)
+#define	ICE_TX_CTXD_SET_TLEN(r, v)		ice_bitset64(r, 47, 30, v)
+#define	ICE_TX_CTXD_SET_TSYN_REG(r, v)		ice_bitset64(r, 35, 30, v)
+#define	ICE_TX_CTXD_MSS(v)			ice_bitx64(v, 63, 50)
+#define	ICE_TX_CTXD_SET_MSS(r, v)		ice_bitset64(r, 63, 50, v)
+#define	ICE_TX_CTXD_SET_VSI(r, v)		ice_bitset64(r, 63, 50, v)
+
+/* CTXD Quad Word 0 */
+#define	ICE_TX_CTXD_SET_TUNNEL_PARAM(r, v)	ice_bitset64(r, 23, 0, v)
+#define	ICE_TX_CTXD_SET_EIPT(r, v)		ice_bitset64(r, 1, 0, v)
+#define	ICE_TX_CTXD_EIPT_NONE			0
+#define	ICE_TX_CTXD_EIPT_IPV6			1
+#define	ICE_TX_CTXD_EIPT_IPV4_NOCKSUM		2
+#define	ICE_TX_CTXD_EIPT_IPV4_CKSUM		3
+#define	ICE_TX_CTXD_SET_EIPT_LEN(r, v)		ice_bitset64(r, 8, 2, v)
+#define	ICE_TX_CTXD_SET_L4TUNT(r, v)		ice_bitset64(r, 10, 9, v)
+#define	ICE_TX_CTXD_L4TUNT_NONE			0
+#define	ICE_TX_CTXD_L4TUNT_UDP			1
+#define	ICE_TX_CTXD_L4TUNT_GRE			2
+#define	ICE_TX_CTXD_SET_L4TUNLEN(r, v)		ice_bitset64(r, 18, 12, v)
+#define	ICE_TX_CTXD_DECTTL(r, v)		ice_bitset64(r, 22, 19, v)
+#define	ICE_TX_CTXD_L4T_CS			(1ULL << 23)
+
+#define	ICE_TX_CTXD_SET_L2TAG2(r, v)		ice_bitset64(r, 47, 32, v)
+
+/*
+ * Scheduler Structures used by hardware.
+ */
 typedef struct ice_hw_sched_elem {
 	uint32_t	ihse_pteid;
 	uint32_t	ihse_teid;
@@ -831,15 +1286,365 @@ typedef struct ice_hw_sched_elem {
 	uint16_t	ihse_eir_bw_weight;
 	uint16_t	ihse_rl_profile;
 	uint16_t	ihse_rsvd;
-} ice_hw_sched_elem_t;
+} __packed ice_hw_sched_elem_t;
 
 typedef struct ice_hw_sched_branch {
 	uint32_t		ihsb_rsvd;
 	uint16_t		ihsb_nelms;
-	uint16_t		ihsb_rsvd1;
+	uint8_t			ihsb_rsvd2[2];
 	ice_hw_sched_elem_t	ihsb_elems[];
-} ice_hw_sched_branch_t;
-#pragma pack()
+} __packed ice_hw_sched_branch_t;
+
+typedef struct ice_hw_sched_grp {
+	uint32_t		ihsg_pteid;
+	uint16_t		ihsg_nelems;
+	uint8_t			ihsg_rsvd1[2];
+	ice_hw_sched_elem_t	ihsg_elems[];
+} __packed ice_hw_sched_grp_t;
+
+typedef struct ice_hw_delete_sched_elements {
+	uint32_t	ihdse_pteid;
+	uint16_t	ihdse_nelements;
+	uint8_t		ihdse_resv[2];
+	uint32_t	ihdse_teids[];
+} __packed ice_hw_delete_sched_elements_t;
+
+/*
+ * These values are the sample (i.e. default) recipes in the NIC from
+ * Table 7-10. We don't create any custom switch recipes since the
+ * ones there provide what we need.
+ */
+typedef enum ice_sw_recipe {
+	ICE_SW_RECIPE_ETHERTYPE = 0,
+	ICE_SW_RECIPE_MAC = 1,
+	ICE_SW_RECIPE_MAC_VLAN = 2,
+	ICE_SW_RECIPE_PROMISC = 3,
+	ICE_SW_RECIPE_VLAN = 4,
+	ICE_SW_RECIPE_DEFAULT = 5,
+	ICE_SW_RECIPE_MAC_ETHERTYPE = 8,
+	ICE_SW_RECIPE_PROMISC_VLAN = 9,
+} ice_sw_recipe_t;
+
+/*
+ * The layout of the add/update/remove switch rules data buffer
+ * documented in 7.8.12.6.1.1 is a bit misleading. The initial definition
+ * suggests a struct with a header followed by a union depending on the
+ * specific type of rule. However the further examples suggest different
+ * structs for lookup, vsi lists, etc. that share a common header.
+ * Examination of the FreeBSD driver agrees with the latter characterization.
+ *
+ * The distinction is important since a struct w/ a union will have
+ * padding, but that apparently is not what the hardware is expecting.
+ * As such, these don't _exactly_ match the definitino in 7.8.12.6.1.1
+ * for that reason.
+ */
+typedef struct ice_sw_rule_hdr {
+	uint16_t	iswrh_type;
+	uint16_t	iswrh_status;
+} ice_sw_rule_hdr_t;
+#define	ICE_SW_RULE_T_LOOKUP_RX		0x0
+#define	ICE_SW_RULE_T_LOOKUP_TX		0x1
+#define	ICE_SW_RULE_T_LARGE_ACTION	0x2
+#define	ICE_SW_RULE_T_VSI_LIST_SET	0x3
+#define	ICE_SW_RULE_T_VSI_LIST_CLEAR	0x4
+#define	ICE_SW_RULE_T_PRUNE_LIST_SET	0x5
+#define	ICE_SW_RULE_T_PRUNE_LIST_CLEAR	0x6
+
+typedef struct ice_sw_lookup {
+	ice_sw_rule_hdr_t	iswl_hdr;
+	uint16_t		iswl_rid;	/* recipe id */
+	uint16_t		iswl_source;	/* source vsi or port */
+	uint32_t		iswl_action;
+	uint16_t		iswl_index;	/* LUT index */
+	uint16_t		iswl_header_len;
+	uint8_t			iswl_data[];
+} ice_sw_lookup_t;
+CTASSERT(sizeof (ice_sw_lookup_t) == 16);
+
+typedef struct ice_sw_large_action {
+	ice_sw_rule_hdr_t	isla_hdr;
+	uint16_t		isla_index;
+	uint16_t		isla_size;
+	uint32_t		lsla_action[];
+} ice_sw_large_action_t;
+CTASSERT(sizeof (ice_sw_large_action_t) == 8);
+
+typedef struct ice_sw_vsi_list {
+	ice_sw_rule_hdr_t	isvl_hdr;
+	uint16_t		isvl_nvsi;	/* 0 to clear entire list */
+	uint16_t		isvl_vsi[];
+} ice_sw_vsi_list_t;
+CTASSERT(sizeof (ice_sw_vsi_list_t) == 6);
+
+typedef struct ice_sw_vsi_query {
+	ice_sw_rule_hdr_t	isvq_hdr;
+	uint8_t			isvq_vsi_list[96];	/* VSI bitmap */
+} ice_sw_vsi_query_t;
+CTASSERT(sizeof (ice_sw_vsi_query_t) == 100);
+
+/* Macros for the action value */
+#define	ICE_SW_RULE_ACT_TYPE(x)			ice_bitx32(x, 2, 0)
+#define	ICE_SW_RULE_ACT_T_LOGICAL_PORT_FWD	0x0
+#define	ICE_SW_RULE_ACT_T_FWD_QUEUE		0x1
+#define	ICE_SW_RULE_ACT_T_PRUNE			0x2
+#define	ICE_SW_RULE_ACT_T_LPTR			0x2
+#define	ICE_SW_RULE_ACT_T_OTHER			0x3
+/* Type 0, 1, 2 */
+#define	ICE_SW_RULE_ACT_LB_EN			(1 << 2)
+#define	ICE_SW_RULE_ACT_LAN_EN			(1 << 3)
+/* Type 0 */
+#define	ICE_SW_RULE_ACT_SET_VSI(r, v)		ice_bitset32(r, 13, 4, v)
+#define	ICE_SW_RULE_ACT_VSI(x)			ice_bitx32(x, 13, 4)
+#define	ICE_SW_RULE_ACT_VSI_LIST		(1 << 14)
+#define	ICE_SW_RULE_ACT_VSI_VALID		(1 << 17)
+#define	ICE_SW_RULE_ACT_DROP			(1 << 18)
+/* Type 1 */
+#define	ICE_SW_RULE_ACT_SET_QIDX(r, v)		ice_bitset32(r, 14, 4, v)
+#define	ICE_SW_RULE_ACT_QIDX(x)			ice_bitx32(x, 14, 4)
+#define	ICE_SW_RULE_ACT_SET_QSZ(r, v)		ice_bitset32(r, 17, 15, v)
+#define	ICE_SW_RULE_ACT_QSZ(x)			ice_bitx32(x, 17, 15)
+#define	ICE_SW_RULE_ACT_Q_PRI			(1 << 18)
+/* Type 2 */
+#define	ICE_SW_RULE_ACT_EGRESS			(1 << 15)
+#define	ICE_SW_RULE_ACT_INGRESS			(1 << 16)
+#define	ICE_SW_RULE_ACT_PRUNE			(1 << 17)
+#define	ICE_SW_RULE_ACT_SET_LPTR(r, v) \
+	ice_bitset32(r | (1 << 18), 16, 4, v)
+#define	ICE_SW_RULE_ACT_LPTR(x)			ice_bitx32(x, 16, 4)
+#define	ICE_SW_RULE_ACT_LPTR_HAS_FWD		(1 << 17)
+/* Distinguishes between PRUNE and LPTR (large pointer) */
+#define	ICE_SW_RULE_ACT_IS_LPTR(x)		ice_bitx32(x, 18, 18)
+/* Type 3 */
+#define	ICE_SW_RULE_ACT_OTHER_TYPE(x)		ice_bitx32(x, 19, 17)
+#define	ICE_SW_RULE_ACT_OTHER_MIRROR		0
+#define	ICE_SW_RULE_ACT_SET_STAT		(3 << 17)
+#define	ICE_SW_RULE_ACT_MIRROR_VSI(x)		ICE_SW_RULE_ACT_VSI(x)
+#define	ICE_SW_RULE_ACT_STAT_IDX(x)		ice_bitx32(x, 11, 4)
+
+typedef struct ice_hw_tx_sched_layer {
+	uint8_t		ihtsl_layer;
+	uint8_t		ihtsl_chunk_size;
+	uint16_t	ihtsl_max_nodes;
+	uint8_t		ihtsl_resv[6];
+	uint16_t	ihtsl_max_sibling;
+	uint16_t	ihtsl_ncir_shared;
+	uint16_t	ihtsl_neir_shared;
+	uint16_t	ihtsl_nsrl_shared;
+	uint8_t		ihtls_resv2[14];
+} __packed ice_hw_tx_sched_layer_t;
+CTASSERT(sizeof (ice_hw_tx_sched_layer_t) == 32);
+
+#define	ICE_TX_SCHED_MAX_DEPTH	9
+#define	ICE_TX_SCHED_RES_ALLOC_SIZE	2048
+
+typedef struct ice_hw_tx_sched_gen {
+	uint16_t	ihtsg_nphys_layers;
+	uint16_t	ihtsg_nlayers;
+	uint8_t		ihtsg_flat_bitmap;
+	uint8_t		ihtsg_dev_ncgd;
+	uint8_t		ihtsg_pf_ncgd;
+	uint8_t		ihtsg_resv;
+	uint16_t	ihtsg_nrdma_qset;
+	uint8_t		ihtsg_resv2[22];
+	ice_hw_tx_sched_layer_t	ihtsg_layer_prop[ICE_TX_SCHED_MAX_DEPTH];
+} __packed ice_hw_tx_sched_gen_t;
+CTASSERT(sizeof (ice_hw_tx_sched_gen_t) == 320);
+
+typedef struct ice_hw_tx_sched_elt {
+	uint32_t	ihtse_pteid;		/* Parent TEID */
+	uint32_t	ihtse_teid;		/* Element TEID */
+	uint8_t		ihtse_eltype;		/* Element type */
+	uint8_t		ihtse_valid_sect;	/* Valid sections */
+	uint8_t		ihtse_generic;
+	uint8_t		ihtse_flags;
+	uint16_t	ihtse_cir_bw_prof_id;
+	uint16_t	ihtse_cir_bw_wt;
+	uint16_t	ihtse_eir_bw_prof_id;
+	uint16_t	ihtse_eir_bw_wt;
+	uint16_t	ihtse_shared_prof_id;
+	uint8_t		ihtse_reserved[2];
+} __packed ice_hw_tx_sched_elt_t;
+CTASSERT(sizeof (ice_hw_tx_sched_elt_t) == 24);
+
+#define	ICE_TX_SCHED_TEID_INVALID	0xffffffff
+
+#define	ICE_TX_SCHED_ET_UNDEFINED	0
+#define	ICE_TX_SCHED_ET_ROOT		1
+#define	ICE_TX_SCHED_ET_TC		2
+#define	ICE_TX_SCHED_ET_SE_GENERIC	3
+#define	ICE_TX_SCHED_ET_SOFT_SE		4
+#define	ICE_TX_SCHED_ET_LEAF		5
+
+#define	ICE_TX_SCHED_SECT_GENERIC	(1 << 0)
+#define	ICE_TX_SCHED_SECT_CIR_BW	(1 << 1)
+#define	ICE_TX_SCHED_SECT_EIR_BW	(1 << 2)
+#define	ICE_TX_SCHED_SECT_SHARED_BW	(1 << 3)
+
+#define	ICE_TX_SCHED_GEN_MODE(x)	ice_bitx32(x, 0, 1)
+#define	ICE_TX_SCHED_GEN_BPS			0
+#define	ICE_TX_SCHED_GEN_PPS			1
+#define	ICE_TX_SCHED_GEN_PRI(x)		ice_bitx32(x, 1, 3)
+#define	ICE_TX_SCHED_GEN_SINGLE_PRI(x)	ice_bitx32(x, 4, 4)
+#define	ICE_TX_SCHED_GEN_SINGLE_PRI_NODE	0
+#define	ICE_TX_SCHED_GEN_SINGLE_PRI_WFQ		1
+#define	ICE_TX_SCHED_GEN_ADJ(x)		ice_bitx32(x, 5, 6)
+
+#define	ICE_TX_SCHED_SUSPEND		(1 << 0)
+
+#define	ICE_TX_SCHED_DEFAULT_TOPO_SIZE	4096
+
+typedef struct ice_hw_tx_branch {
+	uint8_t			ihtb_resv[4];
+	uint16_t		ihtb_nelt;
+	uint8_t			ihtb_resv2[2];
+	ice_hw_tx_sched_elt_t	ihtb_elts[];
+} __packed ice_hw_tx_branch_t;
+
+#define	ICE_TX_SCHED_BR_NELT_MIN	2
+#define	ICE_TX_SCHED_BR_NELT_MAX	9
+
+/*
+ * The malicious driver detected uses the same format for TX/RX
+ * One note is that the RX_TCLAN_EVENT field is actually marked reserved
+ * while the RX one explicitly defines the event. However the FreeBSD
+ * driver uses this field on TX as well, so this could just be a misprint
+ * in the datasheet.
+ */
+#define	ICE_PF_MDET_TX_TCLAN		0x00FC000
+#define	ICE_PF_MDET_VALID(x)		ice_bitx32(x, 0, 0)
+
+#define	ICE_GL_MDET_TX_TCLAN		0x00FC068
+#define	ICE_GL_MDET_QNUM(x)		ice_bitx32(x, 14, 0)
+#define	ICE_GL_MDET_VF_NUM(x)		ice_bitx32(x, 22, 15)
+#define	ICE_GL_MDET_PF_NUM(x)		ice_bitx32(x, 25, 23)
+#define	ICE_GL_MDET_EVENT(x)		ice_bitx32(x, 30, 26)
+#define	ICE_GL_MDET_VALID(x)		ice_bitx32(x, 31, 31)
+
+#define	ICE_GL_MDET_TX_PQM		0x002D2E00
+#define	ICE_GL_MDET_TX_PQM_PF_NUM(x)	ice_bitx32(x, 2, 0)
+#define	ICE_GL_MDET_TX_PQM_VF_NUM(x)	ice_bitx32(x, 11, 4)
+#define	ICE_GL_MDET_TX_PQM_QNUM(x)	ice_bitx32(x, 25, 12)
+/*
+ * Similarly, the datasheet marks this field as reserved, but the FreeBSD
+ * driver uses it for the PQM event value.
+ */
+#define	ICE_GL_MDET_TX_PQM_EVENT(x)	ice_bitx32(x, 30, 26)
+#define	ICE_GL_MDET_TX_PQM_VALID(x)	ice_bitx32(x, 31, 31)
+
+#define	ICE_PF_MDET_TX_PQM		0x002D2C80
+#define	ICE_PF_MDET_TX_PQM_VALID(x)	ice_bitx32(x, 31, 31)
+
+#define	ICE_PF_MDET_RX			0x00294280
+#define	ICE_GL_MDET_RX			0x00294C00
+
+/* Stats registers */
+
+/* VSI stats */
+#define	ICE_GLV_RDPC(id)		(0x00294C04 + 4 * (id))
+
+#define	ICE_GLV_GOTCL(id)		(0x00300000 + 8 * (id))
+#define	ICE_GLV_UPTCL(id)		(0x0030A000 + 8 * (id))
+#define	ICE_GLV_MPTCL(id)		(0x0030C000 + 8 * (id))
+#define	ICE_GLV_BPTCL(id)		(0x0030E000 + 8 * (id))
+
+#define	ICE_GLV_TEPC(id)		(0x00312000 + 4 * (id))
+
+#define	ICE_GLV_GORCL(id)		(0x003B0000 + 8 * (id))
+#define	ICE_GLV_UPRCL(id)		(0x003B2000 + 8 * (id))
+#define	ICE_GLV_MPRCL(id)		(0x003B4000 + 8 * (id))
+#define	ICE_GLV_BPRCL(id)		(0x003B6000 + 8 * (id))
+
+/* PF / Port Stats */
+#define	ICE_GLPRT_GORCL(port)		(0x00380000 + 8 * (port))
+#define	ICE_GLPRT_UPRCL(port)		(0x00381300 + 8 * (port))
+#define	ICE_GLPRT_MPRCL(port)		(0x00381340 + 8 * (port))
+#define	ICE_GLPRT_BPRCL(port)		(0x00381380 + 8 * (port))
+#define	ICE_GLPRT_GOTCL(port)		(0x00380B40 + 8 * (port))
+#define	ICE_GLPRT_UPTCL(port)		(0x003811C0 + 8 * (port))
+#define	ICE_GLPRT_MPTCL(port)		(0x00381200 + 8 * (port))
+#define	ICE_GLPRT_BPTCL(port)		(0x00381240 + 8 * (port))
+
+#define	ICE_GLPRT_PRC64L(port)		(0x00380900 + 8 * (port))
+#define	ICE_GLPRT_PRC127L(port)		(0x00380940 + 8 * (port))
+#define	ICE_GLPRT_PRC255L(port)		(0x00380980 + 8 * (port))
+#define	ICE_GLPRT_PRC511L(port)		(0x003809C0 + 8 * (port))
+#define	ICE_GLPRT_PRC1023L(port)	(0x00380A00 + 8 * (port))
+#define	ICE_GLPRT_PRC1522L(port)	(0x00380A40 + 8 * (port))
+#define	ICE_GLPRT_PRC9522L(port)	(0x00380A80 + 8 * (port))
+
+#define	ICE_GLPRT_PTC64L(port)		(0x00380B80 + 8 * (port))
+#define	ICE_GLPRT_PTC127L(port)		(0x00380BC0 + 8 * (port))
+#define	ICE_GLPRT_PTC255L(port)		(0x00380C00 + 8 * (port))
+#define	ICE_GLPRT_PTC511L(port)		(0x00380C40 + 8 * (port))
+#define	ICE_GLPRT_PTC1023L(port)	(0x00380C80 + 8 * (port))
+#define	ICE_GLPRT_PTC1522L(port)	(0x00380CC0 + 8 * (port))
+#define	ICE_GLPRT_PTC9522L(port)	(0x00380D00 + 8 * (port))
+
+#define	ICE_GLPRT_LXONRXC(port)		(0x00380280 + 8 * (port))
+#define	ICE_GLPRT_LXOFFRXC(port)	(0x003802C0 + 8 * (port))
+#define	ICE_GLPRT_LXONTXC(port)		(0x00381140 + 8 * (port))
+#define	ICE_GLPRT_LXOFFTXC(port)	(0x00381180 + 8 * (port))
+
+#define	ICE_GLPRT_PXONRXC(port, pri)	(0x00380300 + 8 * (port) + 0x40 * (pri))
+#define	ICE_GLPRT_PXOFFRXC(port, pri)	(0x00380500 + 8 * (port) + 0x40 * (pri))
+#define	ICE_GLPRT_PXONTXC(port, pri)	(0x00380D40 + 8 * (port) + 0x40 * (pri))
+#define	ICE_GLPRT_PXOFFTXC(port, pri)	(0x00380F40 + 8 * (port) + 0x40 * (pri))
+
+#define	ICE_GLPRT_RXON2OFFCNT(port, pri) \
+	(0x00380700 + 8 * (port) + 0x40 * (pri))
+
+#define	ICE_GLPRT_CRCERRS(port)		(0x00380100 + 8 * (port))
+#define	ICE_GLPRT_ILLERR(port)		(0x003801C0 + 8 * (port))
+#define	ICE_GLPRT_MLFC(port)		(0x00380040 + 8 * (port))
+#define	ICE_GLPRT_MRFC(port)		(0x00380080 + 8 * (port))
+#define	ICE_GLPRT_RLEC(port)		(0x00380140 + 8 * (port))
+#define	ICE_GLPRT_RUC(port)		(0x00380200 + 8 * (port))
+#define	ICE_GLPRT_RFC(port)		(0x00380AC0 + 8 * (port))
+#define	ICE_GLPRT_ROC(port)		(0x00380240 + 8 * (port))
+#define	ICE_GLPRT_RJC(port)		(0x00380B00 + 8 * (port))
+#define	ICE_GLPRT_TDOLD(port)		(0x00381280 + 8 * (port))
+
+typedef struct ice_res_entry {
+	uint16_t	ire_info;
+	uint16_t	ire_ndesc;
+	uint16_t	ire_descs[];
+} ice_res_entry_t;
+CTASSERT(sizeof (ice_res_entry_t) == 4);
+#define	ICE_RES_INFO_TYPE(x)			ice_bitx16(x, 6, 0)
+#define	ICE_RES_INFO_SET_TYPE(x, t)		ice_bitset16(x, 6, 0, t)
+#define	ICE_RES_INFO_SET_PERSISTENT(x, v)	ice_bitset16(x, 7, 7, v)
+#define	ICE_RES_INFO_SET_VSI_PRUNE(x, v)	ice_bitset16(x, 11, 8, v)
+#define	ICE_RES_INFO_SET_SCAN_LAST(x, v)	ice_bitset16(x, 12, 12, v)
+#define	ICE_RES_INFO_SET_IGNORE_IDX(x, v)	ice_bitset16(x, 13, 13, v)
+#define	ICE_RES_INFO_SET_SHARED(x, v)		ice_bitset16(x, 14, 14, v)
+#define	ICE_RES_INFO_SET_VALID(x, v)		ice_bitset16(x, 15, 15, v)
+
+#define	ICE_RES_TYPE_VEB_COUNTER		0x00
+#define	ICE_RES_TYPE_VLAN_COUNTER		0x01
+#define	ICE_RES_TYPE_MIRROR_RULE		0x02
+#define	ICE_RES_TYPE_VSI_LIST_REP		0x03
+#define	ICE_RES_TYPE_VSI_LIST_PRUNE		0x04
+#define	ICE_RES_TYPE_RECIPE			0x05
+#define	ICE_RES_TYPE_PROFILE			0x06
+#define	ICE_RES_TYPE_SWID			0x07
+#define	ICE_RES_TYPE_VSI			0x08
+#define	ICE_RES_TYPE_FLU			0x09
+#define	ICE_RES_TYPE_WIDE_TABLE_1		0x0A
+#define	ICE_RES_TYPE_WIDE_TABLE_2		0x0B
+#define	ICE_RES_TYPE_WIDE_TABLE_4		0x0C
+#define	ICE_RES_TYPE_GLOBAL_RSS_HASH		0x20
+#define	ICE_RES_TYPE_FDIR_COUNTER_BLOCK		0x21
+#define	ICE_RES_TYPE_FDIR_GUARANTEED_ENTRIES	0x22
+#define	ICE_RES_TYPE_FDIR_SHARED_ENTRIES	0x23
+#define	ICE_RES_TYPE_FLEX_DESC_PROG		0x30
+#define	ICE_RES_TYPE_SWITCH_PROF_BLDR_PROFID	0x48
+#define	ICE_RES_TYPE_SWITCH_PROF_BLDR_TCAM	0x49
+#define	ICE_RES_TYPE_ACL_PROF_BLDR_PROFID	0x50
+#define	ICE_RES_TYPE_ACL_PROF_BLDR_TCAM		0x51
+#define	ICE_RES_TYPE_HASH_PROF_BLDR_PROFID	0x60
+#define	ICE_RES_TYPE_HASH_PROF_BLDR_TCAM	0x61
+#define	ICE_RES_TYPE_QHASH_PROF_BLDR_PROFID	0x68
+#define	ICE_RES_TYPE_QHASH_PROF_BLDR_TCAM	0x69
 
 #ifdef __cplusplus
 }
