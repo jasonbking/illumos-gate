@@ -42,5 +42,6 @@ SYMBOL_SCOPE {
 	fnvlist_alloc			{ FLAGS = EXTERN };
 	fnvlist_add_string		{ FLAGS = EXTERN };
 	ncpus_online			{ FLAGS = EXTERN };
+	secpolicy_net_config		{ FLAGS = EXTERN };
 	utsname				{ FLAGS = EXTERN };
 };
