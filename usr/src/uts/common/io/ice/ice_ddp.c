@@ -1,0 +1,888 @@
+/*
+ * This file and its contents are supplied under the terms of the
+ * Common Development and Distribution License ("CDDL"), version 1.0.
+ * You may only use this file in accordance with the terms of version
+ * 1.0 of the CDDL.
+ *
+ * A full copy of the text of the CDDL should have accompanied this
+ * source.  A copy of the CDDL is also available via the Internet at
+ * http://www.illumos.org/license/CDDL.
+ */
+
+/*
+ * Copyright 2026 RackTop Systems, Inc.
+ */
+
+#include <sys/byteorder.h>
+#include <sys/firmload.h>
+
+#include "ice.h"
+
+/*
+ * We care about two segments from the DDP file -- the configuration segment
+ * that corresponds to the specific device and the corresponding signing
+ * segment.
+ */
+typedef struct ice_pkg_data {
+	uint32_t	ipd_cfgidx;
+	uint32_t	ipd_signidx;
+	void		*ipd_config;	/* Config segment contents */
+	void		*ipd_sign;	/* Signing segment */
+	uint32_t	ipd_cfglen;
+	uint32_t	ipd_signlen;
+	ice_pkg_ver_t	ipd_cfgver;	/* Config segment format version */
+} ice_pkg_data_t;
+
+static bool ice_ddp_get_segs(ice_t *, firmware_handle_t, ice_seg_idx_t **,
+    uint32_t *);
+static bool ice_ddp_get_cfg(ice_t *, firmware_handle_t, ice_seg_idx_t *,
+    uint32_t, ice_pkg_data_t *);
+static bool ice_ddp_get_metadata(ice_t *, firmware_handle_t, ice_seg_idx_t *,
+    uint32_t);
+static bool ice_ddp_download_cfg(ice_t *, ice_pkg_data_t *);
+
+static bool ice_ddp_check_id(ice_t *, const uint8_t **, uint32_t *);
+static bool ice_ddp_check_nvm(ice_t *, const uint8_t **, uint32_t *);
+static bool ice_ddp_check_pkg_compat(ice_t *, const ice_pkg_ver_t *);
+static bool ice_ddp_download_pkgs(ice_t *, const void *, uint32_t, uint32_t,
+    bool);
+static void ice_ddp_free_data(ice_pkg_data_t *);
+static void ice_ddp_get_active_pkg_info(ice_t *);
+
+bool
+ice_load_ddp(ice_t *ice)
+{
+	firmware_handle_t	fh;
+	ice_seg_idx_t		*idx;
+	ice_pkg_data_t		data = { 0 };
+	uint32_t		nidx;
+	int			rc;
+	bool			ret = false;
+
+	rc = firmware_open(ICE_MODULE_NAME, "ice.pkg", &fh);
+	if (rc != 0) {
+		ice_error(ice, "failed to read DDP package ice.pkg: %d", rc);
+		ice_ddp_get_active_pkg_info(ice);
+		return (false);
+	}
+
+	if (!ice_ddp_get_segs(ice, fh, &idx, &nidx)) {
+		goto done;
+	}
+
+	if (!ice_ddp_get_metadata(ice, fh, idx, nidx)) {
+		goto done;
+	}
+
+	if (!ice_ddp_get_cfg(ice, fh, idx, nidx, &data)) {
+		goto done;
+	}
+
+	if (!ice_ddp_check_pkg_compat(ice, &data.ipd_cfgver)) {
+		goto done;
+	}
+
+	if (!ice_ddp_download_cfg(ice, &data)) {
+		goto done;
+	}
+
+	ret = true;
+
+done:
+	ice_ddp_get_active_pkg_info(ice);
+	kmem_free(idx, nidx * sizeof (*idx));
+	ice_ddp_free_data(&data);
+	VERIFY0(firmware_close(fh));
+	return (ret);
+}
+
+/*
+ * Build an index of the segments in the DDP file. On success *idxp
+ * contains an array of the indexes while *np contains the number of
+ * segments.
+ *
+ * If successful, the offset and lengths in *idxp have been sanity checked
+ * (i.e. they should exist in the DDP file).
+ */
+static bool
+ice_ddp_get_segs(ice_t *ice, firmware_handle_t fh, ice_seg_idx_t **idxp,
+    uint32_t *np)
+{
+	ice_pkg_hdr_t	hdr = { 0 };
+	ice_seg_idx_t	*idx = NULL;
+	uint32_t	*segs = NULL;
+	off_t		pkglen = 0;
+	uint32_t	i, n = 0;
+
+	pkglen = firmware_get_size(fh);
+	if (pkglen < sizeof (hdr)) {
+		ice_error(ice, "DDP package size (%u bytes) is too small",
+		    pkglen);
+		return (false);
+	}
+
+	if (firmware_read(fh, 0, &hdr, sizeof (hdr)) != 0) {
+		ice_error(ice, "failed to read DDP package header");
+		return (false);
+	}
+
+	/*
+	 * The components of the version value are 8-bits each, so we don't
+	 * need to worry about endianness when checking them.
+	 */
+	if (hdr.iph_version.ipv_major != ICE_PKG_FMT_VERSION_MAJ ||
+	    hdr.iph_version.ipv_minor != ICE_PKG_FMT_VERSION_MIN ||
+	    hdr.iph_version.ipv_update != ICE_PKG_FMT_VERSION_UPDATE ||
+	    hdr.iph_version.ipv_draft != ICE_PKG_FMT_VERSION_DRAFT) {
+		ice_pkg_ver_t *v = &hdr.iph_version;
+
+		ice_error(ice, "unsupported DDP package version %u.%u.%u.%u",
+		    v->ipv_major, v->ipv_minor, v->ipv_update, v->ipv_draft);
+		return (false);
+	}
+
+	n = LE_32(hdr.iph_seg_count);
+
+	if (sizeof (hdr) + n * sizeof (uint32_t) > pkglen) {
+		ice_error(ice, "DDP package segment count (%u) overruns "
+		    "package size (%u bytes)", n, pkglen);
+		return (false);
+	}
+
+	/*
+	 * After the package header, there is the segment table which is an
+	 * array of n 32-bit segment offsets for each section (7.11.5).
+	 */
+	segs = kmem_zalloc(n * sizeof (uint32_t), KM_SLEEP);
+	if (firmware_read(fh, sizeof (hdr), segs, n * sizeof (uint32_t)) != 0) {
+		kmem_free(segs, n * sizeof (uint32_t));
+		ice_error(ice, "failed to read DDP package segment offsets");
+		return (false);
+	}
+
+	/* Sanity check the offsets */
+	for (i = 0; i < n; i++) {
+		/*
+		 * The segment offset is a 32-bit value. Since we're only
+		 * adding sizeof (ice_pkg_seg_hdr_t) bytes (44) to it, we
+		 * can always safely store it in a 64-bit value without
+		 * overflow (so we don't need an explicit overflow check).
+		 */
+		uint64_t offset = LE_32(segs[i]);
+
+		if (offset + sizeof (ice_pkg_seg_hdr_t) > pkglen) {
+			ice_error(ice, "DDP segment %u offset (%lu) out of "
+			    "range", i, offset);
+			kmem_free(segs, n * sizeof (uint32_t));
+			return (false);
+		}
+	}
+
+	/*
+	 * After the segment table are all of the segments. Each segment
+	 * contains a 44-byte header followed by segement specific data.
+	 * We read in each header and fill in the corresponding index entry.
+	 */
+	idx = kmem_zalloc(n * sizeof (ice_seg_idx_t), KM_SLEEP);
+	for (i = 0; i < n; i++) {
+		ice_pkg_seg_hdr_t	shdr = { 0 };
+
+		if (firmware_read(fh, LE_32(segs[i]), &shdr,
+		    sizeof (shdr)) != 0) {
+			ice_error(ice, "failed to read DDP segment %u", i);
+			kmem_free(segs, n * sizeof (uint32_t));
+			kmem_free(idx, n * sizeof (ice_seg_idx_t));
+			return (false);
+		}
+
+		/*
+		 * Sanity check the segment length. Since both the offset and
+		 * length are 32-bits, using a 64-bit int avoids any potential
+		 * overflow.
+		 */
+		if ((uint64_t)LE_32(segs[i]) + LE_32(shdr.ipsh_size) > pkglen) {
+			ice_error(ice, "segment %u length (%u bytes at offset "
+			    "%u) extends past end of package", i,
+			    LE_32(shdr.ipsh_size), LE_32(segs[i]));
+			kmem_free(segs, n * sizeof (uint32_t));
+			kmem_free(idx, n * sizeof (ice_seg_idx_t));
+			return (false);
+		}
+
+		/*
+		 * Set isi_offset and length to refect the start of the
+		 * segment's contents (i.e. exclude ice_pkg_seg_hdr_t).
+		 */
+		idx[i].isi_offset = LE_32(segs[i]) + sizeof (ice_pkg_seg_hdr_t);
+		idx[i].isi_length = LE_32(shdr.ipsh_size)
+		    - sizeof (ice_pkg_seg_hdr_t);
+		idx[i].isi_type = LE_32(shdr.ipsh_type);
+		idx[i].isi_version = shdr.ipsh_version;
+	}
+
+	kmem_free(segs, n * sizeof (uint32_t));
+	*idxp = idx;
+	*np = n;
+
+	return (true);
+}
+
+static bool
+ice_ddp_get_cfg(ice_t *ice, firmware_handle_t fh, ice_seg_idx_t *idx,
+    uint32_t n, ice_pkg_data_t *dp)
+{
+	uint32_t	i;
+	uint32_t	needed_type;
+
+	bzero(dp, sizeof (*dp));
+
+	/*
+	 * The datasheet doesn't indicate that the segment types appear in
+	 * any specific order, so we must first find the configuration
+	 * segment for our NIC type, then check if a signing segment
+	 * exists for that segment.
+	 */
+	switch (ice->ice_mac_type) {
+	case ICE_MAC_E810:
+	case ICE_MAC_GENERIC:
+	case ICE_MAC_GENERIC_3K:
+	case ICE_MAC_GENERIC_3K_E825:
+	default:
+		needed_type = ICE_PKG_SEG_CFG_DATA_E810;
+		break;
+	case ICE_MAC_E830:
+		needed_type = ICE_PKG_SEG_CFG_DATA_E830;
+		break;
+	}
+
+	for (i = 0; i < n; i++) {
+		if (idx[i].isi_type != needed_type) {
+			continue;
+		}
+
+		dp->ipd_cfgidx = i;
+		dp->ipd_config = kmem_zalloc(idx[i].isi_length, KM_SLEEP);
+		dp->ipd_cfglen = idx[i].isi_length;
+		dp->ipd_cfgver = idx[i].isi_version;
+
+		if (firmware_read(fh, idx[i].isi_offset, dp->ipd_config,
+		    idx[i].isi_length) != 0) {
+			ice_error(ice, "failed to read DDP configuration "
+			    "segment %u", i);
+			ice_ddp_free_data(dp);
+			return (false);
+		}
+
+		break;
+	}
+
+	if (dp->ipd_config == NULL) {
+		ice_error(ice, "failed to find DDP configuration segment");
+		ice_ddp_free_data(dp);
+		return (false);
+	}
+
+	switch (ice->ice_mac_type) {
+	case ICE_MAC_GENERIC_3K:
+		needed_type = ICE_SIGN_TYPE_RSA3K;
+		break;
+	case ICE_MAC_GENERIC_3K_E825:
+		needed_type = ICE_SIGN_TYPE_RSA3K_E825;
+		break;
+	case ICE_MAC_E830:
+		needed_type = ICE_SIGN_TYPE_RSA3K_SBB;
+		break;
+	default:
+		needed_type = ICE_SIGN_TYPE_RSA2K;
+		break;
+	}
+
+	for (i = 0; i < n; i++) {
+		void			*buf = NULL;
+		ice_pkg_sign_hdr_t	*shdr;
+
+		if (idx[i].isi_type != ICE_PKG_SEG_SIGNING) {
+			continue;
+		}
+
+		buf = kmem_zalloc(idx[i].isi_length, KM_SLEEP);
+		if (firmware_read(fh, idx[i].isi_offset, buf,
+		    idx[i].isi_length) != 0) {
+			ice_error(ice, "failed to read DDP signing segment %u "
+			    "header", i);
+			kmem_free(buf, idx[i].isi_length);
+			ice_ddp_free_data(dp);
+			return (false);
+		}
+
+		shdr = buf;
+		if (LE_32(shdr->ipsh_signed_idx) != dp->ipd_cfgidx ||
+		    LE_32(shdr->ipsh_type) != needed_type) {
+			kmem_free(buf, idx[i].isi_length);
+			continue;
+		}
+
+		dp->ipd_signidx = i;
+		dp->ipd_sign = buf;
+		dp->ipd_signlen = idx[i].isi_length;
+
+		break;
+	}
+
+	return (true);
+}
+
+static bool
+ice_ddp_get_metadata(ice_t *ice, firmware_handle_t fh, ice_seg_idx_t *idx,
+    uint32_t n)
+{
+	ice_pkg_global_metadata_t	m = { 0 };
+	size_t				namelen;
+	uint_t				i = 0;
+
+	for (i = 0; i < n; i++) {
+		if (idx[i].isi_type == ICE_PKG_SEG_GLOBAL_METADATA) {
+			break;
+		}
+	}
+	if (i == n) {
+		ice_error(ice,
+		    "no global metadata segment present in DDP file");
+		return (false);
+	}
+
+	if (idx[i].isi_length < sizeof (m)) {
+		ice_error(ice, "DDP global metadata segment header size "
+		    "(%u bytes) is too small", idx[i].isi_length);
+		return (false);
+	}
+
+	if (firmware_read(fh, idx[i].isi_offset, &m, sizeof (m)) < 0) {
+		ice_error(ice, "failed to read DDP global metadata segment");
+		return (false);
+	}
+
+	ice->ice_device->id_pkg_version = m.ipgm_version;
+
+	namelen = strnlen(m.ipgm_name, sizeof (m.ipgm_name));
+	bcopy(m.ipgm_name, ice->ice_device->id_pkg_name, namelen);
+	ice->ice_device->id_pkg_name[namelen] = '\0';
+
+	dev_err(ice->ice_dip, CE_CONT,
+	    "?DDP package '%s' version %u.%u.%u.%u\n",
+	    m.ipgm_name, m.ipgm_version.ipv_major, m.ipgm_version.ipv_minor,
+	    m.ipgm_version.ipv_update, m.ipgm_version.ipv_draft);
+
+	return (true);
+}
+
+static bool
+ice_ddp_download_cfg(ice_t *ice, ice_pkg_data_t *dp)
+{
+	const uint8_t	*p = dp->ipd_config;
+	uint32_t	len = dp->ipd_cfglen;
+	uint32_t	nbuf = 0;
+	uint32_t	start = 0;
+	uint32_t	count = 0;
+	bool		ret = false;
+	bool		last = true;
+	bool		held = false;
+
+	if (!ice_ddp_check_id(ice, &p, &len)) {
+		return (false);
+	}
+
+	if (!ice_ddp_check_nvm(ice, &p, &len)) {
+		return (false);
+	}
+
+	/*
+	 * Assume initially that we download all buffers in the segment.
+	 * However apparently if a signing segment is present, this may
+	 * mean we may only download a subset of the buffers in the
+	 * segment (given from the signing segment) which may adjust
+	 * the start and count values.
+	 */
+	nbuf = count = LE_32(*(uint32_t *)p);
+	p += sizeof (uint32_t);
+	len -= sizeof (uint32_t);
+
+	if (nbuf * ICE_PKG_BUF_LEN > len) {
+		ice_error(ice, "DDP config segment buffer count (%u) exceeds "
+		    "remaining segment length (%u)", nbuf, len);
+		return (false);
+	}
+
+	if (dp->ipd_sign != NULL) {
+		ice_pkg_sign_hdr_t	*shdr = dp->ipd_sign;
+		uint32_t		flags  = 0;
+
+		start = LE_IN32(&shdr->ipsh_sbuf_start);
+		count = LE_IN32(&shdr->ipsh_sbuf_count);
+		flags = LE_IN32(&shdr->ipsh_flags);
+
+		if (start > nbuf) {
+			ice_error(ice, "DDP signing segment start buffer (%u) "
+			    "is larger than segment buffer count (%u)",
+			    start, nbuf);
+			return (false);
+		}
+
+		if (start + count > nbuf) {
+			ice_error(ice, "DDP signing segment count "
+			    "(%u start %u) overruns segment buffer count (%u)",
+			    count, start, nbuf);
+			return (false);
+		}
+
+		if ((flags & ICE_PKG_SIGN_FLAG_VALID) != 0) {
+			last = (flags & ICE_PKG_SIGN_FLAG_LAST) != 0 ?
+			    true : false;
+		}
+	}
+
+	if (!ice_cmd_acquire_global_lock(ice, true, &held)) {
+		return (false);
+	}
+
+	/*
+	 * If we weren't actually granted the lock, another PF already
+	 * downloaded an identical package -- there's no download for us to
+	 * do (and no lock for us to release), but we still need to
+	 * populate our own SW-side block tables from our local copy of the
+	 * package image.
+	 */
+	if (!held) {
+		return (ice_fill_blk_tbls(ice, p, nbuf));
+	}
+
+	if (dp->ipd_sign != NULL) {
+		ice_pkg_sign_hdr_t	*shdr = dp->ipd_sign;
+		const uint8_t		*bufs = (const uint8_t *)(shdr + 1);
+		uint32_t		sbcount = 0;
+
+		sbcount = LE_IN32(bufs);
+		bufs += sizeof (sbcount);
+
+		if (!ice_ddp_download_pkgs(ice, bufs, 0, sbcount, false)) {
+			ice_error(ice, "failed to download DDP signing "
+			    "segment");
+			goto done;
+		}
+	}
+
+	if (!ice_ddp_download_pkgs(ice, p, start, count, last)) {
+		ice_error(ice, "failed to download DDP config");
+		goto done;
+	}
+
+	if (!ice_fill_blk_tbls(ice, p, nbuf)) {
+		ice_error(ice, "failed to process initial DDP package buffers");
+		goto done;
+	}
+
+	ret = true;
+
+done:
+	if (!ice_cmd_release_global_lock(ice)) {
+		return (false);
+	}
+
+	return (ret);
+}
+
+static bool
+is_last(const void *buf, uint32_t i, uint32_t n, bool set_last)
+{
+	ASSERT3U(i, <, n);
+
+	if (!set_last) {
+		return (false);
+	}
+
+	if (i + 1 == n) {
+		return (true);
+	}
+
+	const ice_pkg_buf_hdr_t *bhdr = buf;
+	const ice_pkg_sect_t	*sect = (const ice_pkg_sect_t *)(bhdr + 1);
+
+	if ((LE_IN32(&sect->ips_type) & ICE_PKG_SECT_METADATA) != 0) {
+		return (true);
+	}
+
+	return (false);
+}
+
+/*
+ * Download the packages in the given buffers starting with buffer
+ * `start` and continuing for `nbuf` buffers. Note that the caller
+ * should must validate that start and nbuf are valid within buf
+ */
+static bool
+ice_ddp_download_pkgs(ice_t *ice, const void *buf, uint32_t start,
+    uint32_t nbuf, bool set_last)
+{
+	const uint8_t		*p = buf;
+	const ice_pkg_buf_hdr_t	*bhdr;
+	const ice_pkg_sect_t	*sect;
+
+	p += ICE_PKG_BUF_LEN * start;
+	bhdr = (const ice_pkg_buf_hdr_t *)p;
+	sect = (const ice_pkg_sect_t *)(bhdr + 1);
+
+	/*
+	 * The FreeBSD driver indicates that if the first section of the
+	 * first buf is a metadata section, we skip everything.
+	 */
+	if ((LE_IN32(&sect->ips_type) & ICE_PKG_SECT_METADATA) != 0) {
+		return (true);
+	}
+
+	for (uint32_t i = 0; i < nbuf; i++) {
+		/*
+		 * Also from the FreeBSD driver, if we encounter a
+		 * metadata section while downloading, that means we're
+		 * done, so check the 'next' section (if not the last one)
+		 * to see if this is the final section
+		 */
+		bool last = is_last(p + ICE_PKG_BUF_LEN, i, nbuf, set_last);
+
+		if (!ice_cmd_download_pkg(ice, p, ICE_PKG_BUF_LEN, last)) {
+			ice_error(ice, "failed to download package %u",
+			    start +i);
+			return (false);
+		}
+
+		p += ICE_PKG_BUF_LEN;
+	}
+
+	return (true);
+}
+
+static bool
+ice_ddp_check_id(ice_t *ice, const uint8_t **hdrp, uint32_t *lenp)
+{
+	const uint8_t *p = *hdrp;
+	uint32_t len = *lenp;
+	uint32_t i, n;
+
+	/*
+	 * To recap Table 7-182, the device id table has a 4 byte
+	 * count (may be 0) followed by an array of
+	 * (PCI device id, PCI vendor id, PCI sub-device ID, PCI sub-vendor
+	 * IDs). I.e. a 32-byte count (n) followed by 'n' (4 * 16-bit)
+	 * entries.
+	 */
+	if (len < sizeof (uint32_t)) {
+		ice_error(ice, "DDP configuration segment size (%u) too small: "
+		    "failed to read device ID count");
+		return (false);
+	}
+
+	/* These might not be aligned, so we use LE_INxx() to read */
+	n = LE_IN32(p);
+	p += sizeof (n);
+	len -= sizeof (n);
+
+	/* Cast to size_t to avoid overflows */
+	if ((size_t)n * 4 * sizeof (uint16_t) > len) {
+		ice_error(ice, "DDP configuration segment device ID count (%u)"
+		    " overflow", n);
+		return (false);
+	}
+
+	/* Advance *hdrp after the device ID table */
+	*hdrp = p;
+	*hdrp += n * 4 * sizeof (uint16_t);
+
+	/*
+	 * Reduce the remaining length of the segment by the size of
+	 * the device id table.
+	 */
+	*lenp = len;
+	*lenp -= n * 4 * sizeof (uint16_t);
+
+	for (i = 0; i < n; i++) {
+		uint16_t devid, venid, subdevid, subvenid;
+
+		/*
+		 * We checked the length just prior to the loop, so we can
+		 * safely grab all 4 values.
+		 */
+		devid = LE_IN16(p);
+		p += sizeof (uint16_t);
+		venid = LE_IN16(p);
+		p += sizeof (uint16_t);
+		subdevid = LE_IN16(p);
+		p += sizeof (uint16_t);
+		subvenid = LE_IN16(p);
+		p += sizeof (uint16_t);
+
+		if (devid == ice->ice_pci_did &&
+		    venid == ice->ice_pci_vid &&
+		    subdevid == ice->ice_pci_sdid &&
+		    subvenid == ice->ice_pci_svid) {
+			return (true);
+		}
+	}
+
+	/*
+	 * We assume if there is a device id table, that we should be
+	 * able to find a match (if not, we probably need an updated
+	 * DDP package).
+	 */
+	if (n > 0) {
+		ice_error(ice, "DDP configuration segment does not contain a "
+		    "matching PCI id for device");
+		return (false);
+	}
+
+	return (true);
+}
+
+static bool
+ice_ddp_check_nvm(ice_t *ice, const uint8_t **pp, uint32_t *lenp)
+{
+	const uint8_t *p = *pp;
+	const uint8_t *end;
+	uint32_t len = *lenp;
+	uint32_t n, sz;
+
+	if (len < sizeof (uint32_t)) {
+		ice_error(ice, "NVM version table is truncated");
+		return (false);
+	}
+
+	n = LE_IN32(p);
+	p += sizeof (uint32_t);
+	len -= sizeof (n);
+
+	sz = n * sizeof (uint32_t);
+	if (sz > len) {
+		ice_error(ice, "NVM version table size (%u entries) overflow",
+		    n);
+		return (false);
+	}
+
+	end = p + sz;
+	len -= sz;
+
+	/*
+	 * The entries in this table (if any) list the NVM versions the
+	 * segment was built against. The actual compatibility check
+	 * between the DDP package and the device is instead performed
+	 * against the DDP package info the device itself reports it has
+	 * resident in NVM (see ice_ddp_check_pkg_compat()), so, other than
+	 * skipping over it, we don't need to do anything further with the
+	 * contents of this table -- this matches the behavior of the
+	 * FreeBSD driver.
+	 */
+
+	*pp = end;
+	*lenp = len;
+	return (true);
+}
+
+/*
+ * Verify that the configuration segment we intend to download to the
+ * device (seg_ver, its format version) is compatible with the DDP package
+ * the device reports as being resident in its NVM. The device must find
+ * the segment format version's major number to match exactly, and its
+ * minor number must not exceed the resident package's minor number --
+ * i.e. the NVM must be at least as new (in terms of format) as what we're
+ * about to download.
+ */
+static bool
+ice_ddp_check_pkg_compat(ice_t *ice, const ice_pkg_ver_t *seg_ver)
+{
+	ice_pkg_info_resp_t	*resp;
+	uint32_t		count, i;
+	bool			found = false;
+	bool			ret = true;
+
+	resp = kmem_zalloc(ICE_CQ_GET_PKG_INFO_BUF_SZ, KM_SLEEP);
+
+	if (!ice_cmd_get_package_info_list(ice, resp,
+	    ICE_CQ_GET_PKG_INFO_BUF_SZ)) {
+		ice_error(ice, "failed to get DDP package info list from "
+		    "device");
+		kmem_free(resp, ICE_CQ_GET_PKG_INFO_BUF_SZ);
+		return (false);
+	}
+
+	count = LE_32(resp->ipir_count);
+	if (count > ICE_PKG_INFO_MAX_ENTRIES) {
+		count = ICE_PKG_INFO_MAX_ENTRIES;
+	}
+
+	for (i = 0; i < count; i++) {
+		ice_pkg_info_t *info = &resp->ipir_info[i];
+
+		if (!info->ipi_is_in_nvm) {
+			continue;
+		}
+
+		found = true;
+
+		if (seg_ver->ipv_major != info->ipi_version.ipv_major ||
+		    seg_ver->ipv_minor > info->ipi_version.ipv_minor) {
+			ice_error(ice, "DDP configuration segment version "
+			    "%u.%u.%u.%u is incompatible with the DDP "
+			    "package version %u.%u.%u.%u resident in NVM",
+			    seg_ver->ipv_major, seg_ver->ipv_minor,
+			    seg_ver->ipv_update, seg_ver->ipv_draft,
+			    info->ipi_version.ipv_major,
+			    info->ipi_version.ipv_minor,
+			    info->ipi_version.ipv_update,
+			    info->ipi_version.ipv_draft);
+			ret = false;
+		}
+
+		break;
+	}
+
+	kmem_free(resp, ICE_CQ_GET_PKG_INFO_BUF_SZ);
+
+	if (!found) {
+		dev_err(ice->ice_dip, CE_CONT, "?device did not report a "
+		    "DDP package resident in NVM; skipping compatibility "
+		    "check\n");
+	}
+
+	return (ret);
+}
+
+/*
+ * Query the device for the DDP package it currently reports as active and
+ * record its version/name into ice_active_pkg_version/ice_active_pkg_name.
+ *
+ * This may differ from ice_pkg_version/ice_pkg_name, which is the DDP file
+ * (e.g. ice.pkg) we tried to load. If the load failed or the package was
+ * already active, or NIC may be running a different package (e.g. the
+ * one in NVM) than what we tried to download. Since this is just for UFM
+ * reporting, we query this after attempting to laod the package.
+ *
+ * That also means this is best effort.
+ */
+static void
+ice_ddp_get_active_pkg_info(ice_t *ice)
+{
+	ice_pkg_info_resp_t	*resp;
+	uint32_t		count, i;
+
+	resp = kmem_zalloc(ICE_CQ_GET_PKG_INFO_BUF_SZ, KM_SLEEP);
+
+	if (!ice_cmd_get_package_info_list(ice, resp,
+	    ICE_CQ_GET_PKG_INFO_BUF_SZ)) {
+		ice_error(ice, "!failed to get active DDP package info from "
+		    "device");
+		kmem_free(resp, ICE_CQ_GET_PKG_INFO_BUF_SZ);
+		return;
+	}
+
+	count = LE_32(resp->ipir_count);
+	if (count > ICE_PKG_INFO_MAX_ENTRIES) {
+		count = ICE_PKG_INFO_MAX_ENTRIES;
+	}
+
+	for (i = 0; i < count; i++) {
+		ice_pkg_info_t *info = &resp->ipir_info[i];
+		size_t len;
+
+		if (!info->ipi_is_active) {
+			continue;
+		}
+
+		ice->ice_device->id_active_pkg_version = info->ipi_version;
+
+		len = strnlen(info->ipi_name, sizeof (info->ipi_name));
+		bcopy(info->ipi_name, ice->ice_device->id_active_pkg_name,
+		    len);
+		ice->ice_device->id_active_pkg_name[len] = '\0';
+
+		ice->ice_device->id_active_pkg_valid = true;
+		break;
+	}
+
+	kmem_free(resp, ICE_CQ_GET_PKG_INFO_BUF_SZ);
+}
+
+static void
+ice_ddp_free_data(ice_pkg_data_t *dp)
+{
+	if (dp == NULL) {
+		return;
+	}
+
+	if (dp->ipd_config != NULL) {
+		ASSERT3U(dp->ipd_cfglen, >, 0);
+		kmem_free(dp->ipd_config, dp->ipd_cfglen);
+		dp->ipd_config = NULL;
+		dp->ipd_cfglen = 0;
+	}
+
+	if (dp->ipd_sign != NULL) {
+		ASSERT3U(dp->ipd_sign, >, 0);
+		kmem_free(dp->ipd_sign, dp->ipd_signlen);
+		dp->ipd_sign = NULL;
+		dp->ipd_signlen = 0;
+	}
+}
+
+bool
+ice_pkg_iter_section(ice_t *ice, const uint8_t *pkgbuf, uint32_t nbuf,
+    uint32_t sid, bool (*cb)(ice_t *, uint32_t, const void *, size_t, void *),
+    void *arg)
+{
+	uint32_t i, j;
+
+	for (i = 0; i < nbuf; i++) {
+		const uint8_t		*p = pkgbuf;
+		ice_pkg_buf_hdr_t	phdr;
+
+		phdr.ipbh_size = LE_IN16(p);
+		p += sizeof (uint16_t);
+
+		phdr.ipbh_data_end = LE_IN16(p);
+		p += sizeof (uint16_t);
+
+		for (j = 0; j < phdr.ipbh_size; j++) {
+			ice_pkg_sect_t	shdr;
+
+			shdr.ips_type = LE_IN32(p);
+			p += sizeof (uint32_t);
+
+			shdr.ips_offset = LE_IN16(p);
+			p += sizeof (uint16_t);
+
+			shdr.ips_size = LE_IN16(p);
+			p += sizeof (uint16_t);
+
+			if (shdr.ips_offset < 12 || shdr.ips_offset > 4095) {
+				ice_error(ice,
+				    "section %u offset %u is invalid", j,
+				    shdr.ips_offset);
+				return (false);
+			}
+
+			if (shdr.ips_size < 1 || shdr.ips_size > 4084) {
+				ice_error(ice, "section %u size %u is invalid",
+				    j, shdr.ips_size);
+				return (false);
+			}
+
+			if (shdr.ips_type != sid)
+				continue;
+
+			if (!cb(ice, sid, pkgbuf + shdr.ips_offset,
+			    shdr.ips_size, arg)) {
+				return (false);
+			}
+		}
+
+		pkgbuf += ICE_PKG_BUF_LEN;
+	}
+
+	return (true);
+}
