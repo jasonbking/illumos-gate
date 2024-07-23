@@ -1,0 +1,326 @@
+/*
+ *  Copyright (c) 2024, Intel Corporation
+ *  All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions are met:
+ *
+ *   1. Redistributions of source code must retain the above copyright notice,
+ *      this list of conditions and the following disclaimer.
+ *
+ *   2. Redistributions in binary form must reproduce the above copyright
+ *      notice, this list of conditions and the following disclaimer in the
+ *      documentation and/or other materials provided with the distribution.
+ *
+ *   3. Neither the name of the Intel Corporation nor the names of its
+ *      contributors may be used to endorse or promote products derived from
+ *      this software without specific prior written permission.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ *  ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ *  LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ *  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ *  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ *  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ *  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ *  POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/* Copyright 2026 RackTop Systems, Inc. */
+
+#ifndef _ICE_FLOW_H
+#define	_ICE_FLOW_H
+
+#include <sys/types.h>
+#include <sys/list.h>
+#include <sys/bitmap.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifndef ICE_MAX_VSIS
+#define	ICE_MAX_VSIS 768
+#endif
+
+/*
+ * This currently contains a subset of the contents of the FreeBSD ice_flow.h
+ * basically enough for us to get RSS working.
+ */
+#define	ICE_FLOW_FLD_OFF_INVAL		0xffff
+
+typedef enum ice_rss_cfg_hdr_type {
+	ICE_RSS_OUTER_HEADERS, /* take outer headers as inputset. */
+	ICE_RSS_INNER_HEADERS, /* take inner headers as inputset. */
+	/* take inner headers as inputset for packet with outer IPv4. */
+	ICE_RSS_INNER_HEADERS_W_OUTER_IPV4,
+	/* take inner headers as inputset for packet with outer IPv6. */
+	ICE_RSS_INNER_HEADERS_W_OUTER_IPV6,
+	/* take outer headers first then inner headers as inputset */
+	/* take inner as inputset for GTPoGRE with outer IPv4 + GRE. */
+	ICE_RSS_INNER_HEADERS_W_OUTER_IPV4_GRE,
+	/* take inner as inputset for GTPoGRE with outer IPv6 + GRE. */
+	ICE_RSS_INNER_HEADERS_W_OUTER_IPV6_GRE,
+	ICE_RSS_ANY_HEADERS
+} ice_rss_cfg_hdr_type_t;
+
+typedef struct ice_rss_hash_cfg {
+	uint32_t		irhc_headers;
+	uint64_t		irhc_fields;
+	ice_rss_cfg_hdr_type_t	irhc_hdr_type;
+	/*
+	 * The symmetric argument is never used and currently must be
+	 * false in the FreeBSD driver, so we've omitted here for now
+	 * at least.
+	 */
+	bool			irhc_symmetric;
+} ice_rss_hash_cfg_t;
+
+typedef enum ice_flow_dir {
+	ICE_FLOW_DIR_UNDEFINED	= 0,
+	ICE_FLOW_TX		= 0x01,
+	ICE_FLOW_RX		= 0x02,
+	ICE_FLOW_TX_RX		= ICE_FLOW_RX | ICE_FLOW_TX
+} ice_flow_dir_t;
+
+#define	ICE_HASH_INVALID	0
+
+/*
+ * Protocol header fields within a packet segment. A segment consists of one or
+ * more protocol headers that make up a logical group of protocol headers. Each
+ * logical group of protocol headers encapsulates or is encapsulated using/by
+ * tunneling or encapsulation protocols for network virtualization such as GRE,
+ * VxLAN, etc.
+ */
+typedef enum ice_flow_seg_hdr {
+	ICE_FLOW_SEG_HDR_NONE		= 0x00000000,
+	ICE_FLOW_SEG_HDR_ETH		= 0x00000001,
+	ICE_FLOW_SEG_HDR_VLAN		= 0x00000002,
+	ICE_FLOW_SEG_HDR_IPV4		= 0x00000004,
+	ICE_FLOW_SEG_HDR_IPV6		= 0x00000008,
+	ICE_FLOW_SEG_HDR_ARP		= 0x00000010,
+	ICE_FLOW_SEG_HDR_ICMP		= 0x00000020,
+	ICE_FLOW_SEG_HDR_TCP		= 0x00000040,
+	ICE_FLOW_SEG_HDR_UDP		= 0x00000080,
+	ICE_FLOW_SEG_HDR_SCTP		= 0x00000100,
+	ICE_FLOW_SEG_HDR_GRE		= 0x00000200,
+	/*
+	 * The following is an additive bit for ICE_FLOW_SEG_HDR_IPV4 and
+	 * ICE_FLOW_SEG_HDR_IPV6.
+	 */
+	ICE_FLOW_SEG_HDR_IPV_FRAG	= 0x40000000,
+	ICE_FLOW_SEG_HDR_IPV_OTHER	= 0x80000000,
+} ice_flow_seg_hdr_t;
+
+typedef enum ice_flow_field {
+	/* L2 */
+	ICE_FLOW_FIELD_IDX_ETH_DA,
+	ICE_FLOW_FIELD_IDX_ETH_SA,
+	ICE_FLOW_FIELD_IDX_S_VLAN,
+	ICE_FLOW_FIELD_IDX_C_VLAN,
+	ICE_FLOW_FIELD_IDX_ETH_TYPE,
+	/* L3 */
+	ICE_FLOW_FIELD_IDX_IPV4_DSCP,
+	ICE_FLOW_FIELD_IDX_IPV6_DSCP,
+	ICE_FLOW_FIELD_IDX_IPV4_TTL,
+	ICE_FLOW_FIELD_IDX_IPV4_PROT,
+	ICE_FLOW_FIELD_IDX_IPV6_TTL,
+	ICE_FLOW_FIELD_IDX_IPV6_PROT,
+	ICE_FLOW_FIELD_IDX_IPV4_SA,
+	ICE_FLOW_FIELD_IDX_IPV4_DA,
+	ICE_FLOW_FIELD_IDX_IPV6_SA,
+	ICE_FLOW_FIELD_IDX_IPV6_DA,
+	/* L4 */
+	ICE_FLOW_FIELD_IDX_TCP_SRC_PORT,
+	ICE_FLOW_FIELD_IDX_TCP_DST_PORT,
+	ICE_FLOW_FIELD_IDX_UDP_SRC_PORT,
+	ICE_FLOW_FIELD_IDX_UDP_DST_PORT,
+	ICE_FLOW_FIELD_IDX_SCTP_SRC_PORT,
+	ICE_FLOW_FIELD_IDX_SCTP_DST_PORT,
+	ICE_FLOW_FIELD_IDX_TCP_FLAGS,
+	/* ARP */
+	ICE_FLOW_FIELD_IDX_ARP_SIP,
+	ICE_FLOW_FIELD_IDX_ARP_DIP,
+	ICE_FLOW_FIELD_IDX_ARP_SHA,
+	ICE_FLOW_FIELD_IDX_ARP_DHA,
+	ICE_FLOW_FIELD_IDX_ARP_OP,
+	/* ICMP */
+	ICE_FLOW_FIELD_IDX_ICMP_TYPE,
+	ICE_FLOW_FIELD_IDX_ICMP_CODE,
+	/* GRE */
+	ICE_FLOW_FIELD_IDX_GRE_KEYID,
+	/* The total number of enums must not exceed 64 */
+	ICE_FLOW_FIELD_IDX_MAX
+} ice_flow_field_t;
+
+/*
+ * Combinations of ice_flow_field_t bits describing the sets of packet
+ * fields that RSS should hash on for a given flow type. These mirror the
+ * FreeBSD driver's ICE_FLOW_HASH_* / ICE_HASH_*_IP* macros.
+ */
+#define	ICE_FLOW_HASH_IPV4				\
+	((1ULL << ICE_FLOW_FIELD_IDX_IPV4_SA) |	\
+	    (1ULL << ICE_FLOW_FIELD_IDX_IPV4_DA))
+#define	ICE_FLOW_HASH_IPV6				\
+	((1ULL << ICE_FLOW_FIELD_IDX_IPV6_SA) |	\
+	    (1ULL << ICE_FLOW_FIELD_IDX_IPV6_DA))
+#define	ICE_FLOW_HASH_TCP_PORT				\
+	((1ULL << ICE_FLOW_FIELD_IDX_TCP_SRC_PORT) |	\
+	    (1ULL << ICE_FLOW_FIELD_IDX_TCP_DST_PORT))
+#define	ICE_FLOW_HASH_UDP_PORT				\
+	((1ULL << ICE_FLOW_FIELD_IDX_UDP_SRC_PORT) |	\
+	    (1ULL << ICE_FLOW_FIELD_IDX_UDP_DST_PORT))
+
+#define	ICE_HASH_TCP_IPV4	(ICE_FLOW_HASH_IPV4 | ICE_FLOW_HASH_TCP_PORT)
+#define	ICE_HASH_TCP_IPV6	(ICE_FLOW_HASH_IPV6 | ICE_FLOW_HASH_TCP_PORT)
+#define	ICE_HASH_UDP_IPV4	(ICE_FLOW_HASH_IPV4 | ICE_FLOW_HASH_UDP_PORT)
+#define	ICE_HASH_UDP_IPV6	(ICE_FLOW_HASH_IPV6 | ICE_FLOW_HASH_UDP_PORT)
+
+typedef enum ice_flow_fld_match_type {
+	ICE_FLOW_FLD_TYPE_REG,		/* Value, mask */
+	ICE_FLOW_FLD_TYPE_RANGE,	/* Value, mask, last (upper bound) */
+	ICE_FLOW_FLD_TYPE_PREFIX,	/* IP address, prefix, size of prefix */
+	ICE_FLOW_FLD_TYPE_SIZE,		/* Value, mask, size of match */
+} ice_flow_fld_match_type_t;
+
+typedef struct ice_flow_fld_loc {
+	/*
+	 * Describe offsets of field information relative to the beginning of
+	 * input buffer provided when adding flow entries.
+	 */
+	uint16_t iffl_val;	/* Offset where the value is located */
+	uint16_t iffl_mask;	/* Offset where the mask/prefix is located */
+
+	/* Length or offset where the upper value is located */
+	uint16_t iffl_last;
+} ice_flow_fld_loc_t;
+
+#define	ICE_FLOW_SEG_SINGLE		1
+#define	ICE_FLOW_SEG_MAX		2
+#define	ICE_FLOW_PROFILE_MAX		1024
+#define	ICE_FLOW_ACL_FIELD_VECTOR_MAX	32
+#define	ICE_FLOW_FV_EXTRACT_SZ		2
+
+typedef struct ice_flow_seg_xtrct {
+	/* Protocol ID of extacted header field */
+	uint8_t		ifsx_prot_id;
+	/* Starting offset of the field in header in bytes */
+	uint16_t	ifsx_off;
+	uint8_t		ifsx_idx;	/* Index of FV entry used */
+	/* Displacement of field in bits from FV entry's start */
+	uint8_t		ifsx_disp;
+} ice_flow_seg_xtrct_t;
+
+typedef struct ice_flow_fld_info {
+	ice_flow_fld_match_type_t	iffi_type;
+	ice_flow_fld_loc_t		iffi_src;
+	ice_flow_fld_loc_t		iffi_entry;
+	ice_flow_seg_xtrct_t		iffi_xtrct;
+} ice_flow_fld_info_t;
+
+typedef struct ice_flow_seg_info {
+	uint32_t		ifsi_headers;
+	uint64_t		ifsi_match;
+	uint64_t		ifsi_range;
+	ice_flow_fld_info_t	ifsi_fields[ICE_FLOW_FIELD_IDX_MAX];
+} ice_flow_seg_info_t;
+
+typedef struct ice_flow_prof {
+	list_node_t		ifp_list;
+	uint64_t		ifp_id;
+	ice_flow_dir_t		ifp_dir;
+	uint8_t			ifp_segs_cnt;
+	ice_flow_seg_info_t	ifp_segs[ICE_FLOW_SEG_MAX];
+	ulong_t			ifp_vsis[BT_BITOUL(ICE_MAX_VSIS)];
+	bool			ifp_symm;
+} ice_flow_prof_t;
+
+/*
+ * Decoders for ice_prot_id:
+ * - F: First
+ * - I: Inner
+ * - L: Last
+ * - O: Outer
+ * - S: Single
+ */
+typedef enum ice_prot_id {
+	ICE_PROT_ID_INVAL	= 0,
+	ICE_PROT_MAC_OF_OR_S	= 1,
+	ICE_PROT_MAC_O2		= 2,
+	ICE_PROT_MAC_IL		= 4,
+	ICE_PROT_MAC_IN_MAC	= 7,
+	ICE_PROT_ETYPE_OL	= 9,
+	ICE_PROT_ETYPE_IL	= 10,
+	ICE_PROT_PAY		= 15,
+	ICE_PROT_EVLAN_O	= 16,
+	ICE_PROT_VLAN_O		= 17,
+	ICE_PROT_VLAN_IF	= 18,
+	ICE_PROT_MPLS_OL_MINUS_1 = 27,
+	ICE_PROT_MPLS_OL_OR_OS	= 28,
+	ICE_PROT_MPLS_IL	= 29,
+	ICE_PROT_IPV4_OF_OR_S	= 32,
+	ICE_PROT_IPV4_IL	= 33,
+	ICE_PROT_IPV4_IL_IL	= 34,
+	ICE_PROT_IPV6_OF_OR_S	= 40,
+	ICE_PROT_IPV6_IL	= 41,
+	ICE_PROT_IPV6_IL_IL	= 42,
+	ICE_PROT_IPV6_NEXT_PROTO = 43,
+	ICE_PROT_IPV6_FRAG	= 47,
+	ICE_PROT_TCP_IL		= 49,
+	ICE_PROT_UDP_OF		= 52,
+	ICE_PROT_UDP_IL_OR_S	= 53,
+	ICE_PROT_GRE_OF		= 64,
+	ICE_PROT_NSH_F		= 84,
+	ICE_PROT_ESP_F		= 88,
+	ICE_PROT_ESP_2		= 89,
+	ICE_PROT_SCTP_IL	= 96,
+	ICE_PROT_ICMP_IL	= 98,
+	ICE_PROT_ICMPV6_IL	= 100,
+	ICE_PROT_VRRP_F		= 101,
+	ICE_PROT_OSPF		= 102,
+	ICE_PROT_ATAOE_OF	= 114,
+	ICE_PROT_CTRL_OF	= 116,
+	ICE_PROT_LLDP_OF	= 117,
+	ICE_PROT_ARP_OF		= 118,
+	ICE_PROT_EAPOL_OF	= 120,
+	ICE_PROT_META_ID	= 255, /* when offset == metadata */
+	ICE_PROT_INVALID	= 255  /* when offset == ICE_FV_OFFSET_INVAL */
+} ice_prot_id_t;
+
+typedef enum ice_flow_action_type {
+	ICE_FLOW_ACT_NOP,
+	ICE_FLOW_ACT_ALLOW,
+	ICE_FLOW_ACT_DROP,
+	ICE_FLOW_ACT_CNTR_PKT,
+	ICE_FLOW_ACT_FWD_VSI,
+	ICE_FLOW_ACT_FWD_VSI_LIST,	/* Should be abstracted away */
+	ICE_FLOW_ACT_FWD_QUEUE,		/* Can Queues be abstracted away? */
+	ICE_FLOW_ACT_FWD_QUEUE_GROUP,	/* Can Queues be abstracted away? */
+	ICE_FLOW_ACT_PUSH,
+	ICE_FLOW_ACT_POP,
+	ICE_FLOW_ACT_MODIFY,
+	ICE_FLOW_ACT_CNTR_BYTES,
+	ICE_FLOW_ACT_CNTR_PKT_BYTES,
+	ICE_FLOW_ACT_GENERIC_0,
+	ICE_FLOW_ACT_GENERIC_1,
+	ICE_FLOW_ACT_GENERIC_2,
+	ICE_FLOW_ACT_GENERIC_3,
+	ICE_FLOW_ACT_GENERIC_4,
+	ICE_FLOW_ACT_RPT_FLOW_ID,
+	ICE_FLOW_ACT_BUILD_PROF_IDX,
+} ice_flow_action_type_t;
+
+typedef struct ice_flow_action {
+	ice_flow_action_type_t	ifa_type;
+	uint32_t		ifa_dummy;
+} ice_flow_action_t;
+
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* _ICE_FLOW_H */

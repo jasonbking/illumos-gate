@@ -11,6 +11,7 @@
 
 #
 # Copyright 2019, Joyent, Inc.
+# Copyright 2026 RackTop Systems, Inc.
 #
 
 UTSBASE = ../..
@@ -20,15 +21,23 @@ OBJECTS		= $(ICE_OBJS:%=$(OBJS_DIR)/%)
 ROOTMODULE	= $(ROOT_DRV_DIR)/$(MODULE)
 CONF_SRCDIR	= $(UTSBASE)/common/io/ice
 
+FWDIR		= $(UTSBASE)/common/io/ice
+DDP_VERSION	= 1.3.41.0
+DDP_FILE	= ice-$(DDP_VERSION).pkg
+DDP_LINK	= ice.pkg
+ROOTFIRMWARE	= \
+	$(DDP_FILE:%=$(ROOT_FIRMWARE_DIR)/$(MODULE)/%)	\
+	$(DDP_LINK:%=$(ROOT_FIRMWARE_DIR)/$(MODULE)/%)
+
 include $(UTSBASE)/intel/Makefile.intel
 
 ALL_TARGET	= $(BINARY) $(CONFMOD)
-LINT_TARGET	= $(MODULE).lint
 INSTALL_TARGET	= $(BINARY) $(ROOTMODULE) $(ROOT_CONFFILE)
 
-LDFLAGS		+= -dy -N misc/mac
+LDFLAGS		+= -N misc/mac
 
-MAPFILES	+= ddi mac random genunix
+# kernel is needed for bt_getlowbit
+MAPFILES	+= ddi mac random genunix kernel
 
 .KEEP_STATE:
 
@@ -40,13 +49,14 @@ clean:		$(CLEAN_DEPS)
 
 clobber:	$(CLOBBER_DEPS)
 
-lint:		$(LINT_DEPS)
+install:	$(INSTALL_DEPS) $(ROOTFIRMWARE)
 
-modlintlib:	$(MODLINTLIB_DEPS)
-
-clean.lint:	$(CLEAN_LINT_DEPS)
-
-install:	$(INSTALL_DEPS)
+$(ROOT_FIRMWARE_DIR)/$(MODULE)/ice.pkg := INSLINKTARGET = $(DDP_FILE)
 
 include $(UTSBASE)/Makefile.mapfile
 include $(UTSBASE)/intel/Makefile.targ
+
+$(ROOT_FIRMWARE_DIR)/$(MODULE)/%: FRC
+	$(INS.symlink)
+
+FRC:

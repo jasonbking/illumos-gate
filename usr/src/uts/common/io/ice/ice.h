@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2019, Joyent, Inc.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #ifndef _ICE_H
@@ -25,6 +26,11 @@
 #include <sys/kmem.h>
 #include <sys/cmn_err.h>
 #include <sys/pci.h>
+#include <sys/pcie.h>
+#include <sys/ddifm.h>
+#include <sys/fm/protocol.h>
+#include <sys/fm/util.h>
+#include <sys/fm/io/ddi.h>
 #include <sys/mac_provider.h>
 #include <sys/mac_ether.h>
 #include <sys/ethernet.h>
@@ -33,9 +39,17 @@
 #include <sys/disp.h>
 #include <sys/taskq_impl.h>
 #include <sys/random.h>
+#include <sys/stdbool.h>
+#include <sys/pattr.h>
+#include <sys/ddi_ufm.h>
+#include <sys/cpuvar.h>
 
 #include "ice_hw.h"
 #include "ice_controlq.h"
+#include "ice_ddp.h"
+#include "ice_flow.h"
+#include "ice_flex_type.h"
+#include "ice_ioctl.h"
 
 /*
  * Intel 100 GbE Ethernet Driver
@@ -87,6 +101,44 @@ extern "C" {
 #define	ICE_MAX_TX_QUEUES	256
 
 /*
+ * The maximum size of a TX buffer the DMA engine supports (16KiB - 1).
+ */
+#define	ICE_TX_MAX_BUFSZ	0x0000000000003FFFull
+
+/*
+ * Cap packet DMA buffers to avoid painifully slow allocations
+ */
+#define	ICE_MAX_PKT_DMA_BUFSZ	4096
+
+/*
+ * The maximum number of descriptors (including any tx context descriptors)
+ * used to transmit a single packet.
+ */
+#define	ICE_TX_MAX_COOKIE	8
+
+/* The smallest supported MSS value when using LSO. */
+#define	ICE_TX_LSO_MIN_MSS	88
+
+#define	ICE_TX_LSO_MAXLEN	(64 * 1024)
+
+/*
+ * Minimum alignment for TX/RX descriptor rings
+ */
+#define	ICE_DESC_ALIGN	128
+
+/*
+ * Align allocated DMA resources to the smallest supported page size
+ * on the platform
+ */
+#if defined(__x86)
+#define	ICE_DMA_ALIGNMENT	0x1000
+#else
+#error	"unknown architecture for ice"
+#endif
+
+#define	ICE_FM_SERVICE_ICE	"ice"
+
+/*
  * These are the logical different kinds of types that a VSI can be.
  */
 typedef enum ice_vsi_type {
@@ -123,11 +175,11 @@ typedef enum ice_vsi_type {
  */
 #ifdef	DEBUG
 #define	ICE_DMA_SYNC(dma, flag)	VERIFY0(ddi_dma_sync( \
-					    (dma).idb_dma_handle, 0, 0, \
+					    (dma)->idb_dma_handle, 0, 0, \
 					    (flag)))
 #else
 #define	ICE_DMA_SYNC(dma, flag)	((void) ddi_dma_sync( \
-					    (dma).idb_dma_handle, 0, 0, \
+					    (dma)->idb_dma_handle, 0, 0, \
 					    (flag)))
 #endif
 
@@ -183,6 +235,38 @@ typedef enum ice_itr_index {
 #define	ICE_MTU_DEFAULT		1500
 
 /*
+ * The size of a 'small' packet
+ */
+#define	ICE_TX_SMALL_PKT	512
+
+/* The default minimum size to attempt binding an mblk_t on TX */
+#define	ICE_TX_DMA_THRESH_MIN	0
+#define	ICE_TX_DMA_THRESH_DEF	512
+#define	ICE_TX_DMA_THRESH_MAX	INT32_MAX
+
+#define	ICE_TX_BIND_MINSZ_DEFAULT	512
+
+/* The default number of packets we send at one time */
+#define	ICE_TX_THROTTLE_DEFAULT		256
+
+#define	ICE_RX_DMA_THRESH_MIN	0
+#define	ICE_RX_DMA_THRESH_DEF	512
+#define	ICE_RX_DMA_THRESH_MAX	INT32_MAX
+
+#define	ICE_RX_LOAN_MIN		0
+#define	ICE_RX_LOAN_DEF		1024
+/*
+ * This is a somewhat arbitrary limit to avoid excessive kernel memory
+ * consumption.
+ */
+#define	ICE_RX_LOAN_MAX		(100 * 1024)
+
+/* The default maximum number of packets we process in one interrupt */
+#define	ICE_RX_INTR_MAX_PKT_MIN	1
+#define	ICE_RX_INTR_MAX_PKT_DEF	256
+#define	ICE_RX_INTR_MAX_PKT_MAX	INT32_MAX
+
+/*
  * This represents a single logical DMA allocation. At the moment we only use
  * this for entries that a single cookie.  XXX How should we change this when
  * there are more?
@@ -196,6 +280,15 @@ typedef struct ice_dma_buffer {
 	ddi_dma_cookie_t	idb_cookie;
 } ice_dma_buffer_t;
 
+typedef struct ice_buf_pool {
+	kmutex_t		ibp_lock;
+	ice_dma_buffer_t	*ibp_bufs;
+	ice_dma_buffer_t	**ibp_free;
+	size_t			ibp_buflen;
+	size_t			ibp_nbuf;
+	size_t			ibp_nfree;
+} ice_buf_pool_t;
+
 typedef enum ice_controlq_flags {
 	ICE_CONTROLQ_F_ENABLED	= 1 << 0,
 	ICE_CONTROLQ_F_BUSY	= 1 << 1,
@@ -208,16 +301,65 @@ typedef enum ice_vsi_flags {
 	ICE_VSI_F_RSS_SET	= 1 << 2
 } ice_vsi_flags_t;
 
+typedef struct ice_vsi_mac {
+	list_node_t		ivm_node;
+	uint16_t		ivm_idx;	/* Rule index from HW */
+	uint8_t			ivm_mac[ETHERADDRL];
+} ice_vsi_mac_t;
+
+typedef struct ice_vsi_stats {
+	uint64_t	ivs_rx_bytes;			/* gorc */
+	uint64_t	ivs_rx_unicast;			/* uprc */
+	uint64_t	ivs_rx_multicast;		/* mprc */
+	uint64_t	ivs_rx_broadcast;		/* bprc */
+	uint64_t	ivs_rx_discards;		/* rdpc */
+	uint64_t	ivs_tx_bytes;			/* gotc */
+	uint64_t	ivs_tx_unicast;			/* utpc */
+	uint64_t	ivs_tx_multicast;		/* mptc */
+	uint64_t	ivs_tx_broadcast;		/* bptc */
+	uint64_t	ivs_tx_errors;			/* tepc */
+} ice_vsi_stats_t;
+
+typedef struct ice_vsi_kstats {
+	kstat_named_t	ivk_rx_bytes;
+	kstat_named_t	ivk_rx_unicast;
+	kstat_named_t	ivk_rx_multicast;
+	kstat_named_t	ivk_rx_broadcast;
+	kstat_named_t	ivk_rx_discards;
+	kstat_named_t	ivk_tx_bytes;
+	kstat_named_t	ivk_tx_unicast;
+	kstat_named_t	ivk_tx_multicast;
+	kstat_named_t	ivk_tx_broadcast;
+	kstat_named_t	ivk_tx_errors;
+} ice_vsi_kstats_t;
+
+/*
+ * If we support multiple VSIs or RDMA, we'll want to have queue id
+ * maps in each VSI that'll translate a [0..#queues) value into a
+ * physical queue id for both TX and RX.
+ */
+struct ice;
 typedef struct ice_vsi {
 	list_node_t		ivsi_node;
-	boolean_t		ivsi_pool_alloc;
-	uint_t			ivsi_id;
-	ice_vsi_type_t		ivsi_type;
+	kmutex_t		ivsi_lock;
+	struct ice		*ivsi_ice;		/* RO */
+	bool			ivsi_pool_alloc;	/* RO */
+	bool			ivsi_fir;
+	uint_t			ivsi_id;		/* RO */
+	ice_vsi_type_t		ivsi_type;		/* RO */
 	ice_vsi_flags_t		ivsi_flags;
 	ice_hw_vsi_context_t	ivsi_ctxt;
+	uint16_t		ivsi_ntxq;
 	uint16_t		ivsi_nrxq;
 	uint16_t		ivsi_frxq;
+	uint16_t		ivsi_nvlan;
+	uint16_t		*ivsi_vlan;
+	list_t			ivsi_macs;
+	uint16_t		ivsi_bcast_rule_idx;
+	ice_vsi_stats_t		ivsi_stats;
+	kstat_t			*ivsi_kstats;
 } ice_vsi_t;
+#define	ICE_VSI_MAX	767
 
 /*
  * A controlq structure represents a single communication ring that is used with
@@ -252,6 +394,300 @@ typedef struct ice_controlq {
 	uint_t			icq_tail;
 } ice_controlq_t;
 
+struct ice;
+
+struct ice_intr_handler;
+typedef struct ice_intr_handler ice_intr_handler_t;
+struct ice_intr_handler {
+	list_node_t	iih_node;
+	void		(*iih_handler)(struct ice *, ice_intr_handler_t *);
+};
+
+typedef enum ice_tcb_type {
+	ITCB_NOT_USED,
+	ITCB_SMALL_COPY,
+	ITCB_COPY,
+	ITCB_BIND,
+	ITCB_LSO_BIND,
+} ice_tcb_type_t;
+
+struct ice_tx_ring;
+typedef struct ice_tx_ctrl_block {
+	struct ice_tx_ring	*itcb_ring;
+	struct ice_tx_ctrl_block *itcb_next;
+	ice_tcb_type_t		itcb_type;
+	uint32_t		itcb_len;
+	ice_dma_buffer_t	*itcb_buf;
+	mblk_t			*itcb_mp;
+	ddi_dma_handle_t	itcb_dmah;
+	ddi_dma_handle_t	itcb_lso_dmah;
+	hrtime_t		itcb_tx_time;
+} __aligned(64) ice_tx_ctrl_block_t;
+
+/* The maximum size of a TX ring */
+#define	ICE_TX_RING_MAX_SIZE	0x1FE0
+
+/* A rather arbitrary default */
+#define	ICE_TX_RING_DEFAULT_SIZE	1024
+
+/*
+ * The "tx_nrings" driver.conf property value of 0 means to automatically
+ * size the number of TX rings to the number of online CPUs. This is also
+ * used as its default value.
+ */
+#define	ICE_TX_NRINGS_AUTO	0
+
+struct ice;
+
+typedef struct ice_txq_stat {
+	kstat_named_t		ictxs_bytes;
+	kstat_named_t		ictxs_packets;
+
+	kstat_named_t		ictxs_bind_bytes;
+	kstat_named_t		ictxs_bind_frags;
+	kstat_named_t		ictxs_copy_bytes;
+	kstat_named_t		ictxs_copy_frags;
+
+	kstat_named_t		ictxs_lso_bytes;
+	kstat_named_t		ictxs_lso_packets;
+
+	kstat_named_t		ictxs_bind_fails;
+	kstat_named_t		ictxs_mss_retries;
+	kstat_named_t		ictxs_full_copies;
+
+	kstat_named_t		ictxs_hck_meoifail;
+	kstat_named_t		ictxs_hck_nol2info;
+	kstat_named_t		ictxs_hck_nol3info;
+	kstat_named_t		ictxs_hck_nol4info;
+	kstat_named_t		ictxs_hck_badl3;
+	kstat_named_t		ictxs_hck_badl4;
+	kstat_named_t		ictxs_lso_nohck;
+
+	kstat_named_t		ictxs_no_pkt_cache;
+	kstat_named_t		ictxs_drops;
+	kstat_named_t		ictxs_blocked;
+	kstat_named_t		ictxs_badmss;
+	kstat_named_t		ictxs_toobig;
+} ice_txq_stat_t;
+
+typedef struct ice_tx_ring {
+	struct ice		*itxr_ice;		/* RO */
+	ice_intr_handler_t	itxr_intr;		/* RO */
+	mac_ring_handle_t	itxr_mactxring;		/* RO */
+	uint32_t		itxr_vec;		/* RO */
+
+	/* Set/cleared at ring stop/start, RO while ring is running */
+	uint32_t		itxr_teid;
+
+	kmutex_t		itxr_lock;
+	kcondvar_t		itxr_cv;
+	uint_t			itxr_active;
+	bool			itxr_quiesce;
+	bool			itxr_blocked;
+
+	ice_tx_ctrl_block_t	**itxr_tcbs;
+	ice_tx_desc_t		*itxr_descs;
+	ice_dma_buffer_t	itxr_dma;
+
+	uint32_t		itxr_index;
+	uint16_t		itxr_size;
+	uint16_t		itxr_avail;
+	uint16_t		itxr_head;
+	uint16_t		itxr_tail;
+
+	kmutex_t		itxr_tcb_lock;
+	ice_tx_ctrl_block_t	**itxr_tcb_free_list;
+	uint16_t		itxr_tcb_nfree;
+
+	kstat_t			*itxr_kstat;
+	ice_txq_stat_t		itxr_stats;
+} __aligned(64) ice_tx_ring_t;
+
+/* The maximum number of descriptors that can be used for 1 packet */
+#define	ICE_RX_MAX_DESC		5
+
+/* The maximum size of a RX ring */
+#define	ICE_RX_RING_MAX_SIZE	0x1FE0
+
+/* A rather arbitrary default ring size */
+#define	ICE_RX_RING_DEFAULT_SIZE	1024
+
+struct ice_rx_ring;
+
+typedef enum ice_rx_ctrl_block_state {
+	IRXB_FREE,
+	IRXB_ONRING,
+	IRXB_ONLOAN,
+} ice_rx_ctrl_block_state_t;
+
+typedef struct ice_rx_ctrl_block {
+	mblk_t			*ircb_mp;
+	struct ice_rx_ring	*ircb_ring;
+	ice_dma_buffer_t	ircb_dma;
+	frtn_t			ircb_free_rtn;
+	ice_rx_ctrl_block_state_t ircb_state;
+} __aligned(64) ice_rx_ctrl_block_t;
+
+typedef struct ice_rxq_stat {
+	kstat_named_t		icrxs_bytes;
+	kstat_named_t		icrxs_packets;
+
+	kstat_named_t		icrxs_bind_bytes;
+	kstat_named_t		icrxs_bind_segs;
+
+	kstat_named_t		icrxs_copy_bytes;
+	kstat_named_t		icrxs_copy_segs;
+
+	kstat_named_t		icrxs_desc_error;
+	kstat_named_t		icrxs_copy_nomem;
+	kstat_named_t		icrxs_intr_limit;
+	kstat_named_t		icrxs_bind_no_rcb;
+	kstat_named_t		icrxs_bind_no_mp;
+
+	kstat_named_t		icrxs_hck_unknown;
+	kstat_named_t		icrxs_hck_nol3l4p;
+	kstat_named_t		icrxs_hck_v6skip;
+	kstat_named_t		icrxs_hck_iperr;
+	kstat_named_t		icrxs_hck_eiperr;
+	kstat_named_t		icrxs_hck_v4hdrok;
+	kstat_named_t		icrxs_hck_l4err;
+	kstat_named_t		icrxs_hck_l4hdrok;
+
+	kstat_named_t		icrxs_hck_udperr;
+	kstat_named_t		icrxs_hck_tcperr;
+	kstat_named_t		icrxs_hck_sctperr;
+
+	kstat_named_t		icrxs_hck_set;
+	kstat_named_t		icrxs_hck_miss;
+} ice_rxq_stat_t;
+
+typedef struct ice_rx_ring {
+	ice_intr_handler_t	irxr_intr;
+	struct ice		*irxr_ice;
+	bool			irxr_shutdown;
+
+	kmutex_t		irxr_lock;
+
+	mac_ring_handle_t	irxr_macrxring;
+	uint64_t		irxr_rxgen;
+	bool			irxr_poll;
+
+	ice_rx_desc_t		*irxr_descs;
+	ice_rx_ctrl_block_t	**irxr_rcbs;
+
+	uint32_t		irxr_index;
+	ice_dma_buffer_t	irxr_desc_dma;
+	uint16_t		irxr_size;
+	uint16_t		irxr_head;
+	uint16_t		irxr_tail;
+
+	uint32_t		irxr_vec;
+
+	kstat_t			*irxr_kstat;
+	ice_rxq_stat_t		irxr_stats;
+} __aligned(64) ice_rx_ring_t;
+
+typedef struct ice_pf_stats {
+	uint64_t	ips_rx_bytes;
+	uint64_t	ips_rx_unicast;
+	uint64_t	ips_rx_multicast;
+	uint64_t	ips_rx_broadcast;
+	uint64_t	ips_tx_bytes;
+	uint64_t	ips_tx_unicast;
+	uint64_t	ips_tx_multicast;
+	uint64_t	ips_tx_broadcast;
+
+	uint64_t	ips_rx_size_64;
+	uint64_t	ips_rx_size_127;
+	uint64_t	ips_rx_size_255;
+	uint64_t	ips_rx_size_511;
+	uint64_t	ips_rx_size_1023;
+	uint64_t	ips_rx_size_1522;
+	uint64_t	ips_rx_size_9522;
+
+	uint64_t	ips_tx_size_64;
+	uint64_t	ips_tx_size_127;
+	uint64_t	ips_tx_size_255;
+	uint64_t	ips_tx_size_511;
+	uint64_t	ips_tx_size_1023;
+	uint64_t	ips_tx_size_1522;
+	uint64_t	ips_tx_size_9522;
+
+	uint64_t	ips_link_xon_rx;
+	uint64_t	ips_link_xoff_rx;
+	uint64_t	ips_link_xon_tx;
+	uint64_t	ips_link_xoff_tx;
+	uint64_t	ips_priority_xon_rx[8];
+	uint64_t	ips_priority_xoff_rx[8];
+	uint64_t	ips_priority_xon_tx[8];
+	uint64_t	ips_priority_xoff_tx[8];
+	uint64_t	ips_priority_xon_2_xoff[8];
+
+	uint64_t	ips_crc_errors;
+	uint64_t	ips_illegal_bytes;
+	uint64_t	ips_mac_local_faults;
+	uint64_t	ips_mac_remote_faults;
+	uint64_t	ips_rx_length_errors;
+	uint64_t	ips_rx_undersize;
+	uint64_t	ips_rx_fragments;
+	uint64_t	ips_rx_oversize;
+	uint64_t	ips_rx_jabber;
+	uint64_t	ips_tx_dropped_link_down;
+} ice_pf_stats_t;
+
+typedef struct ice_pf_kstats_t {
+	kstat_named_t	ipk_rx_bytes;
+	kstat_named_t	ipk_rx_unicast;
+	kstat_named_t	ipk_rx_multicast;
+	kstat_named_t	ipk_rx_broadcast;
+	kstat_named_t	ipk_tx_bytes;
+	kstat_named_t	ipk_tx_unicast;
+	kstat_named_t	ipk_tx_multicast;
+	kstat_named_t	ipk_tx_broadcast;
+
+	kstat_named_t	ipk_rx_size_64;
+	kstat_named_t	ipk_rx_size_127;
+	kstat_named_t	ipk_rx_size_255;
+	kstat_named_t	ipk_rx_size_511;
+	kstat_named_t	ipk_rx_size_1023;
+	kstat_named_t	ipk_rx_size_1522;
+	kstat_named_t	ipk_rx_size_9522;
+
+	kstat_named_t	ipk_tx_size_64;
+	kstat_named_t	ipk_tx_size_127;
+	kstat_named_t	ipk_tx_size_255;
+	kstat_named_t	ipk_tx_size_511;
+	kstat_named_t	ipk_tx_size_1023;
+	kstat_named_t	ipk_tx_size_1522;
+	kstat_named_t	ipk_tx_size_9522;
+
+	kstat_named_t	ipk_link_xon_rx;
+	kstat_named_t	ipk_link_xoff_rx;
+	kstat_named_t	ipk_link_xon_tx;
+	kstat_named_t	ipk_link_xoff_tx;
+	kstat_named_t	ipk_priority_xon_rx[8];
+	kstat_named_t	ipk_priority_xoff_rx[8];
+	kstat_named_t	ipk_priority_xon_tx[8];
+	kstat_named_t	ipk_priority_xoff_tx[8];
+	kstat_named_t	ipk_priority_xon_2_xoff[8];
+
+	kstat_named_t	ipk_crc_errors;
+	kstat_named_t	ipk_illegal_bytes;
+	kstat_named_t	ipk_mac_local_faults;
+	kstat_named_t	ipk_mac_remote_faults;
+	kstat_named_t	ipk_rx_length_errors;
+	kstat_named_t	ipk_rx_undersize;
+	kstat_named_t	ipk_rx_fragments;
+	kstat_named_t	ipk_rx_oversize;
+	kstat_named_t	ipk_rx_jabber;
+	kstat_named_t	ipk_tx_dropped_link_down;
+
+	kstat_named_t	ipk_temp;
+	kstat_named_t	ipk_temp_warning_threshold;
+	kstat_named_t	ipk_temp_critical_threshold;
+	kstat_named_t	ipk_temp_fatal_threshold;
+} ice_pf_kstats_t;
+
 /*
  * Consolidated information about firmware all in one structure.
  */
@@ -275,32 +711,75 @@ typedef struct ice_fw_info {
 } ice_fw_info_t;
 
 /*
- * NVM information
+ * Option ROM (OROM) combo image version information, decoded from the CIVD
+ * data block found within the active Option ROM flash bank.
  */
+typedef struct ice_orom_info {
+	uint8_t		ioi_major;
+	uint8_t		ioi_patch;
+	uint16_t	ioi_build;
+} ice_orom_info_t;
+
+/*
+ * Netlist (link topology) version information, decoded from the Netlist ID
+ * Block found within the active Netlist flash bank.
+ */
+typedef struct ice_netlist_info {
+	uint32_t	ini_major;
+	uint32_t	ini_minor;
+	uint32_t	ini_type;
+	uint32_t	ini_rev;
+	uint32_t	ini_hash;
+	uint16_t	ini_cust_ver;
+} ice_netlist_info_t;
+
+/*
+ * A reduced version of ice_fw_info_t, used to hold the NVM version fields
+ * (Dev Starter Version and EETRACK ID) that can be decoded from the shadow
+ * ram copy embedded in either flash bank (active or inactive).
+ */
+typedef struct ice_nvm_ver_info {
+	uint16_t	invi_dev_start;
+	uint32_t	invi_eetrack;
+} ice_nvm_ver_info_t;
+
+/*
+ * The NVM, OROM, and netlist modules are each stored in one of two flash
+ * banks. Firmware/software marks one bank active at a time; the other bank
+ * holds either the previous image, or a newer image that has been staged by
+ * an update but not yet activated (i.e. still pending, awaiting a device
+ * reset). This selects which of the two banks to decode version data from.
+ */
+typedef enum ice_bank_select {
+	ICE_BANK_ACTIVE = 0,
+	ICE_BANK_INACTIVE
+} ice_bank_select_t;
+
 typedef enum ice_nvm_flags {
-	/*
-	 * This bit is used to indicate that the NVM is present and therefore we
-	 * can try and perform reads.
-	 */
 	ICE_NVM_PRESENT	= 0x1 << 0,
-	/*
-	 * This bit is used to indicate if the NVM is in 'blank' mode or not.
-	 * When it's in 'blank' mode, we cannot proceed with accessing it
-	 * via the admin queue commands.
-	 */
 	ICE_NVM_BLANK	= 0x1 << 1,
-	/*
-	 * This bit is used to track the fact that we have the NVM locked
-	 * through the admin queue's NVM request resource command.
-	 */
-	ICE_NVM_LOCKED	= 0x1 << 2
+	ICE_NVM_LOCKED	= 0x1 << 2,
 } ice_nvm_flags_t;
+
+/*
+ * Describes the location of one of the two flash banks used to
+ * store the NVM, OROM, or netlist modules, as decoded from the shadow ram
+ * bank pointer/size words and the shadow ram control word.
+ */
+typedef struct ice_flash_bank {
+	uint32_t	ifb_ptr;
+	uint32_t	ifb_size;
+	bool		ifb_bank2_active;
+} ice_flash_bank_t;
 
 typedef struct ice_nvm {
 	kmutex_t in_lock;
 	ice_nvm_flags_t	in_flags;
 	uint32_t in_sector;
 	uint32_t in_size;
+	ice_flash_bank_t in_nvm_bank;
+	ice_flash_bank_t in_orom_bank;
+	ice_flash_bank_t in_netlist_bank;
 } ice_nvm_t;
 
 /*
@@ -313,7 +792,8 @@ typedef enum ice_work_task {
 	ICE_WORK_CONTROLQ		= 1 << 0,
 	ICE_WORK_NEED_RESET		= 1 << 1,
 	ICE_WORK_RESET_DETECTED		= 1 << 2,
-	ICE_WORK_LINK_STATUS_EVENT	= 1 << 3
+	ICE_WORK_LINK_STATUS_EVENT	= 1 << 3,
+	ICE_WORK_MAL_DETECTED		= 1 << 4,
 } ice_work_task_t;
 
 typedef enum ice_task_status {
@@ -347,9 +827,152 @@ typedef enum ice_attach_seq {
 	ICE_ATTACH_INTR_HANDLER	= 0x1 << 9,
 	ICE_ATTACH_TASK		= 0x1 << 10,
 	ICE_ATTACH_VSI		= 0x1 << 11,
-	ICE_ATTACH_MAC		= 0x1 << 12,
-	ICE_ATTACH_INTR_ENABLE	= 0x1 << 13
+	ICE_ATTACH_RING		= 0x1 << 12,
+	ICE_ATTACH_STATS	= 0x1 << 13,
+	ICE_ATTACH_MAC		= 0x1 << 14,
+	ICE_ATTACH_INTR_ENABLE	= 0x1 << 15,
+	ICE_ATTACH_UFM		= 0x1 << 16,
 } ice_attach_seq_t;
+
+typedef enum ice_state {
+	ICE_UNKNOWN =		0,
+	ICE_INITIALIZED =	(1 << 0),
+	ICE_STARTED =		(1 << 1),
+	ICE_ERROR =		(1 << 2),
+} ice_state_t;
+
+typedef enum ice_mac {
+	ICE_MAC_UNKNOWN,
+	ICE_MAC_VF,
+	ICE_MAC_E810,
+	ICE_MAC_E830,
+	ICE_MAC_GENERIC,
+	ICE_MAC_GENERIC_3K,
+	ICE_MAC_GENERIC_3K_E825,
+} ice_mac_t;
+
+/*
+ * The different types of reset that the device supports. These values match
+ * the encoding used by the ICE_REG_GLGEN_RSTAT_RESET_TYPE() field, with the
+ * exception of ICE_RESET_PFR, which is a per-function reset and thus is not
+ * reflected in the (device global) GLGEN_RSTAT register. Section 4.1.3
+ * describes the different reset flows and how they differ in scope.
+ */
+typedef enum ice_reset_req {
+	ICE_RESET_POR	= 0,
+	ICE_RESET_CORER	= 1,
+	ICE_RESET_GLOBR	= 2,
+	ICE_RESET_EMPR	= 3,
+	ICE_RESET_PFR	= 4
+} ice_reset_req_t;
+
+/*
+ * For now, all we care about is the TEIDs, though this might change
+ * in the future.
+ */
+typedef struct ice_sched_node {
+	struct ice_sched_node	*isn_parent;
+	struct ice_sched_node	*isn_sibling;
+	struct ice_sched_node	**isn_children;
+	uint32_t		isn_teid;
+	bool			isn_used;
+	uint16_t		isn_vsi;
+	uint8_t			isn_level;
+	uint8_t			isn_nchildren;
+	uint8_t			isn_type;
+} ice_sched_node_t;
+
+/* From Table 8-23 */
+#define	ICE_SCHED_NODE_MAX_DEPTH	9
+
+struct ice;
+
+/*
+ * Tracks the progress of populating an ice_device_t's shared firmware/NVM
+ * version information (see below). The first instance (PF) of a device
+ * populates the firmware information for use by all instances of the
+ * same device.
+ */
+typedef enum ice_device_fw_state {
+	ICE_DEVICE_FW_NONE = 0,
+	ICE_DEVICE_FW_BUSY,
+	ICE_DEVICE_FW_DONE,
+	ICE_DEVICE_FW_FAILED
+} ice_device_fw_state_t;
+
+/*
+ * Like i40e, a number of things are shared amongst the PFs on the
+ * same device. For the most part, the hardware handles any necessary
+ * serialization or arbitration (more so than i40e), but there are still
+ * a few things we want to track at the device and not the PF level.
+ *
+ * Currently the biggest thing are firmware versions since obtaining those
+ * from the NIC can take a fair amount of time (the Option ROM in particular
+ * currently requires scanning the flash for a signature).
+ *
+ * Each physical device gets its own ice_device_t, and each PF on the
+ * device holds a pointer to it. It's referenced counted and so is created
+ * when the first PF on a device attaches (may not always be PF 0) and
+ * is freed when the last PF on the device detaches (we use the PCI b/d/f
+ * information to identify which instances share the same device).
+ *
+ * The ice_device_ts are then stored in a driver-wide linked list.
+ *
+ * Whichever PF is the first to attach for a device is responsible for
+ * querying the firmware and reading the NVM to populate the version information
+ * (see ice_device_fw_enter()/ice_device_fw_exit() in ice.c); every other PF
+ * on the device blocks (in ice_device_fw_enter()) until that has finished.
+ * This is tracked by id_fw_state, protected by id_lock/id_cv.
+ */
+typedef struct ice_device {
+	list_node_t		id_link;
+	dev_info_t		*id_parent;
+	uint_t			id_pci_bus;
+	uint_t			id_pci_dev;
+
+	/*
+	 * The number of ice_t's (PFs) currently attached that share this
+	 * device, and the list of them (linked via ice_dlink).
+	 */
+	uint_t			id_nreg;
+	list_t			id_ice_list;
+
+	/*
+	 * Serializes population of the firmware/NVM/DDP version information
+	 * below across the PFs that share this device.
+	 */
+	kmutex_t		id_lock;
+	kcondvar_t		id_cv;
+	ice_device_fw_state_t	id_fw_state;
+
+	/*
+	 * Once populated, the firmware versions are treated as read
+	 * only, so no additional locking is needed once populated.
+	 */
+	ice_fw_info_t		id_fwinfo;
+
+	ice_pkg_ver_t		id_pkg_version;
+	char			id_pkg_name[ICE_SEG_NAME_SIZE + 1];
+
+	bool			id_active_pkg_valid;
+	ice_pkg_ver_t		id_active_pkg_version;
+	char			id_active_pkg_name[ICE_SEG_NAME_SIZE + 1];
+
+	bool			id_orom_valid;
+	ice_orom_info_t		id_orom;
+	bool			id_netlist_valid;
+	ice_netlist_info_t	id_netlist;
+
+	bool			id_nvm_pending_valid;
+	ice_nvm_ver_info_t	id_nvm_pending;
+	bool			id_orom_pending_valid;
+	ice_orom_info_t		id_orom_pending;
+	bool			id_netlist_pending_valid;
+	ice_netlist_info_t	id_netlist_pending;
+
+	size_t			id_pba_len;
+	uint8_t			*id_pba;
+} ice_device_t;
 
 /*
  * This structure is the primary per-physical function state.
@@ -362,6 +985,9 @@ typedef struct ice {
 	 * This tracks how far we are in attach.
 	 */
 	ice_attach_seq_t	ice_seq;
+
+	ice_state_t		ice_state;
+	bool			ice_shutdown;
 
 	/*
 	 * FMA state
@@ -393,16 +1019,40 @@ typedef struct ice {
 	ice_task_t	ice_task;
 
 	/*
+	 * This protects ice_reset_prepared as well as serializes reset
+	 * handling.
+	 */
+	kmutex_t	ice_reset_lock;
+	/*
+	 * Device has been quiesced in preparation for a reset. Also
+	 * servers to debounce multiple reset notifications.
+	 */
+	bool		ice_reset_prepared;
+
+	/*
 	 * Device information
 	 */
-	ice_fw_info_t		ice_fwinfo;
+	ice_mac_t		ice_mac_type;
 	ice_nvm_t		ice_nvm;
 	uint_t			ice_nfunc_caps;
 	ice_capability_t	*ice_func_caps;
 	uint_t			ice_ndev_caps;
 	ice_capability_t	*ice_dev_caps;
-	size_t			ice_pba_len;
-	uint8_t			*ice_pba;
+
+	ice_device_t		*ice_device;
+	list_node_t		ice_dlink;
+
+	/*
+	 * True if this PF is the one responsible for populating
+	 * ice_device's shared firmware/NVM/DDP version information (i.e.
+	 * ice_device_fw_enter() returned true for it during attach). Used
+	 * by ice_cleanup() to make sure ice_device's id_fw_state doesn't get
+	 * stuck at ICE_DEVICE_FW_BUSY if this PF's attach fails before it
+	 * finishes populating that information.
+	 */
+	bool			ice_fw_owner;
+
+	ddi_ufm_handle_t	*ice_ufmh;
 
 	uint_t			ice_max_vsis;
 	uint_t			ice_max_mtu;
@@ -412,6 +1062,7 @@ typedef struct ice {
 	uint_t			ice_first_txq;
 	uint_t			ice_max_msix;
 	uint_t			ice_first_msix;
+	uint_t			ice_rss_table_size;
 
 	uint8_t			ice_mac[ETHERADDRL];
 
@@ -419,8 +1070,45 @@ typedef struct ice {
 	uint_t			ice_num_rxq_per_vsi;
 	uint_t			ice_num_txq;
 
+	/*
+	 * Since promiscuous mode can be set on group 0 (which for us is
+	 * the first VSI), we track the corresponding switch rule ids
+	 * here instead of in the VSI. ice_promisc_enabled tracks whether
+	 * promiscuous mode is currently supposed to be on, so that we know
+	 * whether to restore it after a reset.
+	 */
+	bool			ice_promisc_enabled;
+	uint16_t		ice_promisc_rid_tx;
+	uint16_t		ice_promisc_m_rid_tx;
+	uint16_t		ice_promisc_rid_rx;
+	uint16_t		ice_promisc_m_rid_rx;
+
+	/*
+	 * Similary, multicast is only set on group 0, so the MACs are
+	 * tracked on the ice_t.
+	 */
+	list_t			ice_mc_macs;
+
+	/*
+	 * Eventually, it may make more sense to move the rings into
+	 * the vsi struct, but for now since there's just 1 vsi, they
+	 * sit here.
+	 */
+	ice_rx_ring_t		*ice_rxr;
+	ice_tx_ring_t		*ice_txr;
+
 	uint_t			ice_mtu;
 	uint_t			ice_frame_size;
+	uint_t			ice_tx_dma_min;
+	bool			ice_tx_hcksum_enable;
+	bool			ice_tx_lso_enable;
+
+	uint_t			ice_rx_dma_min;
+	uint_t			ice_rx_limit_per_intr;
+	uint_t			ice_rx_maxloan;
+	uint_t			ice_rx_rsize;
+	uint_t			ice_rx_bufsize;
+	bool			ice_rx_hcksum_enable;
 
 	uint32_t		ice_soc;
 	uint_t			ice_itr_gran;
@@ -468,6 +1156,7 @@ typedef struct ice {
 	int			ice_intr_cap;
 	size_t			ice_intr_handle_size;
 	ddi_intr_handle_t	*ice_intr_handles;
+	list_t			*ice_intr_handlers;
 
 	/*
 	 * MAC related bits
@@ -485,13 +1174,60 @@ typedef struct ice {
 	 * XXX Replace this with a tree or something of parsed info?
 	 */
 	uint16_t	ice_sched_nbranches;
-	uint8_t	ice_sched_buf[4096];
+	uint8_t		ice_sched_buf[4096];
+
+	kmutex_t		ice_tx_sched_lock;
+	ice_sched_node_t	*ice_tx_sched_root;
+	uint8_t			ice_tx_sched_depth;
+	uint8_t			ice_tx_sched_entry;
+	uint16_t		ice_tx_max_layers;
+	uint16_t		ice_tx_max_sw_layers;
+				/* Max siblings per level */
+	uint16_t		ice_tx_sched_max_sibs[ICE_SCHED_NODE_MAX_DEPTH];
+
+	kmutex_t		ice_stats_lock;
+	kstat_t			*ice_pf_ks;
+	ice_pf_stats_t		ice_pf_stats;
+
+	kmutex_t		ice_fwlog_lock;
+	bool			ice_fwlog_arq_ena;
+	ice_cq_fw_log_module_t	ice_fwlog_levels[ICE_CQ_FW_LOG_ID_MAX];
+
+	/* protects ice_rxbuf_onloan */
+	kmutex_t		ice_rxbuf_lock;
+	kcondvar_t		ice_rxbuf_cv;
+	ice_rx_ctrl_block_t	*ice_rcbs;
+	ice_rx_ctrl_block_t	**ice_free_rcbs;
+	uint_t			ice_used_rcbs_cnt;
+	uint_t			ice_n_rcbs;
+	uint_t			ice_rxbuf_onloan;
+
+	ice_buf_pool_t		ice_bufs;
+	ice_buf_pool_t		ice_small_bufs;
+
+	ice_blk_info_t		ice_blk[ICE_BLK_COUNT];
 } ice_t;
+
+static inline bool
+ice_is_running(const ice_t *ice)
+{
+	if (!(ice->ice_state & ICE_STARTED) ||
+	    (ice->ice_state & (ICE_ERROR)) != 0) {
+		return (false);
+	}
+
+	return (true);
+}
+
+extern const uint8_t ice_bcast_mac[ETHERADDRL];
+
+extern void ice_set_mac(ice_t *);
 
 /*
  * General functions
  */
 extern uint32_t ice_reg_read(ice_t *, uintptr_t);
+extern uint64_t ice_reg_read64(ice_t *, uintptr_t);
 extern void ice_reg_write(ice_t *, uintptr_t, uint32_t);
 extern int ice_regs_check(ice_t *);
 extern void ice_error(ice_t *, const char *, ...);
@@ -499,40 +1235,98 @@ extern void ice_schedule(ice_t *, ice_work_task_t);
 
 extern boolean_t ice_link_status_update(ice_t *);
 
+extern void ice_update_mtu(ice_t *, uint_t);
+
 /*
  * DMA functions
  */
 extern void ice_dma_acc_attr(ice_t *, ddi_device_acc_attr_t *);
 extern void ice_dma_transfer_controlq_attr(ice_t *, ddi_dma_attr_t *);
+extern void ice_dma_ring_attr(ice_t *, ddi_dma_attr_t *);
+extern void ice_pkt_dma_attr(ice_t *, ddi_dma_attr_t *);
+extern void ice_pkt_txbind_attr(ice_t *, ddi_dma_attr_t *);
+extern void ice_pkt_txbind_lso_attr(ice_t *, ddi_dma_attr_t *);
 extern void ice_dma_free(ice_dma_buffer_t *);
-extern boolean_t ice_dma_alloc(ice_t *, ice_dma_buffer_t *, ddi_dma_attr_t *,
-    ddi_device_acc_attr_t *, boolean_t, size_t, boolean_t);
+extern bool ice_dma_alloc(ice_t *, ice_dma_buffer_t *, ddi_dma_attr_t *,
+    ddi_device_acc_attr_t *, bool, size_t, bool);
+extern int ice_check_dma_handle(ddi_dma_handle_t);
+
+extern void ice_buf_pool_init(ice_t *, ice_buf_pool_t *, size_t, size_t,
+    ddi_dma_attr_t *);
+extern void ice_buf_pool_fini(ice_buf_pool_t *);
+extern ice_dma_buffer_t *ice_buf_pool_alloc(ice_buf_pool_t *);
+extern void ice_buf_pool_free(ice_buf_pool_t *, ice_dma_buffer_t *);
+extern size_t ice_buf_pool_size(const ice_buf_pool_t *);
+extern size_t ice_buf_pool_nfree(const ice_buf_pool_t *);
+
+static inline bool
+ice_dma_sync(ice_t *ice, ice_dma_buffer_t *dma, uint_t flags)
+{
+	ICE_DMA_SYNC(dma, flags);
+	if (ice_check_dma_handle(dma->idb_dma_handle) != DDI_FM_OK) {
+		ddi_fm_service_impact(ice->ice_dip, DDI_SERVICE_DEGRADED);
+		atomic_or_32(&ice->ice_state, ICE_ERROR);
+		return (false);
+	}
+
+	return (true);
+}
+
+extern bool ice_load_ddp(ice_t *);
+extern void ice_init_hw_tbls(ice_t *);
+extern void ice_fini_hw_tbls(ice_t *);
+extern bool ice_fill_blk_tbls(ice_t *, const uint8_t *, uint32_t);
+extern bool ice_pkg_iter_section(ice_t *, const uint8_t *, uint32_t, uint32_t,
+    bool (*)(ice_t *, uint32_t, const void *, size_t, void *), void *);
+extern bool ice_rss_config(ice_t *);
+extern bool ice_rss_config_fini(ice_t *, ice_vsi_t *);
+
+extern void ice_buf_init(ice_t *);
+extern void ice_buf_fini(ice_t *);
+
+extern bool ice_rx_start(ice_t *);
+extern void ice_rx_stop(ice_t *);
+extern void ice_tx_start(ice_t *);
+extern void ice_tx_stop(ice_t *);
+
+extern void ice_tx_init(void);
+extern void ice_tx_fini(void);
 
 /*
  * Control Queue related functions.
  */
-extern boolean_t ice_controlq_init(ice_t *);
+extern bool ice_controlq_init(ice_t *);
 extern void ice_controlq_fini(ice_t *);
+
+extern const char *ice_controlq_errmsg(ice_cq_errno_t);
+extern const char *ice_controlq_errstr(ice_cq_errno_t);
 
 extern ice_work_task_t ice_controlq_rq_process(ice_t *);
 
-extern boolean_t ice_cmd_get_version(ice_t *, ice_fw_info_t *);
-extern boolean_t ice_cmd_queue_shutdown(ice_t *, boolean_t);
-extern boolean_t ice_cmd_clear_pf_config(ice_t *);
-extern boolean_t ice_cmd_clear_pxe(ice_t *);
+extern bool ice_cmd_get_version(ice_t *, ice_fw_info_t *);
+extern bool ice_cmd_driver_version(ice_t *, uint8_t, uint8_t, uint8_t, uint8_t,
+    const char *);
+extern bool ice_cmd_queue_shutdown(ice_t *, bool);
+extern bool ice_cmd_clear_pf_config(ice_t *);
+extern bool ice_cmd_clear_pxe(ice_t *);
 /*
- * The NVM commands should not be used directly and instead the ice_nvm.c interfaces
- * mentioned below should be used.
+ * The NVM commands should not be used directly and instead the ice_nvm.c
+ * interfaces mentioned below should be used.
  */
-extern boolean_t ice_cmd_acquire_nvm(ice_t *, boolean_t);
-extern boolean_t ice_cmd_release_nvm(ice_t *);
-extern boolean_t ice_cmd_nvm_read(ice_t *, uint16_t, uint32_t, uint16_t *, uint16_t *, boolean_t);
+extern bool ice_cmd_acquire_nvm(ice_t *, bool);
+extern bool ice_cmd_release_nvm(ice_t *);
+extern bool ice_cmd_nvm_read(ice_t *, uint16_t, uint32_t, uint16_t *,
+    uint16_t *, bool, bool);
 
-extern boolean_t ice_cmd_get_caps(ice_t *, boolean_t, uint_t *,
-    ice_capability_t **);
-extern boolean_t ice_cmd_mac_read(ice_t *, uint8_t *);
-extern boolean_t ice_cmd_get_phy_abilities(ice_t *, ice_phy_abilities_t *,
-    boolean_t);
+extern bool ice_cmd_acquire_global_lock(ice_t *, bool, bool *);
+extern bool ice_cmd_release_global_lock(ice_t *);
+extern bool ice_cmd_acquire_change_lock(ice_t *, bool);
+extern bool ice_cmd_release_change_lock(ice_t *);
+
+extern bool ice_cmd_get_caps(ice_t *, bool, uint_t *, ice_capability_t **);
+extern bool ice_cmd_mac_read(ice_t *, uint8_t *);
+extern bool ice_cmd_get_phy_abilities(ice_t *, ice_phy_abilities_t *, bool);
+extern bool ice_cmd_set_max_mtu(ice_t *, uint16_t);
 
 typedef enum {
 	ICE_LSE_NO_CHANGE,
@@ -540,34 +1334,83 @@ typedef enum {
 	ICE_LSE_DISABLE
 } ice_lse_t;
 
-extern boolean_t ice_cmd_get_link_status(ice_t *, ice_link_status_t *,
+extern bool ice_cmd_get_link_status(ice_t *, ice_link_status_t *,
     ice_lse_t);
-extern boolean_t ice_cmd_set_event_mask(ice_t *, uint16_t);
-extern boolean_t ice_cmd_setup_link(ice_t *, boolean_t);
-extern boolean_t ice_cmd_get_switch_config(ice_t *, void *, size_t, uint16_t,
+extern bool ice_cmd_set_event_mask(ice_t *, uint16_t);
+extern bool ice_cmd_setup_link(ice_t *, bool);
+extern bool ice_cmd_set_port_id_led(ice_t *, bool);
+extern bool ice_cmd_sff_eeprom(ice_t *, uint8_t, uint16_t, void *, uint8_t);
+extern bool ice_cmd_get_switch_config(ice_t *, void *, size_t, uint16_t,
     uint16_t *, uint16_t *);
 
-extern boolean_t ice_cmd_add_vsi(ice_t *, ice_vsi_t *);
-extern boolean_t ice_cmd_free_vsi(ice_t *, ice_vsi_t *, boolean_t);
+extern bool ice_cmd_add_vsi(ice_t *, ice_vsi_t *);
+extern bool ice_cmd_free_vsi(ice_t *, ice_vsi_t *, bool);
 
-extern boolean_t ice_cmd_set_rss_key(ice_t *, ice_vsi_t *, void *, uint_t);
-extern boolean_t ice_cmd_set_rss_lut(ice_t *, ice_vsi_t *, void *, uint_t);
+extern bool ice_cmd_set_rss_key(ice_t *, ice_vsi_t *, void *, uint_t);
+extern bool ice_cmd_set_rss_lut(ice_t *, ice_vsi_t *, void *, uint_t);
 
-extern boolean_t ice_cmd_get_default_scheduler(ice_t *, void *, size_t,
-    uint16_t *);
+extern bool ice_cmd_allocate_resource(ice_t *, ice_res_entry_t *, uint16_t *);
+extern bool ice_cmd_free_resource(ice_t *, ice_res_entry_t *, uint16_t);
+
+extern bool ice_cmd_get_default_scheduler(ice_t *, void *, size_t, uint16_t *);
+extern bool ice_cmd_get_sched_resource_alloc(ice_t *, void *, size_t *);
+extern bool ice_cmd_add_sched_elements(ice_t *, uint16_t *,
+    ice_hw_sched_grp_t *);
+extern bool ice_cmd_del_sched_elements(ice_t *, uint16_t *,
+    ice_hw_delete_sched_elements_t *);
+extern ice_sched_node_t *ice_tx_sched_txq_parent(ice_vsi_t *);
+
+extern bool ice_cmd_add_txq_grp(ice_t *, ice_vsi_t *, ice_tx_ring_t *,
+    ice_hw_txq_context_t *);
+extern bool ice_cmd_disable_queue(ice_t *, ice_tx_ring_t *);
+extern bool ice_cmd_switch_rules(ice_t *, ice_cq_opcode_t, uint16_t,
+    void *, size_t);
+extern bool ice_cmd_download_pkg(ice_t *, const void *, size_t, bool);
+extern bool ice_cmd_update_pkg(ice_t *, const void *, size_t, bool);
+extern bool ice_cmd_get_package_info_list(ice_t *, void *, size_t);
+extern bool ice_cmd_get_sensor_reading(ice_t *, int8_t *, uint8_t *,
+    uint8_t *, uint8_t *);
+extern bool ice_cmd_set_health_status_config(ice_t *, uint8_t);
+extern bool ice_cmd_set_fw_log_config(ice_t *, const ice_cq_fw_log_module_t *,
+    uint16_t, uint8_t, uint16_t);
+extern bool ice_cmd_fw_log_register(ice_t *, bool);
+extern bool ice_cmd_debug_dump(ice_t *, uint16_t, uint16_t, uint32_t, void *,
+    uint16_t, uint16_t *, uint16_t *, uint16_t *, uint32_t *);
+
+extern bool ice_promisc_on(ice_t *);
+extern bool ice_promisc_off(ice_t *);
+extern bool ice_add_mac(ice_t *, uint_t, const uint8_t *, uint16_t *);
+extern bool ice_remove_rule(ice_t *, uint16_t, const uint16_t *);
 
 /*
  * NVM related functions
  */
-extern boolean_t ice_nvm_init(ice_t *);
+extern bool ice_nvm_init(ice_t *, bool);
 extern void ice_nvm_fini(ice_t *);
-extern boolean_t ice_nvm_read16(ice_t *, uint32_t, uint16_t *);
-extern boolean_t ice_nvm_read_pba(ice_t *);
+extern bool ice_nvm_read16(ice_t *, uint32_t, uint16_t *);
+extern bool ice_nvm_read_pba(ice_t *);
+
+/*
+ * TX Scheduler related functions
+ */
+extern bool ice_parse_tx_sched(ice_t *, const uint8_t *, size_t, uint8_t);
+extern void ice_tx_sched_free_nodes(ice_t *, ice_sched_node_t *);
+extern bool ice_tx_sched_add_vsi_node(ice_t *, ice_vsi_t *);
+extern ice_sched_node_t *ice_tx_sched_alloc_node(ice_t *, ice_sched_node_t *,
+    uint32_t, uint8_t);
+extern ice_sched_node_t *ice_tx_sched_find_node(ice_t *, ice_sched_node_t *,
+    uint32_t);
+extern ice_sched_node_t *ice_tx_sched_vsi_node(ice_vsi_t *);
+extern bool ice_tx_sched_del_elt(ice_t *, ice_sched_node_t *, bool);
+extern bool ice_tx_sched_del_subtree(ice_t *, ice_sched_node_t *);
 
 /*
  * Hardware related functions (one that manipulate registers)
  */
-extern boolean_t ice_pf_reset(ice_t *);
+extern bool ice_pf_reset(ice_t *);
+extern bool ice_check_reset(ice_t *);
+extern bool ice_reset(ice_t *, ice_reset_req_t);
+extern ice_reset_req_t ice_reset_type(ice_t *);
 
 /*
  * Interrupt routines
@@ -580,12 +1423,52 @@ extern boolean_t ice_intr_hw_init(ice_t *);
 extern void ice_intr_hw_fini(ice_t *);
 
 extern void ice_intr_trigger_softint(ice_t *);
+extern void ice_intr_add_handler(ice_t *, uint_t, ice_intr_handler_t *);
+extern void ice_intr_remove_handler(ice_t *, uint_t, ice_intr_handler_t *);
 
 /*
  * GLDv3 routines
  */
 extern void ice_mac_unregister(ice_t *);
 extern boolean_t ice_mac_register(ice_t *);
+
+extern mblk_t *ice_ring_tx(void *, mblk_t *);
+extern int ice_ring_tx_stat(mac_ring_driver_t, uint_t, uint64_t *);
+extern int ice_ring_tx_start(mac_ring_driver_t, uint64_t);
+extern void ice_ring_tx_stop(mac_ring_driver_t);
+extern int ice_ring_tx_intr_enable(mac_intr_handle_t);
+extern int ice_ring_tx_intr_disable(mac_intr_handle_t);
+extern void ice_tx_interrupt(ice_t *, ice_intr_handler_t *);
+
+extern int ice_ring_rx_start(mac_ring_driver_t, uint64_t);
+extern void ice_ring_rx_stop(mac_ring_driver_t);
+extern mblk_t *ice_ring_rx_poll(void *, int);
+extern int ice_ring_rx_intr_enable(mac_intr_handle_t);
+extern int ice_ring_rx_intr_disable(mac_intr_handle_t);
+extern int ice_ring_rx_stat(mac_ring_driver_t, uint_t, uint64_t *);
+extern void ice_rx_interrupt(ice_t *, ice_intr_handler_t *);
+
+extern bool ice_rxq_context_write(ice_t *, ice_hw_rxq_context_t *, uint_t);
+extern bool ice_txq_context_write(ice_t *, ice_hw_txq_context_t *, uint8_t *,
+    size_t);
+
+/*
+ * stats routines
+ */
+extern bool ice_stats_init(ice_t *);
+extern void ice_stats_fini(ice_t *);
+extern bool ice_stat_vsi_init(ice_vsi_t *);
+extern void ice_stat_vsi_fini(ice_vsi_t *);
+extern int ice_m_stat(void *, uint_t, uint64_t *);
+
+/*
+ * flex pipeline routines
+ */
+bool ice_add_prof(ice_t *, ice_block_t, uint64_t, ulong_t *, ice_fv_word_t *);
+extern bool ice_rem_prof(ice_t *, ice_block_t, uint64_t);
+extern bool ice_add_vsi_flow(ice_t *, ice_block_t, uint16_t, uint16_t);
+extern bool ice_add_prof_id_flow(ice_t *, ice_block_t, uint16_t, uint64_t);
+extern bool ice_rem_prof_id_flow(ice_t *, ice_block_t, uint16_t, uint64_t);
 
 #ifdef __cplusplus
 }
