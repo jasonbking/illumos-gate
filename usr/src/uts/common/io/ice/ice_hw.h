@@ -768,10 +768,25 @@ typedef struct ice_hw_rxq_context {
  */
 #define	ICE_HW_RXQ_CTX_PHYSICAL_SIZE	32
 
+#define	ICE_RXQ_CONTEXT_REG_SIZE	8
 #define	ICE_REG_RXQ_CONTEXT_BASE	0x00280000
+#define	ICE_REG_RXQ_CONTEXT(n, idx) \
+	(ICE_REG_RXQ_CONTEXT_BASE + (n) * 0x2000 + (idx) * 4)
 
-#define	ICE_REG_QRX_BASE		0x00290000ull
-#define	ICE_QRX_TAIL(idx) 		(ICE_REG_QRX_BASE + ((idx) * 4))
+#define	ICE_QRX_TAIL(idx) 		(0x00290000ull + ((idx) * 4))
+
+#define	ICE_RING_WAIT_NTRIES		10
+
+#define	ICE_QRX_CTRL(idx)		(0x00120000ull + ((idx) * 4))
+#define	ICE_QRX_CTRL_QENA_REQ		(1UL << 0)
+#define	ICE_QRX_CTRL_FAST_QDIS		(1UL << 1)
+#define	ICE_QRX_CTRL_QENA_STAT		(1UL << 2)
+#define	ICE_QRX_CTRL_CDE		(1UL << 3)
+#define	ICE_QRX_CTRL_CDS		(1UL << 4)
+
+#define	ICE_QRX_CTRL_ENABLED \
+	(ICE_QRX_CTRL_QENA_REQ|ICE_QRX_CTRL_QENA_STAT)
+
 
 typedef struct ice_hw_txq_context {
 	uint64_t	ihtc_base;
@@ -822,8 +837,7 @@ typedef struct ice_hw_txq_context {
 
 #define	ICE_HW_TXQ_CTX_PHYSICAL_SIZE	22
 
-#define	ICE_QTX_BASE			0x002C0000
-#define	ICE_QTX_TAIL(idx) 		(ICE_QTX_BASE + ((idx) * 4))
+#define	ICE_QTX_TAIL(idx) 		(0x002C0000 + ((idx) * 4))
 
 /*
  * Scheduler Structures returned by hardware.

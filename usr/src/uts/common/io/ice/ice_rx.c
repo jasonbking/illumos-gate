@@ -10,11 +10,78 @@
  */
 
 /*
+ * Copyright 2015 OmniTI Computer Consulting, Inc. All rights reserved.
+ * Copyright 2019 Joyent, Inc.
+ * Copyright 2017 Tegile Systems, Inc.  All rights reserved.
  * Copyright 2024 RackTop Systems, Inc.
+ * Copyright 2020 Ryan Zezeski
+ * Copyright 2021 Oxide Computer Company
+ *
+ * NOTE: While not an exact copy, this borrows heavily from i40e_transciever.c
+ * as both NICs have very similar interfaces (in general, the E810 hardware is
+ * a superset of the E710). As such, the copyright notices from that file at
+ * the time of this file's creation have been imported here, though they
+ * should not need to be kept in sync (unless both files are being modified
+ * at the same time).
+ *
+ * Aside from the Intel E810 Data Sheet, the i40e driver source can also be
+ * of assistance in answering an questions about the behavior. The main
+ * differences are that the E810 driver may use multiple DMA buffers for a
+ * packet when the MTU is larger than the system's page size. This is to avoid
+ * lengthy allocation times for packet memory.
+ *
+ * Allocating single cookie DMA buffers larger than the system's page size
+ * implies that the resulting memory is physically contiguous. As a result,
+ * when kernel memory is fragmented (even if large amounts are free), the VM
+ * may have to work hard to satisify the thousands of requests per ring needed
+ * for DMA buffers for packet memory (for the ring descriptor memory, this
+ * is less of an issue since there is only one per ring).
+ *
+ * When we scan the RX ring (either due to an interrupt or when asked to
+ * via ice_rx_poll()), we first 'peek' at the descriptors (looking at their
+ * state as well as their length) to determine how many entries should be
+ * processed. In the case of being invoked by the interrupt, we process
+ * up to ice->ice_rx_limit_per_intr packets and in the case of polling, we
+ * limit ourselves to the number of packets less than or equal to the
+ * limit given to us by mac.
+ *
+ * Once we determine how many packets to process, we then will either
+ * copy or loan the buffers from the ring (depending on the size of the
+ * segment and the amount of buffers available to loan).
  */
 
 #include <sys/types.h>
 #include "ice.h"
+
+#define	ICE_RCTX_MAP(_f, _w, _l)				\
+{								\
+	.icm_offset = offsetof(ice_hw_rxq_context_t, _f),	\
+	.icm_size = sizeof (((ice_hw_rxq_context_t *)0)->_f),	\
+	.icm_width = _w,					\
+	.icm_lsb = _l,						\
+}
+
+static const ice_ctx_map_t ice_rctx_map[] = {
+	ICE_RCTX_MAP(ihrc_head,		13, 0),
+	ICE_RCTX_MAP(ihrc_base,		57, 32),
+	ICE_RCTX_MAP(ihrc_qlen,		13, 89),
+	ICE_RCTX_MAP(ihrc_dbuff,	7, 102),
+	ICE_RCTX_MAP(ihrc_hbuff,	5, 109),
+	ICE_RCTX_MAP(ihrc_dtype,	2, 114),
+	ICE_RCTX_MAP(ihrc_dsize,	1, 116),
+	ICE_RCTX_MAP(ihrc_crcstrip,	1, 117),
+	ICE_RCTX_MAP(ihrc_l2tsel,	1, 119),
+	ICE_RCTX_MAP(ihrc_hsplit0,	4, 120),
+	ICE_RCTX_MAP(ihrc_hsplit1,	2, 124),
+	ICE_RCTX_MAP(ihrc_showiv,	1, 127),
+ICE_RCTX_MAP(ihrc_rxmax,	14, 128),
+	ICE_RCTX_MAP(ihrc_tphrdesc,	1, 193),
+	ICE_RCTX_MAP(ihrc_tphwdesc,	1, 194),
+	ICE_RCTX_MAP(ihrc_tphdata,	1, 195),
+	ICE_RCTX_MAP(ihrc_tphhead,	1, 196),
+	ICE_RCTX_MAP(ihrc_lrxqthresh,	3, 198),
+	{ 0 }
+};
 
 static inline bool
 ice_rx_desc_done(const ice_rx_desc_t *desc)
@@ -136,7 +203,7 @@ ice_rcb_alloc(ice_rx_ring_t *rxr, bool loan_replacement)
 		ice->ice_rxbuf_onloan++;
 	}
 
-	rcb = NULL; // TODO get from free list
+	rcb = NULL; // TODO get from pool
 	mutex_exit(&ice->ice_rxbuf_lock);
 
 	ASSERT3S(rcb->ircb_state, ==, IRXB_FREE);
@@ -151,6 +218,9 @@ ice_rcb_free(ice_rx_ctrl_block_t *rcb)
 {
 	ice_t *ice;
 
+	if (rcb == NULL)
+		return;
+
 	ASSERT3S(rcb->ircb_state, !=, IRXB_FREE);
 	ASSERT3P(rcb->ircb_ring, !=, NULL);
 
@@ -163,7 +233,7 @@ ice_rcb_free(ice_rx_ctrl_block_t *rcb)
 	if (rcb->ircb_state == IRXB_ONLOAN)
 		ice->ice_rxbuf_onloan--;
 
-	// TODO: put on free list
+	// TODO: put back in pool
 	mutex_exit(&ice->ice_rxbuf_lock);
 }
 
@@ -176,6 +246,10 @@ ice_rx_recycle(caddr_t arg)
 	ice_t			*ice;
 	ice_rx_ctrl_block_t	*rcb = (ice_rx_ctrl_block_t *)arg;
 
+	/*
+	 * If we were anywhere but the free pool, we should be associated
+	 * with a ring.
+	 */
 	IMPLY(rcb->ircb_state != IRXB_FREE, rcb->ircb_ring != NULL);
 
 	/*
@@ -210,7 +284,7 @@ ice_rx_recycle(caddr_t arg)
 	if (!ice->ice_shutdown)
 		(void) ice_rx_alloc_mp(rcb);
 
-	// TODO -- put back on free list
+	// TODO -- put back in the pool
 }
 
 static mblk_t *
@@ -240,6 +314,8 @@ ice_rx_bind(ice_rx_ring_t *rxr, uint16_t idx, uint_t len)
 		ice_rcb_free(replacement);
 		return (NULL);
 	}
+
+	ice_rx_reset_desc(rxr, idx);
 
 	if (!ice_dma_sync(ice, &rcb->ircb_dma, DDI_DMA_SYNC_FORKERNEL)) {
 		ice_rcb_free(replacement);
@@ -443,7 +519,7 @@ discard:
 
 /*
  * Receive packets from ring. If poll_bytes > 0, it represents the maximum
- * amount of data we can receive. If poll_bytes == 0, there is no limit.
+ * amount of data we can receive. If poll_bytes == 0, there is no byte limit.
  * Returns an mblk_t chain of received packets, or NULL if none are
  * available (subject to poll_bytes).
  */
@@ -492,7 +568,7 @@ ice_ring_rx(ice_rx_ring_t *rxr, int poll_bytes)
 			if (poll_bytes == 0)
 				break;
 		}
-	} while (npkts < ice->ice_rx_limit_per_intr);
+	} while (poll_bytes > 0 || npkts < ice->ice_rx_limit_per_intr);
 
 	if (npkts == ice->ice_rx_limit_per_intr)
 		rxr->irxr_stats.icrxs_intr_limit.value.ui64++;
@@ -546,34 +622,185 @@ ice_ring_rx_poll(void *arg, int poll_bytes)
 	return (mp);
 }
 
-int
-ice_ring_rx_start(mac_ring_driver_t rh, uint64_t gen_num)
+static bool
+ice_rx_setup_bufs(ice_rx_ring_t *rxr)
 {
-	ice_rx_ring_t		*rxr = (ice_rx_ring_t *)rh;
 	ice_t			*ice = rxr->irxr_ice;
 	ddi_dma_attr_t		attr;
 	ddi_device_acc_attr_t	dev_attr;
 	size_t			len;
 
-	len = ice->ice_rx_rsize * sizeof (ice_rx_desc_t);
+	ASSERT(MUTEX_HELD(&rxr->irxr_lock));
 
 	ice_dma_ring_attr(ice, &attr);
 	ice_dma_acc_attr(ice, &dev_attr);
 
+	len = rxr->irxr_size * sizeof (ice_rx_desc_t);
 	if (!ice_dma_alloc(ice, &rxr->irxr_desc_dma, &attr, &dev_attr, true,
 	    len, true)) {
-		ice_error(ice, "!failed to start rx ring");
-		return (-1);
+		ice_error(ice, "failed to alloc RX descriptor ring");
+		return (false);
+	}
+	rxr->irxr_descs = (ice_rx_desc_t *)rxr->irxr_desc_dma.idb_va;
+
+	len = rxr->irxr_size * sizeof (ice_tx_ctrl_block_t *);
+	rxr->irxr_rcbs = kmem_zalloc(len, KM_SLEEP);
+
+	for (uint_t i = 0; i < rxr->irxr_size; i++) {
+		ice_rx_ctrl_block_t *rcb = NULL;
+
+		rcb = ice_rcb_alloc(rxr, false);
+		VERIFY3P(rcb, !=, NULL);
+
+		rxr->irxr_rcbs[i] = rcb;
+		ice_rx_reset_desc(rxr, i);
 	}
 
-	// TODO alloc rcbs + dma memory
+	if (!ice_dma_sync(ice, &rxr->irxr_desc_dma, DDI_DMA_SYNC_FORDEV)) {
+		ice_error(ice, "failed to sync rx ring");
+		return (false);
+	}
 
-	// TODO program RX ring address
-	
+	return (true);
+}
+
+static void
+ice_rx_teardown_bufs(ice_rx_ring_t *rxr)
+{
+	size_t len;
+
+	for (uint_t i = 0; i < rxr->irxr_size; i++) {
+		ice_rcb_free(rxr->irxr_rcbs[i]);
+		rxr->irxr_rcbs[i] = NULL;
+	}
+
+	len = rxr->irxr_size * sizeof (ice_tx_ctrl_block_t *);
+	kmem_free(rxr->irxr_rcbs, len);
+	rxr->irxr_rcbs = NULL;
+
+	ice_dma_free(&rxr->irxr_desc_dma);
+	rxr->irxr_size = 0;
+}
+
+static bool
+ice_rx_setup_ctx(ice_rx_ring_t *rxr)
+{
+	ice_t			*ice = rxr->irxr_ice;
+	uint32_t		regs[ICE_RXQ_CONTEXT_REG_SIZE] = { 0 };
+	ice_hw_rxq_context_t	rctx = {
+		.ihrc_head = 0,
+		.ihrc_base = rxr->irxr_desc_dma.idb_cookie.dmac_laddress >>
+		    ICE_HW_RXQ_CTX_BASE_SHIFT,
+		.ihrc_qlen = rxr->irxr_size,
+		.ihrc_dbuff = ice->ice_rx_bufsize >> ICE_HW_RXQ_CTX_DBUFF_SHIFT,
+		.ihrc_hbuff = 0 >> ICE_HW_RXQ_CTX_HBUFF_SHIFT,
+		.ihrc_dtype = ICE_HW_RXQ_CTX_DTYPE_NOSPLIT,
+		.ihrc_dsize = ICE_HW_RXQ_CTX_DSIZE_32B,
+		.ihrc_crcstrip = 1,
+		.ihrc_l2tsel = 0,
+		.ihrc_hsplit0 = 0,
+		.ihrc_hsplit1 = 0,
+		.ihrc_showiv = 0,
+		.ihrc_rxmax = ice->ice_frame_size, // XXX
+		.ihrc_tphrdesc = 1,
+		.ihrc_tphwdesc = 1,
+		.ihrc_tphdata = 1,
+		.ihrc_tphhead = 0,
+		.ihrc_lrxqthresh = 0, // XXX
+		.ihrc_req = 0,
+	};
+
+	ice_ctx_xlate(ice_rctx_map, &rctx, regs, true);
+
+	for (uint_t i = 0; i < ICE_RXQ_CONTEXT_REG_SIZE; i++) {
+		uintptr_t addr = ICE_REG_RXQ_CONTEXT(i, rxr->irxr_index);
+
+		ice_reg_write(ice, addr, regs[i]);
+	}
+
+	if (ice_regs_check(ice) != 0) {
+		ddi_fm_service_impact(ice->ice_dip, DDI_SERVICE_DEGRADED);
+		atomic_or_32(&ice->ice_state, ICE_ERROR);
+		return (false);
+	}
+
+	return (true);
+}
+
+
+int
+ice_ring_rx_start(mac_ring_driver_t rh, uint64_t gen_num)
+{
+	ice_rx_ring_t	*rxr = (ice_rx_ring_t *)rh;
+	ice_t		*ice = rxr->irxr_ice;
+	uint32_t	reg;
+
 	mutex_enter(&rxr->irxr_lock);
+
 	rxr->irxr_rxgen = gen_num;
 	rxr->irxr_size = ice->ice_rx_rsize;
 	rxr->irxr_head = rxr->irxr_tail = 0;
+
+	/*
+	 * 10.4.3.1.1 Receive Queue Enable Flow.
+	 *
+	 * 1. Allocate memory for receive ring and program receive
+	 * descriptors.
+	 */
+	if (!ice_rx_setup_bufs(rxr)) {
+		ice_rx_teardown_bufs(rxr);
+		mutex_exit(&rxr->irxr_lock);
+		return (-1);
+	}
+
+	/* 2. Program the Rx-Queue context parameters */
+	if (!ice_rx_setup_ctx(rxr)) {
+		ice_rx_teardown_bufs(rxr);
+		mutex_exit(&rxr->irxr_lock);
+		return (-1);
+	}
+
+	/*
+	 * 3. Clear queue tail pointer and set tail to end of descriptor
+	 * ring
+	 */
+	ice_reg_write(ice, ICE_QRX_TAIL(rxr->irxr_index), 0);
+	ice_reg_write(ice, ICE_QRX_TAIL(rxr->irxr_index), rxr->irxr_size - 1);
+
+
+	/* 4. Set QENA_REQ flag in QRX_CTRL[n] */
+	reg = ice_reg_read(ice, ICE_QRX_CTRL(rxr->irxr_index));
+	VERIFY3U((reg & ICE_QRX_CTRL_ENABLED), !=, ICE_QRX_CTRL_ENABLED);
+
+	reg |= ICE_QRX_CTRL_QENA_REQ;
+	ice_reg_write(ice, ICE_QRX_CTRL(rxr->irxr_index), reg);
+
+	/* Note we don't support no-drop TCs, so step 5 omitted */
+
+	/*
+	 * 6. Wait for QENA_STAT flag to be set in QRX_CTRL[n]. Note that
+	 * QENA_REQ should remain set. While this should happen within 10us,
+	 * other drivers (e.g. FreeBSD's ice driver) will retry a few
+	 * times with a 10us delay.
+	 */
+	for (uint_t i = 0; i < ICE_RING_WAIT_NTRIES; i++) {
+		reg = ice_reg_read(ice, ICE_QRX_CTRL(rxr->irxr_index));
+		if ((reg & ICE_QRX_CTRL_ENABLED) != ICE_QRX_CTRL_ENABLED)
+			break;
+
+		drv_usecwait(10);
+	}
+
+	if ((reg & ICE_QRX_CTRL_ENABLED) != ICE_QRX_CTRL_ENABLED) {
+		ice_error(rxr->irxr_ice, "!failed to enable rx queue %u, "
+		    "timed out", rxr->irxr_index);
+
+		ice_rx_teardown_bufs(rxr);
+		mutex_exit(&rxr->irxr_lock);
+		return (-1);
+	}
+
+	/* We currently don't support VFs, so step 7 ommitted */
 	rxr->irxr_shutdown = false;
 	mutex_exit(&rxr->irxr_lock);
 
@@ -584,16 +811,35 @@ void
 ice_ring_rx_stop(mac_ring_driver_t rh)
 {
 	ice_rx_ring_t	*rxr = (ice_rx_ring_t *)rh;
-	//ice_t		*ice = rxr->irxr_ice;
+	ice_t		*ice = rxr->irxr_ice;
+	uint32_t	reg;
 
 	mutex_enter(&rxr->irxr_lock);
 	rxr->irxr_shutdown = true;
-	// TODO wait for rxbs to free
 
-	// TODO release rcbs + dma memory
-	ice_dma_free(&rxr->irxr_desc_dma);
+	// XXX Should we release the lock and disable the queue outside
+	// of holding the lock?
+
+	reg = ice_reg_read(ice, ICE_QRX_CTRL(rxr->irxr_index));
+
+	reg &= ~ICE_QRX_CTRL_QENA_REQ;
+	ice_reg_write(ice, ICE_QRX_CTRL(rxr->irxr_index), reg);
+
+	for (uint_t i = 0; i < ICE_RING_WAIT_NTRIES; i++) {
+		reg = ice_reg_read(ice, ICE_QRX_CTRL(rxr->irxr_index));
+		if ((reg & ICE_QRX_CTRL_QENA_STAT) == 0)
+			break;
+
+		drv_usecwait(10);
+	}
+
+	if ((reg & ICE_QRX_CTRL_QENA_STAT) != 0) {
+		ice_error(rxr->irxr_ice, "!failed to stop queue %u, timed out",
+		    rxr->irxr_index);
+	}
+
+	ice_rx_teardown_bufs(rxr);
 	mutex_exit(&rxr->irxr_lock);
-
 }
 
 int

@@ -61,6 +61,98 @@ ice_reg_write(ice_t *ice, uintptr_t reg, uint32_t val)
 	    reg), val);
 }
 
+/*
+ * Translate between a 'nice' TX or RX context structure and the packed
+ * bit array representation. write denotes the direction -- true
+ * means we're wanting to write the context to the NIC (i.e. translating
+ * from 'nice' -> packed), while false means we plan to read the packed
+ * context from the NIC and want to translate it to the 'nice' representation.
+ */
+void
+ice_ctx_xlate(const ice_ctx_map_t *map, const void *src, void *dest, bool write)
+{
+	union {
+		uint64_t	u64;
+		uint16_t	u16;
+		uint8_t		u8;
+	} sval, dval;
+
+	while (map->icm_width != 0) {
+		const uint8_t	*s = src;
+		uint8_t		*d = dest;
+		uint16_t	shift;
+		uint64_t	mask;
+
+		s += write ? map->icm_offset : (map->icm_lsb / 8);
+		d += write ? (map->icm_lsb / 8) : map->icm_offset;
+
+		shift = map->icm_lsb % 8;
+		mask = (map->icm_width < 64) ?
+		    (1ULL << map->icm_width) - 1 : ~(uint64_t)0;
+
+		// XXX This is incomplete... I think
+		//
+		switch (map->icm_size) {
+		case sizeof (uint8_t):
+			sval.u8 = *s;
+			dval.u8 = *d;
+			if (write) {
+				sval.u8 &= mask;
+				sval.u8 <<= shift;
+				mask <<= shift;
+				dval.u8 &= ~mask;
+				dval.u8 |= sval.u8;
+			} else {
+				mask <<= shift;
+				sval.u8 &= mask;
+				dval.u8 = sval.u8;
+				dval.u8 >>= shift;
+			}
+			*d = dval.u8;
+			break;
+		case sizeof (uint16_t):
+			bcopy(s, &sval.u16, sizeof (uint16_t));
+			bcopy(d, &dval.u16, sizeof (uint16_t));
+			if (write) {
+				sval.u16 &= mask;
+				sval.u16 <<= shift;
+				mask <<= shift;
+				dval.u16 &= LE_16(~mask);
+				dval.u16 |= LE_16(sval.u16);
+			} else {
+				mask <<= shift;
+				sval.u16 &= LE_16(mask);
+				dval.u16 = LE_16(sval.u16);
+				dval.u16 >>= mask;
+			}
+			bcopy(&dval.u16, d, sizeof (uint16_t));
+			break;
+		case sizeof (uint64_t):
+			bcopy(s, &sval.u64, sizeof (uint64_t));
+			bcopy(d, &dval.u64, sizeof (uint64_t));
+			if (write) {
+				sval.u64 &= mask;
+				sval.u64 <<= shift;
+				mask <<= shift;
+				dval.u64 &= LE_64(~mask);
+				dval.u64 |= LE_64(sval.u64);
+			} else {
+				mask <<= shift;
+				sval.u16 &= LE_64(mask);
+				dval.u64 = LE_64(sval.u64);
+				dval.u64 >>= mask;
+			}
+			bcopy(&dval.u64, d, sizeof (uint64_t));
+			break;
+		default:
+			cmn_err(CE_PANIC, "%s: invalid field size %u",
+			    __func__, map->icm_size);
+		}
+
+		map++;
+	}
+}
+
 static ice_capability_t *
 ice_capability_find(ice_t *ice, boolean_t device, ice_cap_id_t capid,
     uint_t major)

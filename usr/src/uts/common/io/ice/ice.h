@@ -662,6 +662,7 @@ typedef struct ice {
 	uint_t			ice_rx_limit_per_intr;
 	uint_t			ice_rx_maxloan;
 	uint_t			ice_rx_rsize;
+	uint_t			ice_rx_bufsize;
 	bool			ice_rx_hcksum_enable;
 
 	uint32_t		ice_soc;
@@ -745,6 +746,13 @@ ice_is_running(const ice_t *ice)
 	return (true);
 }
 
+typedef struct ice_ctx_map {
+	uint16_t	icm_offset;
+	uint16_t	icm_size;
+	uint16_t	icm_width;
+	uint16_t	icm_lsb;
+} ice_ctx_map_t;
+
 /*
  * General functions
  */
@@ -755,6 +763,8 @@ extern void ice_error(ice_t *, const char *, ...);
 extern void ice_schedule(ice_t *, ice_work_task_t);
 
 extern boolean_t ice_link_status_update(ice_t *);
+
+extern void ice_ctx_xlate(const ice_ctx_map_t *, const void *, void *, bool);
 
 /*
  * DMA functions
