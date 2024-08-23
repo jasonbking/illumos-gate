@@ -138,7 +138,7 @@ ice_dma_ring_attr(ice_t *ice, ddi_dma_attr_t *attrp)
 	 * sizes since that's the closest thing.
 	 */
 	attrp->dma_attr_burstsizes = 0x3c0;
-	
+
 	/*
 	 * Also similar to controlq DMA memory, we just set some sensible
 	 * defaults here.

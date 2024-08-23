@@ -97,7 +97,7 @@
  * and size counters, we'll also revert back to the normal mode of attempting
  * to DMA bind larger mblk fragments. If copying fails, we undo everything
  * (except the header) and copy the entire packet.
- * 
+ *
  * Since the size of the pre-mapped buffers are the smaller of the MTU or the
  * system's pagesize (e.g. 4k), copying the mblk contents requires at most 3
  * descriptors per frame with the largest possible MTU, so copying a LSO frame
@@ -490,6 +490,8 @@ ice_tx_pkt_retry_mss_seg(ice_tx_pkt_t *pkt, mblk_t **mpp, size_t *offp)
 	/* We should never retry once we're copying the whole packet */
 	VERIFY3S(pkt->itxp_method, !=, ITPM_COPY_ALL);
 
+	pkt->itxp_ring->itxr_stats.ictxs_mss_retries.value.ui64++;
+
 	if (pkt->itxp_method == ITPM_COPY_MSS) {
 		VERIFY(pkt->itxp_lso);
 		/*
@@ -509,7 +511,8 @@ ice_tx_pkt_retry_mss_seg(ice_tx_pkt_t *pkt, mblk_t **mpp, size_t *offp)
 		pkt->itxp_prev_segcnt = 0;
 		pkt->itxp_prev_ntcb = 1;
 		pkt->itxp_prev_desc_total = 1;
-		// TODO bump stat and maybe even dtrace probe
+		pkt->itxp_ring->itxr_stats.ictxs_full_copies.value.ui64++;
+		// XXX dtrace probe?
 	}
 
 	/* First pop off and free any tcbs that were added */
@@ -560,6 +563,8 @@ ice_tx_copy_fragment(ice_tx_ctrl_block_t *tcb, const mblk_t *mp, size_t off,
 	bcopy(src, dest, to_copy);
 	tcb->itcb_len += to_copy;
 
+	tcb->itcb_ring->itxr_stats.ictxs_copy_bytes.value.ui64 += to_copy;
+	tcb->itcb_ring->itxr_stats.ictxs_copy_frags.value.ui64++;
 	return (to_copy);
 }
 
@@ -584,11 +589,13 @@ ice_tx_bind_fragment(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, const mblk_t *mp,
 	if (ret != DDI_DMA_MAPPED) {
 		tcb->itcb_type = ITCB_NOT_USED;
 		ice_tcb_free(txr, tcb);
-		// TODO bump stat
+		txr->itxr_stats.ictxs_bind_fails.value.ui64++;
 		return (NULL);
 	}
 
 	tcb->itcb_len = len;
+	txr->itxr_stats.ictxs_bind_bytes.value.ui64 += len;
+	txr->itxr_stats.ictxs_bind_frags.value.ui64++;
 	return (tcb);
 }
 
@@ -604,8 +611,10 @@ ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 
 	bzero(pkt, sizeof (*pkt));
 
-	if (mac_ether_offload_info(mp, &pkt->itxp_meo) != 0)
+	if (mac_ether_offload_info(mp, &pkt->itxp_meo) != 0) {
+		txr->itxr_stats.ictxs_hck_meoifail.value.ui64++;
 		return (false);
+	}
 
 	pkt->itxp_ring = txr;
 	pkt->itxp_hdrlen = pkt->itxp_meo.meoi_l2hlen +
@@ -820,6 +829,7 @@ static bool
 ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 {
 	const mac_ether_offload_info_t	*meo = &pkt->itxp_meo;
+	ice_txq_stat_t			*stats = &pkt->itxp_ring->itxr_stats;
 	uint32_t			start, chkflags;
 
 	mac_hcksum_get(pkt->itxp_mp, &start, NULL, NULL, NULL, &chkflags);
@@ -829,15 +839,15 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 
 	if (chkflags & HCK_IPV4_HDRCKSUM) {
 		if ((meo->meoi_flags & MEOI_L2INFO_SET) == 0) {
-			// TODO bump stat
+			stats->ictxs_hck_nol2info.value.ui64++;
 			return (false);
 		}
 		if ((meo->meoi_flags & MEOI_L3INFO_SET) == 0) {
-			// TODO bump stat
+			stats->ictxs_hck_nol3info.value.ui64++;
 			return (false);
 		}
 		if (meo->meoi_l3proto != ETHERTYPE_IP) {
-			// TODO bump stat
+			stats->ictxs_hck_badl3.value.ui64++;
 			return (false);
 		}
 
@@ -850,17 +860,17 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 
 	if (chkflags & HCK_PARTIALCKSUM) {
 		if ((meo->meoi_flags & MEOI_L4INFO_SET) == 0) {
-			// TODO bump stat
+			stats->ictxs_hck_nol4info.value.ui64++;
 			return (false);
 		}
 
 		if ((chkflags & HCK_IPV4_HDRCKSUM) == 0) {
 			if ((meo->meoi_flags & MEOI_L2INFO_SET) == 0) {
-				// TODO bump stat
+				stats->ictxs_hck_nol2info.value.ui64++;
 				return (false);
 			}
 			if ((meo->meoi_flags & MEOI_L3INFO_SET) == 0) {
-				// TODO bump stat
+				stats->ictxs_hck_nol3info.value.ui64++;
 				return (false);
 			}
 
@@ -872,7 +882,7 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 				*qw1p |= ICE_TX_DESC_CMD_IIPT_IPV6;
 				break;
 			default:
-				// TODO bump stat
+				stats->ictxs_hck_badl3.value.ui64++;
 				return (false);
 			}
 
@@ -893,7 +903,7 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 			*qw1p |= ICE_TX_DESC_CMD_L4T_EOFT_SCTP;
 			break;
 		default:
-			// TODO bump stat
+			stats->ictxs_hck_badl4.value.ui64++;
 			return (false);
 		}
 
@@ -922,7 +932,7 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
  *	0	Insufficient space on the ring, reschedule.
  *	-1	Error with packet, caller should drop.
  */
-static int 
+static int
 ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 {
 	ice_t			*ice = txr->itxr_ice;
@@ -1071,7 +1081,7 @@ ice_ring_tx(void *arg, mblk_t *mp)
 
 	pkt = kmem_cache_alloc(ice_tx_pkt_cache, KM_NOSLEEP);
 	if (pkt == NULL) {
-		// TODO bump stat
+		txr->itxr_stats.ictxs_no_pkt_cache.value.ui64++;
 		return (mp);
 	}
 
@@ -1084,7 +1094,7 @@ ice_ring_tx(void *arg, mblk_t *mp)
 
 		if (!ice_tx_pkt_init(txr, pkt, mp)) {
 			/* mp was malformed in some way, drop and continue */
-			// TODO bump stat
+			txr->itxr_stats.ictxs_drops.value.ui64++;
 			bzero(pkt, sizeof (*pkt));
 			mp = mp_next;
 			continue;
@@ -1134,8 +1144,6 @@ ice_ring_tx(void *arg, mblk_t *mp)
 			 * again.
 			 */
 
-			// TODO try recycling ring
-
 			if (!ice_tx_recycle_ring(txr)) {
 				txr->itxr_blocked = true;
 				ice_tx_exit(txr);
@@ -1160,6 +1168,7 @@ ice_ring_tx(void *arg, mblk_t *mp)
 				continue;
 			} else if (n == 0) {
 				/* Give up and reschedule */
+				txr->itxr_stats.ictxs_blocked.value.ui64++;
 				txr->itxr_blocked = true;
 				ice_tx_exit(txr);
 				mp->b_next = mp_next;
@@ -1178,7 +1187,7 @@ ice_ring_tx(void *arg, mblk_t *mp)
 		 */
 		for (uint_t i = 0; i < n; i++) {
 			txr->itxr_tcbs[tail] =
-			    (i < pkt->itxp_ntcb) ? pkt->itxp_tcbs[i] : NULL; 
+			    (i < pkt->itxp_ntcb) ? pkt->itxp_tcbs[i] : NULL;
 			pkt->itxp_tcbs[i] = NULL;
 
 			tail = ice_tx_next(txr, tail, 1);
@@ -1210,7 +1219,7 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 	uint32_t		n, head;
 
 	ASSERT(MUTEX_HELD(&txr->itxr_lock));
-	
+
 	ASSERT3U(txr->itxr_avail, <=, txr->itxr_size);
 
 	if (txr->itxr_avail == txr->itxr_size) {
@@ -1218,7 +1227,6 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 			txr->itxr_blocked = false;
 			mac_tx_ring_update(ice->ice_mac_hdl,
 			    txr->itxr_mactxring);
-			// TODO bump stat
 		}
 		return (true);
 	}
@@ -1232,7 +1240,7 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 	for (;;) {
 		if (!ice_tx_desc_done(&txr->itxr_descs[head]))
 			break;
-	
+
 		/* Zero out used descriptors for sanity */
 		txr->itxr_descs[head].itxd_qw0 = 0;
 		txr->itxr_descs[head].itxd_qw1 = 0;
@@ -1255,8 +1263,6 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 			mac_tx_ring_update(ice->ice_mac_hdl,
 			    txr->itxr_mactxring);
 		}
-
-		// TODO bump stat
 	}
 
 	mutex_exit(&txr->itxr_lock);
@@ -1265,4 +1271,24 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 		ice_tcb_free(txr, tcbs[i]);
 
 	return ((n > 0) ? true : false);
+}
+
+int
+ice_ring_tx_stat(mac_ring_driver_t rh, uint_t stat, uint64_t *val)
+{
+	ice_tx_ring_t *txr = (ice_tx_ring_t *)rh;
+
+	switch (stat) {
+	case MAC_STAT_OBYTES:
+		*val = txr->itxr_stats.ictxs_bytes.value.ui64;
+		break;
+	case MAC_STAT_OPACKETS:
+		*val = txr->itxr_stats.ictxs_packets.value.ui64;
+		break;
+	default:
+		*val = 0;
+		return (ENOTSUP);
+	}
+
+	return (0);
 }

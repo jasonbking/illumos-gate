@@ -69,7 +69,7 @@ ice_intr_cause_enable(ice_t *ice, uintptr_t reg)
 	ice_reg_write(ice, reg, val);
 }
 
-static void
+void
 ice_intr_msix_enable(ice_t *ice, int vector)
 {
 	uintptr_t reg;
@@ -86,7 +86,7 @@ ice_intr_msix_enable(ice_t *ice, int vector)
 	ice_reg_write(ice, reg, val);
 }
 
-static void
+void
 ice_intr_msix_disable(ice_t *ice, int vector)
 {
 	uintptr_t reg;

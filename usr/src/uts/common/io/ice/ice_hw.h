@@ -209,7 +209,7 @@ ice_bitset32(uint32_t reg, uint_t high, uint_t low, uint32_t val)
 #define	ICE_REG_PFINT_CAUSE_ENA(r)		ice_bitx32(r, 30, 30)
 #define	ICE_REG_PFINT_CAUSE_ENA_SET(r, v)	ice_bitset32(r, 30, 30, v)
 
-#define	ICE_REG_QINT_RQCTL_BASE	0x00150000
+#define	ICE_REG_QINT_RQCTL_BASE	0x00140000
 #define	ICE_REG_QINT_TQCTL_BASE	0x00150000
 #define	ICE_REG_PFINT_FW_CTL	0x0016C800
 
@@ -768,12 +768,9 @@ typedef struct ice_hw_rxq_context {
  */
 #define	ICE_HW_RXQ_CTX_PHYSICAL_SIZE	32
 
-#define	ICE_RXQ_CONTEXT_REG_SIZE	8
 #define	ICE_REG_RXQ_CONTEXT_BASE	0x00280000
-#define	ICE_REG_RXQ_CONTEXT(n, idx) \
-	(ICE_REG_RXQ_CONTEXT_BASE + (n) * 0x2000 + (idx) * 4)
 
-#define	ICE_QRX_TAIL(idx) 		(0x00290000ull + ((idx) * 4))
+#define	ICE_QRX_TAIL(idx)		(0x00290000ull + ((idx) * 4))
 
 #define	ICE_RING_WAIT_NTRIES		10
 
@@ -837,7 +834,36 @@ typedef struct ice_hw_txq_context {
 
 #define	ICE_HW_TXQ_CTX_PHYSICAL_SIZE	22
 
-#define	ICE_QTX_TAIL(idx) 		(0x002C0000 + ((idx) * 4))
+#define	ICE_QTX_TAIL(idx)		(0x002C0000 + ((idx) * 4))
+
+typedef struct ice_hw_txq_perq {
+	/* Per queue */
+	uint16_t	ihtp_qid;
+	uint16_t	ihtp_rsvd;
+	uint32_t	ihtp_qteid;
+	uint8_t		ihtp_ctx[22];
+	uint16_t	ihtp_rsvd2;
+
+	/* TX Scheduler Leaf Node Config */
+	uint8_t		ihtp_rsvd3;
+	uint8_t		ithp_valid_sect;
+	uint8_t		ithp_generic;
+	uint8_t		ithp_rsvd4;
+	uint16_t	ithp_cir_bw_id;
+	uint16_t	ithp_cir_bw_wfq_weights;
+	uint16_t	ithp_eir_bw_id;
+	uint16_t	ithp_eir_bw_wfq_weights;
+	uint16_t	ithp_shared_profile_id;
+	uint16_t	ithp_rsvd5;
+} __packed ice_hw_txq_perq_t;
+CTASSERT(sizeof (ice_hw_txq_perq_t) == 48);
+
+typedef struct ice_hw_txq_group {
+	uint32_t		ihtg_teid;
+	uint8_t			ihtg_nqueue;
+	uint8_t			ihtg_rsvd[3];
+	ice_hw_txq_perq_t	ihtg_perq[];
+} __packed ice_hw_txq_group_t;
 
 /*
  * Scheduler Structures returned by hardware.

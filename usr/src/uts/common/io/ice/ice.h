@@ -346,6 +346,32 @@ typedef struct ice_tx_desc {
 
 #define	ICE_TX_DESC_DTYPE_DONE		ICE_TX_DESC_DTYPE_MASK
 
+typedef struct ice_txq_stat {
+	kstat_named_t		ictxs_bytes;
+	kstat_named_t		ictxs_packets;
+
+	kstat_named_t		ictxs_bind_bytes;
+	kstat_named_t		ictxs_bind_frags;
+	kstat_named_t		ictxs_copy_bytes;
+	kstat_named_t		ictxs_copy_frags;
+
+	kstat_named_t		ictxs_bind_fails;
+	kstat_named_t		ictxs_mss_retries;
+	kstat_named_t		ictxs_full_copies;
+
+	kstat_named_t		ictxs_hck_meoifail;
+	kstat_named_t		ictxs_hck_nol2info;
+	kstat_named_t		ictxs_hck_nol3info;
+	kstat_named_t		ictxs_hck_nol4info;
+	kstat_named_t		ictxs_hck_badl3;
+	kstat_named_t		ictxs_hck_badl4;
+	kstat_named_t		ictxs_lso_nohck;
+
+	kstat_named_t		ictxs_no_pkt_cache;
+	kstat_named_t		ictxs_drops;
+	kstat_named_t		ictxs_blocked;
+} ice_txq_stat_t;
+
 typedef struct ice_tx_ring {
 	struct ice		*itxr_ice;		/* RO */
 
@@ -370,6 +396,8 @@ typedef struct ice_tx_ring {
 	kmutex_t		itxr_tcb_lock;
 	ice_tx_ctrl_block_t	**itxr_tcb_free_list;
 	uint16_t		itxr_tcb_nfree;
+
+	ice_txq_stat_t		itxr_stats;
 } ice_tx_ring_t;
 
 /*
@@ -470,6 +498,8 @@ typedef struct ice_rx_ring {
 	uint16_t		irxr_size;
 	uint16_t		irxr_head;
 	uint16_t		irxr_tail;
+
+	uint32_t		irxr_vec;
 
 	kstat_t			*irxr_kstat;
 	ice_rxq_stat_t		irxr_stats;
@@ -652,6 +682,9 @@ typedef struct ice {
 	uint_t			ice_num_rxq_per_vsi;
 	uint_t			ice_num_txq;
 
+	ice_rx_ring_t		*icr_rxr;
+	ice_tx_ring_t		*ice_txr;
+
 	uint_t			ice_mtu;
 	uint_t			ice_frame_size;
 	uint_t			ice_tx_dma_min;
@@ -746,13 +779,6 @@ ice_is_running(const ice_t *ice)
 	return (true);
 }
 
-typedef struct ice_ctx_map {
-	uint16_t	icm_offset;
-	uint16_t	icm_size;
-	uint16_t	icm_width;
-	uint16_t	icm_lsb;
-} ice_ctx_map_t;
-
 /*
  * General functions
  */
@@ -763,8 +789,6 @@ extern void ice_error(ice_t *, const char *, ...);
 extern void ice_schedule(ice_t *, ice_work_task_t);
 
 extern boolean_t ice_link_status_update(ice_t *);
-
-extern void ice_ctx_xlate(const ice_ctx_map_t *, const void *, void *, bool);
 
 /*
  * DMA functions
@@ -839,6 +863,8 @@ extern boolean_t ice_cmd_set_rss_lut(ice_t *, ice_vsi_t *, void *, uint_t);
 extern boolean_t ice_cmd_get_default_scheduler(ice_t *, void *, size_t,
     uint16_t *);
 
+extern bool ice_cmd_add_txq_grp(ice_t *, ice_vsi_t *, ice_hw_txq_context_t *);
+
 /*
  * NVM related functions
  */
@@ -864,19 +890,29 @@ extern void ice_intr_hw_fini(ice_t *);
 
 extern void ice_intr_trigger_softint(ice_t *);
 
+extern void ice_intr_msix_enable(ice_t *, int);
+extern void ice_intr_msix_disable(ice_t *, int);
+
 /*
  * GLDv3 routines
  */
 extern void ice_mac_unregister(ice_t *);
 extern boolean_t ice_mac_register(ice_t *);
 
+extern mblk_t *ice_ring_tx(void *, mblk_t *);
+extern bool ice_tx_recycle_ring(ice_tx_ring_t *);
+extern int ice_ring_tx_stat(mac_ring_driver_t, uint_t, uint64_t *);
+
 extern int ice_ring_rx_start(mac_ring_driver_t, uint64_t);
 extern void ice_ring_rx_stop(mac_ring_driver_t);
 extern mblk_t *ice_ring_rx_poll(void *, int);
 extern int ice_ring_rx_intr_enable(mac_intr_handle_t);
 extern int ice_ring_rx_intr_disable(mac_intr_handle_t);
+extern int ice_ring_rx_stat(mac_ring_driver_t, uint_t, uint64_t *);
 
-extern bool ice_tx_recycle_ring(ice_tx_ring_t *);
+extern bool ice_rxq_context_write(ice_t *, ice_hw_rxq_context_t *, uint_t);
+extern bool ice_txq_context_write(ice_t *, ice_hw_txq_context_t *, uint8_t *,
+    size_t);
 
 #ifdef __cplusplus
 }

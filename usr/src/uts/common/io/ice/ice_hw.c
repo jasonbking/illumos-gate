@@ -104,7 +104,7 @@ ice_rxq_context_register(uint_t queue, uint_t byteoff)
  * length that it will show up in dest. To do this, we end up trying to find a
  * number of bytes that this will fit in and memcpy and edit that.
  */
-static boolean_t
+static bool
 ice_context_write(ice_t *ice, const uint8_t *src, void *dest, size_t destlen,
     const ice_context_map_t *map)
 {
@@ -115,7 +115,7 @@ ice_context_write(ice_t *ice, const uint8_t *src, void *dest, size_t destlen,
 	if (nbits > map->icm_memlen * 8) {
 		ice_error(ice, "invalid context entry, asked to use %u bits "
 		    "from a %u byte length member", nbits, map->icm_memlen);
-		return (B_FALSE);
+		return (false);
 	}
 
 	/*
@@ -126,7 +126,7 @@ ice_context_write(ice_t *ice, const uint8_t *src, void *dest, size_t destlen,
 		ice_error(ice, "context entry starts at byte %u, but the "
 		    "buffer is %zu bytes long and we need space for 8 bytes",
 		    fbyte, destlen);
-		return (B_FALSE);
+		return (false);
 	}
 
 	/*
@@ -136,21 +136,21 @@ ice_context_write(ice_t *ice, const uint8_t *src, void *dest, size_t destlen,
 	 */
 	switch (map->icm_memlen) {
 	case 1:
-		val = *(uint8_t *)src;
+		val = *((uint8_t *)src + map->icm_member);
 		break;
 	case 2:
-		val = *(uint16_t *)src;
+		val = *((uint16_t *)src + map->icm_member);
 		break;
 	case 4:
-		val = *(uint32_t *)src;
+		val = *((uint32_t *)src + map->icm_member);
 		break;
 	case 8:
-		val = *(uint64_t *)src;
+		val = *((uint64_t *)src + map->icm_member);
 		break;
 	default:
 		ice_error(ice, "context entry has invalid member legth: %u",
 		    map->icm_memlen);
-		return (B_FALSE);
+		return (false);
 	}
 
 	/*
@@ -165,7 +165,7 @@ ice_context_write(ice_t *ice, const uint8_t *src, void *dest, size_t destlen,
 	if ((~mask & val) != 0) {
 		ice_error(ice, "found illegal bits set in context entry: "
 		    "have value %" PRIx64 " and mask %" PRIx64, val, mask);
-		return (B_FALSE);
+		return (false);
 	}
 
 	/*
@@ -181,10 +181,10 @@ ice_context_write(ice_t *ice, const uint8_t *src, void *dest, size_t destlen,
 	tmp |= LE_64(val);
 	bcopy(&tmp, dest + fbyte, sizeof (tmp));
 
-	return (B_TRUE);
+	return (true);
 }
 
-boolean_t
+bool
 ice_rxq_context_write(ice_t *ice, ice_hw_rxq_context_t *ctxt, uint_t index)
 {
 	uint_t i;
@@ -193,14 +193,14 @@ ice_rxq_context_write(ice_t *ice, ice_hw_rxq_context_t *ctxt, uint_t index)
 	if (index >= ICE_MAX_RX_QUEUES) {
 		ice_error(ice, "asked to write rxq context to illegal index: "
 		    "%u", index);
-		return (B_FALSE);
+		return (false);
 	}
 
 	bzero(buf, sizeof (buf));
 	for (i = 0; i < ARRAY_SIZE(ice_rxq_map); i++) {
 		if (!ice_context_write(ice, (uint8_t *)ctxt, buf, sizeof (buf),
 		    &ice_rxq_map[i])) {
-			return (B_FALSE);
+			return (false);
 		}
 	}
 
@@ -212,7 +212,24 @@ ice_rxq_context_write(ice_t *ice, ice_hw_rxq_context_t *ctxt, uint_t index)
 		ice_reg_write(ice, reg, val);
 	}
 
-	return (B_TRUE);
+	return (true);
+}
+
+bool
+ice_txq_context_write(ice_t *ice, ice_hw_txq_context_t *ctxt, uint8_t *dest,
+    size_t len)
+{
+	uint_t i;
+
+	bzero(dest, len);
+	for (i = 0; i < ARRAY_SIZE(ice_txq_map); i++) {
+		if (!ice_context_write(ice, (uint8_t *)ctxt, dest, len,
+		    &ice_txq_map[i])) {
+			return (false);
+		}
+	}
+
+	return (true);
 }
 
 boolean_t

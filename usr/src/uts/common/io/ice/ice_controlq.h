@@ -97,7 +97,15 @@ typedef enum ice_cq_opcode {
 	 * RSS Commands
 	 */
 	ICE_CQ_OP_SET_RSS_KEY = 0xB02,
-	ICE_CQ_OP_SET_RSS_LUT = 0xB03
+	ICE_CQ_OP_SET_RSS_LUT = 0xB03,
+	/*
+	 * Transmit Queue Commands
+	 */
+	ICE_CQ_OP_ADD_TXQ = 0xC30,
+	ICE_CQ_OP_DISABLE_FLOW = 0xC31,
+	ICE_CQ_OP_MOVE_TXQ = 0xC32,
+	ICE_CQ_OP_ADD_RDMA_TQSET = 0xC33,
+	ICE_CQ_OP_MOVE_RDMA_TQSET = 0xC34,
 } ice_cq_opcode_t;
 
 /*
@@ -393,6 +401,13 @@ typedef struct ice_cq_cmd_query_default_scheduler {
 
 #define	ICE_CQ_QUERY_DEFAULT_SCHED_BUF_SIZE	4096
 
+typedef struct ice_cq_cmd_add_txq {
+	uint8_t		iccat_ngrp;
+	uint8_t		iccat_rsvd[7];
+	uint32_t	iccat_data_high;
+	uint32_t	iccat_data_low;
+} ice_cq_cmd_add_txq_t;
+
 /*
  * This is a generic structure of a command that may be used.
  */
@@ -423,6 +438,7 @@ typedef union ice_cq_cmd {
 	ice_cq_cmd_set_rss_key_t icc_set_rss_key;
 	ice_cq_cmd_set_rss_lut_t icc_set_rss_lut;
 	ice_cq_cmd_query_default_scheduler_t icc_query_default_scheduler;
+	ice_cq_cmd_add_txq_t icc_add_txq;
 } ice_cq_cmd_t;
 
 /*

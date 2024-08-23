@@ -1391,3 +1391,59 @@ ice_cmd_get_default_scheduler(ice_t *ice, void *buf, size_t len,
 
 	return (B_TRUE);
 }
+
+/*
+ * Add a TX queue to a VSI. Currently we only support adding one TX queue
+ * at a time.
+ */
+bool
+ice_cmd_add_txq_grp(ice_t *ice, ice_vsi_t *vsi, ice_hw_txq_context_t *ctx)
+{
+	ice_hw_txq_group_t	*grp;
+	ice_hw_txq_perq_t	*perq;
+	ice_cq_cmd_add_txq_t	*add_txq;
+	size_t			len;
+	ice_cq_desc_t		desc;
+	ice_cq_errno_t		err;
+	uint8_t			code;
+
+	CTASSERT(sizeof (ice_hw_txq_group_t) + sizeof (ice_hw_txq_perq_t) <=
+	    UINT16_MAX);
+
+	len = sizeof (ice_hw_txq_group_t) + sizeof (ice_hw_txq_perq_t);
+
+	grp = kmem_zalloc(len, KM_SLEEP);
+	perq = &grp->ihtg_perq[0];
+
+	ice_cmd_direct_init(&desc, ICE_CQ_OP_ADD_TXQ);
+	add_txq = &desc.icqd_command.icc_add_txq;
+
+	desc.icqd_data_len = LE_16(len);
+	add_txq->iccat_ngrp = 1;
+
+	// TODO fill out struct
+	grp->ihtg_nqueue = 1;
+
+	if (!ice_txq_context_write(ice, ctx, &perq->ihtp_ctx[0],
+	    sizeof (perq->ihtp_ctx))) {
+			kmem_free(grp, len);
+			return (false);
+	}
+
+	if (!ice_cmd_submit(ice, &ice->ice_asq, &desc, grp,
+	    ICE_CMD_COPY_TO_DEV)) {
+		kmem_free(grp, len);
+		ice_error(ice, "Failed to add TX queue to group");
+		return (false);
+	}
+
+	if (!ice_cmd_result(&desc, &err, &code)) {
+		kmem_free(grp, len);
+		ice_error(ice, "add TX queue command failed with 0x%x "
+		    "(fw private: %x)", err, code);
+		return (false);
+	}
+
+	kmem_free(grp, len);
+	return (true);
+}

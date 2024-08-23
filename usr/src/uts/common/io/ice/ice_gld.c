@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2019, Joyent, Inc.
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 /*
@@ -70,36 +71,24 @@ ice_group_remove_mac(void *arg, const uint8_t *mac_addr)
 	return (0);
 }
 
-/*
- * XXX Stub I/O related functions should probably move to their own file.
- */
-static mblk_t *
-ice_ring_tx(void *arg, mblk_t *mp)
-{
-	freemsg(mp);
-	return (NULL);
-}
-
-static int
-ice_ring_rx_stat(mac_ring_driver_t rh, uint_t stat, uint64_t *val)
-{
-	return (ENOTSUP);
-}
-
-static int
-ice_ring_tx_stat(mac_ring_driver_t rh, uint_t stat, uint64_t *val)
-{
-	return (ENOTSUP);
-}
-
 static void
 ice_fill_rx_ring(void *arg, mac_ring_type_t rtype, const int group_index,
     const int ring_index, mac_ring_info_t *infop, mac_ring_handle_t rh)
 {
+	ice_t		*ice = arg;
+	ice_rx_ring_t	*rxr;
+
+	ASSERT3S(group_index, ==, 0);
+	ASSERT3S(ring_index, <, ice->ice_num_rxq_per_vsi);
+
+	rxr = &ice->icr_rxr[ring_index];
+	rxr->irxr_macrxring = rh;
+
 	infop->mri_start = ice_ring_rx_start;
 	infop->mri_stop = ice_ring_rx_stop;
 	infop->mri_poll = ice_ring_rx_poll;
 	infop->mri_stat = ice_ring_rx_stat;
+	infop->mri_intr.mi_handle = (mac_intr_handle_t)rxr;
 	infop->mri_intr.mi_enable = ice_ring_rx_intr_enable;
 	infop->mri_intr.mi_disable = ice_ring_rx_intr_disable;
 }
@@ -108,6 +97,16 @@ static void
 ice_fill_tx_ring(void *arg, mac_ring_type_t rtype, const int group_index,
     const int ring_index, mac_ring_info_t *infop, mac_ring_handle_t rh)
 {
+	ice_t		*ice = arg;
+	ice_tx_ring_t	*txr;
+
+	ASSERT3S(group_index, ==, 0);
+	ASSERT3S(ring_index, <, ice->ice_num_txq);
+
+	txr = &ice->ice_txr[ring_index];
+	txr->itxr_mactxring = rh;
+
+	infop->mri_driver = (mac_ring_driver_t)txr;
 	infop->mri_tx = ice_ring_tx;
 	infop->mri_stat = ice_ring_tx_stat;
 }

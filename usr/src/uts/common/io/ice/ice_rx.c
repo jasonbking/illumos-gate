@@ -53,36 +53,6 @@
 #include <sys/types.h>
 #include "ice.h"
 
-#define	ICE_RCTX_MAP(_f, _w, _l)				\
-{								\
-	.icm_offset = offsetof(ice_hw_rxq_context_t, _f),	\
-	.icm_size = sizeof (((ice_hw_rxq_context_t *)0)->_f),	\
-	.icm_width = _w,					\
-	.icm_lsb = _l,						\
-}
-
-static const ice_ctx_map_t ice_rctx_map[] = {
-	ICE_RCTX_MAP(ihrc_head,		13, 0),
-	ICE_RCTX_MAP(ihrc_base,		57, 32),
-	ICE_RCTX_MAP(ihrc_qlen,		13, 89),
-	ICE_RCTX_MAP(ihrc_dbuff,	7, 102),
-	ICE_RCTX_MAP(ihrc_hbuff,	5, 109),
-	ICE_RCTX_MAP(ihrc_dtype,	2, 114),
-	ICE_RCTX_MAP(ihrc_dsize,	1, 116),
-	ICE_RCTX_MAP(ihrc_crcstrip,	1, 117),
-	ICE_RCTX_MAP(ihrc_l2tsel,	1, 119),
-	ICE_RCTX_MAP(ihrc_hsplit0,	4, 120),
-	ICE_RCTX_MAP(ihrc_hsplit1,	2, 124),
-	ICE_RCTX_MAP(ihrc_showiv,	1, 127),
-ICE_RCTX_MAP(ihrc_rxmax,	14, 128),
-	ICE_RCTX_MAP(ihrc_tphrdesc,	1, 193),
-	ICE_RCTX_MAP(ihrc_tphwdesc,	1, 194),
-	ICE_RCTX_MAP(ihrc_tphdata,	1, 195),
-	ICE_RCTX_MAP(ihrc_tphhead,	1, 196),
-	ICE_RCTX_MAP(ihrc_lrxqthresh,	3, 198),
-	{ 0 }
-};
-
 static inline bool
 ice_rx_desc_done(const ice_rx_desc_t *desc)
 {
@@ -169,7 +139,7 @@ ice_rx_reset_desc(ice_rx_ring_t *rxr, uint16_t idx)
 /*
  * If rcb doesn't have an mblk_t associted with it, attempt to alloc an
  * mblk_t and associate it with the buffer in rcb.
-*
+ *
  * Returns true if rcb has an mblk_t associated with it, false if not.
  */
 static inline bool
@@ -597,7 +567,7 @@ ice_ring_rx(ice_rx_ring_t *rxr, int poll_bytes)
 			    DDI_SERVICE_DEGRADED);
 			atomic_or_32(&ice->ice_state, ICE_ERROR);
 		}
-	
+
 		rxr->irxr_stats.icrxs_bytes.value.ui64 += bytes;
 		rxr->irxr_stats.icrxs_packets.value.ui64 += npkts;
 	}
@@ -682,16 +652,16 @@ ice_rx_teardown_bufs(ice_rx_ring_t *rxr)
 	rxr->irxr_size = 0;
 }
 
-static bool
-ice_rx_setup_ctx(ice_rx_ring_t *rxr)
+int
+ice_ring_rx_start(mac_ring_driver_t rh, uint64_t gen_num)
 {
+	ice_rx_ring_t		*rxr = (ice_rx_ring_t *)rh;
 	ice_t			*ice = rxr->irxr_ice;
-	uint32_t		regs[ICE_RXQ_CONTEXT_REG_SIZE] = { 0 };
+	uint32_t		reg;
 	ice_hw_rxq_context_t	rctx = {
 		.ihrc_head = 0,
-		.ihrc_base = rxr->irxr_desc_dma.idb_cookie.dmac_laddress >>
-		    ICE_HW_RXQ_CTX_BASE_SHIFT,
-		.ihrc_qlen = rxr->irxr_size,
+		.ihrc_base = 0,		/* Set after buf is allocated */
+		.ihrc_qlen = ice->ice_rx_rsize,
 		.ihrc_dbuff = ice->ice_rx_bufsize >> ICE_HW_RXQ_CTX_DBUFF_SHIFT,
 		.ihrc_hbuff = 0 >> ICE_HW_RXQ_CTX_HBUFF_SHIFT,
 		.ihrc_dtype = ICE_HW_RXQ_CTX_DTYPE_NOSPLIT,
@@ -701,39 +671,14 @@ ice_rx_setup_ctx(ice_rx_ring_t *rxr)
 		.ihrc_hsplit0 = 0,
 		.ihrc_hsplit1 = 0,
 		.ihrc_showiv = 0,
-		.ihrc_rxmax = ice->ice_frame_size, // XXX
+		.ihrc_rxmax = ice->ice_frame_size, // XXX is this the right one?
 		.ihrc_tphrdesc = 1,
 		.ihrc_tphwdesc = 1,
 		.ihrc_tphdata = 1,
 		.ihrc_tphhead = 0,
-		.ihrc_lrxqthresh = 0, // XXX
+		.ihrc_lrxqthresh = 0, // XXX different value?
 		.ihrc_req = 0,
 	};
-
-	ice_ctx_xlate(ice_rctx_map, &rctx, regs, true);
-
-	for (uint_t i = 0; i < ICE_RXQ_CONTEXT_REG_SIZE; i++) {
-		uintptr_t addr = ICE_REG_RXQ_CONTEXT(i, rxr->irxr_index);
-
-		ice_reg_write(ice, addr, regs[i]);
-	}
-
-	if (ice_regs_check(ice) != 0) {
-		ddi_fm_service_impact(ice->ice_dip, DDI_SERVICE_DEGRADED);
-		atomic_or_32(&ice->ice_state, ICE_ERROR);
-		return (false);
-	}
-
-	return (true);
-}
-
-
-int
-ice_ring_rx_start(mac_ring_driver_t rh, uint64_t gen_num)
-{
-	ice_rx_ring_t	*rxr = (ice_rx_ring_t *)rh;
-	ice_t		*ice = rxr->irxr_ice;
-	uint32_t	reg;
 
 	mutex_enter(&rxr->irxr_lock);
 
@@ -754,7 +699,10 @@ ice_ring_rx_start(mac_ring_driver_t rh, uint64_t gen_num)
 	}
 
 	/* 2. Program the Rx-Queue context parameters */
-	if (!ice_rx_setup_ctx(rxr)) {
+	rctx.ihrc_base = rxr->irxr_desc_dma.idb_cookie.dmac_laddress;
+	rctx.ihrc_base >>= ICE_HW_RXQ_CTX_BASE_SHIFT;
+
+	if (!ice_rxq_context_write(ice, &rctx, rxr->irxr_index)) {
 		ice_rx_teardown_bufs(rxr);
 		mutex_exit(&rxr->irxr_lock);
 		return (-1);
@@ -801,6 +749,7 @@ ice_ring_rx_start(mac_ring_driver_t rh, uint64_t gen_num)
 	}
 
 	/* We currently don't support VFs, so step 7 ommitted */
+
 	rxr->irxr_shutdown = false;
 	mutex_exit(&rxr->irxr_lock);
 
@@ -845,11 +794,45 @@ ice_ring_rx_stop(mac_ring_driver_t rh)
 int
 ice_ring_rx_intr_enable(mac_intr_handle_t intrh)
 {
+	ice_rx_ring_t	*rxr = (ice_rx_ring_t *)intrh;
+	ice_t		*ice = rxr->irxr_ice;
+
+	if (rxr->irxr_vec == 0)
+		return (0);
+
+	ice_intr_msix_enable(ice, rxr->irxr_vec);
 	return (0);
 }
 
-int 
+int
 ice_ring_rx_intr_disable(mac_intr_handle_t intrh)
 {
+	ice_rx_ring_t	*rxr = (ice_rx_ring_t *)intrh;
+	ice_t		*ice = rxr->irxr_ice;
+
+	if (rxr->irxr_vec == 0)
+		return (0);
+
+	ice_intr_msix_disable(ice, rxr->irxr_vec);
+	return (0);
+}
+
+int
+ice_ring_rx_stat(mac_ring_driver_t rh, uint_t stat, uint64_t *val)
+{
+	ice_rx_ring_t *rxr = (ice_rx_ring_t *)rh;
+
+	switch (stat) {
+	case MAC_STAT_RBYTES:
+		*val = rxr->irxr_stats.icrxs_bytes.value.ui64;
+		break;
+	case MAC_STAT_IPACKETS:
+		*val = rxr->irxr_stats.icrxs_packets.value.ui64;
+		break;
+	default:
+		*val = 0;
+		return (ENOTSUP);
+	}
+
 	return (0);
 }
