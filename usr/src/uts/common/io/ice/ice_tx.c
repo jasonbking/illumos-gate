@@ -1274,6 +1274,45 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 }
 
 int
+ice_ring_tx_start(mac_ring_driver_t mri, uint64_t gen)
+{
+	// TODO
+	return (0);
+}
+
+void
+ice_ring_tx_stop(mac_ring_driver_t mri)
+{
+	// TODO
+}
+
+int
+ice_ring_tx_intr_enable(mac_intr_handle_t intrh)
+{
+	ice_tx_ring_t	*txr = (ice_tx_ring_t *)intrh;
+	ice_t		*ice = txr->itxr_ice;
+
+	if (txr->itxr_vec == 0)
+		return (0);
+
+	ice_intr_msix_enable(ice, txr->itxr_vec);
+	return (0);
+}
+
+int
+ice_ring_tx_intr_disable(mac_intr_handle_t intrh)
+{
+	ice_tx_ring_t	*txr = (ice_tx_ring_t *)intrh;
+	ice_t		*ice = txr->itxr_ice;
+
+	if (txr->itxr_vec == 0)
+		return (0);
+
+	ice_intr_msix_disable(ice, txr->itxr_vec);
+	return (0);
+}
+
+int
 ice_ring_tx_stat(mac_ring_driver_t rh, uint_t stat, uint64_t *val)
 {
 	ice_tx_ring_t *txr = (ice_tx_ring_t *)rh;

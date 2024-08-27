@@ -318,34 +318,6 @@ typedef struct ice_tx_ctrl_block {
 
 struct ice;
 
-typedef struct ice_tx_desc {
-	uint64_t	itxd_qw0;
-	uint64_t	itxd_qw1;
-} ice_tx_desc_t;
-
-#define	ICE_TX_DESC_DTYPE_MASK		0x000000000000000Full
-
-#define	ICE_TX_DESC_DTYPE_DATA		0x00000000000000000000ull
-#define	ICE_TX_DESC_EOP				0x0000000000000010ull
-#define	ICE_TX_DESC_RS				0x0000000000000020ull
-#define	ICE_TX_DESC_CMD_IIPT_IPV6		0x0000000000000200ull
-#define	ICE_TX_DESC_CMD_IIPT_IPV4		0x0000000000000400ull
-#define	ICE_TX_DESC_CMD_IIPT_IPV4_CSUM		0x0000000000000600ull
-#define	ICE_TX_DESC_CMD_L4T_EOFT_TCP		0x0000000000010000ull
-#define	ICE_TX_DESC_CMD_L4T_EOFT_UDP		0x0000000000020000ull
-#define	ICE_TX_DESC_CMD_L4T_EOFT_SCTP		0x0000000000030000ull
-#define	ICE_TX_DESC_LENGTH_SHIFT		34
-#define	ICE_TX_DESC_LENGTH_MACLEN_SHIFT		16
-#define	ICE_TX_DESC_LENGTH_IPLEN_SHIFT		21
-#define	ICE_TX_DESC_LENGTH_L4_FC_LE_SHIFT	30
-
-#define	ICE_TX_DESC_DTYPE_CONTEXT	0x0000000000000001ull
-#define	ICE_TX_CTX_DESC_TSO		0x0000000000000010ull
-#define	ICE_TXD_QW1_TSO_LEN_SHIFT	30
-#define	ICE_TXD_QW1_TSO_MSS_SHIFT	50
-
-#define	ICE_TX_DESC_DTYPE_DONE		ICE_TX_DESC_DTYPE_MASK
-
 typedef struct ice_txq_stat {
 	kstat_named_t		ictxs_bytes;
 	kstat_named_t		ictxs_packets;
@@ -397,39 +369,11 @@ typedef struct ice_tx_ring {
 	ice_tx_ctrl_block_t	**itxr_tcb_free_list;
 	uint16_t		itxr_tcb_nfree;
 
+	uint32_t		itxr_vec;
+
+	kstat_t			*itxr_kstat;
 	ice_txq_stat_t		itxr_stats;
 } ice_tx_ring_t;
-
-/*
- * Like i40e, ice supports both a 16 byte and 32 byte receive descriptor.
- * We use the 32 byte descriptor in case we want to utilize the additional
- * information in the future.
- */
-typedef struct ice_rx_desc {
-	uint64_t	irxd_qw0;
-	uint64_t	irxd_qw1;
-	uint64_t	irxd_qw2;
-	uint64_t	irxd_qw3;
-} ice_rx_desc_t;
-
-/* RXD qword1 bits */
-#define	ICE_RXD_DONE	(1ULL << 0)
-#define	ICE_RXD_EOP	(1ULL << 1)
-#define	ICE_RXD_L3L4P	(1ULL << 3)
-
-
-#define	ICE_RXD_ERR_SHIFT	19
-#define	ICE_RXD_ERR		(1ULL << 0)
-#define	ICE_RXD_HBO		(1ULL << 2)
-#define	ICE_RXD_IPERR		(1ULL << 3)
-#define	ICE_RXD_L3ERR		(1ULL << 4)
-#define	ICE_RXD_EXTERR		(1ULL << 5)
-#define	ICE_RXD_OVERSIZE	(1ULL << 6)
-
-#define	ICE_RXD_LEN_SHIFT	38
-#define	ICE_RXD_LEN_MASK	((1ULL << 14) - 1)
-#define	ICE_RXD_HLEN_SHIFT	14
-#define	ICE_RXD_SPLIT		25
 
 /* The maximum number of descriptors that can be used for 1 packet */
 #define	ICE_RX_MAX_DESC		5
@@ -600,8 +544,9 @@ typedef enum ice_attach_seq {
 	ICE_ATTACH_INTR_HANDLER	= 0x1 << 9,
 	ICE_ATTACH_TASK		= 0x1 << 10,
 	ICE_ATTACH_VSI		= 0x1 << 11,
-	ICE_ATTACH_MAC		= 0x1 << 12,
-	ICE_ATTACH_INTR_ENABLE	= 0x1 << 13
+	ICE_ATTACH_RING		= 0x1 << 12,
+	ICE_ATTACH_MAC		= 0x1 << 13,
+	ICE_ATTACH_INTR_ENABLE	= 0x1 << 14,
 } ice_attach_seq_t;
 
 typedef enum ice_state {
@@ -682,7 +627,12 @@ typedef struct ice {
 	uint_t			ice_num_rxq_per_vsi;
 	uint_t			ice_num_txq;
 
-	ice_rx_ring_t		*icr_rxr;
+	/*
+	 * Eventually, it may make more sense to move the rings into
+	 * the vsi struct, but for now since there's just 1 vsi, they
+	 * sit here.
+	 */
+	ice_rx_ring_t		*ice_rxr;
 	ice_tx_ring_t		*ice_txr;
 
 	uint_t			ice_mtu;
@@ -902,6 +852,10 @@ extern boolean_t ice_mac_register(ice_t *);
 extern mblk_t *ice_ring_tx(void *, mblk_t *);
 extern bool ice_tx_recycle_ring(ice_tx_ring_t *);
 extern int ice_ring_tx_stat(mac_ring_driver_t, uint_t, uint64_t *);
+extern int ice_ring_tx_start(mac_ring_driver_t, uint64_t);
+extern void ice_ring_tx_stop(mac_ring_driver_t);
+extern int ice_ring_tx_intr_enable(mac_intr_handle_t);
+extern int ice_ring_tx_intr_disable(mac_intr_handle_t);
 
 extern int ice_ring_rx_start(mac_ring_driver_t, uint64_t);
 extern void ice_ring_rx_stop(mac_ring_driver_t);

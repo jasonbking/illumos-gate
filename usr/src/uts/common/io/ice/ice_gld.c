@@ -81,9 +81,10 @@ ice_fill_rx_ring(void *arg, mac_ring_type_t rtype, const int group_index,
 	ASSERT3S(group_index, ==, 0);
 	ASSERT3S(ring_index, <, ice->ice_num_rxq_per_vsi);
 
-	rxr = &ice->icr_rxr[ring_index];
+	rxr = &ice->ice_rxr[ring_index];
 	rxr->irxr_macrxring = rh;
 
+	infop->mri_driver = (mac_ring_driver_t)rxr;
 	infop->mri_start = ice_ring_rx_start;
 	infop->mri_stop = ice_ring_rx_stop;
 	infop->mri_poll = ice_ring_rx_poll;
@@ -107,8 +108,13 @@ ice_fill_tx_ring(void *arg, mac_ring_type_t rtype, const int group_index,
 	txr->itxr_mactxring = rh;
 
 	infop->mri_driver = (mac_ring_driver_t)txr;
+	infop->mri_start = ice_ring_tx_start;
+	infop->mri_stop = ice_ring_tx_stop;
 	infop->mri_tx = ice_ring_tx;
 	infop->mri_stat = ice_ring_tx_stat;
+	infop->mri_intr.mi_handle = (mac_intr_handle_t)txr;
+	infop->mri_intr.mi_enable = ice_ring_tx_intr_enable;
+	infop->mri_intr.mi_disable = ice_ring_tx_intr_disable;
 }
 
 static void

@@ -53,6 +53,22 @@
 #include <sys/types.h>
 #include "ice.h"
 
+static inline uintptr_t
+ice_qrx_tail(const ice_rx_ring_t *rxr)
+{
+	uintptr_t base = ICE_REG_RXQ_BASE;
+
+	return (base + rxr->irxr_index * 4);
+}
+
+static inline uintptr_t
+ice_qrx_ctrl(const ice_rx_ring_t *rxr)
+{
+	uintptr_t base = ICE_REG_RXQ_CTRL_BASE;
+
+	return (base + rxr->irxr_index * 4);
+}
+
 static inline bool
 ice_rx_desc_done(const ice_rx_desc_t *desc)
 {
@@ -561,7 +577,7 @@ ice_ring_rx(ice_rx_ring_t *rxr, int poll_bytes)
 		else
 			tail = rxr->irxr_size - 1;
 
-		ice_reg_write(ice, ICE_QRX_TAIL(rxr->irxr_index), tail);
+		ice_reg_write(ice, ice_qrx_tail(rxr), tail);
 		if (ice_regs_check(ice) != DDI_FM_OK) {
 			ddi_fm_service_impact(ice->ice_dip,
 			    DDI_SERVICE_DEGRADED);
@@ -712,16 +728,15 @@ ice_ring_rx_start(mac_ring_driver_t rh, uint64_t gen_num)
 	 * 3. Clear queue tail pointer and set tail to end of descriptor
 	 * ring
 	 */
-	ice_reg_write(ice, ICE_QRX_TAIL(rxr->irxr_index), 0);
-	ice_reg_write(ice, ICE_QRX_TAIL(rxr->irxr_index), rxr->irxr_size - 1);
-
+	ice_reg_write(ice, ice_qrx_tail(rxr), 0);
+	ice_reg_write(ice, ice_qrx_tail(rxr), rxr->irxr_size - 1);
 
 	/* 4. Set QENA_REQ flag in QRX_CTRL[n] */
-	reg = ice_reg_read(ice, ICE_QRX_CTRL(rxr->irxr_index));
+	reg = ice_reg_read(ice, ice_qrx_ctrl(rxr));
 	VERIFY3U((reg & ICE_QRX_CTRL_ENABLED), !=, ICE_QRX_CTRL_ENABLED);
 
 	reg |= ICE_QRX_CTRL_QENA_REQ;
-	ice_reg_write(ice, ICE_QRX_CTRL(rxr->irxr_index), reg);
+	ice_reg_write(ice, ice_qrx_ctrl(rxr), reg);
 
 	/* Note we don't support no-drop TCs, so step 5 omitted */
 
@@ -732,7 +747,7 @@ ice_ring_rx_start(mac_ring_driver_t rh, uint64_t gen_num)
 	 * times with a 10us delay.
 	 */
 	for (uint_t i = 0; i < ICE_RING_WAIT_NTRIES; i++) {
-		reg = ice_reg_read(ice, ICE_QRX_CTRL(rxr->irxr_index));
+		reg = ice_reg_read(ice, ice_qrx_ctrl(rxr));
 		if ((reg & ICE_QRX_CTRL_ENABLED) != ICE_QRX_CTRL_ENABLED)
 			break;
 
@@ -769,13 +784,12 @@ ice_ring_rx_stop(mac_ring_driver_t rh)
 	// XXX Should we release the lock and disable the queue outside
 	// of holding the lock?
 
-	reg = ice_reg_read(ice, ICE_QRX_CTRL(rxr->irxr_index));
-
+	reg = ice_reg_read(ice, ice_qrx_ctrl(rxr));
 	reg &= ~ICE_QRX_CTRL_QENA_REQ;
-	ice_reg_write(ice, ICE_QRX_CTRL(rxr->irxr_index), reg);
+	ice_reg_write(ice, ice_qrx_ctrl(rxr), reg);
 
 	for (uint_t i = 0; i < ICE_RING_WAIT_NTRIES; i++) {
-		reg = ice_reg_read(ice, ICE_QRX_CTRL(rxr->irxr_index));
+		reg = ice_reg_read(ice, ice_qrx_ctrl(rxr));
 		if ((reg & ICE_QRX_CTRL_QENA_STAT) == 0)
 			break;
 

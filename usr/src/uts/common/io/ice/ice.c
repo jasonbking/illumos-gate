@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2019, Joyent, Inc.
+ * Copyright 2024 RackTop Systems, Inc.
  */
 
 /*
@@ -1117,6 +1118,199 @@ ice_pf_vsi_init(ice_t *ice)
 	return (B_TRUE);
 }
 
+static bool
+ice_rx_ring_init(ice_t *ice, ice_rx_ring_t *rxr, uint_t index)
+{
+	ice_rxq_stat_t	*rqs = &rxr->irxr_stats;
+	char		buf[64];
+
+	mutex_init(&rxr->irxr_lock, NULL, MUTEX_DRIVER,
+	    DDI_INTR_PRI(ice->ice_intr_pri));
+	rxr->irxr_ice = ice;
+	rxr->irxr_index = index;
+
+	(void) snprintf(buf, sizeof (buf), "rx_%u", index);
+
+	rxr->irxr_kstat = kstat_create(ICE_MODULE_NAME,
+	    ddi_get_instance(ice->ice_dip), buf, "net", KSTAT_TYPE_NAMED,
+	    sizeof (ice_rxq_stat_t) / sizeof (kstat_named_t),
+	    KSTAT_FLAG_VIRTUAL);
+	if (rxr->irxr_kstat == NULL) {
+		ice_error(ice, "Failed to create kstats for RX ring %u", index);
+		mutex_destroy(&rxr->irxr_lock);
+		return (false);
+	}
+
+	rxr->irxr_kstat->ks_data = rqs;
+
+	kstat_named_init(&rqs->icrxs_bytes, "bytes", KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_packets, "packets", KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_bind_bytes, "bind_bytes",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_bind_segs, "bind_segments",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_copy_bytes, "copy_bytes",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_copy_segs, "copy_segments",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_desc_error, "desc_error",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_copy_nomem, "copy_nomem",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_intr_limit, "intr_limit",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_bind_no_rcb, "bind_no_rcb",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_bind_no_mp, "bind_no_mp",
+	KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_unknown, "hck_unknown",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_nol3l4p, "hck_nol3l4p",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_v6skip, "hck_v6skip",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_iperr, "hck_iperr",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_eiperr, "hck_eiperr",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_v4hdrok, "hck_v4hdrok",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_l4err, "hck_l4err",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_l4hdrok, "hck_l4hdrok",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_set, "hck_set",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_miss, "hck_miss",
+	    KSTAT_DATA_UINT64);
+
+	kstat_install(rxr->irxr_kstat);
+	return (true);
+}
+
+static void
+ice_rx_ring_fini(ice_rx_ring_t *rxr)
+{
+	kstat_delete(rxr->irxr_kstat);
+	rxr->irxr_kstat = NULL;
+	mutex_destroy(&rxr->irxr_lock);
+}
+
+static bool
+ice_tx_ring_init(ice_t *ice, ice_tx_ring_t *txr, uint_t index)
+{
+	ice_txq_stat_t	*tqs = &txr->itxr_stats;
+	void		*pri = DDI_INTR_PRI(ice->ice_intr_pri);
+	char		buf[64];
+
+
+	txr->itxr_ice = ice;
+	txr->itxr_index = index;
+	mutex_init(&txr->itxr_lock, NULL, MUTEX_DRIVER, pri);
+	mutex_init(&txr->itxr_tcb_lock, NULL, MUTEX_DRIVER, pri);
+	cv_init(&txr->itxr_cv, NULL, CV_DRIVER, NULL);
+
+	(void) snprintf(buf, sizeof (buf), "tx_%u", index);
+
+	txr->itxr_kstat = kstat_create(ICE_MODULE_NAME,
+	    ddi_get_instance(ice->ice_dip), buf, "net", KSTAT_TYPE_NAMED,
+	    sizeof (ice_txq_stat_t) / sizeof (kstat_named_t),
+	    KSTAT_FLAG_VIRTUAL);
+	if (txr->itxr_kstat == NULL) {
+		ice_error(ice, "Failed to create kstats for TX ring %u", index);
+		cv_destroy(&txr->itxr_cv);
+		mutex_destroy(&txr->itxr_tcb_lock);
+		mutex_destroy(&txr->itxr_lock);
+		return (false);
+	}
+
+	txr->itxr_kstat->ks_data = tqs;
+
+	kstat_named_init(&tqs->ictxs_bytes, "bytes", KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_packets, "packet", KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_bind_bytes, "bind_bytes",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_bind_frags, "bind_frags",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_copy_bytes, "copy_bytes",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_bind_fails, "bind_fails",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_mss_retries, "mss_retries",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_full_copies, "full_copies",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_hck_meoifail, "hck_meoifail",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_hck_nol2info, "hck_nol2info",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_hck_nol3info, "hck_nol3info",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_hck_nol4info, "hck_nol4info",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_hck_badl3, "hck_badl3",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_hck_badl4, "hck_badl4",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_lso_nohck, "lso_nohck",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_no_pkt_cache, "no_pkt_cache",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_drops, "drops", KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_blocked, "blocked", KSTAT_DATA_UINT64);
+
+	return (true);
+}
+
+void
+ice_tx_ring_fini(ice_tx_ring_t *txr)
+{
+	kstat_delete(txr->itxr_kstat);
+	txr->itxr_kstat = NULL;
+	mutex_destroy(&txr->itxr_lock);
+	mutex_destroy(&txr->itxr_tcb_lock);
+	cv_destroy(&txr->itxr_cv);
+}
+
+static bool
+ice_ring_init(ice_t *ice)
+{
+	size_t len;
+	uint_t i;
+
+	len = ice->ice_num_rxq_per_vsi * sizeof (ice_rx_ring_t);
+	ice->ice_rxr = kmem_zalloc(len, KM_SLEEP);
+
+	for (i = 0; i < ice->ice_num_rxq_per_vsi; i++) {
+		if (!ice_rx_ring_init(ice, &ice->ice_rxr[i], i))
+			goto fail_rx;
+	}
+
+	len = ice->ice_num_txq * sizeof (ice_tx_ring_t);
+	ice->ice_txr = kmem_zalloc(len, KM_SLEEP);
+
+	for (i = 0; i < ice->ice_num_txq; i++) {
+		if (!ice_tx_ring_init(ice, &ice->ice_txr[i], i))
+			goto fail_tx;
+	}
+
+	// TODO: assign interrupt vectors
+
+	return (true);
+
+fail_tx:
+	while (i-- > 0)
+		ice_tx_ring_fini(&ice->ice_txr[i]);
+
+	i = ice->ice_num_rxq_per_vsi;
+
+fail_rx:
+	while (i-- > 0)
+		ice_rx_ring_fini(&ice->ice_rxr[i]);
+
+	return (false);
+}
+
 static void
 ice_cleanup(ice_t *ice)
 {
@@ -1132,6 +1326,10 @@ ice_cleanup(ice_t *ice)
 	if (ice->ice_seq & ICE_ATTACH_MAC) {
 		ice_mac_unregister(ice);
 		ice->ice_seq &= ~ICE_ATTACH_MAC;
+	}
+
+	if (ice->ice_seq & ICE_ATTACH_RING) {
+		// TODO
 	}
 
 	if (ice->ice_seq & ICE_ATTACH_VSI) {
@@ -1348,6 +1546,11 @@ ice_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	 * guarantee leaving us in. This can be dealt with once we have general
 	 * I/O working.
 	 */
+
+	if (!ice_ring_init(ice)) {
+		goto err;
+	}
+	ice->ice_seq |= ICE_ATTACH_RING;
 
 	if (!ice_mac_register(ice)) {
 		goto err;

@@ -769,12 +769,11 @@ typedef struct ice_hw_rxq_context {
 #define	ICE_HW_RXQ_CTX_PHYSICAL_SIZE	32
 
 #define	ICE_REG_RXQ_CONTEXT_BASE	0x00280000
-
-#define	ICE_QRX_TAIL(idx)		(0x00290000ull + ((idx) * 4))
+#define	ICE_REG_RXQ_BASE		0x00290000
 
 #define	ICE_RING_WAIT_NTRIES		10
 
-#define	ICE_QRX_CTRL(idx)		(0x00120000ull + ((idx) * 4))
+#define	ICE_REG_RXQ_CTRL_BASE		0x00120000
 #define	ICE_QRX_CTRL_QENA_REQ		(1UL << 0)
 #define	ICE_QRX_CTRL_FAST_QDIS		(1UL << 1)
 #define	ICE_QRX_CTRL_QENA_STAT		(1UL << 2)
@@ -784,6 +783,35 @@ typedef struct ice_hw_rxq_context {
 #define	ICE_QRX_CTRL_ENABLED \
 	(ICE_QRX_CTRL_QENA_REQ|ICE_QRX_CTRL_QENA_STAT)
 
+/*
+ * Like i40e, ice supports both a 16 byte and 32 byte receive descriptor.
+ * We use the 32 byte descriptor in case we want to utilize the additional
+ * information in the future.
+ */
+typedef struct ice_rx_desc {
+	uint64_t	irxd_qw0;
+	uint64_t	irxd_qw1;
+	uint64_t	irxd_qw2;
+	uint64_t	irxd_qw3;
+} ice_rx_desc_t;
+
+/* RXD qword1 bits */
+#define	ICE_RXD_DONE	(1ULL << 0)
+#define	ICE_RXD_EOP	(1ULL << 1)
+#define	ICE_RXD_L3L4P	(1ULL << 3)
+
+#define	ICE_RXD_ERR_SHIFT	19
+#define	ICE_RXD_ERR		(1ULL << 0)
+#define	ICE_RXD_HBO		(1ULL << 2)
+#define	ICE_RXD_IPERR		(1ULL << 3)
+#define	ICE_RXD_L3ERR		(1ULL << 4)
+#define	ICE_RXD_EXTERR		(1ULL << 5)
+#define	ICE_RXD_OVERSIZE	(1ULL << 6)
+
+#define	ICE_RXD_LEN_SHIFT	38
+#define	ICE_RXD_LEN_MASK	((1ULL << 14) - 1)
+#define	ICE_RXD_HLEN_SHIFT	14
+#define	ICE_RXD_SPLIT		25
 
 typedef struct ice_hw_txq_context {
 	uint64_t	ihtc_base;
@@ -864,6 +892,34 @@ typedef struct ice_hw_txq_group {
 	uint8_t			ihtg_rsvd[3];
 	ice_hw_txq_perq_t	ihtg_perq[];
 } __packed ice_hw_txq_group_t;
+
+typedef struct ice_tx_desc {
+	uint64_t	itxd_qw0;
+	uint64_t	itxd_qw1;
+} ice_tx_desc_t;
+
+#define	ICE_TX_DESC_DTYPE_MASK		0x000000000000000Full
+
+#define	ICE_TX_DESC_DTYPE_DATA		0x00000000000000000000ull
+#define	ICE_TX_DESC_EOP				0x0000000000000010ull
+#define	ICE_TX_DESC_RS				0x0000000000000020ull
+#define	ICE_TX_DESC_CMD_IIPT_IPV6		0x0000000000000200ull
+#define	ICE_TX_DESC_CMD_IIPT_IPV4		0x0000000000000400ull
+#define	ICE_TX_DESC_CMD_IIPT_IPV4_CSUM		0x0000000000000600ull
+#define	ICE_TX_DESC_CMD_L4T_EOFT_TCP		0x0000000000010000ull
+#define	ICE_TX_DESC_CMD_L4T_EOFT_UDP		0x0000000000020000ull
+#define	ICE_TX_DESC_CMD_L4T_EOFT_SCTP		0x0000000000030000ull
+#define	ICE_TX_DESC_LENGTH_SHIFT		34
+#define	ICE_TX_DESC_LENGTH_MACLEN_SHIFT		16
+#define	ICE_TX_DESC_LENGTH_IPLEN_SHIFT		21
+#define	ICE_TX_DESC_LENGTH_L4_FC_LE_SHIFT	30
+
+#define	ICE_TX_DESC_DTYPE_CONTEXT	0x0000000000000001ull
+#define	ICE_TX_CTX_DESC_TSO		0x0000000000000010ull
+#define	ICE_TXD_QW1_TSO_LEN_SHIFT	30
+#define	ICE_TXD_QW1_TSO_MSS_SHIFT	50
+
+#define	ICE_TX_DESC_DTYPE_DONE		ICE_TX_DESC_DTYPE_MASK
 
 /*
  * Scheduler Structures returned by hardware.
