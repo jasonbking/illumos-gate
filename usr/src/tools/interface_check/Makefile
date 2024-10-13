@@ -10,7 +10,7 @@
 #
 
 #
-# Copyright 2022 Jason King
+# Copyright 2024 Jason King
 #
 
 PROG = interface_check
@@ -23,15 +23,23 @@ MAN1ONBLDFILES = interface_check.1onbld
 # against it.
 CUSTRDIR = $(SRC)/lib/libcustr/common
 
-OBJS = interface_check.o custr.o
+OBJS = \
+    category.o \
+    custr.o \
+    exceptions.o \
+    find_elf.o \
+    header.o \
+    interface_check.o \
+    str.o \
+    util.o
 
 include $(SRC)/tools/Makefile.tools
 include $(SRC)/cmd/Makefile.ctf
 
 $(ROOTONBLDMAN1ONBLDFILES) := FILEMODE=	644
 
-LDLIBS = -lelf -lavl
-NATIVE_LIBS += libelf.so libc.so libavl.so
+LDLIBS = -lelf -lavl -lumem
+NATIVE_LIBS += libelf.so libc.so libavl.so libumem.so
 
 CPPFLAGS += -I$(CUSTRDIR)
 LDFLAGS = \
