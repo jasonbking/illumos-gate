@@ -10,103 +10,151 @@
  */
 
 /*
- * Copyright 2023 Jason King
+ * Copyright 2024 Jason King
  */
 
 #include <ctype.h>
 #include <err.h>
+#include <fcntl.h>
 #include <gelf.h>
 #include <libcustr.h>
 #include <regex.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include <sys/debug.h>
-#include <sys/linker_set.h>
+#include <sys/stat.h>
 
-typedef struct re_init {
-	const char	*re_str;
-	regex_t		*re_ptr;
-} re_init_t;
-SET_DECLARE(re_init_set, re_init_t);
+#include "category.h"
+#include "find_elf.h"
+#include "header.h"
+#include "exceptions.h"
+#include "util.h"
 
-#define	DECL_RE(_name, _str)			\
-	static regex_t	re_##_name;		\
-	static re_init_t re_init_##_name = {	\
-		.re_str = _str,			\
-		.re_ptr = &re_##_name,		\
-	};					\
-	DATA_SET(re_init_set, re_init_##_name)
+typedef struct scn_info {
+	Elf_Scn	*si_scn;
+	size_t	si_nent;
+	uint_t	si_stridx;
+} scn_info_t;
 
-typedef enum category_type {
-	CT_NUMBERED,
-	CT_PLAIN,
-	CT_SONAME,
-	CT_PRIVATE,
-	CT_UNKNOWN,
-} category_type_t;
-
-typedef struct category {
-	category_type_t	c_type;
-	/* These are only used with CT_NUMBERED */
-	uint_t		c_num;
-	uint_t		c_ver[3];
-} category_t;
+typedef struct version {
+	GElf_Verdef	*v_verdef;
+	category_t	v_cat;
+	uint_t		v_ancestors;
+	uint_t		v_weak_ancestors;
+	GElf_Sym	*v_syms;
+	size_t		v_nsyms;
+	size_t		v_syms_alloc;
+} version_t;
 
 typedef struct obj {
-	char		*obj_relpath;
-	char		**obj_aliases;
-	size_t		obj_aliasalloc;
-	int		obj_class;
-	uint16_t	obj_type;
-	bool		obj_hasverdef;
+	const char	*o_prefix;
+	int		o_dirfd;
+	elf_obj_t	*o_elfobj;
+	Elf		*o_elf;
+	scn_info_t	o_verdef;
+	scn_info_t	o_versym;
+	scn_info_t	o_dynsym;
+	scn_info_t	o_dyn;
+	size_t		o_soname_idx;
+	uint_t		o_errcnt;
+	version_t	*o_versions;
+	uint_t		o_npubvers;
 } obj_t;
 
-typedef struct exception {
-	char	*e_verb;
-	regex_t	*e_regexes;
-	uint_t	e_n;
-	uint_t	e_sz;
-} exception_t;
+static void load_find_elf(const char *);
+static void run_find_elf(int, char **);
+static void process_object(int, const char *, elf_obj_t *);
+static void errmsg(obj_t *, const char *, ...);
+static FILE *fopenat(int, const char *, const char *);
 
-typedef struct exceptions {
-	exception_t	*es_exceptions;
-	uint_t		es_n;
-	uint_t		es_size;
-} exceptions_t;
+static void check_path(obj_t *);
+static bool has_versions(obj_t *, bool);
+static bool open_obj(obj_t *);
+static void obj_close(obj_t *);
+static bool check_version_names(obj_t *);
+static void print_symbols(obj_t *);
 
-typedef struct file {
-	const char	*f_name;
-	FILE		*f_f;
-	uint_t		f_linenum;
-	custr_t		*f_cus;
-	char		*f_line;
-} file_t;
+static void get_symbols(obj_t *);
+static void add_sym(version_t *, GElf_Sym *);
+static int cmp_sym(const void *, const void *, void *);
 
-static void parse_category(const char *, const char *, category_t *);
-static void load_exceptions(const char *, exceptions_t *);
-static void print_header(FILE *);
+static void print_version(obj_t *, GElf_Verdef *, bool);
 
-static int each_line(const char *, FILE *f,
-    int (*)(char *, const bookmark_t *, void *), void *);
-static void init_re(void);
-static void *xcalloc(size_t, size_t);
-static void *zalloc(size_t);
-static void errout(const char *, ...);
+static exceptions_t *exceptions;
+static elf_objs_t **elf_objs;
+static uint_t n_objs;
 
-/* BEGIN CSTYLED */
-DECL_RE(mach, "MACH\(([^))]+)\)");
-DECL_RE(cat_version, "^((?:SUNW|ILLUMOS)_)([:digit:]+)\.([:digit]+)(\.([:digit]+))?");
-DECL_RE(cat_plain_1, "^SYSVAPI_1.[23]$");
-DECL_RE(cat_plain_2, "^SISCD_2.3[ab]*$");
-DECL_RE(cat_private, "^(SUNW_ILLUMOS)private(_[0-9.]+)?$");
-/* END CSTYLED */
-
-static exceptions_t exceptions;
-static bool do_header;
+static bool do_header = true;
 static const char *errfname = "(stdout)";
 static FILE *errf = stdout;
 static FILE *intf;
+static bool expand_inheritance;
+static bool one_liner;
+static int filedir = AT_FDCWD;
+
+static inline const char *
+obj_path(const obj_t *obj)
+{
+	return (obj->o_elfobj->eo_relpath);
+}
+
+static inline const char *
+obj_soname(obj_t *obj)
+{
+	return (elf_strptr(obj->o_elf, obj->o_dyn.si_stridx,
+	    obj->o_soname_idx));
+}
+
+static inline GElf_Verdef *
+verdef_next(GElf_Verdef *v)
+{
+	uintptr_t next = (uintptr_t)v + v->vd_next;
+	return ((GElf_Verdef *)next);
+}
+
+static inline GElf_Verdaux *
+verdef_aux(GElf_Verdef *v)
+{
+	uintptr_t aux = (uintptr_t)v + v->vd_aux;
+	return ((GElf_Verdaux *)aux);
+}
+
+static inline GElf_Verdaux *
+vaux_next(GElf_Verdaux *aux)
+{
+	uintptr_t next = (uintptr_t)aux + aux->vda_next;
+	return ((GElf_Verdaux *)next);
+}
+
+static inline const char *
+vaux_name(obj_t *obj, GElf_Verdaux *vaux)
+{
+	return (elf_strptr(obj->o_elf, obj->o_verdef.si_stridx,
+	    vaux->vda_name));
+}
+
+static inline const char *
+verdef_name(obj_t *obj, GElf_Verdef *verdef)
+{
+	GElf_Verdaux *vaux = verdef_aux(verdef);
+	return (vaux_name(obj, vaux));
+}
+
+static inline size_t
+num_versions(obj_t *obj)
+{
+	return (obj->o_verdef.si_nent);
+}
+
+static inline const char *
+dsym_name(obj_t *obj, const GElf_Sym *dsym)
+{
+	return (elf_strptr(obj->o_elf, obj->o_dynsym.si_stridx, dsym->st_name));
+}
 
 static void __NORETURN
 usage(const char *name)
@@ -135,29 +183,41 @@ main(int argc, char **argv)
 	const char *intfile = NULL;
 	const char *errfile = NULL;
 	const char *elffile = NULL;
+	const char *exfile = NULL;
+	const char *wfile = NULL;
 	int c;
+
+	if (elf_version(EV_CURRENT) == EV_NONE)
+		errx(EXIT_FAILURE, "elf library is out of date");
 
 	while ((c = getopt(argc, argv, "c:E:e:f:hIi:ow:")) != -1) {
 		switch (c) {
 		case 'c':
+			// TODO
+			break;
 		case 'E':
 			errfile = optarg;
 			break;
 		case 'e':
+			exfile = optarg;
+			break;
 		case 'f':
 			elffile = optarg;
 			break;
 		case 'h':
-			do_header = true;
+			do_header = false;
 			break;
 		case 'I':
+			expand_inheritance = true;
+			break;
 		case 'i':
 			intfile = optarg;
 			break;
 		case 'o':
+			one_liner = true;
+			break;
 		case 'w':
-			if (chdir(optarg) < 0)
-				err(EXIT_FAILURE, "chdir(%s) failed", optarg);
+			wfile = optarg;
 			break;
 		case '?':
 			(void) fprintf(stderr, "Unknown option -%c\n", optopt);
@@ -168,486 +228,471 @@ main(int argc, char **argv)
 	if (argc <= optind && elffile == NULL)
 		usage(argv[0]);
 
-	if (errfile != NULL) {
-		int errfd;
+	category_init();
 
-		errfd = open(errfile, O_RDWR|O_CREAT, 0444);
-		if (errfd < 0)
-			err(EXIT_FAILURE, "Failed to open %s", errfile);
+	if (wfile != NULL) {
+		int fd;
 
-		if (dup(errfd, STDOUT_FILENO) < 0)
-			err(EXIT_FAILURE, "dup() failed");
+		fd = open(wfile, O_RDONLY|O_DIRECTORY);
+		if (fd == -1)
+			err(EXIT_FAILURE, "failed to open %s", wfile);
+		filedir = fd;
 	}
 
-	init_re();
+	if (errfile != NULL) {
+		errf = fopenat(filedir, errfile, "w");
+		if (errf == NULL)
+			err(EXIT_FAILURE, "Failed to open %s", errfile);
 
-	intfile = fopen(optarg, "w");
-	if (intfile == NULL)
-		err(EXIT_FAILURE, "Unable to open %s", optarg);
+		errfname = errfile;
+	}
 
-	if (do_header)
-		print_header(intfile);
-
-	if (elffile != NULL) {
+	if (exfile != NULL) {
 		FILE *f;
 
-		f = fopen(elffile, "r");
+		f = fopenat(filedir, exfile, "r");
 		if (f == NULL)
-			err(EXIT_FAILURE, "Unable to open %s", elffile);
+			err(EXIT_FAILURE, "Failed to open %s", exfile);
 
-		process_find_elf(f, elffile);
+		exceptions = load_exceptions(f, exfile);
+		VERIFY0(fclose(f));
 	} else {
-		argv += optind;
-		while (*argv != NULL) {
-			FILE *f;
-			struct stat sb = { 0 };
-			char cmd[MAXPATHNAME] = { 0 };
-			bool is_dir = false;
+		char *fname;
+		FILE *f;
 
-			if (stat(*argv, &sb) < 0)
-				err(EXIT_FAILURE, "Unable to stat %s", *argv);
+		fname = find_exception_file(filedir, "interface_check");
+		if (fname == NULL)
+			errx(EXIT_FAILURE, "failed to find exception file");
 
-			if (S_ISDIR(sb.st_mode))
-				is_dir = true;
+		f = fopenat(filedir, fname, "r");
+		exceptions = load_exceptions(f, fname);
+		VERIFY0(fclose(f));
+		free(fname);
+	}
 
-			(void) snprintf(cmd, sizeof (cmd), "find_elf -frs%s %s",
-			    is_dir ? " -a" : " ", *argv);
-
-			f = popen(cmd, "r");
-			if (f == NULL)
-				err(EXIT_FAILURE, "Failed running '%s'", cmd);
-
-			process_find_elf(f, *argv++);
+	if (intfile != NULL) {
+		if (strcmp(intfile, "-") == 0) {
+			intf = stdout;
+		} else {
+			intf = fopenat(filedir, intfile, "w");
+			if (intf == NULL)
+				err(EXIT_FAILURE, "Unable to open %s", intfile);
 		}
 	}
 
+	if (do_header && intf != NULL)
+		print_header(intf, argc, argv);
+
+	if (elffile != NULL) {
+		load_find_elf(elffile);
+	} else {
+		run_find_elf(argc - optind, argv + optind);
+	}
+
+	for (uint_t i = 0; i < n_objs; i++) {
+		elf_objs_t *objs = elf_objs[i];
+		elf_obj_t *obj;
+		int prefixfd = -1;
+
+		prefixfd = openat(filedir, objs->eos_prefix,
+		    O_RDONLY|O_DIRECTORY);
+		if (prefixfd == -1) {
+			err(EXIT_FAILURE, "failed to open %s",
+			    objs->eos_prefix);
+		}
+
+		for (obj = avl_first(&objs->eos_objs); obj != NULL;
+		    obj = AVL_NEXT(&objs->eos_objs, obj)) {
+			process_object(prefixfd, objs->eos_prefix, obj);
+		}
+
+		VERIFY0(close(prefixfd));
+
+		elf_objs_free(objs);
+		elf_objs[i] = NULL;
+	}
+
+	if (errf != stdout)
+		VERIFY0(fclose(errf));
+	if (intf != NULL && intf != stdout)
+		VERIFY0(fclose(intf));
+	if (filedir != AT_FDCWD)
+		VERIFY0(close(filedir));
+
+	exceptions_free(exceptions);
 	return (EXIT_SUCCESS);
 }
 
-static char *
-get_exception_name(const char *name)
-{
-	char *out = NULL;
-
-	if (name != NULL) {
-		out = strdup(name);
-		if (out == NULL)
-			err(EXIT_FAILURE, "strdup failed");
-		return (out);
-	}
-
-	const char *cws = getenv("CODEMGR_WS");
-	struct stat sb;
-	int ret;
-
-	if (cws != NULL) {
-		ret = asprintf(&out, "%s/exception_lists/%s", cws, name);
-		if (ret < 0)
-			err(EXIT_FAILURE, "asprintf failed");
-
-		if (stat(out, &sb) == 0 && S_ISREG(sb.st_mode))
-			return (out);
-
-		free(out);
-		out = NULL;
-	}
-
-	ret = asprintf(&out, "../etc/exception_lists/%s", name);
-	if (ret < 0)
-		err(EXIT_FAILURE, "asprintf failed");
-
-	if (stat(out, &sb) == 0 && S_ISREG(sb.st_mode))
-		return (out);
-
-	free(out);
-	return (NULL);
-}
-
-#define	EXCEPTION_CHUNK 4
-static exception_t *
-get_exception(exceptions_t *es, const char *verb, bool create)
-{
-	for (uint_t i = 0; i < es->es_n; i++) {
-		if (strcmp(verb, es->es_exceptions[i].e_verb) == 0)
-			return (&es->es_exceptions[i]);
-	}
-
-	if (!create)
-		return (NULL);
-
-	if (es->es_n == es->es_size) {
-		exceptions_t *new_e;
-		size_t newamt = es->es_size + EXCEPTION_CHUNK;
-
-		new_e = calloc(newamt, sizeof (exception_t));
-		if (new_e == NULL)
-			err(EXIT_FAILURE, "failed to grow exceptions array");
-
-		(void) memcpy(new_e, es->es_exceptions,
-		    es->es_n * sizeof (exception_t));
-
-		es->es_size = newamt;
-		free(es->es_exceptions);
-		es->es_exceptions = new_e;
-	}
-
-	exception_t *e = &es->es_exceptions[es->es_n++];
-
-	e->e_verb = strdup(verb);
-	if (e->e_verb == NULL)
-		err(EXIT_FALURE, "failed to allocate verb");
-
-	return (e);
-}
-
 static void
-add_ex_regex(exception_t *e, const char *re_str)
+load_find_elf(const char *filename)
 {
-	regex_t *re;
-	int ret;
+	FILE *f;
 
-	if (e->e_n == e->e_sz) {
-		regex_t *new_e;
-		size_t newamt = e->e_sz + EXCEPTION_CHUNK;
+	elf_objs = xcalloc(1, sizeof (elf_objs_t *));
+	n_objs = 1;
 
-		new_e = xcalloc(newamt, sizeof (regex_t));
-		(void) memcpy(new_e, e->e_regexes, (e->e_n * sizeof (regex_t)));
-		free(e->e_regexes);
-
-		e->e_sz = newamt;
-		e->e_regexes = new_e;
-	}
-
-	re = &e->regexes[e->e_n++];
-	xregcomp(re, re_str, REG_EXTENDED);
-}
-
-static in
-load_exceptions_cb(const char *line, const bookmark_t *bk, void *arg)
-{
-}
-
-static void
-load_exceptions(const char *name, exceptions_t *es)
-{
-	FILE *f = NULL;
-	char *tryname = NULL;
-	char *line = NULL;
-	size_t linesz = 0;
-	ssize_t n;
-	int ret;
-
-	tryname = get_exception_name(name);
-	if (tryname == NULL)
-		return;
-
-	f = fopen(tryname, "r");
+	f = fopenat(filedir, filename, "r");
 	if (f == NULL)
-		err(EXIT_FAILURE, "unable to open exceptions file %s", tryname);
+		err(EXIT_FAILURE, "Unable to open %s", filename);
 
-	while ((n = getline(&line, &linesz, f)) > 0) {
-		char *p = line;
-
-		/* Skip leading whitespace (if any) */
-		while (*p != '\0' && isspace(*p))
-			p++;
-
-		/* Skip empty lines */
-		if (*p == '\0')
-			continue;
-
-		/* Skip comments */
-		if (*p == '#')
-			continue;
-
-		if (line[n - 1] == '\n')
-			line[n - 1] = '\0';
-
-		char *verb = p;
-		char *re = NULL;
-
-		verb = strtok(p, " \n\t");
-		if (verb == NULL)
-			continue;
-
-		re = strtok(p, NULL);
-		if (re == NULL)
-			continue;
-
-		if (strtok(p, NULL) != NULL)
-			continue;
-
-		/* XXX: Expand MACH() */
-
-		exception_t *e = get_exception(es, verb, true);
-
-		add_ex_regex(e, re);
-	}
-
+	elf_objs[0] = read_find_elf(f, filename);
 	VERIFY0(fclose(f));
-	free(tryname);
-	free(line);
+
+	if (elf_objs[0] == NULL)
+		errx(EXIT_FAILURE, "error reading %s", filename);
 }
 
 static void
-print_header(FILE *out)
+run_find_elf(int argc, char **argv)
 {
+	elf_objs = xcalloc(argc, sizeof (elf_objs_t *));
+	n_objs = argc;
+
+	for (uint_t i = 0; i < argc; i++) {
+		FILE		*pipe;
+		char		*cmd;
+		struct stat	sb = { 0 };
+		bool		is_dir = false;
+
+		if (stat(argv[i], &sb) < 0)
+			err(EXIT_FAILURE, "Failed to stat %s", argv[i]);
+
+		if (S_ISDIR(sb.st_mode))
+			is_dir = true;
+
+		if (asprintf(&cmd, "find_elf -frs%s %s", is_dir ? " -a" : "",
+		    argv[i]) < 0) {
+			err(EXIT_FAILURE, "asprintf failed");
+		}
+
+		pipe = popen(cmd, "r");
+		if (pipe == NULL)
+			err(EXIT_FAILURE, "Failed to run '%s'", cmd);
+
+		elf_objs[i] = read_find_elf(pipe, argv[i]);
+		if (elf_objs[i] == NULL)
+			errx(EXIT_FAILURE, "error reading output of '%s'", cmd);
+
+		free(cmd);
+	}
 }
 
 static void
-process_object(int dirfd, obj_t *obj)
+process_object(int dirfd, const char *prefix, elf_obj_t *eobj)
 {
-	if (obj->obj_type != ET_DYN)
-		return;
-}
-
-struct find_elf_arg {
-	const char	*fea_filename;
-	char		*fea_prefix;
-	int		fea_dirfd;
-	obj_t		*fea_obj;
-	bool		fea_skip;
-};
-
-static int
-load_find_elf(const char *name, int fd)
-{
-	file_t f = { 0 };
-	char *line = NULL;
-	char *word = NULL;
-	int pfxfd = -1;
-	obj_t obj = { 0 };
-	bool skip = false;
-
-	file_open(name, fd, &f);
-	line = file_getline(&f);
-	if (line == NULL)
-		errx(EXIT_FAILURE, "%s: file is empty", name);
-
-	word = strtok(line, " \t");
-	if (strcmp(word, "PREFIX") != 0)
-		f_fatal(&f, "PREFIX is not first");
-
-	word = strtok(NULL, " \t");
-	if (word == NULL)
-		f_fatal(&f, "PREFIX line missing path");
-
-	pfxfd = open(word, O_RDONLY|O_DIRECTORY);
-	if (pfxfd < 0)
-		err(EXIT_FAILURE, "%s", word);
-
-	while ((line = file_getline(&f)) != NULL) {
-		word = strtok(line, " \t");
-
-		if (strcmp(word, "OBJECT") == 0) {
-			char *bits, *type, *verdef, *path;
-
-			/*
-			 * Only interested in shareable objects. The -f
-			 * option may give us more than just shareable
-			 * objects as input.
-			 */
-			if (!skip || obj.obj_type != ET_DYN)
-				process_obj(pfxfd, &obj);
-			obj_reset(&obj);
-
-			bits = strtok(NULL, " \t");
-			type = strtok(NULL, " \t");
-			verdef = strtok(NULL, " \t");
-			path = strtok(NULL, " \t");
-
-			if (bits == NULL || type == NULL || verdef == NULL ||
-			    path == NULL) {
-				f_warn(&f, "OBJECT line is misformed");
-			}
-
-			skip = false;
-			if (!obj_init(&obj, bits, type, verdef, path)) {
-				skip = true;
-				f_warn(&f, "OBJECT line is misformed");
-			}
-			continue;
-		}
-
-		if (strcmp(word, "ALIAS") == 0) {
-			char *objname, *alias;
-
-			if (obj.obj_relpath == NULL) {
-				f_warn(&f, "ALIAS line without OBJECT line");
-				continue;
-			}
-
-			objname = strtok(NULL, " \t");
-			alias = strtok(NULL, " \t");
-
-			if (
-		}
-
-	}
-	file_close(&f);
-	VERIFY0(close(pfxdx));
-}
-
-static int
-find_elf_cb(char *line, const bookmark_t *bk, void *arg)
-{
-	struct find_elf_arg *fea = arg;
-	char *word;
-
-	word = strtok(line, " \t");
-
-	if (strcmp(word, "PREFIX") == 0) {
-		if (fea->fea_prefix != NULL)
-			in_fatal(bk, "duplicate 'PREFIX' keyword");
-
-		word = strtok(NULL, " \t");
-			in_fatal(bk, "missing argument to PREFIX");
-
-		fea->fea_prefix = xstrdup(word);
-		fea->fea_dirfd = open(fea->fea_prefix, O_RDONLY|O_DIRECTORY);
-		if (fea->fea_dirfd < 0)
-			err(EXIT_FAILURE, "%s", fea->fea_prefix);
-		return (0);
-	}
-
-	if (strcmp(word, "OBJECT") == 0) {
-		if (fea->fea_prefix == NULL)
-			in_fatal(bk, "PREFIX line is not first");
-
-		char *bits, *type, *verdef, *path;
-
-		bits = strtok(NULL, " \t");
-		type = strtok(NULL, " \t");
-		verdef = strtok(NULL, " \t");
-		path = strtok(NULL, " \t");
-
-		if (bits == NULL || type == NULL || verdef == NULL ||
-		    path == NULL) {
-			in_fatal(bk, "misformed OBJECT line");
-		}
-
-		if (fea->fea_obj.obj_relpath != NULL) {
-			if (!fea->fea_skip)
-				process_obj(&fea->fea_obj);
-			obj_reset(&fea->fea_obj);
-			fea->fea_skip = false;
-		}
-
-		if (!obj_init(&fea->fea_obj, bits, type, verdef, path))
-			fea->fea_skip = true;
-		return (0);
-	}
-
-	if (strcmp(word, "ALIAS") == 0) {
-		if (fea->fea_filename == NULL) {
-			errx(EXIT_FAILURE, "%s:%zu: PREFIX line is not first",
-			    fea->fea_filename, linenum);
-		}
-
-		if (fea->fea_obj == NULL) {
-			errx(EXIT_FAILURE, "%s:%zu: ALIAS line preceeds OBJECT",
-			    feq->fea_filename, linenum);
-		}
-
-		char *name = strtok(NULL, " \t");
-		char *alias = strtok(NULL, " \t");
-
-		if (name == NULL || alias == NULL) {
-			errx(EXIT_FAILURE, "%s:%zu: invalid ALIAS line",
-			    fea->fea_filename, linenum);
-		}
-
-		add_alias(fea->fea_obj, alias);
-		return (0);
-	}
-
-	(void) fprintf(stderr, "%s:%zu unrecognized line\n", fea->fea_filename,
-	    linenum);
-	return (0);
-}
-
-static void
-process_find_elf(FILE *f, const char *filename)
-{
-	struct find_elf_arg fea = {
-		.fea_filename = filename,
+	obj_t obj = {
+		.o_prefix = prefix,
+		.o_dirfd = dirfd,
+		.o_elfobj = eobj,
 	};
+	bool is_plugin;
 
-	(void) each_line(filename, f, find_elf_cb, &fea);
+	if (eobj->eo_type != ET_DYN)
+		return;
 
-	if (fea->fea_obj.obj_path != NULL)
-		process_obj(&fea->fea_obj);
+	is_plugin = is_exception(eobj->eo_relpath, "PLUGIN", exceptions);
+	if (!is_plugin)
+		check_path(&obj);
 
-	obj_reset(&fea->fea_obj);
-	if (close(fea->fea_dirfd) < 0)
-		err(EXIT_FAILURE, "%s", fea->fea_prefix);
-	free(fea->fea_prefix);
+	/* If there's no versions in the file, then we're done */
+	if (!has_versions(&obj, is_plugin))
+		return;
+
+	if (!open_obj(&obj))
+		return;
+
+	if (!check_version_names(&obj))
+		goto done;
+
+	// TODO more of the tests
+
+	print_symbols(&obj);
+
+done:
+	obj_close(&obj);
+}
+
+/* Check if pathname does not follow the runtime versioned name convention */
+static void
+check_path(obj_t *obj)
+{
+	const char *path = obj_path(obj);
+	struct stat sb;
+
+	/*
+	 * The check here is pretty simple -- it must contain '.so.' if
+	 * the path is not a symlink.
+	 */
+	if (strstr(path, ".so.") != NULL)
+		return;
+
+	if (fstatat(obj->o_dirfd, path, &sb, AT_SYMLINK_NOFOLLOW) < 0) {
+		warn("failed to stat %s/%s", obj->o_prefix, path);
+		return;
+	}
+
+	if (S_ISLNK(sb.st_mode))
+		return;
+
+	errmsg(obj, "does not have a versioned name");
+}
+
+static bool
+has_versions(obj_t *obj, bool is_plugin)
+{
+	if (obj->o_elfobj->eo_has_verdef)
+		return (true);
+
+	if (!is_plugin && !is_exception(obj_path(obj), "NOVERDEF", exceptions))
+		errmsg(obj, "no versions found");
+
+	return (false);
+}
+
+/* Wrapper around elf_begin(3ELF) */
+static bool
+open_obj(obj_t *obj)
+{
+	const char	*path = obj_path(obj);
+	Elf_Scn		*scn;
+	Elf_Data	*data;
+	GElf_Verdef	*verdef;
+	GElf_Ehdr	ehdr;
+	GElf_Dyn	dyn;
+	int		fd;
+	bool		has_soname;
+
+	fd = openat(obj->o_dirfd, obj_path(obj), O_RDONLY);
+	if (fd < 0) {
+		warn("failed to open %s/%s", obj->o_prefix, path);
+		return (false);
+	}
+
+	obj->o_elf = elf_begin(fd, ELF_C_READ, NULL);
+	if (obj->o_elf == NULL) {
+		int e = elf_errno();
+
+		warnx("elf_begin on %s/%s failed: %s", obj->o_prefix, path,
+		    elf_errmsg(e));
+		return (false);
+	}
+
+	/* Cache sections we're interested in */
+	if (gelf_getehdr(obj->o_elf, &ehdr) == NULL)
+		goto fail;
+
+	scn = NULL;
+	while ((scn = elf_nextscn(obj->o_elf, scn)) != NULL) {
+		GElf_Shdr shdr = { 0 };
+
+		if (gelf_getshdr(scn, &shdr) == NULL)
+			goto fail;
+
+		switch (shdr.sh_type) {
+		case SHT_SUNW_verdef:
+			obj->o_verdef.si_scn = scn;
+			obj->o_verdef.si_nent = shdr.sh_info;
+			obj->o_verdef.si_stridx = shdr.sh_link;
+			break;
+		case SHT_SUNW_versym:
+			obj->o_versym.si_scn = scn;
+			obj->o_versym.si_nent = shdr.sh_size / shdr.sh_entsize;
+			obj->o_versym.si_stridx = shdr.sh_link;
+			break;
+		case SHT_DYNAMIC:
+			obj->o_dyn.si_scn = scn;
+			obj->o_dyn.si_nent = shdr.sh_size / shdr.sh_entsize;
+			obj->o_dyn.si_stridx = shdr.sh_link;
+			break;
+		case SHT_DYNSYM:
+			obj->o_dynsym.si_scn = scn;
+			obj->o_dynsym.si_nent = shdr.sh_size / shdr.sh_entsize;
+			obj->o_dynsym.si_stridx = shdr.sh_link;
+			break;
+		}
+	}
+
+	/* Cache all of the GElf_Verdef (ELF version) objects */
+	obj->o_versions = xcalloc(num_versions(obj), sizeof (version_t));
+	data = elf_getdata(obj->o_verdef.si_scn, NULL);
+	if (data == NULL)
+		goto fail;
+
+	verdef = (GElf_Verdef *)data->d_buf;
+	for (uint_t i = 0; i < num_versions(obj); i++) {
+		version_t	*v = &obj->o_versions[i];
+
+		v->v_verdef = verdef;
+		verdef = verdef_next(verdef);
+	}
+
+	/*
+	 * The way versions are linked/inherited is the additional
+	 * verdaux entries (the first verdaux is for the current entry)
+	 * list the version names this verdef inherits. However, to determine
+	 * which versions are 'top' versions (i.e. they are not inherited by
+	 * any other version), we have to walk all of the inheritance chains
+	 * and mark all of the entries that are inherited.
+	 *
+	 */
+	for (uint_t i = 0; i < num_versions(obj); i++) {
+		GElf_Verdaux	*vaux, *vancestor;
+		bool		is_weak = false;
+
+		verdef = obj->o_versions[i].v_verdef;
+
+		if ((verdef->vd_flags & VER_FLG_WEAK) != 0)
+			is_weak = true;
+
+		/*
+		 * Iterate through all of the ancestors. The first entry
+		 * is 'this' version, so we ignore it.
+		 */
+		vancestor = verdef_aux(verdef);
+
+		for (uint_t j = 1; j < verdef->vd_cnt; j++) {
+			vancestor = vaux_next(vancestor);
+
+			/* Find the verdef of this ancestor */
+			for (uint_t k = 0; k < num_versions(obj); k++) {
+				if (k == i)
+					continue;
+
+				vaux = verdef_aux(obj->o_versions[k].v_verdef);
+
+				if (vancestor->vda_name == vaux->vda_name) {
+					version_t *v = &obj->o_versions[k];
+
+					if (is_weak)
+						v->v_weak_ancestors++;
+					v->v_ancestors++;
+				}
+			}
+		}
+	}
+
+	/* Get the string index of the soname (if it exists) */
+	data = elf_getdata(obj->o_dyn.si_scn, NULL);
+	if (data == NULL)
+		goto fail;
+
+	has_soname = false;
+	for (uint_t i = 0; i < obj->o_dyn.si_nent; i++) {
+		if (gelf_getdyn(data, i, &dyn) == NULL)
+			goto fail;
+
+		if (dyn.d_tag == DT_SONAME) {
+			obj->o_soname_idx = dyn.d_un.d_ptr;
+			has_soname = true;
+			break;
+		}
+	}
+
+	/*
+	 * If there isn't a soname, we use the base version (which should
+	 * be the name of the library) instead.
+	 */
+	if (!has_soname) {
+		for (uint_t i = 0; i < num_versions(obj); i++) {
+			verdef = obj->o_versions[i].v_verdef;
+			if ((verdef->vd_flags & VER_FLG_BASE) != 0) {
+				GElf_Verdaux *vaux;
+
+				vaux = verdef_aux(verdef);
+				obj->o_soname_idx = vaux->vda_name;
+			}
+		}
+	}
+
+	/* We can't categorize the version until we have the soname */
+	for (uint_t i = 0; i < num_versions(obj); i++) {
+		version_t	*v = &obj->o_versions[i];
+		const char	*vname, *soname;
+
+		vname = verdef_name(obj, v->v_verdef);
+		soname = obj_soname(obj);
+		parse_category(vname, soname, &v->v_cat);
+
+		/* Count the number of non-private versions */
+		if (v->v_cat.c_type != CT_SONAME &&
+		    v->v_cat.c_type != CT_PRIVATE) {
+			obj->o_npubvers++;
+		}
+	}
+
+	get_symbols(obj);
+
+	return (true);
+
+fail:
+	obj_close(obj);
+	return (false);
 }
 
 static void
-parse_category(const char *vstr, const char *soname, category_t *c)
+obj_close(obj_t *obj)
 {
-	regmatch_t pmatch[5] = { 0 };
-	int ret;
+	for (uint_t i = 0; i < num_versions(obj); i++) {
+		version_t *v = &obj->o_versions[i];
 
-	(void) memset(c, '\0', sizeof (*c));
-	if (regexec(&cat_version_re, vstr, 5, pmatch, 0) == 0) {
-		c->c_type = CT_NUMBERED;
-		/* TODO */
+		arrayfree(v->v_syms, v->v_syms_alloc, sizeof (GElf_Sym));
 	}
 
-	if (regexec(&cat_plain_re, vstr, 0, NULL, 0) == 0) {
-		c->c_type = CT_PLAIN;
-		return;
-	}
+	arrayfree(obj->o_versions, num_versions(obj), sizeof (version_t));
+	obj->o_versions = NULL;
 
-	if (soname != NULL && strcmp(vstr, soname) == 0) {
-		c->c_type = CT_SONAME;
-		return;
-	}
-
-	if (regexec(&cat_private_re, vstr, 0, NULL, 0) == 0) {
-		c->c_type = CT_PRIVATE;
-		return;
-	}
-
-	c->c_type = CT_UNKNOWN;
+	if (obj->o_elf != NULL)
+		VERIFY0(elf_end(obj->o_elf));
+	obj->o_elf = NULL;
 }
 
-static bool 
-obj_init(obj_t *obj, char *cstr, char *tstr, char *vstr, char *pstr)
+/*
+ * Verify all of the version names in this object follow our standard
+ * (or is an exception).
+ *
+ * Currently, allowed version names are:
+ *	ILLUMOS_x.y.[.z]
+ *	SUNW_x.y.[z]
+ *	ILLUMOS_private(_nnn)
+ *	SUNW_private(_nnn)
+ *	SYSVABI_1.2
+ *	SYSVAVI_1.3
+ *	SISCD_2.3[ab*]
+ *
+ * See category.c for the explicit regexes used to test the version names.
+ */
+static bool
+check_version_names(obj_t *obj)
 {
-	obj->obj_relpath = strdup(pstr);
-	if (obj->obj_relpath == NULL)
-		err(EXIT_FAILURE, "failed to duplicate string");
+	size_t		vercnt;
 
-	if (strcmp(cstr, "32") == 0) {
-		obj->obj_class = ELFCLASS32;
-	else if (strcmp(cstr, "64") == 0) {
-		obj->obj_class = ELFCLASS64;
-	} else {
-		fprintf(stderr, "invalid class '%s' for %s\n", cstr, pstr);
-		return (false);
+	vercnt = 0;
+	for (uint_t i = 0; i < num_versions(obj); i++) {
+		version_t *v = &obj->o_versions[i];
+
+		/*
+		 * Ignore weak versions. This should match the behavior
+		 * of pvs without the -v option (e.g. pvs -v shows weak
+		 * versions, omits them without it). The original script
+		 * did not check version names of weak versions, so we don't
+		 * as well.
+		 */
+		if ((v->v_verdef->vd_flags & VER_FLG_WEAK) != 0)
+			continue;
+
+		/* Count non-weak versions */
+		vercnt++;
+
+		if (v->v_cat.c_type == CT_UNKNOWN &&
+		    !is_exception(obj_path(obj), "NONSTD_VERNAME",
+		    exceptions)) {
+			const char *vname = verdef_name(obj, v->v_verdef);
+			errmsg(obj, "non-standard version name: %s", vname);
+		}
 	}
 
-	if (strcmp(tstr, "REL") == 0) {
-		obj->obj_type = ET_REL;
-	} else if (strcmp(str, "DYN") == 0) {
-		obj->obj_type = ET_DYN;
-	} else if (strcmp(str, "EXEC") == 0) {
-		obj->obj_type = ET_EXEC;
-	} else {
-		fprintf(stderr, "invalid type '%s' for %s\n", tstr, pstr);
-		return (false);
-	}
-
-	if (strcmp(vstr, "VERDEF") == 0) {
-		obj->obj_hasverdef = true;
-	} else if (strcmp(vstr, "NOVERDEF") == 0) {
-		obj->obj_hasverdef = false;
-	} else {
-		fprintf(stderr, "invalid version flag '%s' for %s\n", vstr,
-		    pstr);
+	if (vercnt == 0) {
+		errmsg(obj, "scoped object contains no versions");
 		return (false);
 	}
 
@@ -655,300 +700,209 @@ obj_init(obj_t *obj, char *cstr, char *tstr, char *vstr, char *pstr)
 }
 
 static void
-obj_reset(obj_t *obj)
+get_symbols(obj_t *obj)
 {
-	free(obj->obj_relpath);
-	if (obj->obj_aliases != NULL) {
-		for (uint_t i = 0; obj->obj_aliases[i] != NULL; i++)
-			free(obj->obj_aliases[i]);
-		free(obj->obj_aliases);
+	Elf_Data *data;
+	Elf_Data *vdata;
+	GElf_Versym *vsym;
+
+	data = elf_getdata(obj->o_dynsym.si_scn, NULL);
+	VERIFY3P(data, !=, NULL);
+
+	vdata = elf_getdata(obj->o_versym.si_scn, NULL);
+	VERIFY3P(data, !=, NULL);
+
+	vsym = (GElf_Versym *)vdata->d_buf;
+	for (uint_t i = 0; i < obj->o_dynsym.si_nent; i++, vsym++) {
+		GElf_Sym sym;
+
+		(void) gelf_getsym(data, i, &sym);
+
+		if (sym.st_shndx == 0 || *vsym == 0)
+			continue;
+
+		version_t *v;
+		const char *vername;
+		const char *symname;
+
+		v = &obj->o_versions[(*vsym) - 1];
+		vername = verdef_name(obj, v->v_verdef);
+		symname = dsym_name(obj, &sym);
+
+		/*
+		 * The version name appears in the dynamic symbol table as
+		 * symbol. We don't want to include it.
+		 */
+		if (strcmp(vername, symname) == 0)
+			continue;
+
+		add_sym(v, &sym);
 	}
-	(void) memset(obj, '\0', sizeof (*obj));
+
+	for (uint_t i = 0; i < num_versions(obj); i++) {
+		version_t *v = &obj->o_versions[i];
+
+		qsort_r(v->v_syms, v->v_nsyms, sizeof (GElf_Sym), cmp_sym, obj);
+	}
 }
 
 static void
-add_alias(obj_t *obj, const char *alias)
+print_symbols(obj_t *obj)
 {
-	uint_t n = 0;
+	elf_obj_t	*eo = obj->o_elfobj;
 
-	if (obj->obj_aliases == NULL) {
-		obj->obj_aliases = xcalloc(4, sizeof (char *));
-		obj->obj_aliasalloc = 4;
-	} else {
-		for (n = 0; obj->obj_aliases[n] != NULL; n++)
-			;
+	if (intf == NULL)
+		return;
 
-		if (n + 2 >= obj->obj_aliasalloc) {
-			size_t nalloc = obj->obj_aliasalloc + 4;
-			char **temp = xcalloc(nalloc, sizeof (char *));
+	/* Only output objects that include public versions */
+	if (obj->o_npubvers == 0)
+		return;
 
-			(void) memcpy(temp, obj->obj_aliases,
-			    n * sizeof (char *));
+	/* Start with the header */
 
-			free(obj->obj_aliases);
-			obj->obj_aliases = temp;
-			obj->obj_aliasalloc = nalloc;
+	(void) fprintf(intf,
+	    "OBJECT\t%s\n"
+	    "CLASS\t%s\n"
+	    "TYPE\t%s\n", obj_path(obj), elf_class_str(eo->eo_class),
+	    elf_type_str(eo->eo_type));
+	for (size_t i = 0; i < eo->eo_nalias; i++)
+		(void) fprintf(intf, "ALIAS\t%s\n", eo->eo_aliases[i]);
+
+	for (uint_t i = 0; i < num_versions(obj); i++) {
+		version_t *v = &obj->o_versions[i];
+		bool is_top;
+
+		if (v->v_cat.c_type == CT_SONAME ||
+		    v->v_cat.c_type == CT_PRIVATE)
+			continue;
+
+		if (v->v_ancestors == 0) {
+			is_top = true;
+		} else {
+			is_top = false;
+		}
+
+#if 0
+		if (v->v_ancestors > 0 && v->v_ancestors != v->v_weak_ancestors)
+			is_top = false;
+		else
+			is_top = true;
+
+		if (is_top && (v->v_verdef->vd_flags & VER_FLG_WEAK) != 0) {
+		}
+#endif
+
+		print_version(obj, v->v_verdef, is_top);
+
+		for (size_t j = 0; j < v->v_nsyms; j++) {
+			(void) fprintf(intf, "\tSYMBOL\t%s\n",
+			    dsym_name(obj, &v->v_syms[j]));
 		}
 	}
 
-	obj->obj_aliases[n] = strdup(alias);
-	if (obj->obj_aliases[n] == NULL)
-		err(EXIT_FAILURE, "failed to duplicate string");
+	(void) fputc('\n', intf);
 }
 
 static void
-init_re(void)
+print_version(obj_t *obj, GElf_Verdef *verdef, bool top)
 {
-	re_init_t **rei;
-	int ret;
+	GElf_Verdaux *vaux;
 
-	SET_FOREACH(rei, re_init_set) {
-		ret = regcomp(rei->re_ptr, rei->re_str, REG_EXTENDED);
-		if (ret != 0) {
-			char *errbuf;
-			size_t errlen;
+	if (intf == NULL)
+		return;
 
-			errlen = regerror(ret, rei->re_ptr, NULL, 0);
-			errbuf = xcalloc(1, errlen + 1);
+	if (top)
+		(void) fprintf(intf, "TOP_");
 
-			(void) regerror(ret, rei->re_ptr, errbuf, errlen);
-			errx(EXIT_FAILURE, "failed to compile regex '%s': %s",
-			    rei->re_str, errbuf);
-		} 
+	vaux = verdef_aux(verdef);
+	(void) fprintf(intf, "VERSION\t%s", vaux_name(obj, vaux));
+
+	if (verdef->vd_cnt > 1) {
+		vaux = vaux_next(vaux);
+
+		(void) fprintf(intf, "\t{");
+		for (uint_t i = 1; i < verdef->vd_cnt; i++) {
+			if (i > 1)
+				(void) fputc(',', intf);
+			(void) fprintf(intf, "%s", vaux_name(obj, vaux));
+			vaux = vaux_next(vaux);
+		}
+		(void) fputc('}', intf);
 	}
-}
-
-static void *
-xcalloc(size_t n, size_t sz)
-{
-	void *p = calloc(n, sz);
-
-	if (p != NULL)
-		return (p);
-
-	(void) fprintf(stderr, "Out of memory\n");
-	abort();
-}
-
-static void *
-zalloc(size_t sz)
-{
-	return (xcalloc(1, sz));
+	(void) fputc('\n', intf);
 }
 
 static void
-errout(const char *fmt, ...)
+errmsg(obj_t *obj, const char *fmt, ...)
 {
+	const char *path = obj_path(obj);
 	va_list ap;
-	int n;
 
 	va_start(ap, fmt);
-	n = vfprintf(errf, fmt, ap);
+	if (one_liner) {
+		(void) fprintf(errf, "%s: ", path);
+		(void) vfprintf(errf, fmt, ap);
+	} else {
+		if (obj->o_errcnt == 0)
+			(void) fprintf(errf, "==== %s ====\n", path);
+
+		(void) fputc('\t', errf);
+		(void) vfprintf(errf, fmt, ap);
+	}
 	va_end(ap);
 
-	if (n < 0)
-		err(EXIT_FAILURE, "%s", errfname);
+	(void) fputc('\n', errf);
+	obj->o_errcnt++;
 }
 
-#define	LINE_CHUNK 128
-static void
-add_char(int c, size_t n, char **restrict buf, size_t *restrict lenp)
+static FILE *
+fopenat(int dirfd, const char *path, const char *mode)
 {
-	if (n + 2 >= *lenp) {
-		size_t templen = roundup(*lenp + LINE_CHUNK, LINE_CHUNK);
-		char *temp = zalloc(templen);
+	int fd;
+	int flag = 0;
 
-		(void) memcpy(temp, *buf, n);
-		free(*buf);
-		*buf = temp;
-		*lenp = templen;
-	}
-	*buf[n] = c;
-	*buf[n + 1] = '\0';
-}
+	VERIFY3P(mode, !=, NULL);
 
-static int
-each_line(const char *filename, FILE *f, int (*cb)(char *, size_t, void *),
-    void *arg)
-{
-	char *buf = NULL;
-	size_t buflen = 0;
-	size_t n = 0;
-	size_t linenum = 0;
-	int c, ret;
-
-	while ((c = fgetc(f)) != -1) {
-		if (c != '#' && c != '\n') {
-			add_char(c, n++, &buf, &buflen);
-			continue;
-		}
-
-		/* A continuation line */
-		if (c == '\n' && n > 0 && buf[n - 1] == '\\') {
-			add_char(c, n++, &buf, &buflen);
-			linenum++;
-			continue;
-		}
-
-		/*
-		 * Either end of line or start of a comment.
-		 * Since comments go to the end of the line, they
-		 * effectively terminate a line -- we'll just skip
-		 * over them.
-		 */
-		char *p = buf;
-
-		/* Skip over leading whitespace */
-		while (*p != '\0' && isspace(*p))
-			p++;
-
-		if (*p == '\0') {
-			/* Blank line, reset and go to the next line */
-			n = 0;
-			buf[0] = '\0';
-			continue;
-		}
-
-		ret = cb(p, ++linenum, arg);
-		if (ret != 0) {
-			free(buf);
-			return (ret);
-		}
-
-		/*
-		 * Line terminated by a comment, skip over the rest of the
-		 * line
-		 */
-		if (c == '#') {
-			while ((c = fgetc(f)) != -1 && c != '\n')
-				;
-		}
-	}
-
-	if (ferror(f))
-		err(EXIT_FAILURE, "%s", filename);
-
-	return (0);
-}
-
-static void
-file_open(const char *name, int fd, file_t *fp)
-{
-	FILE *f;
-	custr_t *cus;
-
-	f = fdopen(fd, "r");
-	if (f == NULL)
-		err(EXIT_FAILURE, "%s", name);
-
-	if (custr_alloc(&cus) != 0)
-		err(EXIT_FAILURE, "custr_alloc failed");
-
-	fp->f_name = name;
-	fp->f_f = f;
-	fp->f_cus = cus;
-	fp->f_linenum = 0;
-	fp->f_line = NULL;
-}
-
-static void
-file_close(file_t *fp)
-{
-	VERIFY0(fclose(fp->f_f));
-	custr_free(fp->f_cus);
-	free(fp->f_line);
-}
-
-static char *
-file_getline(file_t *fp)
-{
-	const char *p = NULL;
-	int c, prevc;
-
-	prevc = -1;
-	while ((c = fgetc(fp->f_f)) != -1) {
-		if (c == '\\') {
-			prevc = c;
-			continue;
-		}
-
-		if (c != '#' && c != '\n') {
-			if (prevc == '\\' &&
-			    custr_appendc(fp->f_cus, prevc) != 0) {
-				err(EXIT_FAILURE, "custr_appendc failed");
-			}
-			if (custr_appendc(fp->f_cus, c) != 0) {
-				err(EXIT_FAILURE, "custr_appendc failed");
-			}
-			prevc = c;
-			continue;
-		}
-
-		/* A continuation line, just keep appending */
-		if (c == '\n' && prevc == '\\') {
-			fp->f_linenum++;
-			prevc = c;
-			continue;
-		}
-
-		ASSERT(c == '\n' || c == '#');
-
-		p = custr_cstr(fp->f_cus);
-
-		/* Skip leading whitespace */
-		while (*p != '\0' && isspace(*p))
-			p++;
-
-		/* Empty line, reset and continue */
-		if (*p == '\0') {
-			custr_reset(fp->f_cus);
-			prevc = c;
-			continue;
-		}
-
+	switch (mode[0]) {
+	case 'r':
+		flag = O_RDONLY;
+		break;
+	case 'w':
+		flag = O_WRONLY | O_TRUNC | O_CREAT;
+		break;
+	case 'a':
+		flag = O_WRONLY | O_APPEND | O_CREAT;
 		break;
 	}
 
-	if (fp->f_line != NULL) {
-		free(fp->f_line);
-		fp->f_line = NULL;
-	}
-
-	if (c == -1 && custr_len(f->f_cus) == 0)
+	fd = openat(dirfd, path, flag);
+	if (fd == -1)
 		return (NULL);
 
-	fp->f_line = strdup(p);
-	if (fp->f_line == NULL)
-		err(EXIT_FAILURE, "strdup failed");
-
-	custr_reset(fp->f_cus);
-	return (fp->f_line);
+	return (fdopen(fd, mode));
 }
 
-static const char *
-file_name(const file_t *fp)
-{
-	return (fp->f_name);
-}
-
-static uint_t
-file_line(const file_t *fp)
-{
-	return (fp->f_linenum);
-}
-
+#define	SYM_CHUNK 8
 static void
-in_fatal(const bookmark_t *bk, const char *fmt, ...)
+add_sym(version_t *v, GElf_Sym *sym)
 {
-	va_arg ap;
+	if (v->v_nsyms == v->v_syms_alloc) {
+		size_t newsz = v->v_syms_alloc + SYM_CHUNK;
 
-	va_start(ap, fmt);
-	flockfile(stderr);
-	(void) fprintf(stderr, "%s:%u: ", bk->bk_name, bk->bk_linenum);
-	(void) vfprintf(stderr, fmt, ap);
-	if (fmt[strlen(fmt) - 1] != '\n')
-		(void) fputc('\n', stderr);
-	funlockfile(stderr);
+		v->v_syms = xcreallocarray(v->v_syms, v->v_syms_alloc, newsz,
+		    sizeof (GElf_Sym));
+		v->v_syms_alloc = newsz;
+	}
+	v->v_syms[v->v_nsyms++] = *sym;
+}
 
-	exit(EXIT_FAILURE);
+static int
+cmp_sym(const void *a, const void *b, void *arg)
+{
+	obj_t *obj = arg;
+
+	const GElf_Sym *l = a;
+	const GElf_Sym *r = b;
+
+	return (strcmp(dsym_name(obj, l), dsym_name(obj, r)));
 }
