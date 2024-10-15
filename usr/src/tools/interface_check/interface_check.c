@@ -45,10 +45,12 @@ typedef struct version {
 	category_t	v_cat;
 	uint_t		v_ancestors;
 	uint_t		v_weak_ancestors;
-	GElf_Sym	*v_syms;
-	size_t		v_nsyms;
-	size_t		v_syms_alloc;
 } version_t;
+
+typedef struct dsym {
+	size_t		ds_name;	/* Index into string table */
+	uint_t		ds_version;	/* Index of obj->o_versions */
+} dsym_t;
 
 typedef struct obj {
 	const char	*o_prefix;
@@ -63,6 +65,9 @@ typedef struct obj {
 	uint_t		o_errcnt;
 	version_t	*o_versions;
 	uint_t		o_npubvers;
+	dsym_t		*o_dsyms;
+	uint_t		o_ndsyms;
+	uint_t		o_dsyms_alloc;
 } obj_t;
 
 static void load_find_elf(const char *);
@@ -79,8 +84,8 @@ static bool check_version_names(obj_t *);
 static void print_symbols(obj_t *);
 
 static void get_symbols(obj_t *);
-static void add_sym(version_t *, GElf_Sym *);
-static int cmp_sym(const void *, const void *, void *);
+static void add_sym(obj_t *, uint_t, GElf_Sym *);
+static int cmp_dsym(const void *, const void *, void *);
 
 static void print_version(obj_t *, GElf_Verdef *, bool);
 
@@ -151,9 +156,9 @@ num_versions(obj_t *obj)
 }
 
 static inline const char *
-dsym_name(obj_t *obj, const GElf_Sym *dsym)
+dsym_name(obj_t *obj, const dsym_t *dsym)
 {
-	return (elf_strptr(obj->o_elf, obj->o_dynsym.si_stridx, dsym->st_name));
+	return (elf_strptr(obj->o_elf, obj->o_dynsym.si_stridx, dsym->ds_name));
 }
 
 static void __NORETURN
@@ -632,14 +637,7 @@ fail:
 static void
 obj_close(obj_t *obj)
 {
-	for (uint_t i = 0; i < num_versions(obj); i++) {
-		version_t *v = &obj->o_versions[i];
-
-		arrayfree(v->v_syms, v->v_syms_alloc, sizeof (GElf_Sym));
-	}
-
-	arrayfree(obj->o_versions, num_versions(obj), sizeof (version_t));
-	obj->o_versions = NULL;
+	arrayfree(obj->o_dsyms, obj->o_dsyms_alloc, sizeof (dsym_t));
 
 	if (obj->o_elf != NULL)
 		VERIFY0(elf_end(obj->o_elf));
@@ -727,7 +725,8 @@ get_symbols(obj_t *obj)
 
 		v = &obj->o_versions[(*vsym) - 1];
 		vername = verdef_name(obj, v->v_verdef);
-		symname = dsym_name(obj, &sym);
+		symname = elf_strptr(obj->o_elf, obj->o_dynsym.si_stridx,
+		    sym.st_name);
 
 		/*
 		 * The version name appears in the dynamic symbol table as
@@ -736,13 +735,40 @@ get_symbols(obj_t *obj)
 		if (strcmp(vername, symname) == 0)
 			continue;
 
-		add_sym(v, &sym);
+		add_sym(obj, (*vsym) - 1, &sym);
 	}
 
-	for (uint_t i = 0; i < num_versions(obj); i++) {
-		version_t *v = &obj->o_versions[i];
+	qsort_r(obj->o_dsyms, obj->o_ndsyms, sizeof (dsym_t), cmp_dsym, obj);
+}
 
-		qsort_r(v->v_syms, v->v_nsyms, sizeof (GElf_Sym), cmp_sym, obj);
+static bool
+vername_to_idx(obj_t *obj, uint_t name, uint_t *idxp)
+{
+	for (uint_t i = 0; i < num_versions(obj); i++) {
+		version_t	*v = &obj->o_versions[i];
+		GElf_Verdaux	*vaux = verdef_aux(v->v_verdef);
+
+		if (vaux->vda_name == name) {
+			*idxp = i;
+			return (true);
+		}
+	}
+	return (false);
+}
+
+static void
+traverse_versions(obj_t *obj, uint_t vidx, bool *encountered)
+{
+	version_t	*v = &obj->o_versions[vidx];
+	GElf_Verdaux	*vaux = verdef_aux(v->v_verdef);
+	uint_t		idx;
+
+	encountered[vidx] = true;
+
+	for (uint_t i = 1; i < v->v_verdef->vd_cnt; i++) {
+		vaux = vaux_next(vaux);
+		VERIFY(vername_to_idx(obj, vaux->vda_name, &idx));
+		traverse_versions(obj, idx, encountered);
 	}
 }
 
@@ -750,6 +776,7 @@ static void
 print_symbols(obj_t *obj)
 {
 	elf_obj_t	*eo = obj->o_elfobj;
+	bool		*do_version;
 
 	if (intf == NULL)
 		return;
@@ -757,6 +784,8 @@ print_symbols(obj_t *obj)
 	/* Only output objects that include public versions */
 	if (obj->o_npubvers == 0)
 		return;
+
+	do_version = xcalloc(num_versions(obj), sizeof (bool));
 
 	/* Start with the header */
 
@@ -769,12 +798,28 @@ print_symbols(obj_t *obj)
 		(void) fprintf(intf, "ALIAS\t%s\n", eo->eo_aliases[i]);
 
 	for (uint_t i = 0; i < num_versions(obj); i++) {
-		version_t *v = &obj->o_versions[i];
-		bool is_top;
+		version_t	*v = &obj->o_versions[i];
+		dsym_t		*ds = obj->o_dsyms;
+		const char	*symlabel = "SYMBOL";
+		const char	*inherit = "INHERIT";
+		bool		is_top;
 
 		if (v->v_cat.c_type == CT_SONAME ||
 		    v->v_cat.c_type == CT_PRIVATE)
 			continue;
+
+		(void) memset(do_version, '\0',
+		    num_versions(obj) * sizeof (bool));
+
+		do_version[i] = true;
+		if (expand_inheritance) {
+			/*
+			 * Walk the inheritance tree and mark each
+			 * version we find as one to output
+			 */
+			symlabel = "NEW";
+			traverse_versions(obj, i, do_version);
+		}
 
 		if (v->v_ancestors == 0) {
 			is_top = true;
@@ -794,13 +839,18 @@ print_symbols(obj_t *obj)
 
 		print_version(obj, v->v_verdef, is_top);
 
-		for (size_t j = 0; j < v->v_nsyms; j++) {
-			(void) fprintf(intf, "\tSYMBOL\t%s\n",
-			    dsym_name(obj, &v->v_syms[j]));
-		}
+		for (uint_t j = 0; j < obj->o_ndsyms; j++) {
+			if (!do_version[ds[j].ds_version])
+				continue;
+
+			(void) fprintf(intf, "\t%s\t%s\n",
+			    (i == ds[j].ds_version) ? symlabel : inherit,
+			    dsym_name(obj, &ds[j]));
+}
 	}
 
 	(void) fputc('\n', intf);
+	arrayfree(do_version, num_versions(obj), sizeof (bool));
 }
 
 static void
@@ -884,25 +934,33 @@ fopenat(int dirfd, const char *path, const char *mode)
 
 #define	SYM_CHUNK 8
 static void
-add_sym(version_t *v, GElf_Sym *sym)
+add_sym(obj_t *obj, uint_t idx, GElf_Sym *sym)
 {
-	if (v->v_nsyms == v->v_syms_alloc) {
-		size_t newsz = v->v_syms_alloc + SYM_CHUNK;
+	if (obj->o_ndsyms == obj->o_dsyms_alloc) {
+		size_t newsz = obj->o_dsyms_alloc + SYM_CHUNK;
 
-		v->v_syms = xcreallocarray(v->v_syms, v->v_syms_alloc, newsz,
-		    sizeof (GElf_Sym));
-		v->v_syms_alloc = newsz;
+		obj->o_dsyms = xcreallocarray(obj->o_dsyms, obj->o_dsyms_alloc,
+		    newsz, sizeof (dsym_t));
+		obj->o_dsyms_alloc = newsz;
 	}
-	v->v_syms[v->v_nsyms++] = *sym;
+
+	dsym_t *ds = &obj->o_dsyms[obj->o_ndsyms++];
+
+	ds->ds_name = sym->st_name;
+	ds->ds_version = idx;
 }
 
 static int
-cmp_sym(const void *a, const void *b, void *arg)
+cmp_dsym(const void *a, const void *b, void *arg)
 {
 	obj_t *obj = arg;
 
-	const GElf_Sym *l = a;
-	const GElf_Sym *r = b;
+	const dsym_t *l = a;
+	const dsym_t *r = b;
+	const char *ln = elf_strptr(obj->o_elf, obj->o_dynsym.si_stridx,
+	    l->ds_name);
+	const char *rn = elf_strptr(obj->o_elf, obj->o_dynsym.si_stridx,
+	    r->ds_name);
 
-	return (strcmp(dsym_name(obj, l), dsym_name(obj, r)));
+	return (strcmp(ln, rn));
 }
