@@ -216,8 +216,17 @@
 210	"dot3MauType50GbaseBR20U"	"One single-mode fiber ONU PHY supporting a distance of at least 20 km as specified in Clause 160"
 211	"dot3MauType50GbaseBR40D"	"One single-mode fiber OLT PHY supporting a distance of at least 40 km as specified in Clause 160"
 212	"dot3MauType50GbaseBR40U"	"One single-mode fiber ONU PHY supporting a distance of at least 40 km as specified in Clause 160"
-213	"b2p5GbaseAU"			"Glass optical fiber PHY as specified in Clause 166"
-214	"b5GbaseAU"			"Glass optical fiber PHY as specified in Clause 166"
-215	"b10GbaseAU"			"Glass optical fiber PHY as specified in Clause 166"
-216	"b25GbaseAU"			"Glass optical fiber PHY as specified in Clause 166"
-217	"b50GbaseAU"			"Glass optical fiber PHY as specified in Clause 166"
+213	"b2p5GbaseAU"			"Glass optical fiber PHY as specified in Clause 166"\n
+214	"b5GbaseAU"			"Glass optical fiber PHY as specified in Clause 166"\n
+215	"b10GbaseAU"			"Glass optical fiber PHY as specified in Clause 166"\n
+216	"b25GbaseAU"			"Glass optical fiber PHY as specified in Clause 166"\n
+217	"b50GbaseAU"			"Glass optical fiber PHY as specified in Clause 166"\n
+218	"dot3MauType25GbaseT1"		"Single balanced pair of conductors PHY as specified in Clause 165"\n
+219	"dot3MauType400GbaseDR42"	"400GBASE-R PCS/PMA over 4 single-mode fibers in each direction\nPMD with reach up to at least 2 km as specified in Clause 124"
+220	"dot3MauType800GbaseCR8" 	"800GBASE-R PCS/PMA over 8-lane shielded balanced copper cable\nPMD as specified in Clause 162"
+221	"dot3MauType800GbaseDR8" 	"800GBASE-R PCS/PMA over 8 single-mode fibers in each direction\nPMD with reach up to at least 500 m as specified in Clause 124"
+222	"dot3MauType800GbaseDR82" 	"800GBASE-R PCS/PMA over 8 single-mode fibers in each direction\nPMD with reach up to at least 2 km as specified in Clause 124"
+223	"dot3MauType800GbaseKR8" 	"800GBASE-R PCS/PMA over an electrical backplane PMD as specified\nin Clause 163"
+224	"dot3MauType800GbaseR" 		"Multi-lane PCS as specified in Clause 172 over undefined PMA/PMD"
+225	"dot3MauType800GbaseSR8" 	"800GBASE-R PCS/PMA over 8 multimode fibers in each direction\nPMD with reach up to at least 100 m as specified in Clause 167"
+226	"dot3MauType800GbaseVR8" 	"800GBASE-R PCS/PMA over 8 multimode fibers in each direction\nPMD with reach up to at least 50 m as specified in Clause 167"
