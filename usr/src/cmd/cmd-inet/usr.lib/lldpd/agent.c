@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2024 Jason King
  */
 
 #include <atomic.h>
@@ -20,11 +20,16 @@
 #include <libuutil.h>
 #include <pthread.h>
 #include <string.h>
+#include <stropts.h>
 #include <synch.h>
 #include <umem.h>
 #include <unistd.h>
 #include <sys/containerof.h>
 #include <sys/debug.h>
+#include <sys/dld.h>
+#include <sys/dld_ioc.h>
+#include <sys/mac.h>
+#include <sys/mac_ether.h>
 #include <sys/ethernet.h>
 #include <sys/sysmacros.h>
 
@@ -36,14 +41,8 @@
 #include "timer.h"
 #include "util.h"
 
-#define	DEFAULT_MSG_FAST_TX	1
-#define	DEFAULT_MSG_TX_HOLD	4
-#define	DEFAULT_MSG_TX_INTERVAL	30
-#define	DEFAULT_REINIT_DELAY	2
-#define	DEFAULT_TX_CREDIT_MAX	5
-#define	DEFAULT_TX_FAST_INIT	4
-
 static void *agent_thread(void *);
+static void agent_update_phy(agent_t *);
 static bool open_port(agent_t *);
 static void recv_frame(int, void *);
 
@@ -110,7 +109,7 @@ too_many_neighbors(const agent_t *a)
 }
 
 agent_t *
-agent_create(const char *name)
+agent_create(const char *name, datalink_id_t linkid)
 {
 	agent_t *a;
 	int ret;
@@ -122,6 +121,7 @@ agent_create(const char *name)
 	uu_list_node_init(a, &a->a_node, agent_list_pool);
 
 	a->a_name = xstrdup(name);
+	a->a_linkid = linkid;
 	a->a_port_enabled = false;
 
 	(void) log_child(log, &a->a_log,
@@ -136,25 +136,12 @@ agent_create(const char *name)
 	ttr_init(a);
 
 	a->a_neighbors = neighbor_list_new(a);
-	a->a_cfg.ac_tx_fast_msg = DEFAULT_MSG_FAST_TX;
-	a->a_cfg.ac_tx_hold = DEFAULT_MSG_TX_HOLD;
-	a->a_cfg.ac_tx_interval = DEFAULT_MSG_TX_INTERVAL;
-	a->a_cfg.ac_reinit_delay = DEFAULT_REINIT_DELAY;
-	a->a_cfg.ac_tx_credit_max = DEFAULT_TX_CREDIT_MAX;
-	a->a_cfg.ac_tx_fast_init = DEFAULT_TX_FAST_INIT;
 
-	a->a_cfg.ac_status = LLDP_LINK_TXRX;
-
-	a->a_smf_inst = scf_instance_create(rep_handle);
-	a->a_smf_snap = scf_snapshot_create(rep_handle);
-	a->a_smf_val = scf_value_create(rep_handle);
-	a->a_smf_prop = scf_property_create(rep_handle);
-	a->a_cfg.ac_smf_pg = scf_pg_create(rep_handle);
-	// XXX: change for failure
-
-	
+	/*
+	 * Start with the default agent configuration, overridden by any
+	 * agent-specific configuration in SMF.
+	 */
 	config_agent_init(a);
-	(void) config_agent_read(a);
 
 	a->a_dl_cb.fc_fn = recv_frame;
 	a->a_dl_cb.fc_arg = a;
@@ -163,6 +150,8 @@ agent_create(const char *name)
 		agent_destroy(a);
 		return (NULL);
 	}
+
+	agent_update_phy(a);
 
 	ret = thr_create(NULL, 0, agent_thread, a, THR_SUSPENDED, &a->a_tid);
 	if (ret != 0)
@@ -192,11 +181,31 @@ agent_destroy(agent_t *a)
 	if (a->a_dlh != NULL)
 		dlpi_close(a->a_dlh);
 
+	/*
+	 * Free the neighbors (and any in-flight neighbor) first; their
+	 * rxInfoAge timers are attached to the agent's clock.
+	 */
+	if (a->a_neighbors != NULL) {
+		void		*cookie = NULL;
+		neighbor_t	*nb;
+
+		while ((nb = uu_list_teardown(a->a_neighbors,
+		    &cookie)) != NULL) {
+			neighbor_free(nb);
+		}
+	}
+	neighbor_free(a->a_rx.rx_neighbor);
+	a->a_rx.rx_neighbor = NULL;
+	a->a_rx.rx_curr_neighbor = NULL;
+
 	ttr_fini(&a->a_ttr);
 	tx_fini(&a->a_tx);
 	rx_fini(&a->a_rx);
+	lldp_clock_fini(&a->a_clk);
+	config_agent_cfg_free(&a->a_cfg);
 	free(a->a_name);
-	uu_list_destroy(a->a_neighbors);
+	if (a->a_neighbors != NULL)
+		uu_list_destroy(a->a_neighbors);
 	VERIFY0(cond_destroy(&a->a_cv));
 	VERIFY0(mutex_destroy(&a->a_lock));
 	umem_free(a, sizeof (*a));
@@ -225,6 +234,60 @@ agent_disable(agent_t *a)
 	VERIFY0(cond_signal(&a->a_cv));
 	log_info(a->a_log, "port disabled", LOG_T_END);
 	mutex_exit(&a->a_lock);
+}
+
+/*
+ * Replace the SMF-configurable portion of an agent's configuration with
+ * that of cfg. Values derived from the system rather than from SMF (port id,
+ * topo information, MTU) are retained. The agent takes ownership of any
+ * memory referenced by cfg, so the caller must not use or free it after
+ * this returns.
+ */
+void
+agent_set_cfg(agent_t *a, agent_cfg_t *cfg)
+{
+	VERIFY(!IS_AGENT_THREAD(a));
+
+	agent_cfg_t	old;
+	agent_cfg_t	*cur = &a->a_cfg;
+
+	mutex_enter(&a->a_lock);
+
+	old = *cur;
+
+	/* Carry over the values that don't come from SMF */
+	cfg->ac_port = old.ac_port;
+	cfg->ac_label = old.ac_label;
+	cfg->ac_devname = old.ac_devname;
+	cfg->ac_portnum = old.ac_portnum;
+	cfg->ac_mtu = old.ac_mtu;
+	old.ac_label = old.ac_devname = NULL;
+
+	*cur = *cfg;
+
+	/*
+	 * If txCreditMax was lowered, don't let the current credit exceed
+	 * the new maximum (tx_add_credit() only stops at exactly the max).
+	 */
+	if (a->a_ttr.ttr_tx_credit > cur->ac_tx_credit_max)
+		a->a_ttr.ttr_tx_credit = cur->ac_tx_credit_max;
+
+	if (old.ac_status != cur->ac_status) {
+		log_info(a->a_log, "agent admin status change",
+		    LOG_T_STRING, "old_status",
+		    lldp_admin_status_str(old.ac_status),
+		    LOG_T_STRING, "new_status",
+		    lldp_admin_status_str(cur->ac_status),
+		    LOG_T_END);
+	}
+
+	/* What we advertise may have changed, so (re)send our info */
+	a->a_local_changes = true;
+	VERIFY0(cond_signal(&a->a_cv));
+
+	mutex_exit(&a->a_lock);
+
+	config_agent_cfg_free(&old);
 }
 
 void
@@ -299,7 +362,7 @@ agent_thread(void *arg)
 	agent_t		*a = arg;
 	int		ret;
 	bool		run_tx, run_rx, run_ttr;
-	timestruc_t	tick;
+	timestruc_t	rel;
 
 	log = a->a_log;
 
@@ -319,7 +382,7 @@ agent_thread(void *arg)
 	run_rx = rx_machine(a);
 	run_ttr = ttr_machine(a);
 
-	lldp_clock_tick(&a->a_clk, &tick);
+	lldp_clock_start(&a->a_clk);
 	while (!a->a_exit) {
 		/*
 		 * Run each state machine until they are 'idle' -- i.e.
@@ -338,17 +401,22 @@ agent_thread(void *arg)
 		/*
 		 * Wait for an external trigger (via cv) or for the clock
 		 * to tick, then recheck for any state transitions.
+		 *
+		 * We wait using a relative timeout computed from the clock's
+		 * monotonic deadline, so changes to the system time don't
+		 * affect us. Whatever woke us (timeout, signal, or a
+		 * spurious wakeup), lldp_clock_advance() processes any
+		 * ticks that are due.
 		 */
 		while (!run_tx && !run_rx && !run_ttr) {
-			ret = cond_timedwait(&a->a_cv, &a->a_lock, &tick);
+			lldp_clock_reltime(&a->a_clk, &rel);
+			ret = cond_reltimedwait(&a->a_cv, &a->a_lock, &rel);
+			VERIFY(ret == 0 || ret == ETIME || ret == EINTR);
 
 			if (a->a_exit)
 				break;
 
-			if (ret == ETIME) {
-				lldp_clock_tock(&a->a_clk);
-				lldp_clock_tick(&a->a_clk, &tick);
-			}
+			(void) lldp_clock_advance(&a->a_clk);
 
 			run_tx = tx_next_state(&a->a_tx);
 			run_rx = rx_next_state(a);
@@ -356,6 +424,7 @@ agent_thread(void *arg)
 		}
 	}
 
+	mutex_exit(&a->a_lock);
 	return (a);
 }
 
@@ -380,7 +449,6 @@ tx_init(agent_t *a)
 
 	lldp_timer_init(&a->a_clk, &tx->tx_shutdown, "txShutdownWhile", tx,
 	    tx->tx_log, NULL, NULL);
-	buf_init(&tx->tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
 	tx->tx_state = TX_BEGIN;
 
 	TRACE_RETURN(a->a_log);
@@ -396,7 +464,9 @@ tx_fini(tx_t *tx)
 static bool
 tx_machine(agent_t *a)
 {
-	tx_t *tx = &a->a_tx;
+	tx_t	*tx = &a->a_tx;
+	buf_t	tx_buf;
+
 	TRACE_ENTER(tx->tx_log);
 
 	log_debug(tx->tx_log, "state machine running",
@@ -415,15 +485,18 @@ tx_machine(agent_t *a)
 		tx->tx_ttl = tx_ttl(a);
 		break;
 	case TX_SHUTDOWN_FRAME:
-		make_shutdown_pdu(a, &tx->tx_buf);
-		tx_frame(a->a_dlh, &tx->tx_buf, tx->tx_log);
-		buf_init(&tx->tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
+		(void) memset(tx->tx_frame, '\0', sizeof (tx->tx_frame));
+		buf_init(&tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
+		make_shutdown_pdu(a, &tx_buf);
+		tx_frame(a->a_dlh, &tx_buf, tx->tx_log);
+
 		lldp_timer_set(&tx->tx_shutdown, a->a_cfg.ac_reinit_delay);
 		break;
 	case TX_INFO_FRAME:
-		make_pdu(a, &tx->tx_buf);
-		tx_frame(a->a_dlh, &tx->tx_buf, tx->tx_log);
-		buf_init(&tx->tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
+		(void) memset(tx->tx_frame, '\0', sizeof (tx->tx_frame));
+		buf_init(&tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
+		make_pdu(a, &tx_buf);
+		tx_frame(a->a_dlh, &tx_buf, tx->tx_log);
 		if (dec(&a->a_ttr.ttr_tx_credit)) {
 			uint32_t credit = a->a_ttr.ttr_tx_credit;
 
@@ -516,9 +589,9 @@ rx_init(agent_t *a)
 	    LOG_T_END);
 
 	lldp_timer_init(&a->a_clk, &rx->rx_too_many_neighbors_timer,
-	    "tooManyNeighborsTimer", rx, rx->rx_log, "tooManyNeighbors",
-	    &rx->rx_too_many_neighbors);
-	buf_init(&rx->rx_buf, rx->rx_frame, sizeof (rx->rx_frame));
+	    "tooManyNeighborsTimer", rx, rx->rx_log, NULL, NULL);
+	(void) memset(rx->rx_frame, '\0', sizeof (rx->rx_frame));
+	rx->rx_frame_len = 0;
 	rx->rx_state = RX_BEGIN;
 }
 
@@ -580,21 +653,26 @@ rx_next_state(agent_t *a)
 		}
 		break;
 	case RX_FRAME:
+		/*
+		 * A bad frame doesn't produce a valid rx_ttl, so check for it
+		 * first rather than act on a stale TTL.
+		 */
+		if (rx->rx_bad_frame) {
+			next = RX_WAIT_FOR_FRAME;
+			break;
+		}
+
 		if (rx->rx_ttl == 0) {
 			next = DELETE_INFO;
 			break;
 		}
 
-		if (rx->rx_ttl != 0 && rx->rx_changes) {
+		if (rx->rx_changes) {
 			next = UPDATE_INFO;
 			break;
 		}
 
-		if (rx->rx_bad_frame ||
-		    (rx->rx_ttl != 0 && !rx->rx_changes)) {
-			next = RX_WAIT_FOR_FRAME;
-			break;
-		}
+		next = RX_WAIT_FOR_FRAME;
 		break;
 	case DELETE_INFO:
 		next = RX_WAIT_FOR_FRAME;
@@ -634,6 +712,10 @@ rx_machine(agent_t *a)
 
 	switch (rx->rx_state) {
 	case LLDP_WAIT_PORT_OPERATIONAL:
+		/* Abandon any frame that was being processed */
+		neighbor_free(rx->rx_neighbor);
+		rx->rx_neighbor = NULL;
+		rx->rx_curr_neighbor = NULL;
 		break;
 	case DELETE_AGED_INFO:
 		delete_objects(a);
@@ -667,6 +749,19 @@ rx_machine(agent_t *a)
 
 	TRACE_RETURN(rx->rx_log);
 	return (next);
+}
+
+/*
+ * The ttr machine goes TX_TIMER_IDLE -> TX_TICK -> TX_TIMER_IDLE on every
+ * clock tick (once a second). Those transitions are routine, so they (and
+ * running the machine in those states, which does nothing of note) aren't
+ * logged.
+ */
+static inline bool
+ttr_is_tick(ttr_state_t from, ttr_state_t to)
+{
+	return ((from == TX_TIMER_IDLE && to == TX_TICK) ||
+	    (from == TX_TICK && to == TX_TIMER_IDLE));
 }
 
 static void
@@ -752,10 +847,12 @@ done:
 		return (false);
 	}
 
-	log_debug(ttr->ttr_log, "state transition",
-	    LOG_T_STRING, "oldstate", ttr_statestr(ttr->ttr_state),
-	    LOG_T_STRING, "newstate", ttr_statestr(next),
-	    LOG_T_END);
+	if (!ttr_is_tick(ttr->ttr_state, next)) {
+		log_debug(ttr->ttr_log, "state transition",
+		    LOG_T_STRING, "oldstate", ttr_statestr(ttr->ttr_state),
+		    LOG_T_STRING, "newstate", ttr_statestr(next),
+		    LOG_T_END);
+	}
 
 	ttr->ttr_state = next;
 
@@ -767,9 +864,11 @@ ttr_machine(agent_t *a)
 {
 	ttr_t *ttr = &a->a_ttr;
 
-	log_debug(ttr->ttr_log, "state machine running",
-	    LOG_T_STRING, "state", ttr_statestr(ttr->ttr_state),
-	    LOG_T_END);
+	if (ttr->ttr_state != TX_TICK && ttr->ttr_state != TX_TIMER_IDLE) {
+		log_debug(ttr->ttr_log, "state machine running",
+		    LOG_T_STRING, "state", ttr_statestr(ttr->ttr_state),
+		    LOG_T_END);
+	}
 
 	switch (ttr->ttr_state) {
 	case TX_TIMER_INITIALIZE:
@@ -823,28 +922,63 @@ rx_init_lldp(agent_t *a)
 	neighbor_t	*nb;
 
 	rx->rx_too_many_neighbors = false;
+	lldp_timer_set(&rx->rx_too_many_neighbors_timer, 0);
+
+	neighbor_free(rx->rx_neighbor);
+	rx->rx_neighbor = NULL;
+	rx->rx_curr_neighbor = NULL;
 
 	while ((nb = uu_list_teardown(a->a_neighbors, &cookie)) != NULL)
 		neighbor_free(nb);
 }
 
+/*
+ * Add the newly received neighbor information (rx_neighbor) to the agent's
+ * neighbor list, replacing any existing information from the same MSAP
+ * (rx_curr_neighbor).
+ */
 static void
 update_objects(agent_t *a)
 {
-	rx_t *rx = &a->a_rx;
-	neighbor_t *old_nb = rx->rx_curr_neighbor;
-	neighbor_t *nb = rx->rx_neighbor;
+	rx_t		*rx = &a->a_rx;
+	neighbor_t	*old_nb = rx->rx_curr_neighbor;
+	neighbor_t	*nb = rx->rx_neighbor;
+	uu_list_index_t	idx;
 
+	VERIFY3P(nb, !=, NULL);
 	ASSERT3P(old_nb, !=, nb);
-	ASSERT(neighbor_same(old_nb, nb));
+	ASSERT(old_nb == NULL || !neighbor_same(old_nb, nb));
+
+	if (old_nb != NULL) {
+		uu_list_remove(a->a_neighbors, old_nb);
+		neighbor_free(old_nb);
+	}
 
 	lldp_timer_init(&a->a_clk, &nb->nb_timer, "rxInfoAge", nb,
 	    rx->rx_log, "rxInfoAge", &rx->rx_info_age);
 	lldp_timer_set(&nb->nb_timer, rx->rx_ttl);
-	uu_list_insert(a->a_neighbors, nb, rx->rx_curr_idx);
 
-	uu_list_remove(a->a_neighbors, old_nb);
-	neighbor_free(old_nb);
+	/*
+	 * Look up the insertion point now rather than reuse the index from
+	 * rx_process_frame(); removing old_nb above invalidates it.
+	 */
+	VERIFY3P(uu_list_find(a->a_neighbors, nb, NULL, &idx), ==, NULL);
+	uu_list_insert(a->a_neighbors, nb, idx);
+
+	if (old_nb == NULL) {
+		log_info(rx->rx_log, "new neighbor",
+		    LOG_T_CHASSIS, "chassis",
+		    tlv_list_get(&nb->nb_core_tlvs, NB_TLV_CHASSIS),
+		    LOG_T_PORT, "port",
+		    tlv_list_get(&nb->nb_core_tlvs, NB_TLV_PORT),
+		    LOG_T_UINT32, "ttl", (uint32_t)nb->nb_ttl,
+		    LOG_T_END);
+
+		/* 802.1AB 9.2.7.7.4: trigger fast transmission */
+		a->a_new_neighbor = true;
+	}
+
+	rx->rx_neighbor = NULL;
 	rx->rx_curr_neighbor = NULL;
 }
 
@@ -855,6 +989,24 @@ delete_objects(agent_t *a)
 	uu_list_walk_t	*wk;
 	log_t		*l = a->a_rx.rx_log;
 	uint32_t	count;
+
+	/*
+	 * A shutdown PDU (TTL 0) for a known MSAP: rx_process_frame() leaves
+	 * the matching neighbor in rx_curr_neighbor.
+	 */
+	nb = a->a_rx.rx_curr_neighbor;
+	if (nb != NULL) {
+		log_info(l, "neighbor shut down",
+		    LOG_T_CHASSIS, "chassis",
+		    tlv_list_get(&nb->nb_core_tlvs, NB_TLV_CHASSIS),
+		    LOG_T_PORT, "port",
+		    tlv_list_get(&nb->nb_core_tlvs, NB_TLV_PORT),
+		    LOG_T_END);
+
+		uu_list_remove(a->a_neighbors, nb);
+		neighbor_free(nb);
+		a->a_rx.rx_curr_neighbor = NULL;
+	}
 
 	log_debug(l, "ageing out neighbors", LOG_T_END);
 
@@ -872,8 +1024,9 @@ delete_objects(agent_t *a)
 
 		log_info(l, "ageing out neighbor",
 		    LOG_T_CHASSIS, "chassis",
-		    tlv_list_get(&nb->nb_core_tlvs, 0),
-		    LOG_T_PORT, "port", tlv_list_get(&nb->nb_core_tlvs, 1),
+		    tlv_list_get(&nb->nb_core_tlvs, NB_TLV_CHASSIS),
+		    LOG_T_PORT, "port",
+		    tlv_list_get(&nb->nb_core_tlvs, NB_TLV_PORT),
 		    LOG_T_END);
 
 		uu_list_remove(a->a_neighbors, nb);
@@ -937,11 +1090,9 @@ recv_frame(int fd __unused, void *arg)
 {
 	agent_t		*a = arg;
 	rx_t		*rx = &a->a_rx;
-	buf_t		*b = NULL;
 	uint8_t		src[DLPI_PHYSADDR_MAX] = { 0 };
 	dlpi_recvinfo_t	di = { 0 };
 	size_t		srclen = sizeof (src);
-	size_t		blen;
 	int		ret;
 
 	/* We should be running outside the agent's thread */
@@ -949,22 +1100,21 @@ recv_frame(int fd __unused, void *arg)
 
 	mutex_enter(&a->a_lock);
 
-	buf_init(&rx->rx_buf, rx->rx_frame, sizeof (rx->rx_frame));
-	b = &rx->rx_buf;
-	blen = buf_len(b);
-	(void) memset(buf_ptr(b), '\0', buf_len(b));
+	(void) memset(rx->rx_frame, '\0', sizeof (rx->rx_frame));
+	rx->rx_frame_len = sizeof (rx->rx_frame);
 
-	ret = dlpi_recv(a->a_dlh, &src, &srclen, buf_ptr(b), &blen, 0, &di);
+	ret = dlpi_recv(a->a_dlh, &src, &srclen, rx->rx_frame,
+	    &rx->rx_frame_len, 0, &di);
 	if (ret != DLPI_SUCCESS) {
 		log_dlerr(rx->rx_log, "receive error", ret);
 		rx->rx_bad_frame = true;
 		goto done;
 	}
 
-	if (di.dri_totmsglen > buf_len(b)) {
+	if (di.dri_totmsglen > sizeof (rx->rx_frame)) {
 		log_info(rx->rx_log, "oversize message",
 		    LOG_T_MAC, "src", src,
-		    LOG_T_UINT32, "len", (uint32_t)blen,
+		    LOG_T_UINT32, "len", (uint32_t)sizeof (rx->rx_frame),
 		    LOG_T_END);
 		rx->rx_bad_frame = true;
 		/* XXX: do we need to drain dlh? */
@@ -975,16 +1125,15 @@ recv_frame(int fd __unused, void *arg)
 	/*
 	 * Notifications (e.g. link up/down) will generate 0
 	 * byte reads, so we just ignore.
-	 */ 
+	 */
 	if (di.dri_totmsglen == 0)
 		goto done;
 
 	log_debug(rx->rx_log, "received frame",
 	    LOG_T_MAC, "src", src,
-	    LOG_T_UINT32, "len", (uint32_t)blen,
+	    LOG_T_UINT32, "len", (uint32_t)rx->rx_frame_len,
 	    LOG_T_END);
 
-	VERIFY(buf_truncate(b, blen));
 	rx->rx_recv_frame = true;
 
 done:
@@ -999,29 +1148,252 @@ done:
 static void
 rx_process_frame(agent_t *a)
 {
-	rx_t *rx = &a->a_rx;
-	buf_t *b = &rx->rx_buf;
+	rx_t		*rx = &a->a_rx;
+	neighbor_t	*nb, *curr;
+	buf_t		b;
 
-	if (!process_pdu(rx->rx_log, b, &rx->rx_neighbor)) {
+	VERIFY3U(rx->rx_frame_len, <=, UINT16_MAX);
+	buf_init(&b, rx->rx_frame, rx->rx_frame_len);
+
+	/* Any previous frame should have been fully consumed */
+	ASSERT3P(rx->rx_neighbor, ==, NULL);
+	neighbor_free(rx->rx_neighbor);
+	rx->rx_neighbor = NULL;
+	rx->rx_curr_neighbor = NULL;
+
+	if (!process_pdu(rx->rx_log, &b, &nb)) {
 		rx->rx_bad_frame = true;
 		return;
 	}
+	VERIFY3P(nb, !=, NULL);
 
-	if (rx->rx_neighbor == NULL || too_many_neighbors(a)) {
-		/* TODO: too many neighbors */
+	rx->rx_ttl = nb->nb_ttl;
+	curr = uu_list_find(a->a_neighbors, nb, NULL, NULL);
+
+	/*
+	 * A shutdown PDU. If we know the MSAP, delete_objects() (via
+	 * DELETE_INFO) removes it. Either way the PDU itself isn't needed.
+	 */
+	if (rx->rx_ttl == 0) {
+		rx->rx_curr_neighbor = curr;
+		neighbor_free(nb);
 		return;
 	}
 
-	rx->rx_ttl = rx->rx_neighbor->nb_ttl;
-	rx->rx_curr_neighbor = uu_list_find(a->a_neighbors, rx->rx_neighbor,
-	    NULL, &rx->rx_curr_idx);
-	rx->rx_changes = !neighbor_same(rx->rx_curr_neighbor, rx->rx_neighbor);
+	if (curr == NULL) {
+		/*
+		 * A new MSAP. If we're at our limit, discard the new
+		 * information (802.1AB 9.2.7.7.4); tooManyNeighborsTimer
+		 * tracks how long the condition persists.
+		 */
+		if (rx->rx_too_many_neighbors &&
+		    lldp_timer_val(&rx->rx_too_many_neighbors_timer) == 0) {
+			rx->rx_too_many_neighbors = false;
+		}
 
-	if (!rx->rx_changes) {
-		/* If no changes, just update the TTL and free the new pkt */
-		rx->rx_curr_neighbor->nb_ttl = rx->rx_ttl;
-		neighbor_free(rx->rx_neighbor);
-		rx->rx_neighbor = NULL;
+		if (too_many_neighbors(a)) {
+			lldp_timer_t *t = &rx->rx_too_many_neighbors_timer;
+
+			if (!rx->rx_too_many_neighbors) {
+				log_warn(rx->rx_log, "too many neighbors; "
+				    "discarding information from new neighbor",
+				    LOG_T_UINT32, "neighbor_max",
+				    (uint32_t)a->a_cfg.ac_neighbor_max,
+				    LOG_T_CHASSIS, "chassis",
+				    tlv_list_get(&nb->nb_core_tlvs,
+				    NB_TLV_CHASSIS),
+				    LOG_T_PORT, "port",
+				    tlv_list_get(&nb->nb_core_tlvs,
+				    NB_TLV_PORT),
+				    LOG_T_END);
+			}
+
+			rx->rx_too_many_neighbors = true;
+			lldp_timer_set(t, MAX(lldp_timer_val(t), rx->rx_ttl));
+
+			neighbor_free(nb);
+			rx->rx_changes = false;
+			return;
+		}
+
+		rx->rx_neighbor = nb;
+		rx->rx_changes = true;
+		return;
+	}
+
+	if (neighbor_same(curr, nb)) {
+		/*
+		 * Nothing changed; just refresh the existing information's
+		 * TTL and restart its rxInfoAge timer.
+		 */
+		curr->nb_ttl = rx->rx_ttl;
+		lldp_timer_set(&curr->nb_timer, rx->rx_ttl);
+		neighbor_free(nb);
+		rx->rx_changes = false;
+		return;
+	}
+
+	rx->rx_curr_neighbor = curr;
+	rx->rx_neighbor = nb;
+	rx->rx_changes = true;
+}
+
+/*
+ * Read a (fixed size) MAC property of the agent's link. libdladm only
+ * exposes the media property as a string, so we issue the same ioctl
+ * libdladm uses to get the raw values. Must be called from the main thread
+ * (it uses dl_handle).
+ */
+static bool
+link_get_prop(agent_t *a, mac_prop_id_t id, const char *name, void *val,
+    size_t len)
+{
+	dld_ioc_macprop_t	*dip;
+	size_t			dsize = DLD_MACPROP_BUFSIZE(len);
+	bool			ret = false;
+
+	dip = umem_zalloc(dsize, UMEM_NOFAIL);
+	dip->pr_linkid = a->a_linkid;
+	dip->pr_num = id;
+	dip->pr_flags = 0;
+	dip->pr_valsize = len;
+	(void) strlcpy(dip->pr_name, name, sizeof (dip->pr_name));
+
+	if (ioctl(dladm_dld_fd(dl_handle), DLDIOC_GETMACPROP, dip) == 0) {
+		(void) memcpy(val, dip->pr_val, len);
+		ret = true;
+	}
+
+	umem_free(dip, dsize);
+	return (ret);
+}
+
+static bool
+link_get_flag(agent_t *a, mac_prop_id_t id, const char *name)
+{
+	uint8_t v = 0;
+
+	return (link_get_prop(a, id, name, &v, sizeof (v)) && v != 0);
+}
+
+/*
+ * IANAifMauAutoNegCapBits are SNMP BITS: bit 0 is the most significant bit
+ * of the (16-bit, for this TLV) field.
+ */
+#define	MAU_CAP_BIT(n)		((uint16_t)(0x8000 >> (n)))
+#define	MAU_CAP_OTHER		MAU_CAP_BIT(0)	/* bOther */
+#define	MAU_CAP_10BASET		MAU_CAP_BIT(1)	/* b10baseT */
+#define	MAU_CAP_10BASETFD	MAU_CAP_BIT(2)	/* b10baseTFD */
+#define	MAU_CAP_100BASET4	MAU_CAP_BIT(3)	/* b100baseT4 */
+#define	MAU_CAP_100BASETX	MAU_CAP_BIT(4)	/* b100baseTX */
+#define	MAU_CAP_100BASETXFD	MAU_CAP_BIT(5)	/* b100baseTXFD */
+#define	MAU_CAP_1000BASEX	MAU_CAP_BIT(12)	/* b1000baseX */
+#define	MAU_CAP_1000BASEXFD	MAU_CAP_BIT(13)	/* b1000baseXFD */
+#define	MAU_CAP_1000BASET	MAU_CAP_BIT(14)	/* b1000baseT */
+#define	MAU_CAP_1000BASETFD	MAU_CAP_BIT(15)	/* b1000baseTFD */
+
+static const struct {
+	mac_prop_id_t	ac_id;
+	const char	*ac_name;
+	uint16_t	ac_bit;
+} adv_caps[] = {
+	{ MAC_PROP_ADV_10HDX_CAP, "adv_10hdx_cap", MAU_CAP_10BASET },
+	{ MAC_PROP_ADV_10FDX_CAP, "adv_10fdx_cap", MAU_CAP_10BASETFD },
+	/* libdladm has no name for this one; the kernel only uses the id */
+	{ MAC_PROP_ADV_100T4_CAP, "adv_100t4_cap", MAU_CAP_100BASET4 },
+	{ MAC_PROP_ADV_100HDX_CAP, "adv_100hdx_cap", MAU_CAP_100BASETX },
+	{ MAC_PROP_ADV_100FDX_CAP, "adv_100fdx_cap", MAU_CAP_100BASETXFD },
+	/*
+	 * The 16-bit field only has room for speeds up to 1G; anything
+	 * faster is reported as bOther.
+	 */
+	{ MAC_PROP_ADV_2500FDX_CAP, "adv_2500fdx_cap", MAU_CAP_OTHER },
+	{ MAC_PROP_ADV_5000FDX_CAP, "adv_5000fdx_cap", MAU_CAP_OTHER },
+	{ MAC_PROP_ADV_10GFDX_CAP, "adv_10gfdx_cap", MAU_CAP_OTHER },
+	{ MAC_PROP_ADV_25GFDX_CAP, "adv_25gfdx_cap", MAU_CAP_OTHER },
+	{ MAC_PROP_ADV_40GFDX_CAP, "adv_40gfdx_cap", MAU_CAP_OTHER },
+	{ MAC_PROP_ADV_50GFDX_CAP, "adv_50gfdx_cap", MAU_CAP_OTHER },
+	{ MAC_PROP_ADV_100GFDX_CAP, "adv_100gfdx_cap", MAU_CAP_OTHER },
+	{ MAC_PROP_ADV_200GFDX_CAP, "adv_200gfdx_cap", MAU_CAP_OTHER },
+	{ MAC_PROP_ADV_400GFDX_CAP, "adv_400gfdx_cap", MAU_CAP_OTHER },
+};
+
+static bool
+media_is_1000base_x(mac_ether_media_t m)
+{
+	switch (m) {
+	case ETHER_MEDIA_1000BASE_X:
+	case ETHER_MEDIA_1000BASE_SX:
+	case ETHER_MEDIA_1000BASE_LX:
+	case ETHER_MEDIA_1000BASE_CX:
+	case ETHER_MEDIA_1000BASE_BX:
+		return (true);
+	default:
+		return (false);
+	}
+}
+
+/*
+ * Refresh the information we advertise in the 802.3 MAC/PHY
+ * Configuration/Status TLV. Called from the main thread, with a_lock held
+ * if the agent's thread is running.
+ */
+static void
+agent_update_phy(agent_t *a)
+{
+	agent_phy_t		phy = { 0 };
+	uint32_t		media = ETHER_MEDIA_UNKNOWN;
+	uint8_t			v;
+
+	/*
+	 * There's no property for whether a link supports auto-negotiation
+	 * (only the cap_autoneg kstat); a link whose driver implements the
+	 * adv_autoneg_cap property is assumed to support it.
+	 */
+	if (link_get_prop(a, MAC_PROP_AUTONEG, "adv_autoneg_cap", &v,
+	    sizeof (v))) {
+		phy.ap_autoneg_sup = true;
+		phy.ap_autoneg_en = (v != 0);
+	}
+
+	if (!link_get_prop(a, MAC_PROP_MEDIA, "media", &media,
+	    sizeof (media))) {
+		media = ETHER_MEDIA_UNKNOWN;
+	}
+	phy.ap_mau = lldp_ether_media_to_mau((mac_ether_media_t)media);
+
+	if (phy.ap_autoneg_en) {
+		for (size_t i = 0; i < ARRAY_SIZE(adv_caps); i++) {
+			if (link_get_flag(a, adv_caps[i].ac_id,
+			    adv_caps[i].ac_name)) {
+				phy.ap_adv_caps |= adv_caps[i].ac_bit;
+			}
+		}
+
+		/* 1000BASE-X and 1000BASE-T have separate bits */
+		bool x = media_is_1000base_x((mac_ether_media_t)media);
+
+		if (link_get_flag(a, MAC_PROP_ADV_1000HDX_CAP,
+		    "adv_1000hdx_cap")) {
+			phy.ap_adv_caps |= x ?
+			    MAU_CAP_1000BASEX : MAU_CAP_1000BASET;
+		}
+		if (link_get_flag(a, MAC_PROP_ADV_1000FDX_CAP,
+		    "adv_1000fdx_cap")) {
+			phy.ap_adv_caps |= x ?
+			    MAU_CAP_1000BASEXFD : MAU_CAP_1000BASETFD;
+		}
+	}
+
+	if (memcmp(&phy, &a->a_phy, sizeof (phy)) != 0) {
+		log_debug(a->a_log, "link PHY information",
+		    LOG_T_UINT32, "media", media,
+		    LOG_T_UINT32, "mau", (uint32_t)phy.ap_mau,
+		    LOG_T_BOOLEAN, "autoneg_supported", phy.ap_autoneg_sup,
+		    LOG_T_BOOLEAN, "autoneg_enabled", phy.ap_autoneg_en,
+		    LOG_T_XINT32, "adv_caps", (uint32_t)phy.ap_adv_caps,
+		    LOG_T_END);
+		a->a_phy = phy;
 	}
 }
 
@@ -1037,6 +1409,13 @@ lldp_dlpi_cb(dlpi_handle_t dlh, dlpi_notifyinfo_t *ni, void *arg)
 		log_info(a->a_log, "link up; port enabled",
 		    LOG_T_END);
 		a->a_port_enabled = true;
+
+		/* The media (e.g. transceiver) may have changed */
+		agent_update_phy(a);
+		break;
+
+	case DL_NOTE_SPEED:
+		agent_update_phy(a);
 		break;
 
 	case DL_NOTE_LINK_DOWN:
@@ -1089,8 +1468,8 @@ open_port(agent_t *a)
 	}
 
 	ret = dlpi_enabnotify(a->a_dlh, DL_NOTE_LINK_DOWN | DL_NOTE_LINK_UP |
-	    DL_NOTE_PHYS_ADDR | DL_NOTE_SDU_SIZE, lldp_dlpi_cb, a,
-	    &a->a_dl_nid);
+	    DL_NOTE_PHYS_ADDR | DL_NOTE_SDU_SIZE | DL_NOTE_SPEED, lldp_dlpi_cb,
+	    a, &a->a_dl_nid);
 	if (ret != DLPI_SUCCESS) {
 		log_dlerr(log, "failed to enable DLPI notifications", ret);
 		goto fail;
@@ -1135,7 +1514,9 @@ agent_init(void)
 		    LOG_T_END);
 	}
 
-	agent_list = uu_list_create(agent_list_pool, NULL, UU_LIST_DEBUG);
+	/* Sorted by name; door clients rely on this ordering */
+	agent_list = uu_list_create(agent_list_pool, NULL,
+	    UU_LIST_DEBUG | UU_LIST_SORTED);
 	if (agent_list == NULL) {
 		int ev = uu_error();
 

@@ -26,6 +26,7 @@ extern "C" {
 #endif
 
 struct agent;
+struct agent_cfg;
 struct log;
 
 extern lldp_config_t *lldp_config;
@@ -43,15 +44,13 @@ extern scf_value_t		*scf_val;
 
 void config_init(void);
 bool config_read(void);
+void config_refresh(void);
 void config_agent_init(struct agent *);
-bool config_agent_read(struct agent *);
+void config_agent_cfg_free(struct agent_cfg *);
 
-
-bool config_get_pg(struct log *, const scf_instance_t *, const char *,
-    scf_propertygroup_t *);
+bool config_get_pg(struct log *, const char *, scf_propertygroup_t *);
 bool config_get_prop(struct log *, const scf_propertygroup_t *, const char *,
-    scf_property_t *);
-bool config_get_value(struct log *, const scf_property_t *, scf_value_t *);
+    scf_value_t *);
 
 #ifdef __cplusplus
 }

@@ -10,21 +10,23 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2024 Jason King
  */
 
 #ifndef _LLDPD_H
 #define	_LLDPD_H
 
 #include <synch.h>
+#include <libdladm.h>
 #include <liblldp.h>
 #include <libscf.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define	LLDP_FMRI	"svc:/network/link-layer-discovery"
+#define	LLDP_FMRI	"svc:/network/lldpd"
 #define	LLDP_SVC_FMRI	LLDP_FMRI ":default"
 
 typedef struct fd_cb {
@@ -34,6 +36,9 @@ typedef struct fd_cb {
 
 bool schedule_fd(int, fd_cb_t *);
 void cancel_fd(int);
+
+/* Only used from the main thread */
+extern dladm_handle_t dl_handle;
 
 #ifdef __cplusplus
 }

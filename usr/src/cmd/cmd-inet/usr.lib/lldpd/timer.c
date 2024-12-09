@@ -26,13 +26,28 @@
 #include "util.h"
 
 /*
- * Each agent (port) gets it's own clock (lldp_clock_t). The work of the
- * clock is broken up into two pieces -- lldp_clock_tick() which determines
- * the absolute time when the clock fires, and lldp_clock_tock() which is
- * called when the clock fires (to decrement each timer associated with
- * this clock).
+ * Each agent (port) gets it's own clock (lldp_clock_t), which ticks once a
+ * second. Each tick decrements every timer associated with the clock (and
+ * fires any that reach zero).
+ *
+ * The clock keeps an absolute deadline for its next tick in terms of
+ * gethrtime(), which is monotonic and unaffected by changes to the system
+ * time (NTP steps, date(1), etc). Each deadline is computed from the
+ * previous deadline, not from when the previous tick was processed, so
+ * scheduling and processing latency don't accumulate into drift. The
+ * agent thread waits for the deadline with cond_reltimedwait() (see
+ * lldp_clock_reltime()), and calls lldp_clock_advance() whenever it wakes
+ * to process every tick that has come due -- including any that were
+ * missed if the thread was delayed for longer than a tick.
+ *
+ * A timer is associated with its clock (placed on lc_timers) from
+ * lldp_timer_init() until lldp_timer_fini(). A clock and its timers are only
+ * manipulated by the owning agent's thread, or while that thread isn't
+ * running (agent creation/destruction).
  */
 static uu_list_pool_t *clock_pool;
+
+static void lldp_clock_tock(lldp_clock_t *);
 
 void
 lldp_timers_sysinit(void)
@@ -73,13 +88,28 @@ lldp_timer_init(lldp_clock_t *clk, lldp_timer_t *t, const char *name,
 	t->lt_name = name;
 	t->lt_flagp = flagp;
 	t->lt_flagname = flagname;
+
+	/* Attach to the clock so lldp_clock_tock() counts it down */
+	VERIFY0(uu_list_insert_before(clk->lc_timers, NULL, t));
 }
 
+/*
+ * Detach a timer from its clock and release its resources. It is safe to
+ * call this on a zeroed timer that was never initialized.
+ */
 void
 lldp_timer_fini(lldp_timer_t *t)
 {
-	log_fini(t->lt_log);
+	if (t->lt_clock == NULL)
+		return;
+
+	uu_list_remove(t->lt_clock->lc_timers, t);
 	uu_list_node_fini(t, &t->lt_node, clock_pool);
+	log_fini(t->lt_log);
+
+	t->lt_clock = NULL;
+	t->lt_log = NULL;
+	t->lt_val = 0;
 }
 
 void
@@ -102,6 +132,7 @@ bool
 lldp_clock_init(agent_t *a, lldp_clock_t *clk)
 {
 	clk->lc_agent = a;
+	clk->lc_deadline = 0;
 	clk->lc_timers = uu_list_create(clock_pool, a, UU_LIST_DEBUG);
 	if (clk->lc_timers == NULL) {
 		log_uuerr(a->a_log, LOG_L_ERROR,
@@ -112,45 +143,104 @@ lldp_clock_init(agent_t *a, lldp_clock_t *clk)
 }
 
 void
-lldp_timers_fini(lldp_clock_t *clk)
+lldp_clock_fini(lldp_clock_t *clk)
 {
+	if (clk->lc_timers == NULL)
+		return;
+
+	/* Every timer should have been lldp_timer_fini()ed by now */
+	VERIFY3U(uu_list_numnodes(clk->lc_timers), ==, 0);
 	uu_list_destroy(clk->lc_timers);
 	clk->lc_timers = NULL;
 }
 
-void
-lldp_clock_tick(lldp_clock_t *clk, timestruc_t *tick)
+/*
+ * The length of the next tick. As recommended by 802.1ab, when there's more
+ * than one neighbor for an agent, we introduce some deliberate jitter
+ * (+/- 200ms, uniformly distributed) into the clock to minimize
+ * synchronization. Since the jitter has a mean of zero and each tick is
+ * scheduled from the previous deadline, it doesn't change the long-term
+ * rate of the clock.
+ */
+static hrtime_t
+clock_period(const lldp_clock_t *clk)
 {
-	struct timeval now = { 0 };
-	uint32_t msec = 1000;
+	hrtime_t msec = 1000;
 
-	TRACE_ENTER(clk->lc_agent->a_log);
+	if (uu_list_numnodes(clk->lc_agent->a_neighbors) > 1)
+		msec = msec - 200 + arc4random_uniform(401);
 
-	VERIFY0(gettimeofday(&now, NULL));
-
-	/*
-	 * As recommended by 802.1ab, when there's more than one neighbor
-	 * for an agent, we introduce some deliberate jitter into the clock
-	 * to minimize sychronization.
-	 */
-	if (uu_list_numnodes(clk->lc_agent->a_neighbors) > 1) {
-		msec -= 200 + arc4random_uniform(401);
-	}
-
-	tick->tv_nsec = USEC2NSEC(now.tv_usec) + MSEC2NSEC(msec);
-	if (tick->tv_nsec > NANOSEC) {
-		tick->tv_sec = now.tv_sec + 1;
-		tick->tv_nsec -= NANOSEC;
-	}
-
-	TRACE_RETURN(clk->lc_agent->a_log);
+	return (MSEC2NSEC(msec));
 }
 
+/*
+ * Start the clock: the first tick is one period from now.
+ */
 void
+lldp_clock_start(lldp_clock_t *clk)
+{
+	clk->lc_deadline = gethrtime() + clock_period(clk);
+}
+
+/*
+ * Set *rel to the time remaining until the next tick (zero if it's already
+ * due), suitable for cond_reltimedwait().
+ */
+void
+lldp_clock_reltime(const lldp_clock_t *clk, timestruc_t *rel)
+{
+	hrtime_t left = clk->lc_deadline - gethrtime();
+
+	if (left < 0)
+		left = 0;
+
+	rel->tv_sec = left / NANOSEC;
+	rel->tv_nsec = left % NANOSEC;
+}
+
+/*
+ * Process every tick that has come due, and schedule the next. Returns the
+ * number of ticks processed (zero if woken before the deadline).
+ */
+uint_t
+lldp_clock_advance(lldp_clock_t *clk)
+{
+	hrtime_t	now = gethrtime();
+	uint_t		n = 0;
+
+	while (now >= clk->lc_deadline) {
+		/*
+		 * Timers are 16 bits, so after UINT16_MAX ticks every timer
+		 * has necessarily expired; there's nothing more to catch up
+		 * on, so just restart the schedule from now.
+		 */
+		if (n == UINT16_MAX) {
+			clk->lc_deadline = now + clock_period(clk);
+			break;
+		}
+
+		lldp_clock_tock(clk);
+		clk->lc_deadline += clock_period(clk);
+		n++;
+	}
+
+	if (n > 1) {
+		log_warn(clk->lc_agent->a_log,
+		    "agent fell behind its clock; processed missed ticks",
+		    LOG_T_UINT32, "ticks", n,
+		    LOG_T_END);
+	}
+
+	return (n);
+}
+
+/*
+ * Process a single tick. This runs every second, so it deliberately doesn't
+ * log anything unless a timer actually expires.
+ */
+static void
 lldp_clock_tock(lldp_clock_t *clk)
 {
-	TRACE_ENTER(clk->lc_agent->a_log);
-
 	clk->lc_agent->a_ttr.ttr_tick = true;
 
 	for (lldp_timer_t *t = uu_list_first(clk->lc_timers); t != NULL;
@@ -181,6 +271,4 @@ lldp_clock_tock(lldp_clock_t *clk)
 			    LOG_T_END);
 		}
 	}
-
-	TRACE_RETURN(clk->lc_agent->a_log);
 }

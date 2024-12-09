@@ -32,6 +32,14 @@ extern "C" {
 
 struct agent;
 
+/*
+ * The mandatory TLVs of a received PDU are always the first three entries
+ * of nb_core_tlvs (process_pdu() guarantees this).
+ */
+#define	NB_TLV_CHASSIS	0
+#define	NB_TLV_PORT	1
+#define	NB_TLV_TTL	2
+
 typedef struct neighbor {
 	uu_list_node_t		nb_node;
 
@@ -62,6 +70,8 @@ uu_list_t	*neighbor_list_new(struct agent *);
 neighbor_t	*neighbor_get(const lldp_chassis_t *, const lldp_port_t *);
 
 int		neighbor_cmp_msap(const neighbor_t *, const neighbor_t *);
+int		neighbor_cmp_msap_raw(const neighbor_t *, const uint8_t *,
+    uint16_t, const uint8_t *, uint16_t);
 bool		neighbor_same(const neighbor_t *, const neighbor_t *);
 
 #ifdef __cplusplus

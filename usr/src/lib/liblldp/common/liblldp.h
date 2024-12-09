@@ -16,6 +16,10 @@
 #ifndef _LIBLLDP_H
 #define	_LIBLLDP_H
 
+#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/mac_ether.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -190,7 +194,34 @@ typedef struct lldp_agent_stats {
 	uint64_t	las_length_errs;
 } lldp_agent_stats_t;
 
+/*
+ * A neighbor of one of lldpd's agents, as returned by lldp_get_neighbors().
+ */
+typedef struct lldp_neighbor {
+	char		ln_link[MAXLINKNAMELEN];	/* Agent's hw link */
+	uint16_t	ln_ttl;		/* Seconds until the info ages out */
+	size_t		ln_pdu_len;
+	uint8_t		*ln_pdu;	/* The LLDPDU, exactly as received */
+} lldp_neighbor_t;
+
+/*
+ * Retrieve the current neighbors of the agent for the given (hardware) link
+ * name, or of all agents if link is NULL. On success, returns 0 and sets
+ * *nbrsp to an array of *nump neighbors, which must be freed with
+ * lldp_neighbors_free(). On failure, returns an errno value.
+ */
+int lldp_get_neighbors(const char *, lldp_neighbor_t **, uint_t *);
+void lldp_neighbors_free(lldp_neighbor_t *, uint_t);
+
 const char *lldp_tlv_type_str(lldp_tlv_type_t);
+
+/*
+ * The IANA dot3MauType value (the final arc of its OID) corresponding to a
+ * mac_ether_media_t, or LLDP_MAU_UNKNOWN if there isn't one. Where IANA
+ * has separate half/full duplex types, the full duplex type is returned.
+ */
+#define	LLDP_MAU_UNKNOWN	0
+uint16_t lldp_ether_media_to_mau(mac_ether_media_t);
 const char *lldp_admin_status_str(lldp_admin_status_t);
 const char *lldp_chassis_typestr(lldp_chassis_type_t);
 const char *lldp_port_typestr(lldp_port_type_t);

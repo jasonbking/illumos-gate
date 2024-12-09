@@ -14,7 +14,9 @@
  */
 
 #include <sys/debug.h>
+#include <sys/ethernet.h>
 #include <sys/sysmacros.h>
+#include <sys/vlan.h>
 #include <liblldp.h>
 #include <string.h>
 
@@ -184,6 +186,7 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 	tlv_t		chassis = { 0 };
 	tlv_t		port = { 0 };
 	tlv_t		ttl = { 0 };
+	buf_t		ttl_buf;
 	uint8_t		pdu_count[TLV_NUM_STANDARD] = { 0 };
 	bool		ret = true;
 
@@ -198,6 +201,7 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 		return (false);
 	}
 
+	VERIFY3U(buf_len(raw), <=, sizeof (nb->nb_pdu));
 	(void) memcpy(nb->nb_pdu, buf_ptr(raw), buf_len(raw));
 	nb->nb_pdu_len = buf_len(raw);
 
@@ -211,8 +215,9 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 		ret = false;
 		goto done;
 	}
+	/* Subtype (1 byte) + chassis id (1-LLDP_CHASSIS_MAX bytes) */
 	if (buf_len(&chassis.tlv_buf) < 2 ||
-	    buf_len(&chassis.tlv_buf) > LLDP_CHASSIS_MAX) {
+	    buf_len(&chassis.tlv_buf) > LLDP_CHASSIS_MAX + 1) {
 		log_warn(log, "Chassis ID PDU length is invalid",
 		    LOG_T_UINT32, "len", buf_len(&chassis.tlv_buf),
 		    LOG_T_END);
@@ -220,13 +225,19 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 		goto done;
 	}
 	pdu_count[LLDP_TLV_CHASSIS_ID]++;
+	VERIFY3U(nb->nb_core_tlvs.tlvl_n, ==, NB_TLV_CHASSIS);
+	if (!tlv_list_add(&nb->nb_core_tlvs, &chassis)) {
+		ret = false;
+		goto done;
+	}
 
 	if (!get_tlv_expect(log, &buf, LLDP_TLV_PORT_ID, &port)) {
 		ret = false;
 		goto done;
 	}
+	/* Subtype (1 byte) + port id (1-LLDP_PORT_MAX bytes) */
 	if (buf_len(&port.tlv_buf) < 2 ||
-	    buf_len(&port.tlv_buf) > LLDP_PORT_MAX) {
+	    buf_len(&port.tlv_buf) > LLDP_PORT_MAX + 1) {
 		log_warn(log, "Port ID PDU length is invalid",
 		    LOG_T_UINT32, "len", buf_len(&port.tlv_buf),
 		    LOG_T_END);
@@ -234,6 +245,11 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 		goto done;
 	}
 	pdu_count[LLDP_TLV_PORT_ID]++;
+	VERIFY3U(nb->nb_core_tlvs.tlvl_n, ==, NB_TLV_PORT);
+	if (!tlv_list_add(&nb->nb_core_tlvs, &port)) {
+		ret = false;
+		goto done;
+	}
 
 	if (!get_tlv_expect(log, &buf, LLDP_TLV_TTL, &ttl)) {
 		ret = false;
@@ -247,6 +263,15 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 		goto done;
 	}
 	pdu_count[LLDP_TLV_TTL]++;
+	VERIFY3U(nb->nb_core_tlvs.tlvl_n, ==, NB_TLV_TTL);
+	if (!tlv_list_add(&nb->nb_core_tlvs, &ttl)) {
+		ret = false;
+		goto done;
+	}
+
+	/* Any octets beyond the first two are ignored */
+	ttl_buf = ttl.tlv_buf;
+	VERIFY(buf_get16(&ttl_buf, &nb->nb_ttl));
 
 	while (buf_len(&buf) > 0) {
 		tlv_t tlv = { 0 };
@@ -286,7 +311,7 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 		} else if (tlv.tlv_type < TLV_NUM_STANDARD) {
 			bool ok = false;
 
-			if (pdu_count[tlv.tlv_type] > 1) {
+			if (pdu_count[tlv.tlv_type] > 0) {
 				for (uint_t i = 0; i < ARRAY_SIZE(tlv_multi);
 				    i++) {
 					if (tlv_multi[i] == tlv.tlv_type) {
@@ -326,6 +351,12 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 		ret = false;
 		goto done;
 	}
+
+	/*
+	 * Anything after the END TLV (e.g. ethernet padding) isn't part of
+	 * the LLDPDU; drop it so it doesn't factor into neighbor_same().
+	 */
+	nb->nb_pdu_len = buf_cptr(&buf) - nb->nb_pdu;
 
 done:
 	if (!ret) {
@@ -608,7 +639,11 @@ write_mgmt_vlan(agent_t *a, buf_t *w)
 static bool
 write_phycfg(agent_t *a, buf_t *w)
 {
-	uint16_t tv = make_tlv(LLDP_TLV_ORG_SPEC, 9);
+	const agent_phy_t	*phy = &a->a_phy;
+	uint16_t		tv = make_tlv(LLDP_TLV_ORG_SPEC, 9);
+	uint8_t			an = 0;
+
+	VERIFY(MUTEX_HELD(&a->a_lock));
 
 	if (!buf_put16(w, tv))
 		return (false);
@@ -618,30 +653,53 @@ write_phycfg(agent_t *a, buf_t *w)
 		return (false);
 
 	/*
-	 * 0 autoneg support (1 = enabled)
-	 * 1 autoneg status (1 = enabled)
-	 * 2-7 reserved
+	 * Auto-negotiation support/status:
+	 *	bit 0	auto-negotiation supported
+	 *	bit 1	auto-negotiation enabled
+	 *	bits 2-7 reserved
 	 */
+	if (phy->ap_autoneg_sup)
+		an |= 0x01;
+	if (phy->ap_autoneg_en)
+		an |= 0x02;
+	if (!buf_put8(w, an))
+		return (false);
 
-	/* 2 bytes RFC4836 ifMauAutoNegCapAdvertisedBits */
+	/* PMD auto-negotiation advertised capability (RFC 4836) */
+	if (!buf_put16(w, phy->ap_adv_caps))
+		return (false);
 
-	/*
-	 * 2 bytes last number of dot3MauType OID from RFC 4836
-	 */
+	/* Operational MAU type (dot3MauType, via lldp_ether_media_to_mau()) */
+	if (!buf_put16(w, phy->ap_mau))
+		return (false);
 
-	return (false);
+	return (true);
 }
 
+/*
+ * IEEE 802.3 Maximum Frame Size TLV. This is the SDU and not the MTU, so
+ * it includes the ethernet header + vlan tag (since we always support
+ * vlan tagging) plus the FCS.
+ */
 static bool
 write_mtu(agent_t *a, buf_t *w)
 {
-	uint16_t tv = make_tlv(LLDP_TLV_ORG_SPEC, 6);
+	uint16_t	tv = make_tlv(LLDP_TLV_ORG_SPEC, 6);
+	uint32_t	frame_size;
+
+	VERIFY(MUTEX_HELD(&a->a_lock));
+
+	frame_size = a->a_dl_info.di_max_sdu + sizeof (struct ether_header) +
+	    VLAN_TAGSZ + ETHERFCSL;
+	frame_size = MIN(frame_size, UINT16_MAX);
 
 	if (!buf_put16(w, tv))
 		return (false);
 	if (!buf_putbytes(w, lldp_oui_8023, sizeof (lldp_oui_8023)))
 		return (false);
-	if (!buf_put16(w, a->a_dl_info.di_max_sdu))
+	if (!buf_put8(w, (uint8_t)LLDP_8023_MTU))
+		return (false);
+	if (!buf_put16(w, (uint16_t)frame_size))
 		return (false);
 
 	return (true);

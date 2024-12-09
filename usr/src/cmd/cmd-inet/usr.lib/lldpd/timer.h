@@ -29,6 +29,7 @@ struct log;
 typedef struct lldp_clock {
 	struct agent	*lc_agent;
 	uu_list_t	*lc_timers;
+	hrtime_t	lc_deadline;	/* gethrtime() of the next tick */
 } lldp_clock_t;
 
 typedef struct lldp_timer {
@@ -49,8 +50,9 @@ void lldp_timers_sysfini(void);
 
 bool		lldp_clock_init(struct agent *, lldp_clock_t *);
 void		lldp_clock_fini(lldp_clock_t *);
-void		lldp_clock_tick(lldp_clock_t *, timestruc_t *);
-void		lldp_clock_tock(lldp_clock_t *);
+void		lldp_clock_start(lldp_clock_t *);
+void		lldp_clock_reltime(const lldp_clock_t *, timestruc_t *);
+uint_t		lldp_clock_advance(lldp_clock_t *);
 
 void lldp_timer_init(lldp_clock_t *, lldp_timer_t *, const char *, void *,
     struct log *, const char *, bool *);

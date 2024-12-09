@@ -83,19 +83,42 @@
 		  value='illumos.smf.manage.lldp' />
 	</property_group>
 
-	<property_group name='lldp' type='application'>
-		<propval name='tx_interval' type='count' value='30'
-		  override='true'/>
-		<propval name='tx_delay' type='count' value='2'
-		  override='true'/>
-		<propval name='tx_hold_multiplier' type='count' value='4'
-		  override='true'/>
-		<propval name='reinit_delay' type='count' value='2'
-		  override='true'/>
-		<propval name='notify_interval' type='count' value='5'
-		  override='true'/>
-		<propval name='tx_credit_max' type='count' value='5'
-		  override='true'/>
+	<!--
+	    Default LLDP agent configuration.
+
+	    lldpd has built-in defaults for every agent property. Any
+	    property set in this property group replaces the built-in value,
+	    and the result is the configuration used by every agent.
+
+	    To override values for a single link, create a property group of
+	    type 'agent' named after the link, e.g.:
+
+		svccfg -s network/lldpd addpg igb0 agent
+		svccfg -s network/lldpd setprop igb0/admin_status = rx
+		svcadm refresh network/lldpd
+
+	    Any property not set in a link's property group retains its
+	    default value (from this property group, or built-in).
+
+	    Agent properties (all optional):
+		admin_status		astring	disabled | tx | rx | txrx
+		port_desc		astring	port description TLV
+		tx_tlvs			astring	(list) port-desc sys-name
+						sys-desc sys-cap mgmt-addr none
+		tx_8021_tlvs		astring	(list) native-vlan vlans
+						vlan-name mgmt-vlan none
+		tx_8023_tlvs		astring	(list) phy-cfg mtu none
+		tx_interval		count	1-3600 (default 30)
+		tx_hold_multiplier	count	2-10 (default 4)
+		reinit_delay		count	1-10 (default 2)
+		tx_credit_max		count	1-10 (default 5)
+		tx_fast_interval	count	1-3600 (default 1)
+		tx_fast_init		count	1-8 (default 4)
+		neighbor_max		count	1-65535 (default 32)
+	-->
+	<property_group name='default' type='application'>
+		<propval name='value_authorization' type='astring'
+		  value='illumos.smf.manage.lldp' />
 	</property_group>
 
 	<stability value='Unstable' />

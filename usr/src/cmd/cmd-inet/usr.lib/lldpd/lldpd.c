@@ -55,7 +55,6 @@ dladm_handle_t	dl_handle;
 
 int start_pipe_fd = -1;
 
-static const char *doorpath = "/var/run/lldpd";
 
 static bool debug;
 static bool quit;
@@ -93,9 +92,6 @@ main(int argc, char **argv)
 	 * as fatal.
 	 */
 	umem_nofail_callback(lldp_umem_nomem_cb);
-
-	if (getenv("LLDPD_DOORPATH") != NULL)
-		doorpath = getenv("LLDPD_DOORPATH");
 
 	while ((c = getopt(argc, argv, "dt")) != -1) {
 		switch (c) {
@@ -178,8 +174,6 @@ lldp_init(void)
 	}
 
 	lldp_create_agents();
-
-	/* XXX restarter */
 
 	TRACE_RETURN(log);
 }
@@ -266,6 +260,7 @@ dladm_cb(dladm_handle_t dlh, datalink_id_t did, void *arg)
 	char			link[MAXLINKNAMELEN] = { 0 };
 	dladm_phys_attr_t	dpa = { 0 };
 	agent_t			*a;
+	uu_list_index_t		idx;
 
 	ret = dladm_datalink_id2info(dl_handle, did, NULL, &class, NULL,
 	    link, sizeof (link));
@@ -293,7 +288,8 @@ dladm_cb(dladm_handle_t dlh, datalink_id_t did, void *arg)
 
 	/*
 	 * If a datalink was renamed, 'link' is the name seen in the os
-	 * while dpa.dp_dev is the hardware name (e.g. 'ixgbe0').
+	 * while dpa.dp_dev is the hardware name (e.g. 'ixgbe0'). Agents are
+	 * named (and their SMF property groups looked up) by hardware name.
 	 */
 	ret = dladm_phys_info(dl_handle, did, &dpa, DLADM_OPT_ACTIVE);
 	if (ret != DLADM_STATUS_OK) {
@@ -310,16 +306,28 @@ dladm_cb(dladm_handle_t dlh, datalink_id_t did, void *arg)
 		return (DLADM_WALK_CONTINUE);
 	}
 
-	a = agent_create(dpa.dp_dev);
+	a = agent_create(dpa.dp_dev, did);
+	if (a == NULL) {
+		log_warn(log, "failed to create agent; skipping link",
+		    LOG_T_STRING, "agent", dpa.dp_dev,
+		    LOG_T_STRING, "link", link,
+		    LOG_T_END);
+		return (DLADM_WALK_CONTINUE);
+	}
 
+	/* The agent list is sorted by name */
 	mutex_enter(&agent_list_lock);
-	VERIFY0(uu_list_insert_after(agent_list, NULL, a));
+	VERIFY3P(uu_list_find(agent_list, a, NULL, &idx), ==, NULL);
+	uu_list_insert(agent_list, a, idx);
 	mutex_exit(&agent_list_lock);
 
 	log_debug(log, "created agent",
 	    LOG_T_STRING, "agent", dpa.dp_dev,
 	    LOG_T_POINTER, "addr", a,
 	    LOG_T_END);
+
+	/* Agent threads are created suspended */
+	agent_start(a);
 
 	return (DLADM_WALK_CONTINUE);
 }
@@ -371,10 +379,10 @@ lldp_handle_sig(int fd, void *arg __unused)
 
 		switch (si.ssi_signo) {
 		case SIGHUP:
-			/* XXX: reread config */
+			config_refresh();
 			break;
 		case SIGINT:
-		case SIGKILL:
+		case SIGTERM:
 			log_info(log, "Received exit signal",
 			    LOG_T_STRING, "signal", strsignal(si.ssi_signo),
 			    LOG_T_UINT32, "signo", si.ssi_signo,

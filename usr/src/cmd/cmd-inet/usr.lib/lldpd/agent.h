@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2024 Jason King
  */
 
 #ifndef _AGENT_H
@@ -19,12 +19,10 @@
 #include <inttypes.h>
 #include <libdlpi.h>
 #include <liblldp.h>
-#include <libscf.h>
 #include <libuutil.h>
 #include <synch.h>
 #include <thread.h>
 
-#include "buf.h"
 #include "lldpd.h"
 #include "timer.h"
 
@@ -51,7 +49,6 @@ typedef struct tx {
 	struct log	*tx_log;
 
 	uint8_t		tx_frame[LLDP_PDU_MAX];
-	buf_t		tx_buf;
 
 	lldp_timer_t	tx_shutdown;
 	uint16_t	tx_ttl;
@@ -94,10 +91,10 @@ typedef struct rx {
 	struct log		*rx_log;
 
 	uint8_t			rx_frame[LLDP_PDU_MAX];
-	buf_t			rx_buf;
+	size_t			rx_frame_len;
+
 	struct neighbor		*rx_neighbor;
 	struct neighbor		*rx_curr_neighbor;
-	uu_list_index_t		rx_curr_idx;
 	uint16_t		rx_ttl;
 
 	lldp_timer_t		rx_too_many_neighbors_timer;
@@ -107,6 +104,18 @@ typedef struct rx {
 	bool			rx_changes;
 	bool			rx_too_many_neighbors;
 } rx_t;
+
+/*
+ * Link information sent in the IEEE 802.3 MAC/PHY Configuration/Status TLV.
+ * Updated from the main thread (with a_lock held once the agent is
+ * running) when the agent is created and on link state/speed changes.
+ */
+typedef struct agent_phy {
+	bool		ap_autoneg_sup;	/* Auto-negotiation supported */
+	bool		ap_autoneg_en;	/* Auto-negotiation enabled */
+	uint16_t	ap_adv_caps;	/* ifMauAutoNegCapAdvertisedBits */
+	uint16_t	ap_mau;		/* Operational dot3MauType */
+} agent_phy_t;
 
 typedef struct agent_cfg {
 	lldp_port_t		ac_port;
@@ -130,8 +139,6 @@ typedef struct agent_cfg {
 	uint16_t		ac_tx_fast_init;
 
 	uint16_t		ac_neighbor_max;
-
-	scf_property_group_t	*ac_smf_pg;
 } agent_cfg_t;
 
 typedef struct agent {
@@ -141,6 +148,7 @@ typedef struct agent {
 	cond_t			a_cv;
 
 	char			*a_name;	/* RO */
+	datalink_id_t		a_linkid;	/* RO */
 	struct log		*a_log;		/* RW */
 	thread_t		a_tid;		/* RO */
 
@@ -152,8 +160,8 @@ typedef struct agent {
 	bool			a_exit;		/* RW */
 	bool			a_port_enabled;	/* RW */
 
-	agent_cfg_t		a_default_cfg;
 	agent_cfg_t		a_cfg;
+	agent_phy_t		a_phy;
 
 	uu_list_t		*a_neighbors;
 
@@ -166,12 +174,6 @@ typedef struct agent {
 	bool			a_new_neighbor;
 
 	lldp_agent_stats_t	a_stats;
-
-	char			*a_fmri;
-	scf_instance_t		*a_smf_inst;
-	scf_snapshot_t		*a_smf_snap;
-	scf_value_t		*a_smf_val;
-	scf_property_t		*a_smf_prop;
 } agent_t;
 
 #define	IS_AGENT_THREAD(a)	((a)->a_tid == thr_self())
@@ -181,20 +183,19 @@ extern uu_list_t	*agent_list;
 
 void	agent_init(void);
 
-agent_t	*agent_create(const char *);
+agent_t	*agent_create(const char *, datalink_id_t);
 void	agent_start(agent_t *);
 void	agent_destroy(agent_t *);
 bool	agent_enable(agent_t *);
 void	agent_disable(agent_t *);
 
+void			agent_set_cfg(agent_t *, agent_cfg_t *);
 void			agent_set_status(agent_t *, lldp_admin_status_t);
 lldp_admin_status_t	agent_get_status(agent_t *);
 
 void agent_local_change(agent_t *);
 void agent_rx_frame(agent_t *);
 size_t agent_num_neighbors(agent_t *);
-
-const char *agent_fmri(const agent_t *);
 
 #ifdef __cplusplus
 }
