@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2024 Jason King
  */
 
 #ifndef _LLDPD_H
@@ -19,6 +19,7 @@
 #include <synch.h>
 #include <liblldp.h>
 #include <libscf.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {

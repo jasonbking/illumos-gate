@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2024 Jason King
  */
 
 #ifndef _AGENT_H
@@ -24,7 +24,6 @@
 #include <synch.h>
 #include <thread.h>
 
-#include "buf.h"
 #include "lldpd.h"
 #include "timer.h"
 
@@ -51,7 +50,6 @@ typedef struct tx {
 	struct log	*tx_log;
 
 	uint8_t		tx_frame[LLDP_PDU_MAX];
-	buf_t		tx_buf;
 
 	lldp_timer_t	tx_shutdown;
 	uint16_t	tx_ttl;
@@ -94,7 +92,8 @@ typedef struct rx {
 	struct log		*rx_log;
 
 	uint8_t			rx_frame[LLDP_PDU_MAX];
-	buf_t			rx_buf;
+	size_t			rx_frame_len;
+
 	struct neighbor		*rx_neighbor;
 	struct neighbor		*rx_curr_neighbor;
 	uu_list_index_t		rx_curr_idx;
@@ -130,8 +129,6 @@ typedef struct agent_cfg {
 	uint16_t		ac_tx_fast_init;
 
 	uint16_t		ac_neighbor_max;
-
-	scf_property_group_t	*ac_smf_pg;
 } agent_cfg_t;
 
 typedef struct agent {
@@ -171,6 +168,7 @@ typedef struct agent {
 	scf_instance_t		*a_smf_inst;
 	scf_snapshot_t		*a_smf_snap;
 	scf_value_t		*a_smf_val;
+	scf_propertygroup_t	*a_smf_pg;
 	scf_property_t		*a_smf_prop;
 } agent_t;
 
