@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2022 Jason King
+ * Copyright 2024 Jason King
  */
 
 #include <atomic.h>
@@ -149,7 +149,7 @@ agent_create(const char *name)
 	a->a_smf_snap = scf_snapshot_create(rep_handle);
 	a->a_smf_val = scf_value_create(rep_handle);
 	a->a_smf_prop = scf_property_create(rep_handle);
-	a->a_cfg.ac_smf_pg = scf_pg_create(rep_handle);
+	a->ac_smf_pg = scf_pg_create(rep_handle);
 	// XXX: change for failure
 
 	
@@ -380,7 +380,6 @@ tx_init(agent_t *a)
 
 	lldp_timer_init(&a->a_clk, &tx->tx_shutdown, "txShutdownWhile", tx,
 	    tx->tx_log, NULL, NULL);
-	buf_init(&tx->tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
 	tx->tx_state = TX_BEGIN;
 
 	TRACE_RETURN(a->a_log);
@@ -396,7 +395,9 @@ tx_fini(tx_t *tx)
 static bool
 tx_machine(agent_t *a)
 {
-	tx_t *tx = &a->a_tx;
+	tx_t	*tx = &a->a_tx;
+	buf_t	tx_buf;
+
 	TRACE_ENTER(tx->tx_log);
 
 	log_debug(tx->tx_log, "state machine running",
@@ -415,15 +416,18 @@ tx_machine(agent_t *a)
 		tx->tx_ttl = tx_ttl(a);
 		break;
 	case TX_SHUTDOWN_FRAME:
-		make_shutdown_pdu(a, &tx->tx_buf);
-		tx_frame(a->a_dlh, &tx->tx_buf, tx->tx_log);
-		buf_init(&tx->tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
+		(void) memset(tx->tx_frame, '\0', sizeof (tx->tx_frame));
+		buf_init(&tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
+		make_shutdown_pdu(a, &tx_buf);
+		tx_frame(a->a_dlh, &tx_buf, tx->tx_log);
+
 		lldp_timer_set(&tx->tx_shutdown, a->a_cfg.ac_reinit_delay);
 		break;
 	case TX_INFO_FRAME:
-		make_pdu(a, &tx->tx_buf);
-		tx_frame(a->a_dlh, &tx->tx_buf, tx->tx_log);
-		buf_init(&tx->tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
+		(void) memset(tx->tx_frame, '\0', sizeof (tx->tx_frame));
+		buf_init(&tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
+		make_pdu(a, &tx_buf);
+		tx_frame(a->a_dlh, &tx_buf, tx->tx_log);
 		if (dec(&a->a_ttr.ttr_tx_credit)) {
 			uint32_t credit = a->a_ttr.ttr_tx_credit;
 
@@ -518,7 +522,8 @@ rx_init(agent_t *a)
 	lldp_timer_init(&a->a_clk, &rx->rx_too_many_neighbors_timer,
 	    "tooManyNeighborsTimer", rx, rx->rx_log, "tooManyNeighbors",
 	    &rx->rx_too_many_neighbors);
-	buf_init(&rx->rx_buf, rx->rx_frame, sizeof (rx->rx_frame));
+	(void) memset(rx->rx_frame, '\0', sizeof (rx->rx_frame));
+	rx->rx_frame_len = 0;
 	rx->rx_state = RX_BEGIN;
 }
 
@@ -937,11 +942,9 @@ recv_frame(int fd __unused, void *arg)
 {
 	agent_t		*a = arg;
 	rx_t		*rx = &a->a_rx;
-	buf_t		*b = NULL;
 	uint8_t		src[DLPI_PHYSADDR_MAX] = { 0 };
 	dlpi_recvinfo_t	di = { 0 };
 	size_t		srclen = sizeof (src);
-	size_t		blen;
 	int		ret;
 
 	/* We should be running outside the agent's thread */
@@ -949,22 +952,21 @@ recv_frame(int fd __unused, void *arg)
 
 	mutex_enter(&a->a_lock);
 
-	buf_init(&rx->rx_buf, rx->rx_frame, sizeof (rx->rx_frame));
-	b = &rx->rx_buf;
-	blen = buf_len(b);
-	(void) memset(buf_ptr(b), '\0', buf_len(b));
+	(void) memset(rx->rx_frame, '\0', sizeof (rx->rx_frame));
+	rx->rx_frame_len = sizeof (rx->rx_frame);
 
-	ret = dlpi_recv(a->a_dlh, &src, &srclen, buf_ptr(b), &blen, 0, &di);
+	ret = dlpi_recv(a->a_dlh, &src, &srclen, rx->rx_frame,
+	    &rx->rx_frame_len, 0, &di);
 	if (ret != DLPI_SUCCESS) {
 		log_dlerr(rx->rx_log, "receive error", ret);
 		rx->rx_bad_frame = true;
 		goto done;
 	}
 
-	if (di.dri_totmsglen > buf_len(b)) {
+	if (di.dri_totmsglen > sizeof (rx->rx_frame)) {
 		log_info(rx->rx_log, "oversize message",
 		    LOG_T_MAC, "src", src,
-		    LOG_T_UINT32, "len", (uint32_t)blen,
+		    LOG_T_UINT32, "len", (uint32_t)sizeof (rx->rx_frame),
 		    LOG_T_END);
 		rx->rx_bad_frame = true;
 		/* XXX: do we need to drain dlh? */
@@ -981,10 +983,9 @@ recv_frame(int fd __unused, void *arg)
 
 	log_debug(rx->rx_log, "received frame",
 	    LOG_T_MAC, "src", src,
-	    LOG_T_UINT32, "len", (uint32_t)blen,
+	    LOG_T_UINT32, "len", (uint32_t)rx->rx_frame_len,
 	    LOG_T_END);
 
-	VERIFY(buf_truncate(b, blen));
 	rx->rx_recv_frame = true;
 
 done:
@@ -1000,9 +1001,12 @@ static void
 rx_process_frame(agent_t *a)
 {
 	rx_t *rx = &a->a_rx;
-	buf_t *b = &rx->rx_buf;
+	buf_t b;
 
-	if (!process_pdu(rx->rx_log, b, &rx->rx_neighbor)) {
+	VERIFY3U(rx->rx_frame_len, <=, UINT16_MAX);
+	buf_init(&b, rx->rx_frame, rx->rx_frame_len);
+
+	if (!process_pdu(rx->rx_log, &b, &rx->rx_neighbor)) {
 		rx->rx_bad_frame = true;
 		return;
 	}
