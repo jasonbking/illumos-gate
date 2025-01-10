@@ -15,7 +15,7 @@
 # Copyright 2016, OmniTI Computer Consulting, Inc. All rights reserved.
 # Copyright 2020 Joyent, Inc.
 # Copyright (c) 2018 Datto Inc.
-# Copyright 2021 Jason King
+# Copyright 2025 Jason King
 # Copyright 2024 OmniOS Community Edition (OmniOSce) Association.
 # Copyright 2026 Oxide Computer Company
 #
@@ -206,6 +206,10 @@ file path=opt/zfs-tests/tests/functional/acl/trivial/zfs_acl_tar_001_pos \
     mode=0555
 file path=opt/zfs-tests/tests/functional/acl/trivial/zfs_acl_tar_002_neg \
     mode=0555
+dir  path=opt/zfs-tests/tests/functional/alias
+file path=opt/zfs-tests/tests/functional/alias/alias.cfg mode=0444
+file path=opt/zfs-tests/tests/functional/alias/cleanup mode=0555
+file path=opt/zfs-tests/tests/functional/alias/setup mode=0555
 dir  path=opt/zfs-tests/tests/functional/alloc_class
 file path=opt/zfs-tests/tests/functional/alloc_class/alloc_class.cfg mode=0444
 file path=opt/zfs-tests/tests/functional/alloc_class/alloc_class.kshlib \
