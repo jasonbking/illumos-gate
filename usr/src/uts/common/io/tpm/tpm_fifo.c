@@ -345,7 +345,7 @@ tis_data_avail(tpm_t *tpm)
 }
 
 static bool
-tis_data_avail_cmd(tpm_t *tpm, bool final, uint16_t cmd, clock_t to,
+tis_data_avail_cmd(tpm_t *tpm, bool final, uint32_t cmd, clock_t to,
     const char *func)
 {
 	if (tis_data_avail(tpm)) {
@@ -413,36 +413,30 @@ tis_recv_chunk(tpm_t *tpm, uint8_t *buf, uint32_t len)
 }
 
 static int
-tis_recv_data(tpm_t *tpm, uint8_t *buf, uint32_t bufsiz)
+tis_recv_data(tpm_t *tpm, tpm_cmd_t *cmd)
 {
 	int ret;
 	uint32_t expected, status;
 	uint32_t cmdresult;
 	bool is_retry = false;
 
-	/*
-	 * We should always have a buffer large enough for the smallest
-	 * result.
-	 */
-	VERIFY3U(bufsiz, >=, TPM_HEADER_SIZE);
-
 	mutex_enter(&tpm->tpm_lock);
 
 retry:
-	bzero(buf, bufsiz);
+	bzero(cmd->tcmd_buf, sizeof (cmd->tcmd_buf));
 
 	/* Read header */
-	ret = tis_recv_chunk(tpm, buf, TPM_HEADER_SIZE);
+	ret = tis_recv_chunk(tpm, cmd->tcmd_buf, TPM_HEADER_SIZE);
 	if (ret != 0) {
 		goto check_retry;
 	}
 
 	/* If we succeeded, we have TPM_HEADER_SIZE bytes in buf */
-	cmdresult = tpm_getbuf32(buf, TPM_RETURN_OFFSET);
+	cmdresult = tpm_cmd_rc(cmd);
 
-	/* Get 'paramsize'(4 bytes)--it includes tag and paramsize */
-	expected = tpm_getbuf32(buf, TPM_PARAMSIZE_OFFSET);
-	if (expected > bufsiz) {
+	/* Get the amount of data to read (including header) */
+	expected = tpm_cmdlen(cmd);
+	if (expected > sizeof (cmd->tcmd_buf)) {
 		uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
 
 		ddi_fm_ereport_post(tpm->tpm_dip,
@@ -463,7 +457,7 @@ retry:
 	}
 
 	/* Read in the rest of the data from the TPM */
-	ret = tis_recv_chunk(tpm, buf + TPM_HEADER_SIZE,
+	ret = tis_recv_chunk(tpm, cmd->tcmd_buf + TPM_HEADER_SIZE,
 	    expected - TPM_HEADER_SIZE);
 	if (ret != 0) {
 		goto check_retry;
@@ -751,7 +745,7 @@ tpm_tis_init(tpm_t *tpm)
 }
 
 static int
-tis_start(tpm_t *tpm, const uint8_t *buf)
+tis_start(tpm_t *tpm, const tpm_cmd_t *cmd)
 {
 	int ret;
 
@@ -763,7 +757,7 @@ tis_start(tpm_t *tpm, const uint8_t *buf)
 	}
 
 	tpm_put8(tpm, TPM_STS, TPM_STS_GO);
-	ret = tpm_wait_cmd(tpm, buf, tis_data_avail_cmd, __func__);
+	ret = tpm_wait_cmd(tpm, cmd, tis_data_avail_cmd, __func__);
 
 	mutex_exit(&tpm->tpm_lock);
 
@@ -771,18 +765,18 @@ tis_start(tpm_t *tpm, const uint8_t *buf)
 }
 
 int
-tis_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
+tis_exec_cmd(tpm_t *tpm, tpm_cmd_t *cmd)
 {
 	uint32_t cmdlen;
 	int ret;
+	uint8_t loc = cmd->tcmd_locality;
 
 	VERIFY(tpm_can_access(tpm));
 	VERIFY(tpm->tpm_iftype == TPM_IF_TIS || tpm->tpm_iftype == TPM_IF_FIFO);
-	VERIFY3U(buflen, >=, TPM_HEADER_SIZE);
 
-	cmdlen = tpm_cmdlen(buf);
+	cmdlen = tpm_cmdlen(cmd);
 	VERIFY3U(cmdlen, >=, TPM_HEADER_SIZE);
-	VERIFY3U(cmdlen, <=, buflen);
+	VERIFY3U(cmdlen, <=, sizeof (cmd->tcmd_buf));
 
 	ret = tis_request_locality(tpm, loc);
 	if (ret != 0) {
@@ -795,17 +789,17 @@ tis_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 		goto done;
 	}
 
-	ret = tis_send_data(tpm, buf, cmdlen);
+	ret = tis_send_data(tpm, cmd->tcmd_buf, cmdlen);
 	if (ret != 0) {
 		goto done;
 	}
 
-	ret = tis_start(tpm, buf);
+	ret = tis_start(tpm, cmd);
 	if (ret != 0) {
 		goto done;
 	}
 
-	ret = tis_recv_data(tpm, buf, buflen);
+	ret = tis_recv_data(tpm, cmd);
 
 done:
 	/*

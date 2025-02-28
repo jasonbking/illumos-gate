@@ -24,7 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2023 Jason King
- * Copyright 2024 RackTop Systems, Inc.
+ * Copyright 2025 RackTop Systems, Inc.
  */
 
 #include <sys/devops.h>		/* used by dev_ops */
@@ -345,7 +345,7 @@ tpm_client_reset(tpm_client_t *c)
 {
 	ASSERT(MUTEX_HELD(&c->tpmc_lock));
 
-	bzero(c->tpmc_buf, c->tpmc_buflen);
+	bzero(c->tpmc_cmd.tcmd_buf, sizeof (c->tpmc_cmd.tcmd_buf));
 	c->tpmc_bufused = c->tpmc_bufread = 0;
 	c->tpmc_state = TPM_CLIENT_IDLE;
 	c->tpmc_cmdresult = 0;
@@ -357,7 +357,6 @@ static int
 tpm_create_client(tpm_t *tpm, int flag, int minor, tpm_client_t **clientp)
 {
 	tpm_client_t *c;
-	uint8_t *buf;
 	void *pri;
 	tpm_mode_t mode = TPM_MODE_RDONLY;
 	int kmflag;
@@ -406,19 +405,11 @@ tpm_create_client(tpm_t *tpm, int flag, int minor, tpm_client_t **clientp)
 		return (SET_ERROR(ENOMEM));
 	}
 
-	buf = kmem_zalloc(TPM_IO_BUF_SIZE, kmflag);
-	if (buf == NULL) {
-		kmem_free(c, sizeof (*c));
-		return (SET_ERROR(ENOMEM));
-	}
-
 	c->tpmc_tpm = tpm;
 	c->tpmc_minor = minor;
 	c->tpmc_mode = mode;
 	c->tpmc_iskernel = is_kernel;
 	c->tpmc_state = TPM_CLIENT_IDLE;
-	c->tpmc_buf = buf;
-	c->tpmc_buflen = TPM_IO_BUF_SIZE;
 	c->tpmc_locality = DEFAULT_LOCALITY;
 
 	mutex_init(&c->tpmc_lock, NULL, MUTEX_DRIVER, pri);
@@ -525,8 +516,8 @@ tpm_client_dtor(void *arg)
 
 	tpm_tab_fini(c);
 
-	bzero(c->tpmc_buf, c->tpmc_buflen);
-	kmem_free(c->tpmc_buf, c->tpmc_buflen);
+	/* Ensure no data from a previous command lingers */
+	bzero(c->tpmc_cmd.tcmd_buf, sizeof (c->tpmc_cmd.tcmd_buf));
 
 	cv_destroy(&c->tpmc_cv);
 	mutex_destroy(&c->tpmc_lock);
@@ -615,6 +606,7 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	mutex_enter(&c->tpmc_lock);
 
+	tpm_cmd_t *cmd = &c->tpmc_cmd;;
 	size_t amt_copied = 0;
 	size_t amt_avail = tpm_uio_size(uiop);
 	size_t amt_needed = 0;
@@ -655,8 +647,8 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	if (c->tpmc_bufused < TPM_HEADER_SIZE) {
 		to_copy = MIN(TPM_HEADER_SIZE - c->tpmc_bufused, amt_avail);
 
-		ret = uiomove(c->tpmc_buf + c->tpmc_bufused, to_copy, UIO_WRITE,
-		    uiop);
+		ret = uiomove(cmd->tcmd_buf + c->tpmc_bufused, to_copy,
+		    UIO_WRITE, uiop);
 		if (ret != 0) {
 			goto abort;
 		}
@@ -680,9 +672,9 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 * the amount of additional data needed in the request.
 	 */
 	ASSERT3U(c->tpmc_bufused, >=, TPM_HEADER_SIZE);
-	amt_needed = tpm_cmdlen(c->tpmc_buf);
+	amt_needed = tpm_cmdlen(cmd);
 
-	if (amt_needed > c->tpmc_buflen) {
+	if (amt_needed > sizeof (cmd->tcmd_buf)) {
 		/*
 		 * Request is too large.
 		 *
@@ -711,7 +703,8 @@ tpm_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	amt_needed -= c->tpmc_bufused;
 
 	to_copy = MIN(amt_needed, amt_avail);
-	ret = uiomove(c->tpmc_buf + c->tpmc_bufused, to_copy, UIO_WRITE, uiop);
+	ret = uiomove(cmd->tcmd_buf + c->tpmc_bufused, to_copy, UIO_WRITE,
+	    uiop);
 	if (ret != 0) {
 		goto done;
 	}
@@ -730,9 +723,9 @@ done:
 		 * If we fail for any reason, undo any data we've copied so
 		 * the same write(2) can be retried.
 		 */
-		VERIFY3U(amt_copied, <=, c->tpmc_buflen);
+		VERIFY3U(amt_copied, <=, sizeof (c->tpmc_cmd.tcmd_buf));
 		VERIFY3U(amt_copied, <=, c->tpmc_bufused);
-		bzero(c->tpmc_buf + c->tpmc_bufused - amt_copied, amt_copied);
+		bzero(cmd->tcmd_buf + c->tpmc_bufused - amt_copied, amt_copied);
 		c->tpmc_bufused -= amt_copied;
 		if (c->tpmc_bufused == 0) {
 			c->tpmc_state = TPM_CLIENT_IDLE;
@@ -812,7 +805,8 @@ tpm_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	size_t amt_avail = tpm_uio_size(uiop);
 	size_t to_copy = MIN(amt_avail, c->tpmc_bufused - c->tpmc_bufread);
 
-	ret = uiomove(c->tpmc_buf + c->tpmc_bufread, to_copy, UIO_READ, uiop);
+	ret = uiomove(c->tpmc_cmd.tcmd_buf + c->tpmc_bufread, to_copy, UIO_READ,
+	    uiop);
 	if (ret != 0) {
 		goto done;
 	}

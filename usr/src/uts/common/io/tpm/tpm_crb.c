@@ -11,7 +11,7 @@
 
 /*
  * Copyright 2023 Jason King
- * Copyright 2024 RackTop Systems, Inc.
+ * Copyright 2025 RackTop Systems, Inc.
  */
 
 #include <sys/sysmacros.h>
@@ -471,17 +471,15 @@ crb_go_ready(tpm_t *tpm)
 }
 
 static int
-crb_send_data(tpm_t *tpm, const uint8_t *buf, uint32_t buflen)
+crb_send_data(tpm_t *tpm, const uint8_t *buf, uint32_t cmdlen)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 	uint8_t *dest;
-	uint32_t cmdlen;
 
 	mutex_enter(&tpm->tpm_lock);
 
 	dest = tpm_reg_addr(tpm, tpm->tpm_locality,
 	    crb->tcrb_cmd_off[(uint8_t)tpm->tpm_locality]);
-	cmdlen = tpm_cmdlen(buf);
 
 	if (tpm->tpm_thr_cancelreq) {
 		mutex_exit(&tpm->tpm_lock);
@@ -504,7 +502,7 @@ crb_send_data(tpm_t *tpm, const uint8_t *buf, uint32_t buflen)
 }
 
 static bool
-crb_data_ready_cmd(tpm_t *tpm, bool final, uint16_t cmd, clock_t to,
+crb_data_ready_cmd(tpm_t *tpm, bool final, uint32_t cmd, clock_t to,
     const char *func)
 {
 	/*
@@ -523,7 +521,7 @@ crb_data_ready_cmd(tpm_t *tpm, bool final, uint16_t cmd, clock_t to,
 }
 
 static int
-crb_start(tpm_t *tpm, const uint8_t *buf)
+crb_start(tpm_t *tpm, const tpm_cmd_t *cmd)
 {
 	int ret;
 
@@ -536,7 +534,7 @@ crb_start(tpm_t *tpm, const uint8_t *buf)
 	tpm_put32(tpm, TPM_CRB_CTRL_START, 1);
 	crb_set_state(tpm, TCRB_ST_CMD_EXECUTION);
 
-	ret = tpm_wait_cmd(tpm, buf, crb_data_ready_cmd, __func__);
+	ret = tpm_wait_cmd(tpm, cmd, crb_data_ready_cmd, __func__);
 	mutex_exit(&tpm->tpm_lock);
 
 	return (ret);
@@ -561,20 +559,20 @@ crb_data_ready_cancel(tpm_t *tpm, bool final, clock_t to, const char *func)
 }
 
 static int
-crb_recv_data(tpm_t *tpm, uint8_t *buf, uint32_t buflen)
+crb_recv_data(tpm_t *tpm, tpm_cmd_t *cmd)
 {
 	tpm_crb_t *crb = &tpm->tpm_u.tpmu_crb;
 	uint8_t *src;
+	uint32_t cc;
 	uint32_t resplen;
 
 	mutex_enter(&tpm->tpm_lock);
 
+	cc = tpm_cc(cmd);
+
 	/* tpm_reg_addr() guarantees tpm->tpm_locality is valid */
 	src = tpm_reg_addr(tpm, tpm->tpm_locality,
 	    crb->tcrb_resp_off[(uint8_t)tpm->tpm_locality]);
-
-	VERIFY3U(buflen, >=, crb->tcrb_resp_size[(uint8_t)tpm->tpm_locality]);
-	VERIFY0(buflen & 3);
 
 	if (tpm->tpm_thr_cancelreq) {
 		mutex_exit(&tpm->tpm_lock);
@@ -583,13 +581,13 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, uint32_t buflen)
 
 	crb_set_state(tpm, TCRB_ST_CMD_COMPLETION);
 
-	bzero(buf, buflen);
+	bzero(cmd->tcmd_buf, sizeof (cmd->tcmd_buf));
 
 	/* First read in the header */
-	ddi_rep_get8(tpm->tpm_handle, buf, src, TPM_HEADER_SIZE,
+	ddi_rep_get8(tpm->tpm_handle, cmd->tcmd_buf, src, TPM_HEADER_SIZE,
 	    DDI_DEV_AUTOINCR);
 
-	resplen = tpm_cmdlen(buf);
+	resplen = tpm_cmdlen(cmd);
 
 	/* Any response should fit in the TPM's own response buffer */
 	if (resplen > crb->tcrb_resp_size[(uint8_t)tpm->tpm_locality]) {
@@ -603,7 +601,7 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, uint32_t buflen)
 		    "tpm_interface", DATA_TYPE_STRING,
 		    tpm_iftype_str(tpm->tpm_iftype),
 		    "locality", DATA_TYPE_UINT8, tpm->tpm_locality,
-		    "command", DATA_TYPE_UINT32, tpm->tpm_cmd,
+		    "command", DATA_TYPE_UINT32, cc,
 		    "response_len", DATA_TYPE_UINT32, resplen,
 		    "errmsg", DATA_TYPE_STRING, "excessively large response",
 		    NULL);
@@ -625,7 +623,7 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, uint32_t buflen)
 		    "tpm_interface", DATA_TYPE_STRING,
 		    tpm_iftype_str(tpm->tpm_iftype),
 		    "locality", DATA_TYPE_UINT8, tpm->tpm_locality,
-		    "command", DATA_TYPE_UINT32, tpm->tpm_cmd,
+		    "command", DATA_TYPE_UINT32, cc,
 		    "response_len", DATA_TYPE_UINT32, resplen,
 		    "errmsg", DATA_TYPE_STRING, "response length too small",
 		    NULL);
@@ -635,7 +633,7 @@ crb_recv_data(tpm_t *tpm, uint8_t *buf, uint32_t buflen)
 	}
 
 	/* Read in remainder of response */
-	ddi_rep_get8(tpm->tpm_handle, buf + TPM_HEADER_SIZE,
+	ddi_rep_get8(tpm->tpm_handle, cmd->tcmd_buf + TPM_HEADER_SIZE,
 	    src + TPM_HEADER_SIZE, resplen - TPM_HEADER_SIZE, DDI_DEV_AUTOINCR);
 
 	mutex_exit(&tpm->tpm_lock);
@@ -762,20 +760,20 @@ crb_exec_finish(tpm_t *tpm)
 }
 
 int
-crb_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
+crb_exec_cmd(tpm_t *tpm, tpm_cmd_t *cmd)
 {
 	uint32_t cmdlen;
 	int ret;
+	uint8_t loc = cmd->tcmd_locality;
 
 	VERIFY(tpm_can_access(tpm));
 	VERIFY3S(tpm->tpm_iftype, ==, TPM_IF_CRB);
-	VERIFY3U(buflen, >=, TPM_HEADER_SIZE);
 
-	cmdlen = tpm_cmdlen(buf);
+	cmdlen = tpm_cmdlen(cmd);
 	VERIFY3U(cmdlen, >=, TPM_HEADER_SIZE);
-	VERIFY3U(cmdlen, <=, buflen);
+	VERIFY3U(cmdlen, <=, sizeof (cmd->tcmd_buf));
 
-	if (tpm_cmdlen(buf) > tpm->tpm_u.tpmu_crb.tcrb_cmd_size[loc]) {
+	if (cmdlen > tpm->tpm_u.tpmu_crb.tcrb_cmd_size[loc]) {
 		return (SET_ERROR(E2BIG));
 	}
 
@@ -797,17 +795,17 @@ crb_exec_cmd(tpm_t *tpm, uint8_t loc, uint8_t *buf, size_t buflen)
 		goto done;
 	}
 
-	ret = crb_send_data(tpm, buf, buflen);
+	ret = crb_send_data(tpm, cmd->tcmd_buf, cmdlen);
 	if (ret != 0) {
 		goto done;
 	}
 
-	ret = crb_start(tpm, buf);
+	ret = crb_start(tpm, cmd);
 	if (ret != 0) {
 		goto done;
 	}
 
-	ret = crb_recv_data(tpm, buf, buflen);
+	ret = crb_recv_data(tpm, cmd);
 
 done:
 	/*

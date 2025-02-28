@@ -45,7 +45,7 @@ struct tpm;
 
 #define	TPM_ST_NO_SESSIONS 0x8001
 
-#define	TPM_RC	uint32_t
+typedef uint32_t TPM_RC;
 
 /*
  * The TPM2.0 commands that have explicit timeouts. These might get removed
@@ -54,7 +54,7 @@ struct tpm;
  * Taken from s 6.5.2, Table 12, of
  * "Trusted Platform Module Library Part 2: Structures", Rev 01.59
  */
-#define	TPM_CC	uint32_t
+typedef uint32_t TPM_CC;
 
 #define	TPM_CC_Startup			(TPM_CC)(0x00000144)
 #define	TPM_CC_SelfTest			(TPM_CC)(0x00000143)
@@ -73,8 +73,19 @@ struct tpm;
 #define	TPM_CC_Create			(TPM_CC)(0x00000153)
 #define	TPM_CC_CreatePrimary		(TPM_CC)(0x00000131)
 #define	TPM_CC_CreateLoaded		(TPM_CC)(0x00000191)
+#define	TPM_CC_ContextLoad		(TPM_CC)(0x00000161)
+#define	TPM_CC_ContextSave		(TPM_CC)(0x00000162)
+#define	TPM_CC_FlushContext		(TPM_CC)(0x00000165)
 
 #define	TPM_RC_SUCCESS			0
+#define	TPM2_RC				TPM_RC
+#define TPM2_RC_WARN			((TPM2_RC)0x900)
+#define TPM2_RC_CANCELED		((TPM2_RC)(TPM2_RC_WARN + 0x009))
+
+#define	TSS2_RC_LAYER_SHIFT		16
+#define	TSS2_RC_LAYER(layer)		((TPM_RC)(layer) << TSS2_RC_LAYER_SHIFT)
+#define TSS2_RESMGR_RC_LAYER		TSS2_RC_LAYER(11)
+#define TSS2_RESMGR_TPM_RC_LAYER	TSS2_RC_LAYER(12)
 
 /* Table 2:22 From Part 4 */
 #define	TPM_CAP_FIRST			0x00000000
@@ -104,11 +115,70 @@ typedef uint32_t TPM_PT;
 /* Any transient handle in cmd is flushed at completion */
 #define	TPM_CCA_FLUSHED(cc)	((cc) & (1U << 24))
 
+typedef uint32_t tpm_hdl_t;
+
+typedef enum tpm20_hdl_type {
+	TPM20_HDL_UNKNOWN,
+	TPM20_HDL_PCR,		/* PCR Index */
+	TPM20_HDL_NVIDX,	/* NV Index */
+	TPM20_HDL_HMAC,		/* HMAC Session Handle */
+	TPM20_HDL_POLICY,	/* Policy Session Handle */
+	TPM20_HDL_PERM,		/* Permanent resource handle */
+	TPM20_HDL_TRANSIENT,	/* Transient object handle */
+	TPM20_HDL_PERSIST,	/* Persistent object handle */
+} tpm_hdl_type_t;
+
+static inline tpm_hdl_type_t
+tpm_handle_type(const tpm_hdl_t h)
+{
+	switch (h >> 24) {
+	case 0x00:
+		return (TPM20_HDL_PCR);
+	case 0x01:
+		return (TPM20_HDL_NVIDX);
+	case 0x02:
+		return (TPM20_HDL_HMAC);
+	case 0x03:
+		return (TPM20_HDL_POLICY);
+	case 0x40:
+		return (TPM20_HDL_PERM);
+	case 0x80:
+		return (TPM20_HDL_TRANSIENT);
+	case 0x81:
+		return (TPM20_HDL_PERSIST);
+	default:
+		return (TPM20_HDL_UNKNOWN);
+	}
+}
+
+static inline bool
+tpm_handle_is_session(const tpm_hdl_t h)
+{
+	uint32_t val = h >> 24;
+
+	/*
+	 * HMAC and Policy sessions are the only currently known session
+	 * handle types.
+	 */
+	if (val == 0x02 || val == 0x03)
+		return (true);
+	return (false);
+}
+
 bool tpm20_init(struct tpm *);
-int tpm20_seed_random(struct tpm *, uchar_t *, size_t);
-int tpm20_generate_random(struct tpm *, uchar_t *, size_t);
-tpm_duration_t tpm20_get_duration_type(tpm_t *, const uint8_t *);
-clock_t tpm20_get_timeout(tpm_t *, const uint8_t *);
+
+TPM_RC tpm20_get_properties(struct tpm *, struct tpm_client *, uint32_t,
+    uint32_t, bool (*)(uint32_t, uint32_t, bool, void *), void *);
+
+TPM_RC tpm20_seed_random(struct tpm *, struct tpm_client *, void *, size_t);
+TPM_RC tpm20_generate_random(struct tpm *, struct tpm_client *, void *, size_t);
+uint32_t tpm20_get_ccattr(struct tpm *, TPM_CC);
+TPM_RC tpm20_get_cmd_attr(struct tpm *, struct tpm_client *, uint32_t,
+    uint32_t *);
+TPM_RC tpm20_context_load(struct tpm *, struct tpm_client *, void *);
+TPM_RC tpm20_context_save(struct tpm *, struct tpm_client *, uint32_t, void *,
+    size_t);
+TPM_RC tpm20_context_flish(struct tpm *, struct tpm_client *, uint32_t);
 
 #ifdef __cplusplus
 }

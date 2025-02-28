@@ -24,6 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2023 Jason King
+ * Copyright 2025 RackTop Systems, Inc.
  */
 
 #include <sys/devops.h>		/* used by dev_ops */
@@ -91,6 +92,13 @@ tpm_cancel(tpm_client_t *c)
 	VERIFY3P(curthread, !=, tpm->tpm_thread);
 	VERIFY(MUTEX_HELD(&c->tpmc_lock));
 
+	/*
+	 * The TPM specifications (specifically the TAB specification) states
+	 * that a queued request that is canceled should receive a
+	 * TPM2_RC_CANCELLED return code with the layer being
+	 * TSS2_RESMGR_RC_LAYER (section 3.3). It is unspecified for any
+	 * other state.
+	 */
 	switch (c->tpmc_state) {
 	case TPM_CLIENT_IDLE:
 		return (0);
@@ -189,17 +197,7 @@ tpm_exec_internal(tpm_t *tpm, tpm_client_t *c)
 	ASSERT(MUTEX_HELD(&c->tpmc_lock));
 	ASSERT(c->tpmc_iskernel);
 	ASSERT3S(c->tpmc_state, ==, TPM_CLIENT_CMD_RECEPTION);
-	ASSERT3U(c->tpmc_bufused, <=, c->tpmc_buflen);
-
-	cmdlen = c->tpmc_bufused;
-
-	/* We should always write at least the TPM header */
-	ASSERT3U(cmdlen, >=, TPM_HEADER_SIZE);
-
-	/*
-	 * Set the length field of the TPM header to the amount written.
-	 */
-	BE_OUT32(c->tpmc_buf + TPM_PARAMSIZE_OFFSET, cmdlen);
+	ASSERT3U(tpm_cmdlen(&c->tpmc_cmd), <=, sizeof (c->tpmc_cmd.tcmd_buf));
 
 	if (tpm->tpm_thread != NULL) {
 		tpm_dispatch_cmd(c);
@@ -238,7 +236,8 @@ int
 tpm_exec_client(tpm_client_t *c)
 {
 	tpm_t *tpm = c->tpmc_tpm;
-	uint32_t len;
+	tpm_cmd_t *cmd = &c->tpmc_cmd;
+	uint32_t cc, len;
 	int8_t locality;
 	int ret = 0;
 
@@ -248,28 +247,24 @@ tpm_exec_client(tpm_client_t *c)
 
 	/* We should have the full command, and should be a valid size. */
 	VERIFY3U(c->tpmc_bufused, >=, TPM_HEADER_SIZE);
-	VERIFY3U(c->tpmc_bufused, ==, tpm_cmdlen(c->tpmc_buf));
+	VERIFY3U(c->tpmc_bufused, ==, tpm_cmdlen(cmd));
 
 	c->tpmc_state = TPM_CLIENT_CMD_EXECUTION;
 
-	locality = c->tpmc_locality;
-	tpm->tpm_cmd = tpm_cmd(c->tpmc_buf);
-	bcopy(c->tpmc_buf, tpm->tpm_buf, len);
+	locality = c->tpmc_cmd.tcmd_locality;
+	cc = tpm_cc(cmd);
 
 	mutex_exit(&c->tpmc_lock);
 
-	DTRACE_PROBE4(cmd__exec, tpm_client_t *, c, uint32_t, tpm->tpm_cmd,
-	    uint8_t *, tpm->tpm_buf, uint32_t, len);
+	DTRACE_PROBE2(cmd__exec, tpm_client_t *, c, tpm_cmd_t *, cmd);
 
 	switch (tpm->tpm_iftype) {
 	case TPM_IF_TIS:
 	case TPM_IF_FIFO:
-		ret = tis_exec_cmd(tpm, locality, tpm->tpm_buf,
-		    sizeof (tpm->tpm_buf));
+		ret = tis_exec_cmd(tpm, cmd);
 		break;
 	case TPM_IF_CRB:
-		ret = crb_exec_cmd(tpm, locality, tpm->tpm_buf,
-		    sizeof (tpm->tpm_buf));
+		ret = crb_exec_cmd(tpm, cmd);
 		break;
 	default:
 		dev_err(tpm->tpm_dip, CE_PANIC, "%s: invalid iftype %d",
@@ -278,9 +273,8 @@ tpm_exec_client(tpm_client_t *c)
 
 	mutex_enter(&c->tpmc_lock);
 
-	DTRACE_PROBE5(cmd__done, tpm_client_t *, c, uint32_t, ret,
-	    uint32_t, tpm_cmd(c->tpmc_buf), uint8_t *, c->tpmc_buf,
-	    uint32_t, tpm_cmdlen(c->tpmc_buf));
+	DTRACE_PROBE3(cmd__done, tpm_client_t *, c, uint32_t, ret,
+	    tpm_cmd_t *, &c->tpmc_cmd);
 
 	c->tpmc_cmdresult = ret;
 	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
@@ -295,11 +289,8 @@ tpm_exec_client(tpm_client_t *c)
 		 * If we succeeded, the amount of output will be in the
 		 * returned header.
 		 */
-		c->tpmc_bufused = tpm_getbuf32(tpm->tpm_buf,
-		    TPM_PARAMSIZE_OFFSET);
+		c->tpmc_bufused = tpm_cmdlen(cmd);
 		c->tpmc_bufread = 0;
-		bzero(c->tpmc_buf, c->tpmc_buflen);
-		bcopy(tpm->tpm_buf, c->tpmc_buf, c->tpmc_bufused);
 		break;
 	}
 
@@ -307,7 +298,7 @@ tpm_exec_client(tpm_client_t *c)
 	 * If the TPM ever returns TPM_RC_FAILURE, it's dead at least
 	 * until it's been reset which means a reboot. Mark it as failed.
 	 */
-	if (tpm_cmd(c->tpmc_buf) == TPM_RC_FAILURE) {
+	if (tpm_cmd_rc(cmd) == TPM_RC_FAILURE) {
 		uint64_t ena = fm_ena_generate(0, FM_ENA_FMT1);
 
 		ddi_fm_ereport_post(tpm->tpm_dip,
@@ -317,7 +308,7 @@ tpm_exec_client(tpm_client_t *c)
 		    "tpm_interface", DATA_TYPE_STRING,
 		    tpm_iftype_str(tpm->tpm_iftype),
 		    "locality", DATA_TYPE_UINT8, locality,
-		    "command", DATA_TYPE_UINT32, tpm->tpm_cmd,
+		    "command", DATA_TYPE_UINT32, cc,
 		    "detailed error message", DATA_TYPE_STRING,
 		    "TPM returned TPM_RC_FAILURE",
 		    NULL);
@@ -388,7 +379,7 @@ tpm_exec_thread(void *arg)
 		/*
 		 * We need the duration type in case we're cancelled.
 		 */
-		dur = tpm_get_duration_type(tpm, c->tpmc_buf);
+		dur = tpm_get_duration_type(tpm, &c->tpmc_cmd);
 
 		ret = tpm_exec_client(c);
 		mutex_exit(&c->tpmc_lock);
@@ -492,12 +483,12 @@ tpm_wait(tpm_t *tpm, bool (*cond)(tpm_t *, bool, clock_t, const char *),
  * are a bit different than tpm_wait().
  */
 int
-tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
-    bool (*done)(tpm_t *, bool, uint16_t, clock_t, const char *),
+tpm_wait_cmd(tpm_t *tpm, const tpm_cmd_t *cmd,
+    bool (*done)(tpm_t *, bool, uint32_t, clock_t, const char *),
     const char *func)
 {
 	clock_t exp_done, deadline, now, to, dur;
-	uint16_t cmd = tpm_cmd(buf);
+	uint32_t cc = tpm_cc(cmd);
 
 	VERIFY(tpm_can_access(tpm));
 	VERIFY(MUTEX_HELD(&tpm->tpm_lock));
@@ -524,10 +515,10 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 	 * TPM_WAIT_POLLONCE.  In this instance, we check exactly one time --
 	 * after the command timeout.
 	 */
-	to = tpm_get_timeout(tpm, buf);
+	to = tpm_get_timeout(tpm, cmd);
 	deadline = now + to;
 
-	dur = tpm_get_duration(tpm, buf);
+	dur = tpm_get_duration(tpm, cmd);
 	exp_done = (tpm->tpm_wait != TPM_WAIT_POLLONCE) ? now + to : dur;
 
 	VERIFY3S(exp_done, <=, deadline);
@@ -557,7 +548,7 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 		 * We either received an interrupt or reached the expected
 		 * command duration, check if the command is finished.
 		 */
-		if (done(tpm, false, cmd, to, func)) {
+		if (done(tpm, false, cc, to, func)) {
 			return (0);
 		}
 	}
@@ -590,12 +581,12 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 			continue;
 		}
 
-		if (done(tpm, false, cmd, to, __func__)) {
+		if (done(tpm, false, cc, to, __func__)) {
 			return (0);
 		}
 	}
 
-	if (!done(tpm, true, cmd, to, func)) {
+	if (!done(tpm, true, cc, to, func)) {
 		return (SET_ERROR(ETIME));
 	}
 
@@ -603,35 +594,35 @@ tpm_wait_cmd(tpm_t *tpm, const uint8_t *buf,
 }
 
 tpm_duration_t
-tpm_get_duration_type(tpm_t *tpm, const uint8_t *buf)
+tpm_get_duration_type(tpm_t *tpm, const tpm_cmd_t *cmd)
 {
-	uint32_t cmd = tpm_cmd(buf);
+	uint32_t cc = tpm_cc(cmd);
 
-	if (cmd < TPM12_ORDINAL_MAX) {
-		return (tpm12_get_duration_type(tpm, buf));
+	if (cc < TPM12_ORDINAL_MAX) {
+		return (tpm12_get_duration_type(tpm, cmd));
 	}
-	return (tpm20_get_duration_type(tpm, buf));
+	return (tpm20_get_duration_type(tpm, cmd));
 }
 
 clock_t
-tpm_get_duration(tpm_t *tpm, const uint8_t *buf)
+tpm_get_duration(tpm_t *tpm, const tpm_cmd_t *cmd)
 {
 	tpm_duration_t dur;
 
-	dur = tpm_get_duration_type(tpm, buf);
+	dur = tpm_get_duration_type(tpm, cmd);
 	return (tpm->tpm_duration[dur]);
 }
 
 clock_t
-tpm_get_timeout(tpm_t *tpm, const uint8_t *buf)
+tpm_get_timeout(tpm_t *tpm, const tpm_cmd_t *cmd)
 {
-	uint32_t cmd = tpm_cmd(buf);
+	uint32_t cc = tpm_cc(cmd);
 
-	if (cmd < TPM12_ORDINAL_MAX) {
-		return (tpm12_get_timeout(tpm, cmd));
+	if (cc < TPM12_ORDINAL_MAX) {
+		return (tpm12_get_timeout(tpm, cc));
 	}
 
-	return (tpm20_get_timeout(tpm, buf));
+	return (tpm20_get_timeout(tpm, cmd));
 }
 
 /*
@@ -726,89 +717,6 @@ void
 tpm_put32(tpm_t *tpm, unsigned long offset, uint32_t value)
 {
 	tpm_put32_loc(tpm, tpm->tpm_locality, offset, value);
-}
-
-/*
- * Starts a new command with an internal client.
- * This blocks until the client is free and returns with
- * tpmc_lock held.
- */
-void
-tpm_int_newcmd(tpm_client_t *c, uint16_t sess, uint32_t cmd)
-{
-	uint8_t *buf = c->tpmc_buf;
-
-	mutex_enter(&c->tpmc_lock);
-
-	while (c->tpmc_state != TPM_CLIENT_IDLE)
-		cv_wait(&c->tpmc_cv, &c->tpmc_lock);
-
-	ASSERT3U(c->tpmc_buflen, >=, TPM_HEADER_SIZE);
-
-	c->tpmc_state = TPM_CLIENT_CMD_RECEPTION;
-
-	bzero(buf, c->tpmc_buflen);
-
-	BE_OUT16(buf, sess);
-	buf += sizeof (uint16_t);
-
-	/* Skip length for now */
-	buf += sizeof (uint32_t);
-
-	BE_OUT32(buf, cmd);
-	buf += sizeof (uint32_t);
-
-	c->tpmc_bufused = (size_t)(buf - c->tpmc_buf);
-}
-
-void
-tpm_int_put8(tpm_client_t *c, uint8_t val)
-{
-	ASSERT(MUTEX_HELD(&c->tpmc_lock));
-	VERIFY3U(c->tpmc_bufused + sizeof (uint8_t), <=, c->tpmc_buflen);
-	c->tpmc_buf[c->tpmc_bufused] = val;
-	c->tpmc_bufused += sizeof (uint8_t);
-}
-
-void
-tpm_int_put16(tpm_client_t *c, uint16_t val)
-{
-	uint8_t *buf = c->tpmc_buf + c->tpmc_bufused;
-
-	ASSERT(MUTEX_HELD(&c->tpmc_lock));
-	VERIFY3U(c->tpmc_bufused + sizeof (uint16_t), <=, c->tpmc_buflen);
-	BE_OUT16(buf, val);
-	c->tpmc_bufused += sizeof (uint16_t);
-}
-
-void
-tpm_int_put32(tpm_client_t *c, uint32_t val)
-{
-	uint8_t *buf = c->tpmc_buf + c->tpmc_bufused;
-
-	ASSERT(MUTEX_HELD(&c->tpmc_lock));
-	VERIFY3U(c->tpmc_bufused + sizeof (uint32_t), <=, c->tpmc_buflen);
-	BE_OUT32(buf, val);
-	c->tpmc_bufused += sizeof (uint32_t);
-}
-
-void
-tpm_int_copy(tpm_client_t *c, const void *src, size_t len)
-{
-	uint8_t *buf = c->tpmc_buf + c->tpmc_bufused;
-
-	ASSERT(MUTEX_HELD(&c->tpmc_lock));
-	VERIFY3U(c->tpmc_bufused + len, <=, c->tpmc_buflen);
-
-	bcopy(src, buf, len);
-	c->tpmc_bufused += len;
-}
-
-uint32_t
-tpm_int_rc(tpm_client_t *c)
-{
-	ASSERT(MUTEX_HELD(&c->tpmc_lock));
-	return (tpm_getbuf32(c->tpmc_buf, TPM_RETURN_OFFSET));
 }
 
 /*

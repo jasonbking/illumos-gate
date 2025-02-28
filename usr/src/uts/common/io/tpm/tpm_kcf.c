@@ -24,13 +24,15 @@
  * Use is subject to license terms.
  *
  * Copyright 2023 Jason King
+ * Copyright 2025 RackTop Systems, Inc.
  */
 
 /*
  * KCF Provider for a TPM device. Currently only the RNG function of a TPM
  * is exposed to KCF. Historically, TPM1.2 KCF RNG support was only ever
  * built with special compilation flags (that were never used in illumos).
- * As such, we currently only register TPM2.0 devices with KCF.
+ * As such, we currently only register TPM2.0 devices with KCF, but leave
+ * the option to use TPM1.2 devices for those that want to try it.
  */
 
 #include <sys/types.h>
@@ -41,6 +43,7 @@
 #include <sys/crypto/spi.h>
 
 #include "tpm_ddi.h"
+#include "tpm20.h"
 
 /*
  * CSPI information (entry points, provider info, etc.)
@@ -224,19 +227,32 @@ tpmrng_seed_random(crypto_provider_handle_t provider, crypto_session_id_t sid,
     uchar_t *buf, size_t len, uint_t entropy_est __unused,
     uint32_t flags __unused, crypto_req_handle_t req __unused)
 {
-	tpm_t *tpm = (tpm_t *)provider;
+	tpm_t		*tpm = (tpm_t *)provider;
+	tpm_client_t	*c = tpm->tpm_internal_client;
+	int		ret;
+
+	mutex_enter(&c->tpmc_lock);
 
 	switch (tpm->tpm_family) {
 	case TPM_FAMILY_1_2:
-		return (tpm12_seed_random(tpm, buf, len));
+		ret = tpm12_seed_random(tpm, buf, len);
+		break;
 	case TPM_FAMILY_2_0:
-		return (tpm20_seed_random(tpm, buf, len));
+		ret = tpm20_seed_random(tpm, c, buf, len);
+		break;
 	default:
 		dev_err(tpm->tpm_dip, CE_PANIC,
 		    "unknown TPM family %d", tpm->tpm_family);
+
 		/* Make gcc happy */
-		return (CRYPTO_FAILED);
+		ret = CRYPTO_FAILED;
+		break;
 	}
+
+	tpm_client_reset(c);
+	mutex_exit(&c->tpmc_lock);
+
+	return ((ret == 0) ? CRYPTO_SUCCESS : CRYPTO_FAILED);
 }
 
 static int
@@ -244,17 +260,30 @@ tpmrng_generate_random(crypto_provider_handle_t provider,
     crypto_session_id_t sid __unused, uchar_t *buf, size_t len,
     crypto_req_handle_t req __unused)
 {
-	tpm_t *tpm = (tpm_t *)provider;
+	tpm_t		*tpm = (tpm_t *)provider;
+	tpm_client_t	*c = tpm->tpm_internal_client;
+	int		ret;
+
+	mutex_enter(&c->tpmc_lock);
 
 	switch (tpm->tpm_family) {
 	case TPM_FAMILY_1_2:
-		return (tpm12_generate_random(tpm, buf, len));
+		ret = tpm12_generate_random(tpm, buf, len);
+		break;
 	case TPM_FAMILY_2_0:
-		return (tpm20_generate_random(tpm, buf, len));
+		ret = tpm20_generate_random(tpm, c, buf, len);
+		break;
 	default:
 		dev_err(tpm->tpm_dip, CE_PANIC,
 		    "unknown TPM family %d", tpm->tpm_family);
+
 		/* Make gcc happy */
-		return (CRYPTO_FAILED);
+		ret = CRYPTO_FAILED;
+		break;
 	}
+
+	tpm_client_reset(c);
+	mutex_exit(&c->tpmc_lock);
+
+	return (ret);
 }

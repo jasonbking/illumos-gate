@@ -24,6 +24,7 @@
  * Use is subject to license terms.
  *
  * Copyright 2023 Jason King
+ * Copyright 2025 RackTop Systems, Inc.
  */
 
 #ifndef	_TPM_DDI_H
@@ -119,6 +120,11 @@ typedef struct tpm_tis {
 	bool			ttis_has_cmd_ready_int;	/* WO */
 } tpm_tis_t;
 
+typedef struct tpm_cmd {
+	uint8_t		tcmd_buf[TPM_IO_BUF_SIZE];
+	uint8_t		tcmd_locality;
+} tpm_cmd_t;
+
 /*
  * From PC-Client-Specific-Platform-TPM-Profile 6.5.3.8
  *
@@ -208,6 +214,7 @@ typedef enum tpm_attach_seq {
 
 typedef struct tpm tpm_t;
 typedef struct tpm_client tpm_client_t;
+typedef struct tpm_tab tpm_tab_t;
 
 struct tpm {
 	dev_info_t		*tpm_dip;
@@ -255,10 +262,10 @@ struct tpm {
 	uint32_t		tpm_fw_major;		/* WO */
 	uint32_t		tpm_fw_minor;		/* WO */
 
-	uint32_t		tpm_cmd;		/* during exec */
-	int8_t			tpm_locality;	/* locality during cmd exec */
+	tpm_cmd_t		tpm_cmd;
+	uint8_t			tpm_locality;
 	uint8_t			tpm_n_locality;
-	uint8_t			tpm_buf[TPM_IO_BUF_SIZE];
+	tpm_tab_t		*tpm_last_tab;		/* during exec */
 
 	clock_t			tpm_timeout_a;		/* WO */
 	clock_t			tpm_timeout_b;		/* WO */
@@ -303,8 +310,6 @@ typedef enum tpm_client_state {
 	TPM_CLIENT_CMD_COMPLETION,	/* Write command to client */
 } tpm_client_state_t;
 
-typedef struct tpm_tab tpm_tab_t;
-
 struct tpm_client {
 	refhash_link_t		tpmc_reflink;
 	list_node_t		tpmc_node;
@@ -316,8 +321,7 @@ struct tpm_client {
 	tpm_mode_t		tpmc_mode;		/* WO */
 	tpm_client_state_t	tpmc_state;		/* RW */
 	pollhead_t		tpmc_pollhead;		/* RW */
-	uint8_t			*tpmc_buf;		/* RW */
-	uint32_t		tpmc_buflen;		/* WO */
+	tpm_cmd_t		tpmc_cmd;
 	uint32_t		tpmc_bufused;		/* RW */
 	uint32_t		tpmc_bufread;		/* RW */
 	int			tpmc_instance;		/* WO */
@@ -345,29 +349,19 @@ tpm_can_access(const tpm_t *tpm)
 	return (tpm->tpm_thread == NULL || curthread == tpm->tpm_thread);
 }
 
-static inline uint16_t
-tpm_getbuf16(const uint8_t *ptr, uint32_t offset)
-{
-	return (BE_IN16(ptr + offset));
-}
-
-static inline uint32_t
-tpm_getbuf32(const uint8_t *ptr, uint32_t offset)
-{
-	return (BE_IN32(ptr + offset));
-}
-
-static inline uint32_t
-tpm_cmd(const uint8_t *ptr)
-{
-	return (BE_IN32(ptr + TPM_COMMAND_CODE_OFFSET));
-}
-
-static inline uint32_t
-tpm_cmdlen(const uint8_t *ptr)
-{
-	return (tpm_getbuf32(ptr, TPM_PARAMSIZE_OFFSET));
-}
+uint32_t tpm_cc(const tpm_cmd_t *);
+uint32_t tpm_cmdlen(const tpm_cmd_t *);
+uint16_t tpm_getbuf16(const tpm_cmd_t *, uint32_t);
+uint32_t tpm_getbuf32(const tpm_cmd_t *, uint32_t);
+uint16_t tpm_cmd_sess(const tpm_cmd_t *);
+uint32_t tpm_cmd_rc(const tpm_cmd_t *);
+void tpm_cmd_getbuf(const tpm_cmd_t *, uint32_t, uint32_t, void *);
+void tpm_cmd_init(tpm_cmd_t *, uint8_t, uint32_t, uint16_t);
+void tpm_cmd_resp(tpm_cmd_t *, uint8_t, uint32_t, uint16_t);
+void tpm_cmd_put8(tpm_cmd_t *, uint8_t);
+void tpm_cmd_put16(tpm_cmd_t *, uint16_t);
+void tpm_cmd_put32(tpm_cmd_t *, uint32_t);
+void tpm_cmd_copy(tpm_cmd_t *, const void *, uint32_t);
 
 /*
  * Some operations do not generate an interrupt on completion.
@@ -395,12 +389,12 @@ void tpm_put32_loc(tpm_t *, int8_t, unsigned long, uint32_t);
 
 int tpm_wait(tpm_t *, bool (*)(tpm_t *, bool, clock_t, const char *), clock_t,
     bool, const char *);
-int tpm_wait_cmd(tpm_t *, const uint8_t *,
-    bool(*)(tpm_t *, bool, uint16_t, clock_t, const char *), const char *);
+int tpm_wait_cmd(tpm_t *, const tpm_cmd_t *,
+    bool(*)(tpm_t *, bool, uint32_t, clock_t, const char *), const char *);
 
-tpm_duration_t tpm_get_duration_type(tpm_t *, const uint8_t *);
-clock_t tpm_get_duration(tpm_t *, const uint8_t *);
-clock_t tpm_get_timeout(tpm_t *, const uint8_t *);
+tpm_duration_t tpm_get_duration_type(tpm_t *, const tpm_cmd_t *);
+clock_t tpm_get_duration(tpm_t *, const tpm_cmd_t *);
+clock_t tpm_get_timeout(tpm_t *, const tpm_cmd_t *);
 
 void tpm_client_refhold(tpm_client_t *);
 void tpm_client_refrele(tpm_client_t *);
@@ -410,13 +404,6 @@ int tpm_cancel(tpm_client_t *);
 void tpm_dbg(const tpm_t *, int, const char *, ...);
 void tpm_dispatch_cmd(tpm_client_t *);
 void tpm_exec_thread(void *);
-
-void tpm_int_newcmd(tpm_client_t *, uint16_t, uint32_t);
-void tpm_int_put8(tpm_client_t *, uint8_t);
-void tpm_int_put16(tpm_client_t *, uint16_t);
-void tpm_int_put32(tpm_client_t *, uint32_t);
-void tpm_int_copy(tpm_client_t *, const void *, size_t);
-uint32_t tpm_int_rc(tpm_client_t *);
 
 int tpm_exec_client(tpm_client_t *);
 int tpm_exec_internal(tpm_t *, tpm_client_t *);
@@ -429,26 +416,21 @@ const char *tpm_hwvend_str(uint16_t);
 int tpm12_seed_random(tpm_t *, uchar_t *, size_t);
 int tpm12_generate_random(tpm_t *, uchar_t *, size_t);
 bool tpm12_init(tpm_t *);
-tpm_duration_t tpm12_get_duration_type(tpm_t *, const uint8_t *);
+tpm_duration_t tpm12_get_duration_type(tpm_t *, const tpm_cmd_t *);
 clock_t tpm12_get_timeout(tpm_t *, uint32_t);
 
 bool tpm20_init(struct tpm *);
-int tpm20_get_properties(tpm_t *, uint32_t, uint32_t,
-    bool (*)(uint32_t, bool, uint32_t, uint32_t, void *), void *);
-int tpm20_get_property(struct tpm *, uint32_t, uint32_t *);
-int tpm20_seed_random(struct tpm *, uchar_t *, size_t);
-int tpm20_generate_random(struct tpm *, uchar_t *, size_t);
-tpm_duration_t tpm20_get_duration_type(tpm_t *, const uint8_t *);
-clock_t tpm20_get_timeout(tpm_t *, const uint8_t *);
+tpm_duration_t tpm20_get_duration_type(tpm_t *, const tpm_cmd_t *);
+clock_t tpm20_get_timeout(tpm_t *, const tpm_cmd_t *);
 
 bool tpm_tis_init(tpm_t *);
-int tis_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
+int tis_exec_cmd(tpm_t *, tpm_cmd_t *);
 void tis_cancel_cmd(tpm_t *, tpm_duration_t);
 void tpm_tis_intr_mgmt(tpm_t *, bool);
 uint_t tpm_tis_intr(caddr_t, caddr_t);
 
 bool crb_init(tpm_t *);
-int crb_exec_cmd(tpm_t *, uint8_t, uint8_t *, size_t);
+int crb_exec_cmd(tpm_t *, tpm_cmd_t *);
 void crb_cancel_cmd(tpm_t *, tpm_duration_t);
 void crb_intr_mgmt(tpm_t *, bool);
 uint_t crb_intr(caddr_t, caddr_t);

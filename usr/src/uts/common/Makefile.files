@@ -29,7 +29,7 @@
 # Copyright 2016 OmniTI Computer Consulting, Inc.  All rights reserved.
 # Copyright 2016 Hans Rosenfeld <rosenfeld@grumpf.hope-2000.org>
 # Copyright 2024 Oxide Computer Company
-# Copyright 2023 RackTop Systems, Inc.
+# Copyright 2025 RackTop Systems, Inc.
 # Copyright 2023 Jason King
 #
 
@@ -2260,6 +2260,7 @@ NULLDRIVER_OBJS =	nulldriver.o
 # Trusted Platform Module driver
 #
 TPM_OBJS =	tpm.o \
+		tpm_cmd.o \
 		tpm_crb.o \
 		tpm_ddi.o \
 		tpm_fifo.o \
