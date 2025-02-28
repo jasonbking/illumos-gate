@@ -211,7 +211,7 @@ tpm_tab_cmd_pre(tpm_client_t *c)
 
 	cc = tpm_cc(src);
 	attr = tpm20_get_ccattr(tpm, cc);
-	nhdl = TPM_CCA_CHDL(attr);
+	nhdl = TPM2_CCA_CHDL(attr);
 
 	if (tpm->tpm_last_tab != tab && nhdl > 0) {
 		;
