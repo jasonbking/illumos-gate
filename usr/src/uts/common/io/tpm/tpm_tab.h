@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2023 Jason King
+ * Copyright 2025 RackTop Systems, Inc.
  */
 
 #ifndef _TPM_TAB_H
@@ -20,10 +21,13 @@
 extern "C" {
 #endif
 
+struct tpm;
 struct tpm_client;
 
-int tpm_tab_init(struct tpm_client *);
-void tpm_tab_fini(struct tpm_client *);
+void tpm_tab_init(struct tpm *);
+void tpm_tab_fini(struct tpm *);
+bool tpm_tab_cmd_pre(struct tpm_client *);
+bool tpm_tab_cmd_post(struct tpm *, struct tpm_client *);
 
 #ifdef __cplusplus
 }

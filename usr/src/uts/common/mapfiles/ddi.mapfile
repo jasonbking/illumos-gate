@@ -11,7 +11,7 @@
 
 #
 # Copyright 2020 Joyent, Inc.
-# Copyright 2020-2024 RackTop Systems, Inc.
+# Copyright 2020-2025 RackTop Systems, Inc.
 # Copyright 2024 Oxide Computer Company
 # Copyright 2023 Jason King
 #
@@ -64,6 +64,13 @@ SYMBOL_SCOPE {
 	assfail3			{ FLAGS = EXTERN };
 	atomic_dec_32_nv		{ FLAGS = EXTERN };
 	atomic_inc_32_nv		{ FLAGS = EXTERN };
+	avl_add				{ FLAGS = EXTERN };
+	avl_create			{ FLAGS = EXTERN };
+	avl_destroy			{ FLAGS = EXTERN };
+	avl_find			{ FLAGS = EXTERN };
+	avl_last			{ FLAGS = EXTERN };
+	avl_numnodes			{ FLAGS = EXTERN };
+	avl_remove			{ FLAGS = EXTERN };
 	bcmp				{ FLAGS = EXTERN };
 	bcopy				{ FLAGS = EXTERN };
 	bzero				{ FLAGS = EXTERN };
@@ -208,8 +215,10 @@ SYMBOL_SCOPE {
 	list_is_empty			{ FLAGS = EXTERN };
 	list_link_active		{ FLAGS = EXTERN };
 	list_next			{ FLAGS = EXTERN };
+	list_prev			{ FLAGS = EXTERN };
 	list_remove			{ FLAGS = EXTERN };
 	list_remove_head		{ FLAGS = EXTERN };
+	list_tail			{ FLAGS = EXTERN };
 	membar_producer			{ FLAGS = EXTERN };
 	memcpy				{ FLAGS = EXTERN };
 	memmove				{ FLAGS = EXTERN };

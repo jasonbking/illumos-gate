@@ -765,11 +765,10 @@ tis_start(tpm_t *tpm, const tpm_cmd_t *cmd)
 }
 
 int
-tis_exec_cmd(tpm_t *tpm, tpm_cmd_t *cmd)
+tis_exec_cmd(tpm_t *tpm, uint8_t loc, tpm_cmd_t *cmd)
 {
 	uint32_t cmdlen;
 	int ret;
-	uint8_t loc = cmd->tcmd_locality;
 
 	VERIFY(tpm_can_access(tpm));
 	VERIFY(tpm->tpm_iftype == TPM_IF_TIS || tpm->tpm_iftype == TPM_IF_FIFO);

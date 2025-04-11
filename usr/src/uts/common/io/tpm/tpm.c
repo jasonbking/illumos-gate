@@ -189,15 +189,18 @@ tpm_dispatch_cmd(tpm_client_t *c)
 }
 
 int
-tpm_exec_internal(tpm_t *tpm, tpm_client_t *c)
+tpm_exec_internal(tpm_client_t *c)
 {
-	uint32_t cmdlen;
-	int ret;
+	tpm_t		*tpm;
+	uint32_t	cmdlen;
+	int		ret;
 
 	ASSERT(MUTEX_HELD(&c->tpmc_lock));
 	ASSERT(c->tpmc_iskernel);
 	ASSERT3S(c->tpmc_state, ==, TPM_CLIENT_CMD_RECEPTION);
 	ASSERT3U(tpm_cmdlen(&c->tpmc_cmd), <=, sizeof (c->tpmc_cmd.tcmd_buf));
+
+	tpm = c->tpmc_tpm;
 
 	if (tpm->tpm_thread != NULL) {
 		tpm_dispatch_cmd(c);
@@ -251,39 +254,16 @@ tpm_exec_client(tpm_client_t *c)
 
 	c->tpmc_state = TPM_CLIENT_CMD_EXECUTION;
 
-	locality = c->tpmc_cmd.tcmd_locality;
-	cc = tpm_cc(cmd);
-
 	mutex_exit(&c->tpmc_lock);
 
-	DTRACE_PROBE2(cmd__exec, tpm_client_t *, c, tpm_cmd_t *, cmd);
-
-	switch (tpm->tpm_iftype) {
-	case TPM_IF_TIS:
-	case TPM_IF_FIFO:
-		ret = tis_exec_cmd(tpm, cmd);
-		break;
-	case TPM_IF_CRB:
-		ret = crb_exec_cmd(tpm, cmd);
-		break;
-	default:
-		dev_err(tpm->tpm_dip, CE_PANIC, "%s: invalid iftype %d",
-		    __func__, tpm->tpm_iftype);
-	}
+	ret = tpm_exec_cmd(tpm, c, cmd);
 
 	mutex_enter(&c->tpmc_lock);
-
-	DTRACE_PROBE3(cmd__done, tpm_client_t *, c, uint32_t, ret,
-	    tpm_cmd_t *, &c->tpmc_cmd);
 
 	c->tpmc_cmdresult = ret;
 	c->tpmc_state = TPM_CLIENT_CMD_COMPLETION;
 
 	switch (ret) {
-	case ECANCELED:
-		c->tpmc_bufused = 0;
-		c->tpmc_bufread = 0;
-		break;
 	case 0:
 		/*
 		 * If we succeeded, the amount of output will be in the
@@ -292,7 +272,43 @@ tpm_exec_client(tpm_client_t *c)
 		c->tpmc_bufused = tpm_cmdlen(cmd);
 		c->tpmc_bufread = 0;
 		break;
+	case ECANCELED:
+	default:
+		c->tpmc_bufused = 0;
+		c->tpmc_bufread = 0;
+		break;
 	}
+
+	return (ret);
+}
+
+int
+tpm_exec_cmd(tpm_t *tpm, tpm_client_t *c, tpm_cmd_t *cmd)
+{
+	uint32_t	cc;
+	uint8_t		loc;
+	int		ret = 0;
+
+	loc = c->tpmc_locality;
+	cc = tpm_cc(cmd);
+
+	DTRACE_PROBE2(cmd__exec, tpm_client_t *, c, tpm_cmd_t *, cmd);
+
+	switch (tpm->tpm_iftype) {
+	case TPM_IF_TIS:
+	case TPM_IF_FIFO:
+		ret = tis_exec_cmd(tpm, loc, cmd);
+		break;
+	case TPM_IF_CRB:
+		ret = crb_exec_cmd(tpm, loc, cmd);
+		break;
+	default:
+		dev_err(tpm->tpm_dip, CE_PANIC, "%s: invalid iftype %d",
+		    __func__, tpm->tpm_iftype);
+	}
+
+	DTRACE_PROBE3(cmd__done, tpm_client_t *, c, uint32_t, ret,
+	    tpm_cmd_t *, &c->tpmc_cmd);
 
 	/*
 	 * If the TPM ever returns TPM_RC_FAILURE, it's dead at least
@@ -307,17 +323,16 @@ tpm_exec_client(tpm_client_t *c)
 		    FM_VERSION, DATA_TYPE_UINT8, FM_EREPORT_VERS0,
 		    "tpm_interface", DATA_TYPE_STRING,
 		    tpm_iftype_str(tpm->tpm_iftype),
-		    "locality", DATA_TYPE_UINT8, locality,
+		    "locality", DATA_TYPE_UINT8, loc,
 		    "command", DATA_TYPE_UINT32, cc,
 		    "detailed error message", DATA_TYPE_STRING,
 		    "TPM returned TPM_RC_FAILURE",
 		    NULL);
 
 		ddi_fm_service_impact(tpm->tpm_dip, DDI_SERVICE_LOST);
-		return (EIO);
+		ret = EIO;
 	}
 
-	/* We were called with tpmc_lock held, return with tpmc_lock held */
 	return (ret);
 }
 

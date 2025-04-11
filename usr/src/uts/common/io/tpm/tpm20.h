@@ -108,18 +108,18 @@ tpm_handle_is_session(const tpm_hdl_t h)
 
 bool tpm20_init(struct tpm *);
 
-TPM2_RC tpm20_get_properties(struct tpm *, struct tpm_client *, uint32_t,
+TPM2_RC tpm20_get_properties(struct tpm_client *, uint32_t,
     uint32_t, bool (*)(uint32_t, uint32_t, bool, void *), void *);
 
-TPM2_RC tpm20_seed_random(struct tpm *, struct tpm_client *, void *, size_t);
-TPM2_RC tpm20_generate_random(struct tpm *, struct tpm_client *, void *, size_t);
+TPM2_RC tpm20_seed_random(struct tpm_client *, void *, size_t);
+TPM2_RC tpm20_generate_random(struct tpm_client *, void *, size_t);
 uint32_t tpm20_get_ccattr(struct tpm *, TPM2_CC);
-TPM2_RC tpm20_get_cmd_attr(struct tpm *, struct tpm_client *, uint32_t,
+TPM2_RC tpm20_get_cmd_attr(struct tpm_client *, uint32_t,
     uint32_t *);
-TPM2_RC tpm20_context_load(struct tpm *, struct tpm_client *, void *);
-TPM2_RC tpm20_context_save(struct tpm *, struct tpm_client *, uint32_t, void *,
+TPM2_RC tpm20_context_load(struct tpm_client *, void *);
+TPM2_RC tpm20_context_save(struct tpm_client *, uint32_t, void *,
     size_t);
-TPM2_RC tpm20_context_flish(struct tpm *, struct tpm_client *, uint32_t);
+TPM2_RC tpm20_context_flush(struct tpm_client *, uint32_t);
 
 #ifdef __cplusplus
 }

@@ -389,13 +389,12 @@ tpm12_get_timeouts(tpm_t *tpm)
 	uint32_t len;
 
 	mutex_enter(&c->tpmc_lock);
-	tpm_cmd_init(cmd, c->tpmc_locality, TPM_ORD_GetCapability,
-	    TPM_TAG_RQU_COMMAND);
+	tpm_cmd_init(cmd, TPM_ORD_GetCapability, TPM_TAG_RQU_COMMAND);
 	tpm_cmd_put32(cmd, TPM_CAP_PROPERTY);
 	tpm_cmd_put32(cmd, sizeof (uint32_t));
 	tpm_cmd_put32(cmd, TPM_CAP_PROP_TIS_TIMEOUT);
 
-	ret = tpm_exec_internal(tpm, c);
+	ret = tpm_exec_internal(c);
 	if (ret != 0) {
 		tpm_client_reset(c);
 		mutex_exit(&c->tpmc_lock);
@@ -478,12 +477,11 @@ tpm12_get_duration(tpm_t *tpm)
 	uint32_t len;
 
 	mutex_enter(&c->tpmc_lock);
-	tpm_cmd_init(cmd, c->tpmc_locality, TPM_ORD_GetCapability,
-	    TPM_TAG_RQU_COMMAND);
+	tpm_cmd_init(cmd, TPM_ORD_GetCapability, TPM_TAG_RQU_COMMAND);
 	tpm_cmd_put32(cmd, sizeof (uint32_t));
 	tpm_cmd_put32(cmd, TPM_CAP_PROP_DURATION);
 
-	ret = tpm_exec_internal(tpm, c);
+	ret = tpm_exec_internal(c);
 	if (ret != 0) {
 		dev_err(tpm->tpm_dip, CE_WARN, "%s: command failed: %d",
 		    __func__, ret);
@@ -543,12 +541,11 @@ tpm12_get_version(tpm_t *tpm, tpm12_vers_info_t *vp)
 	uint32_t len;
 
 	mutex_enter(&c->tpmc_lock);
-	tpm_cmd_init(cmd, c->tpmc_locality, TPM_ORD_GetCapability,
-	    TPM_TAG_RQU_COMMAND);
+	tpm_cmd_init(cmd, TPM_ORD_GetCapability, TPM_TAG_RQU_COMMAND);
 	tpm_cmd_put32(cmd, TPM_CAP_VERSION_VAL);
 	tpm_cmd_put32(cmd, 0); /* Sub cap size */
 
-	ret = tpm_exec_internal(tpm, c);
+	ret = tpm_exec_internal(c);
 	if (ret != DDI_SUCCESS) {
 		tpm_client_reset(c);
 		mutex_exit(&c->tpmc_lock);
@@ -618,9 +615,8 @@ tpm12_continue_selftest(tpm_t *tpm)
 	int ret;
 
 	mutex_enter(&c->tpmc_lock);
-	tpm_cmd_init(cmd, c->tpmc_locality, TPM_ORD_ContinueSelfTest,
-	    TPM_TAG_RQU_COMMAND);
-	ret = tpm_exec_internal(tpm, c);
+	tpm_cmd_init(cmd, TPM_ORD_ContinueSelfTest, TPM_TAG_RQU_COMMAND);
+	ret = tpm_exec_internal(c);
 
 	if (ret != DDI_SUCCESS) {
 		tpm_client_reset(c);
@@ -646,12 +642,11 @@ tpm12_seed_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 		return (CRYPTO_ARGUMENTS_BAD);
 
 	mutex_enter(&c->tpmc_lock);
-	tpm_cmd_init(cmd, c->tpmc_locality, TPM_ORD_StirRandom,
-	    TPM_TAG_RQU_COMMAND);
+	tpm_cmd_init(cmd, TPM_ORD_StirRandom, TPM_TAG_RQU_COMMAND);
 	tpm_cmd_put32(cmd, buflen);
 	tpm_cmd_copy(cmd, buf, buflen);
 
-	ret = tpm_exec_internal(tpm, c);
+	ret = tpm_exec_internal(c);
 	/* Timeout reached */
 	if (ret != 0) {
 		tpm_client_reset(c);
@@ -679,10 +674,9 @@ tpm12_generate_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 		return (CRYPTO_ARGUMENTS_BAD);
 
 	mutex_enter(&c->tpmc_lock);
-	tpm_cmd_init(cmd, c->tpmc_locality, TPM_ORD_GetRandom,
-	    TPM_TAG_RQU_COMMAND);
+	tpm_cmd_init(cmd, TPM_ORD_GetRandom, TPM_TAG_RQU_COMMAND);
 	tpm_cmd_put32(cmd, buflen);
-	ret = tpm_exec_internal(tpm, c);
+	ret = tpm_exec_internal(c);
 
 	if (ret != 0) {
 		tpm_client_reset(c);
@@ -712,7 +706,7 @@ tpm12_generate_random(tpm_t *tpm, uchar_t *buf, size_t buflen)
 }
 
 /*
- * Initialize TPM1.2 device
+ * Initialize TPM 1.2 device
  * 1. Find out supported interrupt capabilities
  * 2. Set up interrupt handler if supported (some BIOSes don't support
  * interrupts for TPMS, in which case we set up polling)

@@ -411,27 +411,10 @@ tpm_create_client(tpm_t *tpm, int flag, int minor, tpm_client_t **clientp)
 	c->tpmc_iskernel = is_kernel;
 	c->tpmc_state = TPM_CLIENT_IDLE;
 	c->tpmc_locality = DEFAULT_LOCALITY;
+	c->tpmc_next_hid = 1;
 
 	mutex_init(&c->tpmc_lock, NULL, MUTEX_DRIVER, pri);
 	cv_init(&c->tpmc_cv, NULL, CV_DRIVER, pri);
-
-	/*
-	 * We cannot initialize the internal client's TAB instance until we
-	 * query the TPM for the necessary parameters, but we would like
-	 * to use the internal client to use during the initial setup.
-	 */
-	if (tpm->tpm_family == TPM_FAMILY_2_0 &&
-	    clientp != &tpm->tpm_internal_client) {
-		int ret;
-
-		ret = tpm_tab_init(c);
-		if (ret != 0) {
-			mutex_destroy(&c->tpmc_lock);
-			cv_destroy(&c->tpmc_cv);
-			kmem_free(c, sizeof (*c));
-			return (ret);
-		}
-	}
 
 	*clientp = c;
 	return (0);
@@ -514,7 +497,7 @@ tpm_client_dtor(void *arg)
 	}
 	mutex_exit(&tpm->tpm_lock);
 
-	tpm_tab_fini(c);
+	// TODO clean out any TAB entries
 
 	/* Ensure no data from a previous command lingers */
 	bzero(c->tpmc_cmd.tcmd_buf, sizeof (c->tpmc_cmd.tcmd_buf));
@@ -1531,6 +1514,7 @@ tpm_attach_sync(tpm_t *tpm)
 	    DDI_INTR_PRI(tpm->tpm_intr_pri) : NULL;
 
 	mutex_init(&tpm->tpm_lock, NULL, MUTEX_DRIVER, pri);
+	mutex_init(&tpm->tpm_tab.tab_lock, NULL, MUTEX_DRIVER, pri);
 	cv_init(&tpm->tpm_thr_cv, NULL, CV_DRIVER, pri);
 	return (true);
 }
@@ -1539,6 +1523,7 @@ static void
 tpm_cleanup_sync(tpm_t *tpm)
 {
 	cv_destroy(&tpm->tpm_thr_cv);
+	mutex_destroy(&tpm->tpm_tab.tab_lock);
 	mutex_destroy(&tpm->tpm_lock);
 }
 

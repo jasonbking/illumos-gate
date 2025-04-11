@@ -122,8 +122,12 @@ typedef struct tpm_tis {
 
 typedef struct tpm_cmd {
 	uint8_t		tcmd_buf[TPM_IO_BUF_SIZE];
-	uint8_t		tcmd_locality;
 } tpm_cmd_t;
+
+typedef struct tpm_cmd_reader {
+	uint8_t		*tcr_buf;
+	uint32_t	tcr_remaining;
+} tpm_cmd_reader_t;
 
 /*
  * From PC-Client-Specific-Platform-TPM-Profile 6.5.3.8
@@ -214,7 +218,100 @@ typedef enum tpm_attach_seq {
 
 typedef struct tpm tpm_t;
 typedef struct tpm_client tpm_client_t;
-typedef struct tpm_tab tpm_tab_t;
+
+/*
+ * We need to know if a given context (which can be a session, transient
+ * object or sequence) is currently loaded within the TPM or if it's been
+ * saved (swapped out). Additionally, because of the context gap, we have
+ * to know if the client has decided to save a session context and track
+ * that, so session contexts have an additional possible state.
+ */
+typedef enum {
+	TPM_CTX_IN_TPM,
+	TPM_CTX_IN_TAB,
+	TPM_CTX_UNLOADED,	/* Only for sessions */
+} tpm_ctx_state_t;
+
+typedef struct tpm_tab_context {
+	avl_node_t	tctx_avl;
+	list_node_t	tctx_list;
+
+	/* The client that has created this context */
+	tpm_client_t	*tctx_client;
+
+	/* Where is this context? */
+	tpm_ctx_state_t	tctx_state;
+
+	/*
+	 * The client's handle -- for objects, this will be the virtual
+	 * handle. Sessions are never virtualized, so for sessions this is
+	 * the actual handle used by the TPM.
+	 */
+	uint32_t	tctx_handle;
+
+	/*
+	 * The serialized data saved from the TPM when a session or object
+	 * is unloaded. While there is a small 'header' at the start of the
+	 * data, we treat it as an opaque structure. The TPM spec requires
+	 * that the encoding used by the TPM include protection against things
+	 * like replay attacks and such, so we just need to make sure that
+	 * it's not visible/accessible to other clients.
+	 *
+	 * This is only valid when the session or object is not loaded on
+	 * the TPM.
+	 */
+	uint8_t		*tctx_data;
+
+	/*
+	 * When we allocate a context, depending on the type (object or
+	 * session), we allocate tctx_data to be large enough to hold the
+	 * largest possible object or context based on the max object and
+	 * context size reported by the TPM. This is the actual size of the
+	 * saved context, which should be <= the max size.
+	 */
+	uint32_t	tctx_datalen;
+
+	uint8_t		tctx_locality;	/* The locality the object is in */
+
+	union {
+		/*
+		 * For objects, the real handle when loaded on the TPM.
+		 * When not loaded, this is 0.
+		 */
+		uint32_t	tobj_real_handle;
+		struct {
+			uint8_t		*ts_client_ctx;
+			uint32_t	ts_client_ctx_len;
+			avl_node_t	ts_seq_avl;
+		};
+	};
+} tpm_tab_context_t;
+
+typedef struct tpm_tab {
+	kmutex_t	tab_lock;
+	avl_tree_t	tab_contexts;		/* All contexts */
+
+	/*
+	 * We maintain lists of the sessions and objects that are currently
+	 * loaded on the TPM. The lists are ordered by most recently used.
+	 * When we need to evict a session or object, we choose the least
+	 * recently used one. 
+	 *
+	 * We distinguish between objects and sessions (unlike the global
+	 * tree of contexts) since TPMs may have different limits on the
+	 * number of sessions and objects it can hold in its RAM (if loading
+	 * an object fails due to insufficient resources, we'll want to
+	 * evict an object to make room, etc).
+	 */
+	list_t		tab_sessions;
+	uint32_t	tab_nsessions;
+
+	list_t		tab_objects;
+	uint32_t	tab_nobjects;
+
+	/* Saved sessions ordered by their sequence number */
+	avl_tree_t	tab_sessions_by_seq;
+} tpm_tab_t;
 
 struct tpm {
 	dev_info_t		*tpm_dip;
@@ -265,7 +362,7 @@ struct tpm {
 	tpm_cmd_t		tpm_cmd;
 	uint8_t			tpm_locality;
 	uint8_t			tpm_n_locality;
-	tpm_tab_t		*tpm_last_tab;		/* during exec */
+	tpm_tab_t		tpm_tab;
 
 	clock_t			tpm_timeout_a;		/* WO */
 	clock_t			tpm_timeout_b;		/* WO */
@@ -279,6 +376,7 @@ struct tpm {
 	uint32_t		tpm_session_size;	/* WO */
 
 	uint32_t		tpm20_object_max;	/* WO */
+	uint32_t		tpm20_session_max;	/* WO */
 	uint32_t		*tpm20_cca;		/* WO */
 	uint32_t		tpm20_num_cc;		/* WO */
 
@@ -325,12 +423,12 @@ struct tpm_client {
 	uint32_t		tpmc_bufused;		/* RW */
 	uint32_t		tpmc_bufread;		/* RW */
 	int			tpmc_instance;		/* WO */
+	uint32_t		tpmc_next_hid;		/* RW */
+	uint32_t		tpmc_nobjs;		/* RW */
 	int8_t			tpmc_locality;		/* RW */
 	int			tpmc_cmdresult;		/* RW */
 	bool			tpmc_closing;		/* WO */
 	bool			tpmc_iskernel;		/* WO */
-
-	tpm_tab_t		*tpmc_tab;		/* RW */
 };
 
 static inline bool
@@ -351,13 +449,14 @@ tpm_can_access(const tpm_t *tpm)
 
 uint32_t tpm_cc(const tpm_cmd_t *);
 uint32_t tpm_cmdlen(const tpm_cmd_t *);
+uint16_t tpm_tag(const tpm_cmd_t *);
 uint16_t tpm_getbuf16(const tpm_cmd_t *, uint32_t);
 uint32_t tpm_getbuf32(const tpm_cmd_t *, uint32_t);
 uint16_t tpm_cmd_sess(const tpm_cmd_t *);
 uint32_t tpm_cmd_rc(const tpm_cmd_t *);
 void tpm_cmd_getbuf(const tpm_cmd_t *, uint32_t, uint32_t, void *);
-void tpm_cmd_init(tpm_cmd_t *, uint8_t, uint32_t, uint16_t);
-void tpm_cmd_resp(tpm_cmd_t *, uint8_t, uint32_t, uint16_t);
+void tpm_cmd_init(tpm_cmd_t *, uint32_t, uint16_t);
+void tpm_cmd_resp(tpm_cmd_t *, uint32_t, uint16_t);
 void tpm_cmd_put8(tpm_cmd_t *, uint8_t);
 void tpm_cmd_put16(tpm_cmd_t *, uint16_t);
 void tpm_cmd_put32(tpm_cmd_t *, uint32_t);
@@ -406,7 +505,8 @@ void tpm_dispatch_cmd(tpm_client_t *);
 void tpm_exec_thread(void *);
 
 int tpm_exec_client(tpm_client_t *);
-int tpm_exec_internal(tpm_t *, tpm_client_t *);
+int tpm_exec_internal(tpm_client_t *);
+int tpm_exec_cmd(tpm_t *, tpm_client_t *, tpm_cmd_t *);
 
 size_t tpm_uio_size(const uio_t *);
 
@@ -424,13 +524,13 @@ tpm_duration_t tpm20_get_duration_type(tpm_t *, const tpm_cmd_t *);
 clock_t tpm20_get_timeout(tpm_t *, const tpm_cmd_t *);
 
 bool tpm_tis_init(tpm_t *);
-int tis_exec_cmd(tpm_t *, tpm_cmd_t *);
+int tis_exec_cmd(tpm_t *, uint8_t, tpm_cmd_t *);
 void tis_cancel_cmd(tpm_t *, tpm_duration_t);
 void tpm_tis_intr_mgmt(tpm_t *, bool);
 uint_t tpm_tis_intr(caddr_t, caddr_t);
 
 bool crb_init(tpm_t *);
-int crb_exec_cmd(tpm_t *, tpm_cmd_t *);
+int crb_exec_cmd(tpm_t *, uint8_t, tpm_cmd_t *);
 void crb_cancel_cmd(tpm_t *, tpm_duration_t);
 void crb_intr_mgmt(tpm_t *, bool);
 uint_t crb_intr(caddr_t, caddr_t);

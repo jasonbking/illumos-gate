@@ -85,6 +85,8 @@ static crypto_provider_info_t tpmrng_prov_info = {
 	.pi_ops_vector =		&tpmrng_crypto_ops,
 };
 
+static int tpmkcf_map_rc(const tpm_t *, uint32_t);
+
 /*
  * Random number generator entry points
  */
@@ -103,9 +105,10 @@ tpmrng_ext_info(crypto_provider_handle_t prov,
     crypto_provider_ext_info_t *ext_info,
     crypto_req_handle_t cfreq __unused)
 {
-	tpm_t *tpm = (tpm_t *)prov;
-	char *s = "";
-	char buf[64];
+	tpm_client_t	*c = (tpm_client_t *)prov;
+	tpm_t		*tpm = c->tpmc_tpm;
+	char		*s = "";
+	char		buf[64];
 
 	if (tpm == NULL)
 		return (DDI_FAILURE);
@@ -161,9 +164,15 @@ tpm_kcf_register(tpm_t *tpm)
 
 	(void) strlcpy(id, "Trusted Platform Module", sizeof (id));
 
+	/*
+	 * At least initially, we use the internal client for all
+	 * KCF interaction with the TPM. In the future if we expand
+	 * the KCF support, we may want to instead have a dedicated TPM
+	 * client for KCF.
+	 */
 	tpmrng_prov_info.pi_provider_description = id;
 	tpmrng_prov_info.pi_provider_dev.pd_hw = tpm->tpm_dip;
-	tpmrng_prov_info.pi_provider_handle = tpm;
+	tpmrng_prov_info.pi_provider_handle = &tpm->tpm_internal_client;
 
 	ret = crypto_register_provider(&tpmrng_prov_info, &tpm->tpm_n_prov);
 
@@ -227,9 +236,9 @@ tpmrng_seed_random(crypto_provider_handle_t provider, crypto_session_id_t sid,
     uchar_t *buf, size_t len, uint_t entropy_est __unused,
     uint32_t flags __unused, crypto_req_handle_t req __unused)
 {
-	tpm_t		*tpm = (tpm_t *)provider;
-	tpm_client_t	*c = tpm->tpm_internal_client;
-	int		ret;
+	tpm_client_t	*c = (tpm_client_t *)provider;
+	tpm_t		*tpm = c->tpmc_tpm;;
+	uint32_t	ret;
 
 	mutex_enter(&c->tpmc_lock);
 
@@ -238,7 +247,7 @@ tpmrng_seed_random(crypto_provider_handle_t provider, crypto_session_id_t sid,
 		ret = tpm12_seed_random(tpm, buf, len);
 		break;
 	case TPM_FAMILY_2_0:
-		ret = tpm20_seed_random(tpm, c, buf, len);
+		ret = tpm20_seed_random(c, buf, len);
 		break;
 	default:
 		dev_err(tpm->tpm_dip, CE_PANIC,
@@ -252,7 +261,7 @@ tpmrng_seed_random(crypto_provider_handle_t provider, crypto_session_id_t sid,
 	tpm_client_reset(c);
 	mutex_exit(&c->tpmc_lock);
 
-	return ((ret == 0) ? CRYPTO_SUCCESS : CRYPTO_FAILED);
+	return (tpmkcf_map_rc(tpm, ret));
 }
 
 static int
@@ -260,8 +269,8 @@ tpmrng_generate_random(crypto_provider_handle_t provider,
     crypto_session_id_t sid __unused, uchar_t *buf, size_t len,
     crypto_req_handle_t req __unused)
 {
-	tpm_t		*tpm = (tpm_t *)provider;
-	tpm_client_t	*c = tpm->tpm_internal_client;
+	tpm_client_t	*c = (tpm_client_t *)provider;
+	tpm_t		*tpm = c->tpmc_tpm;
 	int		ret;
 
 	mutex_enter(&c->tpmc_lock);
@@ -271,7 +280,7 @@ tpmrng_generate_random(crypto_provider_handle_t provider,
 		ret = tpm12_generate_random(tpm, buf, len);
 		break;
 	case TPM_FAMILY_2_0:
-		ret = tpm20_generate_random(tpm, c, buf, len);
+		ret = tpm20_generate_random(c, buf, len);
 		break;
 	default:
 		dev_err(tpm->tpm_dip, CE_PANIC,
@@ -285,5 +294,34 @@ tpmrng_generate_random(crypto_provider_handle_t provider,
 	tpm_client_reset(c);
 	mutex_exit(&c->tpmc_lock);
 
-	return (ret);
+	return (tpmkcf_map_rc(tpm, ret));
+}
+
+static int
+tpmkcf_map_rc(const tpm_t *tpm, uint32_t rc)
+{
+	/* This is the same for TPM1.2 and TPM2.0 */
+	if (rc == TPM2_RC_SUCCESS) {
+		return (CRYPTO_SUCCESS);
+	}
+
+	
+	switch (tpm->tpm_family) {
+	case TPM_FAMILY_1_2:
+		return (CRYPTO_FAILED);
+	case TPM_FAMILY_2_0:
+		/*
+		 * For now, we map all failures to CRYPTO_FAILED. In the
+		 * future, we may want to translate more codes into their
+		 * semantic equivalent CRYPTO_xxx values when such
+		 * translations exist.
+		 */
+		return (CRYPTO_FAILED);
+	default:
+		dev_err(tpm->tpm_dip, CE_PANIC,
+		    "unknown TPM family %d", tpm->tpm_family);
+
+		/*NOTREACHED*/
+		return (CRYPTO_FAILED);
+	}
 }

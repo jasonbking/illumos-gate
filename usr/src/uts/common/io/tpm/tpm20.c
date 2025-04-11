@@ -53,23 +53,14 @@
 
 static bool tpm20_get_prop_cb(uint32_t, uint32_t, bool, void *);
 
-static inline tpm_cmd_t *
-tpm20_get_cmd(tpm_t *tpm, tpm_client_t *c)
-{
-	return ((c != NULL) ? &c->tpmc_cmd : &tpm->tpm_cmd);
-}
-
-static uint8_t
-tpm20_get_locality(tpm_client_t *c)
-{
-	/* We assume locality 0 if there isn't a client */
-	return ((c != NULL) ? c->tpmc_locality : 0);
-}
-
 bool
 tpm20_init(tpm_t *tpm)
 {
-	TPM2_RC ret;
+	tpm_client_t	*c;
+	size_t		cca_len;
+	TPM2_RC		ret;
+
+	c = tpm->tpm_internal_client;
 
 	/* Until TAB support is implemented, only support a single client */
 	tpm->tpm_client_max = 1;
@@ -89,31 +80,43 @@ tpm20_init(tpm_t *tpm)
 	tpm->tpm_timeout_poll = drv_usectohz(TPM_POLLING_TIMEOUT * 1000);
 
 	/*
-	 * Get all of the fixed properties. We'll ignore the ones we
-	 * don't care about. It's simpler than requesting each property
-	 * one at a time.
+	 * Get all of the fixed properties with a single TPM command.
+	 * tpm20_get_prop_cb() will set the relevant fields of tpm to the
+	 * property values we care about and ignore the properties we aren't
+	 * interested in.
 	 */
-	(void) tpm20_get_properties(tpm, NULL, TPM2_PT_FIXED, 256,
+	ret = tpm20_get_properties(c, TPM2_PT_FIXED, 256,
 	    tpm20_get_prop_cb, tpm);
-
-	tpm->tpm20_cca = kmem_zalloc(tpm->tpm20_num_cc * sizeof (uint32_t),
-	    KM_SLEEP);
-
-	if (tpm->tpm20_cca == 0) {
-		/*
-		 * We should have attributes for at least the commands in
-		 * the spec.
-		 */
+	if (ret != TPM2_RC_SUCCESS) {
+		dev_err(tpm->tpm_dip, CE_NOTE, "!TPM2_CC_GetProperties failed "
+		    "with %u", ret);
 		return (false);
 	}
 
-	ret = tpm20_get_cmd_attr(tpm, NULL, tpm->tpm20_num_cc, tpm->tpm20_cca);
+	/*
+	 * This should be non-zero -- a TPM that supports no commands would
+	 * be rather strange and useless and is almost certainly broken.
+	 * It would also make it impossible for the TAB to work since we
+	 * need to be able to properly handle any vendor specific commands
+	 * based on the 'metadata' given from the properties and command
+	 * attributes.
+	 */
+	if (tpm->tpm20_num_cc == 0) {
+		dev_err(tpm->tpm_dip, CE_NOTE, "TPM reports zero supported "
+		    "commands");
+		return (false);
+	}
+
+	cca_len = tpm->tpm20_num_cc * sizeof (uint32_t);
+	tpm->tpm20_cca = kmem_zalloc(cca_len, KM_SLEEP);
+
+	ret = tpm20_get_cmd_attr(c, tpm->tpm20_num_cc, tpm->tpm20_cca);
 	if (ret != 0) {
-		kmem_free(tpm->tpm20_cca, tpm->tpm20_num_cc * sizeof (uint32_t));
+		kmem_free(tpm->tpm20_cca, cca_len);
 		tpm->tpm20_cca = NULL;
 	}
 
-	return ((ret == 0) ? true : false);
+	return ((ret == TPM2_RC_SUCCESS) ? true : false);
 }
 
 static bool
@@ -256,36 +259,31 @@ tpm20_get_duration_type(tpm_t *tpm, const tpm_cmd_t *cmd)
 
 
 TPM2_RC
-tpm20_get_properties(tpm_t *tpm, tpm_client_t *c, uint32_t start,
+tpm20_get_properties(tpm_client_t *c, uint32_t start,
     uint32_t count, bool (*cb)(uint32_t, uint32_t, bool, void *), void *arg)
 {
-	tpm_cmd_t *cmd;
-	uint8_t *buf;
-	uint8_t *end;
-	int ret;
-	TPM2_RC trc;
-	uint32_t i, n, tag, val;
-	bool more;
+	tpm_t		*tpm = c->tpmc_tpm;
+	tpm_cmd_t	*cmd = &c->tpmc_cmd;
+	uint8_t		*buf, *end;
+	int		ret;
+	TPM2_RC		trc;
+	uint32_t	i, n, tag, val;
+	bool		more;
 
-	IMPLY(c != NULL, MUTEX_HELD(&c->tpmc_lock));
+	ASSERT(MUTEX_HELD(&c->tpmc_lock));
 
-	cmd = tpm20_get_cmd(tpm, c);
-
-	tpm_cmd_init(cmd, tpm20_get_locality(c), TPM2_CC_GetCapability,
-	    TPM2_ST_NO_SESSIONS);
+	tpm_cmd_init(cmd, TPM2_CC_GetCapability, TPM2_ST_NO_SESSIONS);
 	tpm_cmd_put32(cmd, TPM2_CAP_TPM_PROPERTIES);
 	tpm_cmd_put32(cmd, start);
 	tpm_cmd_put32(cmd, count);
 
-	ret = tpm_exec_internal(tpm, c);
+	ret = tpm_exec_internal(c);
 	if (ret != 0) {
 		return (ret);
 	}
 
 	trc = tpm_cmd_rc(cmd);
 	if (trc != TPM2_RC_SUCCESS) {
-		(void) cb(0, 0, false, arg);
-
 		dev_err(tpm->tpm_dip, CE_NOTE,
 		    "!TPM2_CC_GetCapability(TPM2_CAP_TPM_PROPERTIES) failed "
 		    "with %u", trc);
@@ -334,8 +332,9 @@ tpm20_get_properties(tpm_t *tpm, tpm_client_t *c, uint32_t start,
 }
 
 TPM2_RC
-tpm20_generate_random(tpm_t *tpm, tpm_client_t *c, void *buf, size_t len)
+tpm20_generate_random(tpm_client_t *c, void *buf, size_t len)
 {
+	tpm_t		*tpm = c->tpmc_tpm;
 	tpm_cmd_t	*cmd;
 	int		ret;
 	TPM2_RC		trc;
@@ -344,13 +343,12 @@ tpm20_generate_random(tpm_t *tpm, tpm_client_t *c, void *buf, size_t len)
 		return (CRYPTO_DATA_LEN_RANGE);
 	}
 
-	cmd = tpm20_get_cmd(tpm, c);
+	cmd = &c->tpmc_cmd;
 
-	tpm_cmd_init(cmd, tpm20_get_locality(c), TPM2_CC_GetRandom,
-	    TPM2_ST_NO_SESSIONS);
+	tpm_cmd_init(cmd, TPM2_CC_GetRandom, TPM2_ST_NO_SESSIONS);
 	tpm_cmd_put16(cmd, len);
 
-	ret = tpm_exec_internal(tpm, c);
+	ret = tpm_exec_internal(c);
 	if (ret != 0) {
 		/* XXX: Can we map to better errors here?
 		 * Maybe CRYPTO_BUSY for timeouts?
@@ -385,8 +383,9 @@ tpm20_generate_random(tpm_t *tpm, tpm_client_t *c, void *buf, size_t len)
 #define	TPM_STIR_MAX 128
 
 TPM2_RC
-tpm20_seed_random(tpm_t *tpm, tpm_client_t *c, void *buf, size_t len)
+tpm20_seed_random(tpm_client_t *c, void *buf, size_t len)
 {
+	tpm_t		*tpm = c->tpmc_tpm;
 	tpm_cmd_t	*cmd = &c->tpmc_cmd;
 	int		ret;
 	TPM2_RC		trc;
@@ -396,10 +395,7 @@ tpm20_seed_random(tpm_t *tpm, tpm_client_t *c, void *buf, size_t len)
 		return (CRYPTO_DATA_LEN_RANGE);
 	}
 
-	cmd = tpm20_get_cmd(tpm, c);
-
-	tpm_cmd_init(cmd, tpm20_get_locality(c), TPM2_CC_StirRandom,
-	    TPM2_ST_NO_SESSIONS);
+	tpm_cmd_init(cmd, TPM2_CC_StirRandom, TPM2_ST_NO_SESSIONS);
 	/*
 	 * Note we've checked the value of 'len' at the start of
 	 * tpm2_seed_random().
@@ -407,7 +403,7 @@ tpm20_seed_random(tpm_t *tpm, tpm_client_t *c, void *buf, size_t len)
 	tpm_cmd_put16(cmd, len);
 	tpm_cmd_copy(cmd, buf, len);
 
-	ret = tpm_exec_internal(tpm, c);
+	ret = tpm_exec_internal(c);
 	if (ret != 0) {
 		/* XXX: Map to better errors? */
 		return (CRYPTO_FAILED);
@@ -439,27 +435,29 @@ tpm20_get_ccattr(tpm_t *tpm, TPM2_CC cc)
 }
 
 TPM2_RC
-tpm20_get_cmd_attr(tpm_t *tpm, tpm_client_t *c, uint32_t num_cc, uint32_t *buf)
+tpm20_get_cmd_attr(tpm_client_t *c, uint32_t num_cc, uint32_t *buf)
 {
+	tpm_t		*tpm;
 	tpm_cmd_t	*cmd = &c->tpmc_cmd;
 	TPM2_RC		rc;
 	int		ret;
 	uint32_t	offset;
 	uint32_t	val;
 
+	tpm = c->tpmc_tpm;
+
 	if (tpm->tpm20_num_cc == 0) {
 		return (0);
 	}
 
-	cmd = tpm20_get_cmd(tpm, c);
+	cmd = &c->tpmc_cmd;
 
-	tpm_cmd_init(cmd, tpm20_get_locality(c), TPM2_CC_GetCapability,
-	    TPM2_ST_NO_SESSIONS);
+	tpm_cmd_init(cmd, TPM2_CC_GetCapability, TPM2_ST_NO_SESSIONS);
 	tpm_cmd_put32(cmd, TPM2_CAP_COMMANDS);
 	tpm_cmd_put32(cmd, TPM2_CAP_FIRST);
 	tpm_cmd_put32(cmd, num_cc);
 
-	ret = tpm_exec_internal(tpm, c);
+	ret = tpm_exec_internal(c);
 	if (ret != 0) {
 		return (ret);
 	}
