@@ -18,6 +18,7 @@
 # Copyright 2023 Peter Tribble
 # Copyright 2025 Oxide Computer Company
 # Copyright 2023 RackTop Systems, Inc.
+# Copyright 2022 Jason King
 #
 
 include		$(SRC)/Makefile.master
@@ -139,6 +140,7 @@ _MANFILES=	aac.4d		\
 		systrace.4d	\
 		ticlts.4d	\
 		tmp43x.4d	\
+		tpm.4d		\
 		ts511x.4d	\
 		tty.4d		\
 		tzmon.4d	\
