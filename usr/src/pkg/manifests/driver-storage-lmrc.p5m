@@ -10,7 +10,7 @@
 #
 
 #
-# Copyright 2023 RackTop Systems, Inc.
+# Copyright 2024 RackTop Systems, Inc.
 #
 
 #
@@ -49,3 +49,4 @@ driver name=lmrc class=scsi-self-identifying \
     alias=pciex1000,10e6 \
     alias=pciex1000,10e7
 license cr_Sun license=cr_Sun
+depend type=require fmri=system/storage/mfiutil

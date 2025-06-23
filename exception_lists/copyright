@@ -510,3 +510,9 @@ usr/src/lib/libvmmapi/README.license
 #
 usr/src/test/util-tests/tests/mdb/*/*.mdb
 usr/src/test/util-tests/tests/mdb/*/*.out
+
+#
+# mfiutil(8) from FreeBSD
+#
+usr/src/cmd/mfiutil/THIRDPARTYLICENSE
+usr/src/cmd/mfiutil/THIRDPARTYLICENSE.descrip

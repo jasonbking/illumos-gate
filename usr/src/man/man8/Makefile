@@ -21,6 +21,7 @@
 # Copyright 2022 Garrett D'Amore
 # Copyright 2025 Oxide Computer Company
 # Copyright 2025 Peter Tribble
+# Copyright 2024 RackTop Systems, Inc.
 #
 
 include		$(SRC)/Makefile.master
@@ -546,6 +547,7 @@ i386_MANFILES=			\
 		acpixtract.8	\
 		bhyve.8		\
 		bhyvectl.8	\
+		mfiutil.8	\
 		nvmeadm.8	\
 		pptadm.8	\
 		rdmsr.8

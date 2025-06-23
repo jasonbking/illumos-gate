@@ -497,6 +497,7 @@ i386_SUBDIRS=		\
 	diskscan	\
 	efibootmgr	\
 	ficl		\
+	mfiutil		\
 	nvmeadm		\
 	pptadm		\
 	rdmsr		\
