@@ -23,6 +23,7 @@
 # Use is subject to license terms.
 #
 # Copyright 2020 Joyent, Inc.
+# Copyright 2025 Hans Rosenfeld
 #
 
 include ../../Makefile.cmd
@@ -67,8 +68,6 @@ CPPFLAGS			+= -I$(COMMON_DIR)
 LDLIBS			+= -lkstat -lproc -lproject -lumem -lscf
 LDLIBS			+= $(EXTRA_LDLIBS)
 
-LINTFLAGS64		+= -u
-
 OBJS =			$(SRCS:%.c=%.o) rcapd_conf.o
 
 POFILES =		$(OBJS:%.o=%.po)
@@ -77,9 +76,6 @@ POFILE =		$(PROG).po
 CLOBBERFILES +=		$(POFILES) $(POFILE)
 
 include ../Makefile.com
-
-.NO_PARALLEL:
-.PARALLEL: $(OBJS)
 
 all: $(PROG)
 
@@ -94,9 +90,6 @@ check: $(CHKMANIFEST)
 clean:
 	$(RM) $(OBJS)
 	$(RM) rcapd_conf.c
-
-lint:
-	$(LINT.c) $(LINTSRCS) $(LDLIBS)
 
 $(POFILE): $(POFILES)
 	$(RM) $@
