@@ -33,12 +33,13 @@ include ../../Makefile.cmd
 
 COMMON_DIR=	../common	# for Makefile.com
 PROG =		rcapstat
-OBJS =		rcapstat.o \
-		utils.o \
-		rcapd_conf.o
+OBJS =		rcapstat.o $(COMMON_OBJS)
 SRCS =		$(OBJS:%.o=%.c)
 
 include $(SRC)/cmd/stat/Makefile.stat
+
+COMMON_OBJS =	utils.o rcapd_conf.o
+CLEANFILES +=	$(OBJS) $(COMMON_OBJS:%.o=%.c)
 
 $(NOT_RELEASE_BUILD)CPPFLAGS	+= -DDEBUG
 CPPFLAGS			+= -I$(COMMON_DIR)
@@ -46,8 +47,6 @@ LDLIBS				+= -lumem -lscf
 
 POFILES =			$(OBJS:%.o=%.po)
 POFILE =			p$(PROG).po
-
-CLOBBERFILES +=			$(POFILES) $(POFILE)
 
 all: $(PROG) $(MAPFILE.NGB)
 
@@ -62,7 +61,7 @@ $(POFILE): $(POFILES)
 	$(CAT) $(POFILES) > $@
 
 clean:
-	$(RM) $(OBJS)
+	$(RM) $(CLEANFILES)
 
 $(ROOTBIN):
 	$(MKDIR) -p $(ROOTBIN)
