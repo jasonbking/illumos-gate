@@ -9,7 +9,7 @@
  *
  * 1. Copyright Notice
  *
- * Some or all of this work - Copyright (c) 1999 - 2023, Intel Corp.
+ * Some or all of this work - Copyright (c) 1999 - 2025, Intel Corp.
  * All rights reserved.
  *
  * 2. License
@@ -186,6 +186,7 @@ AxExtractTables (
     int                     Status = 0;
     unsigned int            State = AX_STATE_FIND_HEADER;
 
+    memset (UpperSignature, 0, sizeof(UpperSignature));
 
     /* Open input in text mode, output is in binary mode */
 
@@ -204,7 +205,7 @@ AxExtractTables (
 
     if (Signature)
     {
-        strncpy (UpperSignature, Signature, ACPI_NAMESEG_SIZE);
+        memcpy (UpperSignature, Signature, ACPI_NAMESEG_SIZE);
         AcpiUtStrupr (UpperSignature);
 
         /* Are there enough instances of the table to continue? */
@@ -212,7 +213,8 @@ AxExtractTables (
         AxNormalizeSignature (UpperSignature);
         Instances = AxCountTableInstances (InputPathname, UpperSignature);
 
-        if (Instances < MinimumInstances)
+        if (Instances < MinimumInstances ||
+            (Instances == 0 && MinimumInstances == AX_OPTIONAL_TABLES))
         {
             printf ("Table [%s] was not found in %s\n",
                 UpperSignature, InputPathname);
