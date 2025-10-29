@@ -8,7 +8,7 @@
  *
  * 1. Copyright Notice
  *
- * Some or all of this work - Copyright (c) 1999 - 2023, Intel Corp.
+ * Some or all of this work - Copyright (c) 1999 - 2025, Intel Corp.
  * All rights reserved.
  *
  * 2. License
@@ -243,9 +243,10 @@ ApIsValidChecksum (
     {
         fprintf (stderr, "%4.4s: Warning: wrong checksum in table\n",
             Table->Signature);
+        return (FALSE);
     }
 
-    return (AE_OK);
+    return (TRUE);
 }
 
 
