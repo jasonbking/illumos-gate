@@ -108,6 +108,8 @@ INTERMEDIATES = \
 # too much noise
 SMATCH=off
 
+CSTD = $(CSTD_GNU99)
+
 CPPFLAGS += -I$(SRC)/uts/intel/sys/acpi -DACPI_ASL_COMPILER -I.
 CPPFLAGS += -DACPI_DATE=\"`$(ECHO) $(VERSION) | sed -e 's/ /_/g'`\"
 
@@ -139,7 +141,9 @@ OBJS += $(LEX_C_FILES:.c=.o) $(YACC_C_FILES:.c=.o)
 
 # We are using stack pointer value there
 utdebug.o := CERRWARN += -_gcc=-Wno-dangling-pointer
-dttable2.o dmtbdump2.o := CERRWARN += -_gcc=-Wno-implicit-fallthrough
+dttable2.o dmtbdump2.o := CERRWARN += \
+	-_gcc=-Wno-implicit-fallthrough \
+	-_gcc=-Wno-unused-variable
 
 GM4FLAGS = -P
 LFLAGS = -i -s
