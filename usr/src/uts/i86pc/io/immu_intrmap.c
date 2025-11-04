@@ -26,6 +26,7 @@
 /*
  * Copyright (c) 2009, Intel Corporation.
  * All rights reserved.
+ * Copyright 2025 RackTop Systems, Inc.
  */
 
 
@@ -812,10 +813,9 @@ immu_intrmap_map(void *intrmap_private, void *intrmap_data, uint16_t type,
 
 			/* set interrupt remapping table entry */
 			bcopy(&irte, intrmap->intrmap_vaddr +
-			    idx * INTRMAP_RTE_SIZE,
+			    (idx + i) * INTRMAP_RTE_SIZE,
 			    INTRMAP_RTE_SIZE);
 			vector++;
-			idx++;
 		}
 
 		immu_qinv_intr_caches(immu, idx, count, iwp);
