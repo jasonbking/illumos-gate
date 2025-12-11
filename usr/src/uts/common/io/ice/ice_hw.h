@@ -893,6 +893,16 @@ typedef struct ice_hw_txq_group {
 	ice_hw_txq_perq_t	ihtg_perq[];
 } __packed ice_hw_txq_group_t;
 
+#define	ICE_TX_TXQ_DISABLE_QID_LAN	0x0000
+#define	ICE_TX_TXQ_DISABLE_QID_RDMA	0x4000
+
+typedef struct ice_hw_txq_disable_grp {
+	uint32_t	txqd_pteid;
+	uint8_t		txqd_nqueue;
+	uint8_t		txqd_resv;
+	uint16_t	txqd_qids[];
+} ice_hw_txq_disable_grp_t;
+
 typedef struct ice_tx_desc {
 	uint64_t	itxd_qw0;
 	uint64_t	itxd_qw1;

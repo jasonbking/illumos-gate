@@ -178,6 +178,7 @@ SYMBOL_SCOPE {
 	list_head			{ FLAGS = EXTERN };
 	list_insert_head		{ FLAGS = EXTERN };
 	list_insert_tail		{ FLAGS = EXTERN };
+	list_link_active		{ FLAGS = EXTERN };
 	list_next			{ FLAGS = EXTERN };
 	list_remove			{ FLAGS = EXTERN };
 	list_remove_head		{ FLAGS = EXTERN };

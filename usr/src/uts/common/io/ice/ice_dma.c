@@ -201,6 +201,19 @@ ice_pkt_txbind_attr(ice_t *ice, ddi_dma_attr_t *attrp)
 }
 
 void
+ice_pkt_txbind_lso_attr(ice_t *ice, ddi_dma_attr_t *attrp)
+{
+	ice_pkt_txbind_attr(ice, attrp);
+
+	/*
+	 * This is the only difference between the regular TX bind and
+	 * LSO bind DMA attributes -- that is LSO binding can support
+	 * more segments.
+	 */
+	attrp->dma_attr_sgllen = ICE_TX_LSO_MAX_COOKIE;
+}
+
+void
 ice_dma_free(ice_dma_buffer_t *idb)
 {
 	if (idb->idb_ncookies != 0) {

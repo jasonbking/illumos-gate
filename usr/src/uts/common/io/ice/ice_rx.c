@@ -26,16 +26,14 @@
  *
  * Aside from the Intel E810 Data Sheet, the i40e driver source can also be
  * of assistance in answering an questions about the behavior. The main
- * differences are that the E810 driver may use multiple DMA buffers for a
- * packet when the MTU is larger than the system's page size. This is to avoid
- * lengthy allocation times for packet memory.
- *
- * Allocating single cookie DMA buffers larger than the system's page size
- * implies that the resulting memory is physically contiguous. As a result,
- * when kernel memory is fragmented (even if large amounts are free), the VM
- * may have to work hard to satisify the thousands of requests per ring needed
- * for DMA buffers for packet memory (for the ring descriptor memory, this
- * is less of an issue since there is only one per ring).
+ * differences are that the E810 driver caps the size of the RX buffers to
+ * PAGESIZE and will let the hardware segment an incoming packet across
+ * multiple descriptors if it is larger than PAGESIZE. The reason behind this
+ * is that allocating thousands of single-segment DMA buffers larger than
+ * PAGESIZE can put _severe_ pressure on the VM system as it may have to spend
+ * considerable time shuffling around memory to obtain the necessary number of
+ * physically contiguous segments of memory. Times in excess of 30 minutes(!)
+ * due to this has been observed in the field.
  *
  * When we scan the RX ring (either due to an interrupt or when asked to
  * via ice_rx_poll()), we first 'peek' at the descriptors (looking at their
@@ -43,14 +41,15 @@
  * processed. In the case of being invoked by the interrupt, we process
  * up to ice->ice_rx_limit_per_intr packets and in the case of polling, we
  * limit ourselves to the number of packets less than or equal to the
- * limit given to us by mac.
+ * byte limit given to us by mac.
  *
- * Once we determine how many packets to process, we then will either
- * copy or loan the buffers from the ring (depending on the size of the
- * segment and the amount of buffers available to loan).
+ * Once we determine how many packets to process, we then either copy or loan
+ * the buffers from the ring (depending on the size of the segment and the
+ * amount of buffers available to loan).
  */
 
 #include <sys/types.h>
+#include <sys/containerof.h>
 #include "ice.h"
 
 static inline uintptr_t
@@ -65,6 +64,14 @@ static inline uintptr_t
 ice_qrx_ctrl(const ice_rx_ring_t *rxr)
 {
 	uintptr_t base = ICE_REG_RXQ_CTRL_BASE;
+
+	return (base + rxr->irxr_index * 4);
+}
+
+static inline uintptr_t
+ice_qint_rqctl(const ice_rx_ring_t *rxr)
+{
+	uintptr_t base = ICE_REG_QINT_RQCTL_BASE;
 
 	return (base + rxr->irxr_index * 4);
 }
@@ -118,6 +125,12 @@ ice_rx_split(const ice_rx_desc_t *desc)
 	return (ice_rx_lenval(desc) & ICE_RXD_SPLIT);
 }
 #endif
+
+static inline ice_rx_ring_t *
+ice_ih_to_rxr(const ice_intr_handler_t *h)
+{
+	return (__containerof(h, ice_rx_ring_t, irxr_intr));
+}
 
 static inline uint16_t
 ice_rx_next(const ice_rx_ring_t *rxr, uint16_t idx, uint16_t amt)
@@ -608,6 +621,27 @@ ice_ring_rx_poll(void *arg, int poll_bytes)
 	return (mp);
 }
 
+void
+ice_rx_interrupt(ice_t *ice, ice_intr_handler_t *h)
+{
+	ice_rx_ring_t	*rxr = ice_ih_to_rxr(h);
+	mblk_t		*mp;
+
+	mutex_enter(&rxr->irxr_lock);
+	if (rxr->irxr_shutdown) {
+		mutex_exit(&rxr->irxr_lock);
+		return;
+	}
+
+	mp = ice_ring_rx(rxr, 0);
+	mutex_exit(&rxr->irxr_lock);
+
+	if (mp != NULL) {
+		mac_rx_ring(ice->ice_mac_hdl, rxr->irxr_macrxring, mp,
+		    rxr->irxr_rxgen);
+	}
+}
+
 static bool
 ice_rx_setup_bufs(ice_rx_ring_t *rxr)
 {
@@ -629,7 +663,7 @@ ice_rx_setup_bufs(ice_rx_ring_t *rxr)
 	}
 	rxr->irxr_descs = (ice_rx_desc_t *)rxr->irxr_desc_dma.idb_va;
 
-	len = rxr->irxr_size * sizeof (ice_tx_ctrl_block_t *);
+	len = rxr->irxr_size * sizeof (ice_rx_ctrl_block_t *);
 	rxr->irxr_rcbs = kmem_zalloc(len, KM_SLEEP);
 
 	for (uint_t i = 0; i < rxr->irxr_size; i++) {
@@ -810,11 +844,10 @@ ice_ring_rx_intr_enable(mac_intr_handle_t intrh)
 {
 	ice_rx_ring_t	*rxr = (ice_rx_ring_t *)intrh;
 	ice_t		*ice = rxr->irxr_ice;
+	uint32_t	val = ice_reg_read(ice, ice_qint_rqctl(rxr));
 
-	if (rxr->irxr_vec == 0)
-		return (0);
-
-	ice_intr_msix_enable(ice, rxr->irxr_vec);
+	val = ICE_REG_PFINT_CAUSE_ENA_SET(val, 1);
+	ice_reg_write(ice, ice_qint_rqctl(rxr), val);
 	return (0);
 }
 
@@ -823,11 +856,10 @@ ice_ring_rx_intr_disable(mac_intr_handle_t intrh)
 {
 	ice_rx_ring_t	*rxr = (ice_rx_ring_t *)intrh;
 	ice_t		*ice = rxr->irxr_ice;
+	uint32_t	val = ice_reg_read(ice, ice_qint_rqctl(rxr));
 
-	if (rxr->irxr_vec == 0)
-		return (0);
-
-	ice_intr_msix_disable(ice, rxr->irxr_vec);
+	val = ICE_REG_PFINT_CAUSE_ENA_SET(val, 0);
+	ice_reg_write(ice, ice_qint_rqctl(rxr), val);
 	return (0);
 }
 

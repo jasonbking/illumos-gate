@@ -305,7 +305,12 @@ ice_intr_ddi_free(ice_t *ice)
 			ice_error(ice, "failed to free interrupt %d: %d",
 			    i, ret);
 		}
+
+		list_destroy(&ice->ice_intr_handlers[i]);
 	}
+
+	kmem_free(ice->ice_intr_handlers, ice->ice_nintrs * sizeof (list_t));
+	ice->ice_intr_handlers = NULL;
 
 	if (ice->ice_intr_handles != NULL) {
 		kmem_free(ice->ice_intr_handles, ice->ice_intr_handle_size);
@@ -390,6 +395,14 @@ ice_intr_alloc_type(ice_t *ice, int type)
 		ice_error(ice, "failed to get interrupt priority, type %d, "
 		    "error: %d", type, ret);
 		goto err;
+	}
+
+	ice->ice_intr_handlers = kmem_zalloc(ice->ice_nintrs * sizeof (list_t),
+	    KM_SLEEP);
+	for (uint_t i = 0; i < ice->ice_nintrs; i++) {
+		list_create(&ice->ice_intr_handlers[i],
+		    sizeof (ice_intr_handler_t),
+		    offsetof(ice_intr_handler_t, iih_node));
 	}
 
 	return (B_TRUE);
@@ -1277,6 +1290,7 @@ ice_ring_init(ice_t *ice)
 {
 	size_t len;
 	uint_t i;
+	uint32_t vector = 1;	/* Vec 0 is for the controlq */
 
 	len = ice->ice_num_rxq_per_vsi * sizeof (ice_rx_ring_t);
 	ice->ice_rxr = kmem_zalloc(len, KM_SLEEP);
@@ -1294,7 +1308,73 @@ ice_ring_init(ice_t *ice)
 			goto fail_tx;
 	}
 
-	// TODO: assign interrupt vectors
+	/* Assign the available interrupt vectors to the RX and TX rings */
+
+	if (ice->ice_nintrs >= ice->ice_num_rxq_per_vsi + ice->ice_num_txq) {
+		/* Every ring gets its own vector */
+		for (i = 0; i < ice->ice_num_rxq_per_vsi; i++) {
+			ASSERT3U(vector, <, ice->ice_nintrs);
+			ice->ice_rxr[i].irxr_vec = vector++;
+		}
+
+		for (i = 0; i < ice->ice_num_txq; i++) {
+			ASSERT3U(vector, <, ice->ice_nintrs);
+			ice->ice_txr[i].itxr_vec = vector++;
+		}
+	} else if (ice->ice_nintrs >= MAX(ice->ice_num_rxq_per_vsi,
+	    ice->ice_num_txq)) {
+		/*
+		 * Try to pair up (as much as possible) a TX and RX queue
+		 * to an interrupt vector.
+		 */
+		uint_t nvec = MAX(ice->ice_num_rxq_per_vsi, ice->ice_num_txq);
+
+		for (i = 0; i < nvec; i++) {
+			ASSERT3U(vector, <, ice->ice_nintrs);
+			if (i < ice->ice_num_rxq_per_vsi)
+				ice->ice_rxr[i].irxr_vec = vector;
+			if (i < ice->ice_num_txq)
+				ice->ice_txr[i].itxr_vec = vector;
+
+			vector++;
+		}
+	} else {
+		/* Just distribute the rings over the interrupts we have */
+
+		for (i = 0; i < ice->ice_num_rxq_per_vsi; i++) {
+			ice->ice_rxr[i].irxr_vec = vector++;
+			vector %= ice->ice_nintrs;
+
+			/* Reserve vector 0 for the controlq if MSI-X*/
+			if (vector == 0 && ice->ice_nintrs > 1)
+				vector++;
+		}
+
+		for (i = 0; i < ice->ice_num_txq; i++) {
+			ice->ice_txr[i].itxr_vec = vector++;
+			vector %= ice->ice_nintrs;
+
+			/* Reserve vector 0 for the controlq */
+			if (vector == 0 && ice->ice_nintrs > 1)
+				vector++;
+		}
+	}
+
+	/*
+	 * Now that the vectors have been assigned, we can add the handlers
+	 * to the appropriate vector.
+	 */
+	for (i = 0; i < ice->ice_num_rxq_per_vsi; i++) {
+		ice_rx_ring_t *rxr = &ice->ice_rxr[i];
+
+		ice_intr_add_handler(ice, rxr->irxr_vec, &rxr->irxr_intr);
+	}
+
+	for (i = 0; i < ice->ice_num_txq; i++) {
+		ice_tx_ring_t *txr = &ice->ice_txr[i];
+
+		ice_intr_add_handler(ice, txr->itxr_vec, &txr->itxr_intr);
+	}
 
 	return (true);
 

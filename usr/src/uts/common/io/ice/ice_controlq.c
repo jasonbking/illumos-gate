@@ -1416,10 +1416,9 @@ ice_cmd_add_txq_grp(ice_t *ice, ice_vsi_t *vsi, ice_hw_txq_context_t *ctx)
 	grp = kmem_zalloc(len, KM_SLEEP);
 	perq = &grp->ihtg_perq[0];
 
-	ice_cmd_direct_init(&desc, ICE_CQ_OP_ADD_TXQ);
+	ice_cmd_indirect_init(&desc, ICE_CQ_OP_ADD_TXQ, len, false);
 	add_txq = &desc.icqd_command.icc_add_txq;
 
-	desc.icqd_data_len = LE_16(len);
 	add_txq->iccat_ngrp = 1;
 
 	// TODO fill out struct

@@ -409,6 +409,17 @@ typedef struct ice_cq_cmd_add_txq {
 	uint32_t	iccat_data_low;
 } ice_cq_cmd_add_txq_t;
 
+typedef struct ice_cq_cmd_txq_disable_flow {
+	uint8_t		icctdf_flags;
+	uint8_t		icctdf_nqgrp;
+	uint8_t		icctdf_resv;
+	uint8_t		icctdf_timeout;
+	uint8_t		icctdf_blocked;
+	uint8_t		icctdf_resv2[3];
+	uint32_t	icctdf_data_high;
+	uint32_t	icctdf_data_low;
+} ice_cq_cmd_txq_disable_flow_t;
+
 /*
  * This is a generic structure of a command that may be used.
  */
@@ -440,6 +451,7 @@ typedef union ice_cq_cmd {
 	ice_cq_cmd_set_rss_lut_t icc_set_rss_lut;
 	ice_cq_cmd_query_default_scheduler_t icc_query_default_scheduler;
 	ice_cq_cmd_add_txq_t icc_add_txq;
+	ice_cq_cmd_txq_disable_flow_t icc_txq_disable_flow;
 } ice_cq_cmd_t;
 
 /*

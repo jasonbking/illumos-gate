@@ -294,6 +294,15 @@ typedef struct ice_controlq {
 	uint_t			icq_tail;
 } ice_controlq_t;
 
+struct ice;
+
+struct ice_intr_handler;
+typedef struct ice_intr_handler ice_intr_handler_t;
+struct ice_intr_handler {
+	list_node_t	iih_node;
+	void		(*iih_handler)(struct ice *, ice_intr_handler_t *);
+};
+
 typedef enum ice_tcb_type {
 	ITCB_NOT_USED,
 	ITCB_SMALL_COPY,
@@ -345,6 +354,7 @@ typedef struct ice_txq_stat {
 } ice_txq_stat_t;
 
 typedef struct ice_tx_ring {
+	ice_intr_handler_t	itxr_intr;
 	struct ice		*itxr_ice;		/* RO */
 
 	kmutex_t		itxr_lock;
@@ -426,6 +436,7 @@ typedef struct ice_rxq_stat {
 } ice_rxq_stat_t;
 
 typedef struct ice_rx_ring {
+	ice_intr_handler_t	irxr_intr;
 	struct ice		*irxr_ice;
 	bool			irxr_shutdown;
 
@@ -694,6 +705,7 @@ typedef struct ice {
 	int			ice_intr_cap;
 	size_t			ice_intr_handle_size;
 	ddi_intr_handle_t	*ice_intr_handles;
+	list_t			*ice_intr_handlers;
 
 	/*
 	 * MAC related bits
@@ -715,6 +727,14 @@ typedef struct ice {
 
 	kmutex_t		ice_rxbuf_lock;
 	uint_t			ice_rxbuf_onloan;
+
+	ice_dma_buffer_t	**ice_dma_bufs;
+	uint_t			ice_buf_sz;
+	uint_t			ice_buf_alloc;
+
+	ice_dma_buffer_t	**ice_dma_small_bufs;
+	uint_t			ice_small_buf_sz;
+	uint_t			ice_small_buf_alloc;
 
 } ice_t;
 
@@ -746,6 +766,8 @@ extern boolean_t ice_link_status_update(ice_t *);
 extern void ice_dma_acc_attr(ice_t *, ddi_device_acc_attr_t *);
 extern void ice_dma_transfer_controlq_attr(ice_t *, ddi_dma_attr_t *);
 extern void ice_dma_ring_attr(ice_t *, ddi_dma_attr_t *);
+extern void ice_pkt_txbind_attr(ice_t *, ddi_dma_attr_t *);
+extern void ice_pkt_txbind_lso_attr(ice_t *, ddi_dma_attr_t *);
 extern void ice_dma_free(ice_dma_buffer_t *);
 extern boolean_t ice_dma_alloc(ice_t *, ice_dma_buffer_t *, ddi_dma_attr_t *,
     ddi_device_acc_attr_t *, boolean_t, size_t, boolean_t);
@@ -839,9 +861,8 @@ extern boolean_t ice_intr_hw_init(ice_t *);
 extern void ice_intr_hw_fini(ice_t *);
 
 extern void ice_intr_trigger_softint(ice_t *);
-
-extern void ice_intr_msix_enable(ice_t *, int);
-extern void ice_intr_msix_disable(ice_t *, int);
+extern void ice_intr_add_handler(ice_t *, uint_t, ice_intr_handler_t *);
+extern void ice_intr_remove_handler(ice_t *, uint_t, ice_intr_handler_t *);
 
 /*
  * GLDv3 routines
@@ -856,6 +877,7 @@ extern int ice_ring_tx_start(mac_ring_driver_t, uint64_t);
 extern void ice_ring_tx_stop(mac_ring_driver_t);
 extern int ice_ring_tx_intr_enable(mac_intr_handle_t);
 extern int ice_ring_tx_intr_disable(mac_intr_handle_t);
+extern void ice_tx_interrupt(ice_t *, ice_intr_handler_t *);
 
 extern int ice_ring_rx_start(mac_ring_driver_t, uint64_t);
 extern void ice_ring_rx_stop(mac_ring_driver_t);
@@ -863,6 +885,7 @@ extern mblk_t *ice_ring_rx_poll(void *, int);
 extern int ice_ring_rx_intr_enable(mac_intr_handle_t);
 extern int ice_ring_rx_intr_disable(mac_intr_handle_t);
 extern int ice_ring_rx_stat(mac_ring_driver_t, uint_t, uint64_t *);
+extern void ice_rx_interrupt(ice_t *, ice_intr_handler_t *);
 
 extern bool ice_rxq_context_write(ice_t *, ice_hw_rxq_context_t *, uint_t);
 extern bool ice_txq_context_write(ice_t *, ice_hw_txq_context_t *, uint8_t *,
