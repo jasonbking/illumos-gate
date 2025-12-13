@@ -14,7 +14,7 @@
 #
 
 CRYPTO		= pkcs kcf
-COMMON_OBJS	= main.o
+COMMON_OBJS	= main.o data.o key.o
 
 TESTROOT	= $(ROOT)/opt/crypto-tests/tests/hmac
 
