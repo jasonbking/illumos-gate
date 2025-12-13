@@ -12,6 +12,7 @@
 /*
  * Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
  * Copyright 2019 Joyent, Inc.
+ * Copyright 2025 RackTop Systems, Inc.
  */
 
 #include <stdio.h>
@@ -24,7 +25,7 @@ extern size_t KEYLEN[];
 extern uint8_t *DATA[];
 extern size_t DATALEN[];
 extern uint8_t *HMAC[];
-extern size_t hmac_len;
+extern size_t HMACLEN[];
 extern size_t msgcount;
 
 static size_t updatelens[] = {
@@ -52,7 +53,7 @@ main(void)
 		args.in = DATA[i];
 		args.inlen = DATALEN[i];
 
-		errs += run_test(&args, HMAC[i], hmac_len, MAC_FG);
+		errs += run_test(&args, HMAC[i], HMACLEN[i], MAC_FG);
 		(void) fprintf(stderr, "----------\n");
 	}
 	if (errs != 0)

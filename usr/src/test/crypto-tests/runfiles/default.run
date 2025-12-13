@@ -64,13 +64,15 @@ post = cleanup
 post_user = root
 
 [/opt/crypto-tests/tests/hmac/pkcs]
-tests = ['hmac_sha1_32', 'hmac_sha1_64']
+tests = ['hmac_sha1_32', 'hmac_sha1_64', 'hmac_sha256_32', 'hmac_sha256_64',
+         'hmac_sha384_32', 'hmac_sha384_64', 'hmac_sha512_32', 'hmac_sha512_64']
 
 [/opt/crypto-tests/tests/hmac/kcf]
 pre = setup
 pre_user = root
 user = root
-tests = ['hmac_sha1_32', 'hmac_sha1_64']
+tests = ['hmac_sha1_32', 'hmac_sha1_64', 'hmac_sha256_32', 'hmac_sha256_64',
+         'hmac_sha384_32', 'hmac_sha384_64', 'hmac_sha512_32', 'hmac_sha512_64']
 post = cleanup
 post_user = root
 

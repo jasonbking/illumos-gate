@@ -11,11 +11,17 @@
 
 #
 # Copyright 2019 Joyent, Inc.
+# Copyright 2025 RackTop Systems, Inc.
 #
 
 CRYPTO		= pkcs kcf
 COMMON_OBJS	= main.o
+SHA2_OBJS	= data_sha2.o key_sha2.o
 
 TESTROOT	= $(ROOT)/opt/crypto-tests/tests/hmac
+
+hmac_sha256_OBJS = $(SHA2_OBJS)
+hmac_sha384_OBJS = $(SHA2_OBJS)
+hmac_sha512_OBJS = $(SHA2_OBJS)
 
 include $(SRC)/test/crypto-tests/tests/Makefile.crypto

@@ -14,6 +14,7 @@
 # Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
 # Copyright 2019 Joyent, Inc.
 # Copyright 2020 Oxide Computer Company
+# Copyright 2025 RackTop Systems, Inc.
 #
 
 include $(SRC)/cmd/Makefile.cmd
@@ -26,6 +27,9 @@ PROGS = $(PROGS_32) $(PROGS_64)
 
 COMMON_OBJS_32 = $(COMMON_OBJS:%.o=%.32.o)
 COMMON_OBJS_64 = $(COMMON_OBJS:%.o=%.64.o)
+
+$(BASEPROG)_OBJS_32 = $($(BASEPROG)_OBJS:%.o=%.32.o)
+$(BASEPROG)_OBJS_64 = $($(BASEPROG)_OBJS:%.o=%.64.o)
 
 # Some tests may only be relevant for PKCS#11 or KCF.  One can use
 # a statement like 'CRYPTO_kcf = $(POUND_SIGN)' in a test's Makefile to
@@ -49,6 +53,11 @@ $(CRYPTO_pkcs)$(BASEPROG)_64_pkcs := OBJS += $(COMMONDIR)/cryptotest_pkcs.64.o
 $(CRYPTO_kcf)$(BASEPROG)_32_kcf	:= OBJS += $(COMMONDIR)/cryptotest_kcf.32.o
 $(CRYPTO_kcf)$(BASEPROG)_64_kcf	:= OBJS += $(COMMONDIR)/cryptotest_kcf.64.o
 
+$(BASEPROG)_32_pkcs := OBJS += $($(BASEPROG)_OBJS_32)
+$(BASEPROG)_32_kcf := OBJS += $($(BASEPROG)_OBJS_32)
+$(BASEPROG)_64_pkcs := OBJS += $($(BASEPROG)_OBJS_64)
+$(BASEPROG)_64_kcf := OBJS += $($(BASEPROG)_OBJS_64)
+
 $(CRYPTO_pkcs)$(PROGS_pkcs)	:= LDLIBS += -lpkcs11 -lcryptoutil
 
 CSTD = $(CSTD_GNU99)
@@ -64,19 +73,19 @@ CPPFLAGS += -I$(COMMONDIR) -I$(SRC)/common/crypto/
 
 all: $(PROGS)
 
-%_32_pkcs: %.32.o $(COMMON_OBJS_32)
+%_32_pkcs: %.32.o $(COMMON_OBJS_32) $($(BASEPROG)_OBJS_32)
 	$(LINK.c) $(OBJS) -o $@ $(LDLIBS)
 	$(POST_PROCESS)
 
-%_64_pkcs: %.64.o $(COMMON_OBJS_64)
+%_64_pkcs: %.64.o $(COMMON_OBJS_64) $($(BASEPROG)_OBJS_64)
 	$(LINK64.c) $(OBJS) -o $@ $(LDLIBS)
 	$(POST_PROCESS)
 
-%_32_kcf: %.32.o $(COMMON_OBJS_32)
+%_32_kcf: %.32.o $(COMMON_OBJS_32) $($(BASEPROG)_OBJS_32)
 	$(LINK.c) $(OBJS) -o $@ $(LDLIBS)
 	$(POST_PROCESS)
 
-%_64_kcf: %.64.o $(COMMON_OBJS_64)
+%_64_kcf: %.64.o $(COMMON_OBJS_64) $($(BASEPROG)_OBJS_64)
 	$(LINK64.c) $(OBJS) -o $@ $(LDLIBS)
 	$(POST_PROCESS)
 

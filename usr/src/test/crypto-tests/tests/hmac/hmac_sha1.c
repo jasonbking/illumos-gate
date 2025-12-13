@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2019 Joyent, Inc.
+ * Copyright 2025 RackTop Systems, Inc.
  */
 
 #include <sys/crypto/ioctl.h>
@@ -202,6 +203,10 @@ size_t KEYLEN[] = {
 
 uint8_t *HMAC[] = { HMAC0, HMAC1, HMAC2, HMAC3, HMAC4, HMAC5, HMAC6 };
 
+size_t HMACLEN[] = {
+	sizeof (HMAC0), sizeof (HMAC1), sizeof (HMAC2), sizeof (HMAC3),
+	sizeof (HMAC4), sizeof (HMAC5), sizeof (HMAC6),
+};
+
 char *mechname = SUN_CKM_SHA1_HMAC;
 size_t msgcount = 7;
-size_t hmac_len = SHA1_DIGEST_LENGTH;
