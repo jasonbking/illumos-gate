@@ -11,7 +11,7 @@
 
 /*
  * Copyright (c) 2017, Joyent, Inc.
- * Copyright 2025 RackTop Systems, Inc.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #ifndef _SFF_H
@@ -156,11 +156,24 @@ typedef enum sff_8024_id {
 #define	SFF_8472_LENGTH_OM3_FACTOR		10
 #define	SFF_8472_WAVELENGTH_FACTOR		1
 
+/*
+ * SFF 8472 Page A2 constants
+ */
+#define	SFF_8472_TEMP				96
+#define	SFF_8472_VCC				98
+#define	SFF_8472_TX_BIAS			100
+#define	SFF_8472_TX_POWER			102
+#define	SFF_8472_RX_POWER			104
+#define	SFF_8472_LASER_TEMP_WL			106
+#define	SFF_8472_TEC_CURRENT			108
+#define	SFF_8472_ALARMS				112
+#define	SFF_8472_WARNINGS			116
 
 /*
  * SFF 8636 related constants
  */
 #define	SFF_8636_IDENTIFIER			0
+#define	SFF_8636_REV_COMPLIANCE			1
 #define	SFF_8636_EXT_IDENTIFIER			129
 #define	SFF_8636_CONNECTOR			130
 

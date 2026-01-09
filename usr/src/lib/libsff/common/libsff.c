@@ -11,7 +11,7 @@
 
 /*
  * Copyright (c) 2017, Joyent, Inc.
- * Copyright 2025 RackTop Systems, Inc.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -31,10 +31,12 @@
  */
 
 #include <assert.h>
+#include <stdbool.h>
 #include <strings.h>
 #include <libsff.h>
 #include <errno.h>
 #include <ctype.h>
+#include <sys/sysmacros.h>
 
 #include "sff.h"
 
@@ -484,6 +486,45 @@ static const char *sff_8472_8472_comp[] = {
 	"Rev 12.3",
 	"Rev 12.4",
 	"Rev 12.5",
+};
+
+/*
+ * This is derived from SFF 8472 r12.5 Table 9-17
+ * Note the same bit values are used for warnings as well
+ */
+#define	SFF_8472_ALARMS_MASK 0xfffc
+static sff_pair_t sff_8472_alarms[] = {
+	{ 0x8000, "High Temperature" },
+	{ 0x4000, "Low Temperature" },
+	{ 0x2000, "Vcc High" },
+	{ 0x1000, "Vcc Low" },
+	{ 0x0800, "TX Bias High" },
+	{ 0x0400, "TX Bias Low" },
+	{ 0x0200, "TX Power High" },
+	{ 0x0100, "TX Power Low" },
+	{ 0x0080, "RX Power High" },
+	{ 0x0040, "RX Power Low" },
+	{ 0x0020, "Laser Temp High" },
+	{ 0x0010, "Laser Temp Low" },
+	{ 0x0008, "TEC Current High" },
+	{ 0x0004, "TEC Current Low" },
+};
+
+/*
+ * This is derived from SFF 8636 r2.11 Table 6-4
+ * Oddly, Rev 2.11 does not define a value in this table for Rev 2.11
+ */
+#define	SFF_8636_REV_COMP_NENTRIES 9
+static const char *sff_8636_rev_comp[] = {
+	"Not specified",
+	"SFF-8436 Rev 4.8",
+	"SFF-8436 Rev 4.8+Attenuation",
+	"SFF-8636 Rev 1.3",
+	"SFF-8636 Rev 1.4",
+	"SFF-8636 Rev 1.5",
+	"SFF-8636 Rev 2.0",
+	"SFF-8636 Rev 2.5, 2.6, 2.7",
+	"SFF-8636 Rev 2.8, 2.9, 2.10",
 };
 
 /*
@@ -1001,6 +1042,39 @@ sff_parse_8472_comp(uint8_t val, nvlist_t *nvl)
 	return (nvlist_add_string(nvl, LIBSFF_KEY_COMPLIANCE_8472, str));
 }
 
+static int
+sff_parse_diag(uint8_t val, nvlist_t *nvl)
+{
+	const char *buf[4];
+	uint_t count = 0;
+
+	if ((val & 0x40) != 0x40) {
+		/* Not implemented */
+		return (0);
+	}
+
+	if (val & 0x20) {
+		buf[count++] = "Internally calibrated";
+	}
+
+	if (val & 0x10) {
+		buf[count++] = "Externally calibrated";
+	}
+
+	if (val & 0x08) {
+		buf[count++] = "Received power measurements: OMA";
+	} else {
+		buf[count++] = "Received power measurements: Average Power";
+	}
+
+	if (val & 0x02) {
+		buf[count++] = "Remote performance monitoring";
+	}
+
+	return (nvlist_add_string_array(nvl, LIBSFF_KEY_DIAG_MONITOR,
+	    (char **)buf, count));
+}
+
 /*
  * Parse an SFP that is either based on INF 8074 or SFF 8472. These are GBIC,
  * SFP, SFP+, and SFP28 based devices.
@@ -1073,6 +1147,9 @@ sff_parse_sfp(const uint8_t *buf, nvlist_t *nvl)
 	    SFF_8472_DATE_CODE_LEN, LIBSFF_KEY_DATECODE, nvl)) != 0)
 		return (ret);
 
+	if ((ret = sff_parse_diag(buf[SFF_8472_DIAG_MONITORING], nvl)) != 0)
+		return (ret);
+
 	if ((ret = sff_gather_bitfield(buf[SFF_8472_ENHANCED_OPTIONS] &
 	    SFF_8472_EXTOPT_MASK, LIBSFF_KEY_EXTENDED_OPTIONS,
 	    sff_8472_extopts, nvl)) != 0)
@@ -1083,6 +1160,20 @@ sff_parse_sfp(const uint8_t *buf, nvlist_t *nvl)
 		return (ret);
 
 	return (0);
+}
+
+static int
+sff_qsfp_parse_rev_compliance(uint8_t byte, nvlist_t *nvl)
+{
+	const char *str;
+
+	if (byte >= SFF_8636_REV_COMP_NENTRIES) {
+		str = "Reserved";
+	} else {
+		str = sff_8636_rev_comp[byte];
+	}
+
+	return (nvlist_add_string(nvl, LIBSFF_KEY_COMPLIANCE_8636, str));
 }
 
 static int
@@ -1373,6 +1464,10 @@ sff_parse_qsfp(const uint8_t *buf, nvlist_t *nvl)
 	if ((ret = sff_parse_connector(buf[SFF_8636_CONNECTOR], nvl)) != 0)
 		return (ret);
 
+	if ((ret = sff_qsfp_parse_rev_compliance(buf[SFF_8636_REV_COMPLIANCE],
+	    nvl)) != 0)
+		return (ret);
+
 	if ((ret = sff_qsfp_parse_compliance(buf, nvl)) != 0)
 		return (ret);
 
@@ -1443,29 +1538,10 @@ sff_parse_qsfp(const uint8_t *buf, nvlist_t *nvl)
 	return (0);
 }
 
-int
-libsff_parse(const uint8_t *buf, size_t len, uint_t page, nvlist_t **nvpp)
+static int
+sff_parse_page_a0(const uint8_t *buf, size_t len, nvlist_t *nvl)
 {
-	int ret;
-	nvlist_t *nvp = NULL;
-	uint8_t ubuf[256];
-
-	/*
-	 * At the moment, we only support page a0.
-	 */
-	if (page != 0xa0 || buf == NULL || len == 0 || nvpp == NULL)
-		return (EINVAL);
-
-	*nvpp = NULL;
-
-	/*
-	 * Make sure that the library has been given valid data to parse.
-	 */
-	if (uucopy(buf, ubuf, MIN(sizeof (ubuf), len)) != 0)
-		return (errno);
-
-	if ((ret = nvlist_alloc(&nvp, NV_UNIQUE_NAME, 0)) != 0)
-		return (ret);
+	int ret = 0;
 
 	switch (buf[0]) {
 	case SFF_8024_ID_QSFP:
@@ -1479,15 +1555,195 @@ libsff_parse(const uint8_t *buf, size_t len, uint_t page, nvlist_t **nvpp)
 			ret = EINVAL;
 			break;
 		}
-		ret = sff_parse_qsfp(ubuf, nvp);
+		ret = sff_parse_qsfp(buf, nvl);
 		break;
 	default:
 		if (len < SFP_MIN_LEN_8472) {
 			ret = EINVAL;
 			break;
 		}
-		ret = sff_parse_sfp(ubuf, nvp);
+		ret = sff_parse_sfp(buf, nvl);
 		break;
+	}
+
+	return (ret);
+}
+
+static int
+sff_parse_int_temp(uint16_t val, nvlist_t *nvl, const char *key)
+{
+	int16_t *s16 = (int16_t *)&val;
+	double dval = *s16;
+	char str[SFP_STRBUF];
+
+	dval /= 256.0;
+	(void) snprintf(str, sizeof (str), "%.3f degC", dval);
+
+	return (nvlist_add_string(nvl, key, str));
+}
+
+static int
+sff_parse_int_voltage(uint16_t val, nvlist_t *nvl, const char *key)
+{
+	double dval = val;
+	char str[SFP_STRBUF];
+
+	if (val > 9999) {
+		(void) snprintf(str, sizeof (str), "%.2f V", dval / 10000.0);
+	} else {
+		(void) snprintf(str, sizeof (str), "%.1 mV", dval / 10);
+	}
+
+	return (nvlist_add_string(nvl, key, str));
+}
+
+static int
+sff_parse_int_power(uint16_t val, nvlist_t *nvl, const char *key)
+{
+	double dval = val;
+	char str[SFP_STRBUF];
+
+	if (val < 9999) {
+		(void) snprintf(str, sizeof (str), "%.1f uW", dval / 10);
+	} else {
+		(void) snprintf(str, sizeof (str), "%.4f mW", dval / 10000);
+	}
+
+	return (nvlist_add_string(nvl, key, str));
+}
+
+static int
+sff_parse_int_bias_current(uint16_t val, nvlist_t *nvl, const char *key)
+{
+	uint32_t scaled = (uint32_t)val * 2;
+	char str[SFP_STRBUF];
+
+	if (scaled < 1000) {
+		(void) snprintf(str, sizeof (str), "%" PRIu32 " uA", scaled);
+	} else {
+		(void) snprintf(str, sizeof (str), "%" PRIu32 " mA",
+		    scaled / 1000);
+	}
+
+	return (nvlist_add_string(nvl, key, str));
+}
+
+static int
+sff_parse_int_tec_current(uint16_t val, nvlist_t *nvl, const char *key)
+{
+	int16_t *sval = (int16_t *)&val;
+	double dval = *sval;
+	char str[SFP_STRBUF];
+
+	(void) snprintf(str, sizeof (str), "%.1f mA", dval / 10.0);
+
+	return (nvlist_add_string(nvl, key, str));
+}
+
+static int
+sff_parse_u16_val(const uint8_t *buf, uint_t idx,
+    int (*parse)(uint16_t, nvlist_t *, const char *), nvlist_t *nvl,
+    const char *key)
+{
+	uint16_t val = (uint16_t)buf[idx] << 8 | buf[idx + 1];
+
+	return (parse(val, nvl, key));
+}
+
+static struct {
+	uint_t		idx;
+	const char	*key;
+	int		(*parse)(uint16_t, nvlist_t *, const char *);
+} a2_tbl[] = {
+	{ SFF_8472_TEMP, LIBSFF_KEY_TEMP, sff_parse_int_temp },
+	{ SFF_8472_VCC, LIBSFF_KEY_VCC, sff_parse_int_voltage },
+	{ SFF_8472_TX_BIAS, LIBSFF_KEY_TX_BIAS, sff_parse_int_bias_current },
+	{ SFF_8472_TX_POWER, LIBSFF_KEY_TX_POWER, sff_parse_int_power },
+	{ SFF_8472_RX_POWER, LIBSFF_KEY_RX_POWER, sff_parse_int_power },
+	{ SFF_8472_TEC_CURRENT, LIBSFF_KEY_TEC_CURRENT,
+	    sff_parse_int_tec_current },
+};
+
+static int
+sff_parse_page_a2(const uint8_t *buf, bool ext_cal, nvlist_t *nvl)
+{
+	int ret;
+	uint_t i;
+	uint16_t val;
+
+	if (!ext_cal) {
+		return (0);
+	}
+
+	for (i = 0; i < ARRAY_SIZE(a2_tbl); i++) {
+		if ((ret = sff_parse_u16_val(buf, a2_tbl[i].idx,
+		    a2_tbl[i].parse, nvl, a2_tbl[i].key)) != 0)
+			return (ret);
+	}
+
+	/* The same bit fields are used for alarms and warnings */
+	val = (uint16_t)buf[SFF_8472_WARNINGS] << 8;
+	val |= buf[SFF_8472_WARNINGS + 1];
+	if ((ret = sff_gather_bitfield(val, LIBSFF_KEY_WARNINGS,
+	    sff_8472_alarms, nvl)) != 0)
+		return (ret);
+
+	val = (uint16_t)buf[SFF_8472_ALARMS] << 8;
+	val |= buf[SFF_8472_ALARMS + 1];
+	if ((ret = sff_gather_bitfield(val, LIBSFF_KEY_ALARMS,
+	    sff_8472_alarms, nvl)) != 0)
+		return (ret);
+
+
+	return (0);
+}
+
+static bool
+sff_supported_page(uint_t page)
+{
+	switch (page) {
+	case 0xa0:
+	case 0xa2:
+		return (true);
+	default:
+		return (false);
+	}
+}
+
+int
+libsff_parse(const uint8_t *buf, size_t len, uint_t page, nvlist_t **nvpp)
+{
+	int ret;
+	nvlist_t *nvp = NULL;
+	uint8_t ubuf[256];
+
+	if (!sff_supported_page(page)) {
+		return (EINVAL);
+	}
+
+	if (buf == NULL || len == 0 || nvpp == NULL)
+		return (EINVAL);
+
+	*nvpp = NULL;
+
+	/*
+	 * Make sure that the library has been given valid data to parse.
+	 */
+	if (uucopy(buf, ubuf, MIN(sizeof (ubuf), len)) != 0)
+		return (errno);
+
+	if ((ret = nvlist_alloc(&nvp, NV_UNIQUE_NAME, 0)) != 0)
+		return (ret);
+
+	switch (page) {
+	case 0xa0:
+		ret = sff_parse_page_a0(ubuf, len, nvp);
+		break;
+	case 0xa2:
+		ret = sff_parse_page_a2(ubuf, false, nvp);
+		break;
+	default:
+		ret = EINVAL;
 	}
 
 	if (ret != 0) {
