@@ -67,6 +67,7 @@ extern int libsff_parse(const uint8_t *, size_t, uint_t, nvlist_t **);
 #define	LIBSFF_KEY_ATTENUATE_7G	"Cable Attenuation at 7.0 GHz"	/* String */
 #define	LIBSFF_KEY_ATTENUATE_12G "Cable Attenuation at 12.9 GHz" /* String */
 #define	LIBSFF_KEY_TRAN_TECH	"Transmitter Technology"	/* String */
+#define	LIBSFF_KEY_COMPLIANCE_8636 "8636 Compliance"	/* String */
 
 /*
  * Note, different revisions of the SFF standard have different compliance
@@ -93,6 +94,33 @@ extern int libsff_parse(const uint8_t *, size_t, uint_t, nvlist_t **);
  * The following keys have meaning that varies based on the standard.
  */
 #define	LIBSFF_KEY_8472_EXT_IDENTIFIER	"Extended Identifier"	/* uint8_t */
+
+/* SFP / SFP+ Monitoring values */
+#define	LIBSFF_KEY_TEMP			"Module Temperature"	/* String */
+#define	LIBSFF_KEY_VCC			"Supply Voltage"	/* String */
+#define	LIBSFF_KEY_TX_BIAS		"TX Bias Current"	/* String */
+#define	LIBSFF_KEY_TX_POWER		"TX Output Power"	/* String */
+#define	LIBSFF_KEY_RX_POWER		"RX Input Power"	/* String */
+#define	LIBSFF_KEY_TEC_CURRENT		"TEC current"		/* String */
+#define	LIBSFF_KEY_WARNINGS		"Warnings"	/* String Array */
+#define	LIBSFF_KEY_ALARMS		"Alarms"	/* String Array */
+
+/*
+ * QSFP have some of the montoring values x4 (presumably for each one)
+ * so they're not quite the same as SFP / SFP+
+ */
+#define	LIBSFF_KEY_RX1_POWER		"Rx1 Input Power"	/* String */
+#define	LIBSFF_KEY_RX2_POWER		"Rx2 Input Power"	/* String */
+#define	LIBSFF_KEY_RX3_POWER		"Rx3 Input Power"	/* String */
+#define	LIBSFF_KEY_RX4_POWER		"Rx4 Input Power"	/* String */
+#define	LIBSFF_KEY_TX1_BIAS		"Tx1 Bias Current"	/* String */
+#define	LIBSFF_KEY_TX2_BIAS		"Tx2 Bias Current"	/* String */
+#define	LIBSFF_KEY_TX3_BIAS		"Tx3 Bias Current"	/* String */
+#define	LIBSFF_KEY_TX4_BIAS		"Tx4 Bias Current"	/* String */
+#define	LIBSFF_KEY_TX1_POWER		"Tx1 Output Power"	/* String */
+#define	LIBSFF_KEY_TX2_POWER		"Tx2 Output Power"	/* String */
+#define	LIBSFF_KEY_TX3_POWER		"Tx3 Output Power"	/* String */
+#define	LIBSFF_KEY_TX4_POWER		"Tx4 Output Power"	/* String */
 
 #ifdef __cplusplus
 }
