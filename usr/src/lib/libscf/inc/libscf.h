@@ -24,7 +24,7 @@
  * Copyright 2016 RackTop Systems.
  * Copyright 2020 Joyent, Inc.
  * Copyright 2026 Oxide Computer Company
- * Copyright 2024 Jason King
+ * Copyright 2026 Jason King
  */
 
 #ifndef	_LIBSCF_H
@@ -278,6 +278,8 @@ typedef struct {
 #define	SCF_GROUP_FRAMEWORK		"framework"
 #define	SCF_GROUP_DEPENDENCY		"dependency"
 #define	SCF_GROUP_METHOD		"method"
+#define	SCF_GROUP_PERIODIC		"periodic"
+#define	SCF_GROUP_SCHEDULE		"schedule"
 #define	SCF_GROUP_TEMPLATE		"template"
 #define	SCF_GROUP_TEMPLATE_PG_PATTERN	"template_pg_pattern"
 #define	SCF_GROUP_TEMPLATE_PROP_PATTERN	"template_prop_pattern"

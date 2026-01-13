@@ -24,7 +24,7 @@
 /*
  * Copyright 2011 Nexenta Systems, Inc.  All rights reserved.
  * Copyright 2020 Joyent, Inc.
- * Copyright 2024 Jason King
+ * Copyright 2026 Jason King
  */
 
 
@@ -265,6 +265,34 @@ static const char *lxml_prop_types[] = {
 	""				/* SC_XI_INCLUDE */
 };
 
+typedef struct sched_attr_spec {
+	int64_t	sas_min;
+	int64_t sas_max;
+	boolean_t sas_zero;		/* Does range include or exclude 0? */
+	const char *sas_names[];	/* case insensitive list */
+} sched_attr_spec_t;
+
+static sched_attr_spec_t week_of_year_spec = { -53, 53, B_FALSE, NULL };
+static sched_attr_spec_t month_spec = {
+	-12, 12, B_FALSE, {
+		"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep",
+		"oct", "nov", "dec", "january", "february", "march", "april",
+		"june", "july", "august", "september", "october", "november",
+		"december", NULL,
+	},
+};
+static sched_attr_spec_t day_of_month_spec = { -31, 31, B_FALSE, NULL };
+static sched_attr_spec_t weekday_of_month_spec = { -5, 5, B_FALSE, NULL };
+static sched_attr_spec_t day_spec = {
+	-7, 7, B_FALSE, {
+		"mon", "tue", "wed", "thu", "fri", "sat", "sun", "monday",
+		"tuesday", "wednesday", "thursday", "friday", "saturday",
+		"sunday", NULL
+	}
+};
+static sched_attr_spec_t hour_spec = { -24, 23, B_TRUE, NULL };
+static sched_attr_spec_t min_spec = { -60, 59, B_TRUE, NULL };
+
 static int xml_read_options = 0;
 
 int
@@ -480,6 +508,69 @@ new_opt_str_prop_from_attr(pgroup_t *pgrp, const char *pname, scf_type_t ty,
 	if (r != 0)
 		internal_property_free(p);
 
+	return (r);
+}
+
+static int
+new_time_range_prop_from_attr(pgroup_t *pgrp, const char *pname, xmlNodePtr n,
+    const char *attr, const sched_attr_spec_t *spec)
+{
+	int64_t i_val;
+	xmlChar *val;
+	property_t *p;
+	char *endptr = NULL;
+	int r;
+	boolean_t strings_ok = (*spec->sas_names != NULL) ? B_TRUE : B_FALSE;
+
+	val = xmlGetProp(n, (xmlChar *)attr);
+	if (val == NULL)
+		return (0);
+
+	errno = 0;
+	i_val = strtol((char *)val, &endptr, 10);
+	if (errno != 0 || endptr == (char *)val || endptr[0] != '\0') {
+		uint_t i;
+		boolean_t ok = B_FALSE;
+
+		if (!strings_ok) {
+			uu_die(gettext("illegal value \"%s\" for %s (%s)\n"),
+			    (char *)val, (errno != 0) ? strerror(errno) :
+			    gettext("Illegal character"));
+		}
+
+		for (i = 0; spec->sas_names[i] != NULL; i++) {
+			if (strcasecmp(spec->sas_names[i],
+			    (const char *)val) == 0) {
+				ok = B_TRUE;
+				break;
+			}
+		}
+
+		if (!ok) {
+			uu_die(gettext("illegal value \"%s\" for "
+			    "attribute %s\n"), val, attr);
+		}
+	} else {
+		if (i_val < spec->sas_min || i_val > spec->sas_max ||
+		    (spec->sas_zero && i_val == 0)) {
+			uu_die(gettext("attribute %s value %" PRId64 " out of "
+			    "range\n"), attr, i_val);
+		}
+
+	}
+
+	if (strings_ok) {
+		p = internal_property_create(pname, SCF_TYPE_INTEGER, 1, i_val);
+	} else {
+		p = internal_property_create(pname, SCF_TYPE_ASTRING, 1, val);
+	}
+
+	r = internal_attach_property(pgrp, p);
+
+	if (r != 0)
+		internal_property_free(p);
+
+	xmlFree(val);
 	return (r);
 }
 
@@ -1122,7 +1213,7 @@ lxml_get_exec_method(entity_t *entity, xmlNodePtr emeth)
 		r = internal_attach_property(pg, p);
 		xmlFree(timeout);
 	}
-	if (r != 0)
+	if (r !=0)
 		return (-1);
 
 	/*
@@ -1676,6 +1767,195 @@ out:
 	free(event);
 
 	return (r);
+}
+
+static int
+lxml_get_periodic_method(entity_t *entity, xmlNodePtr pmeth)
+{
+	pgroup_t *pg;
+	pgroup_t *start_pg;
+	xmlChar *timeout;
+	xmlNodePtr cursor;
+	int r = 0;
+
+	if (entity->sc_op == SVCCFG_OP_APPLY)
+		lxml_validate_element(pmeth);
+
+	pg = internal_pgroup_find_or_create(entity, "periodic",
+	    (char *)SCF_GROUP_PERIODIC);
+
+	start_pg = internal_pgroup_find_or_create(entity, "start",
+	    (char *)SCF_GROUP_METHOD);
+
+	if (new_str_prop_from_attr(pg, SCF_PROPERTY_PERIOD, SCF_TYPE_TIME,
+	    pmeth, period_attr) != 0)
+		return (-1);
+
+	if (new_opt_str_prop_from_attr(pg, SCF_PROPERTY_JITTER, SCF_TYPE_TIME,
+	    pmeth, jitter_attr, "0") != 0)
+		return (-1);
+
+	if (new_opt_str_prop_from_attr(pg, SCF_PROPERTY_DELAY, SCF_TYPE_TIME,
+	    pmeth, delay_attr, "0") != 0)
+		return (-1);
+
+	/*
+	 * A missing boolean property is not treated as a failure by
+	 * new_bool_prop_from_attr()
+	 */
+	if (new_bool_prop_from_attr(pg, SCF_PROPERTY_PERSISTENT, pmeth,
+	    persistent_attr) != 0)
+		return (-1);
+
+	if (new_bool_prop_from_attr(pg, SCF_PROPERTY_RECOVER, pmeth,
+	    recover_attr) != 0)
+		return (-1);
+
+	if (new_str_prop_from_attr(start_pg, SCF_PROPERTY_EXEC,
+	    SCF_TYPE_ASTRING, pmeth, "exec") != 0)
+		return (-1);
+
+	timeout = xmlGetProp(pmeth, (xmlChar *)timeout_seconds_attr);
+	if (timeout != NULL) {
+		uint64_t u_timeout;
+		property_t *p;
+		char *endptr;
+
+		/*
+		 * Although an SC_COUNT represents a uint64_t the use
+		 * of a negative value is acceptable due to the usage
+		 * established by inetd(8).
+		 */
+		errno = 0;
+		u_timeout = strtoull((char *)timeout, &endptr, 10);
+		if (errno != 0 || endptr == (char *)timeout || *endptr)
+			uu_die(gettext("illegal value \"%s\" for "
+			    "timeout_seconds (%s)\n"),
+			    (char *)timeout, (errno) ? strerror(errno):
+			    gettext("Illegal character"));
+		p = internal_property_create(SCF_PROPERTY_TIMEOUT,
+		    SCF_TYPE_COUNT, 1, u_timeout);
+		r = internal_attach_property(start_pg, p);
+		xmlFree(timeout);
+	}
+	if (r != 0)
+		return (-1);
+
+	for (cursor = pmeth->xmlChildrenNode; cursor != NULL;
+	    cursor = cursor->next) {
+		if (lxml_ignorable_block(cursor))
+			continue;
+
+		switch (lxml_xlate_element(cursor->name)) {
+		case SC_STABILITY:
+			if (lxml_get_pgroup_stability(pg, cursor) != 0)
+				return (-1);
+			break;
+
+		case SC_METHOD_CONTEXT:
+			(void) lxml_get_method_context(pg, cursor);
+			break;
+
+		default:
+			uu_die(gettext("illegal element \"%s\" on "
+			    "periodic method\n"), cursor->name);
+			break;
+		}
+	}
+
+	return (0);
+}
+
+static int
+lxml_get_scheduled_method(entity_t *entity, xmlNodePtr smeth)
+{
+	pgroup_t *pg;
+	pgroup_t *start_pg;
+	xmlChar *timeout;
+	xmlNodePtr cursor;
+	int r = 0;
+
+	if (entity->sc_op == SVCCFG_OP_APPLY)
+		lxml_validate_element(smeth);
+
+	pg = internal_pgroup_find_or_create(entity, "scheduled",
+	    (char *)SCF_GROUP_SCHEDULE);
+
+	start_pg = internal_pgroup_find_or_create(entity, "start",
+	    (char *)SCF_GROUP_METHOD);
+
+	// TODO
+	// interval astring required one of:
+	//     year,month,week,day,day_of_month,hour_minute
+	// frequency count optional default 1
+	// timezone astring optional default system TZ
+	// year count
+	// C Locale for names
+	// week_of_year integer (1-53 or -1 - -53) mutually exclusive with month
+	// month astring month name or 1-12 or -1 - -12
+	// day_of_month integer (1-31 -1 - -31) mutually exclusive with day
+	// weekday_of_month integer (1-5 or -1 - -5) if present, must have day
+	// day astring day of week 1-7 -1 - -7
+	// hour integer 0-23 -1 - -24
+	// minute integer 0-59 -1 - -60
+
+	if (new_bool_prop_from_attr(pg, SCF_PROPERTY_RECOVER, smeth,
+	    recover_attr) != 0)
+		return (-1);
+
+	if (new_str_prop_from_attr(start_pg, SCF_PROPERTY_EXEC,
+	    SCF_TYPE_ASTRING, smeth, "exec") != 0)
+		return (-1);
+
+	timeout = xmlGetProp(smeth, (xmlChar *)timeout_seconds_attr);
+	if (timeout != NULL) {
+		uint64_t u_timeout;
+		property_t *p;
+		char *endptr;
+
+		/*
+		 * Although an SC_COUNT represents a uint64_t the use
+		 * of a negative value is acceptable due to the usage
+		 * established by inetd(8).
+		 */
+		errno = 0;
+		u_timeout = strtoull((char *)timeout, &endptr, 10);
+		if (errno != 0 || endptr == (char *)timeout || *endptr)
+			uu_die(gettext("illegal value \"%s\" for "
+			    "timeout_seconds (%s)\n"),
+			    (char *)timeout, (errno) ? strerror(errno):
+			    gettext("Illegal character"));
+		p = internal_property_create(SCF_PROPERTY_TIMEOUT,
+		    SCF_TYPE_COUNT, 1, u_timeout);
+		r = internal_attach_property(start_pg, p);
+		xmlFree(timeout);
+	}
+	if (r != 0)
+		return (-1);
+
+	for (cursor = smeth->xmlChildrenNode; cursor != NULL;
+	    cursor = cursor->next) {
+		if (lxml_ignorable_block(cursor))
+			continue;
+
+		switch (lxml_xlate_element(cursor->name)) {
+		case SC_STABILITY:
+			if (lxml_get_pgroup_stability(pg, cursor) != 0)
+				return (-1);
+			break;
+
+		case SC_METHOD_CONTEXT:
+			(void) lxml_get_method_context(pg, cursor);
+			break;
+
+		default:
+			uu_die(gettext("illegal element \"%s\" on "
+			    "periodic method\n"), cursor->name);
+			break;
+		}
+	}
+
+	return (0);
 }
 
 /*
