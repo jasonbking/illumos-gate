@@ -12,6 +12,7 @@
 /*
  * Copyright (c) 2017, Joyent, Inc.
  * Copyright 2024 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -198,22 +199,45 @@ dltran_verbose_dump(datalink_id_t linkid, uint_t tranid)
 	uint8_t buf[256];
 	size_t buflen = sizeof (buf);
 	int ret;
-	nvlist_t *nvl;
+	nvlist_t *nvl = NULL;
+	boolean_t is_8472;
 
 	if (dltran_read_page(linkid, tranid, 0xa0, buf, &buflen) != 0) {
 		dltran_errors++;
 		return;
 	}
 
+	is_8472 = dltran_is_8472(buf);
+
 	ret = libsff_parse(buf, buflen, 0xa0, &nvl);
-	if (ret == 0) {
-		dump_nvlist(nvl, 8);
-		nvlist_free(nvl);
-	} else {
-		fprintf(stderr, "failed to parse sfp data: %s\n",
+	if (ret != 0) {
+		fprintf(stderr, "failed to parse sfp page a0 data: %s\n",
 		    strerror(ret));
 		dltran_errors++;
+		return;
 	}
+
+	if (!is_8472) {
+		dump_nvlist(nvl, 8);
+		nvlist_free(nvl);
+		return;
+	}
+
+	if (dltran_read_page(linkid, tranid, 0xa2, buf, &buflen) != 0) {
+		dltran_errors++;
+		return;
+	}
+
+	ret = libsff_parse(buf, buflen, 0xa2, &nvl);
+	if (ret != 0) {
+		fprintf(stderr, "failed to parse sfp page a2 data: %s\n",
+		    strerror(ret));
+		dltran_errors++;
+		return;
+	}
+
+	dump_nvlist(nvl, 8);
+	nvlist_free(nvl);
 }
 
 static int
