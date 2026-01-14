@@ -113,11 +113,11 @@ const char * const timezone_attr = "timezone";
 const char * const year_attr = "year";
 const char * const week_of_year_attr = "week_of_year";
 const char * const month_attr = "month";
-const char * const weekday_of_month = "weekday_of_month";
-const char * const day = "day";
-const char * const day_of_month = "day_of_month";
-const char * const hour = "hour";
-const char * const minute = "minute";
+const char * const weekday_of_month_attr = "weekday_of_month";
+const char * const day_attr = "day";
+const char * const day_of_month_attr = "day_of_month";
+const char * const hour_attr = "hour";
+const char * const minute_attr = "minute";
 
 /* Attribute values */
 const char * const all_value = "all";
@@ -264,34 +264,6 @@ static const char *lxml_prop_types[] = {
 	"",				/* SC_XI_FALLBACK */
 	""				/* SC_XI_INCLUDE */
 };
-
-typedef struct sched_attr_spec {
-	int64_t	sas_min;
-	int64_t sas_max;
-	boolean_t sas_zero;		/* Does range include or exclude 0? */
-	const char *sas_names[];	/* case insensitive list */
-} sched_attr_spec_t;
-
-static sched_attr_spec_t week_of_year_spec = { -53, 53, B_FALSE, NULL };
-static sched_attr_spec_t month_spec = {
-	-12, 12, B_FALSE, {
-		"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep",
-		"oct", "nov", "dec", "january", "february", "march", "april",
-		"june", "july", "august", "september", "october", "november",
-		"december", NULL,
-	},
-};
-static sched_attr_spec_t day_of_month_spec = { -31, 31, B_FALSE, NULL };
-static sched_attr_spec_t weekday_of_month_spec = { -5, 5, B_FALSE, NULL };
-static sched_attr_spec_t day_spec = {
-	-7, 7, B_FALSE, {
-		"mon", "tue", "wed", "thu", "fri", "sat", "sun", "monday",
-		"tuesday", "wednesday", "thursday", "friday", "saturday",
-		"sunday", NULL
-	}
-};
-static sched_attr_spec_t hour_spec = { -24, 23, B_TRUE, NULL };
-static sched_attr_spec_t min_spec = { -60, 59, B_TRUE, NULL };
 
 static int xml_read_options = 0;
 
@@ -512,65 +484,70 @@ new_opt_str_prop_from_attr(pgroup_t *pgrp, const char *pname, scf_type_t ty,
 }
 
 static int
-new_time_range_prop_from_attr(pgroup_t *pgrp, const char *pname, xmlNodePtr n,
-    const char *attr, const sched_attr_spec_t *spec)
+new_opt_count_prop_from_attr(pgroup_t *pgrp, const char *pname, xmlNodePtr n,
+    const char *attr, const uint64_t *dflt)
 {
-	int64_t i_val;
-	xmlChar *val;
+	uint64_t val;
+	xmlChar *str;
 	property_t *p;
-	char *endptr = NULL;
+	char *endptr;
 	int r;
-	boolean_t strings_ok = (*spec->sas_names != NULL) ? B_TRUE : B_FALSE;
 
-	val = xmlGetProp(n, (xmlChar *)attr);
-	if (val == NULL)
-		return (0);
-
-	errno = 0;
-	i_val = strtol((char *)val, &endptr, 10);
-	if (errno != 0 || endptr == (char *)val || endptr[0] != '\0') {
-		uint_t i;
-		boolean_t ok = B_FALSE;
-
-		if (!strings_ok) {
+	str = xmlGetProp(n, (xmlChar *)attr);
+	if (str == NULL) {
+		if (dflt == NULL)
+			return (0);
+		val = *dflt;
+	} else {
+		errno = 0;
+		val = strtoull((char *)str, &endptr, 10);
+		if (errno != 0 || endptr == (char *)str || endptr[0] != '\0')
 			uu_die(gettext("illegal value \"%s\" for %s (%s)\n"),
-			    (char *)val, (errno != 0) ? strerror(errno) :
+			    (char *)str, (errno != 0) ? strerror(errno) :
 			    gettext("Illegal character"));
-		}
-
-		for (i = 0; spec->sas_names[i] != NULL; i++) {
-			if (strcasecmp(spec->sas_names[i],
-			    (const char *)val) == 0) {
-				ok = B_TRUE;
-				break;
-			}
-		}
-
-		if (!ok) {
-			uu_die(gettext("illegal value \"%s\" for "
-			    "attribute %s\n"), val, attr);
-		}
-	} else {
-		if (i_val < spec->sas_min || i_val > spec->sas_max ||
-		    (spec->sas_zero && i_val == 0)) {
-			uu_die(gettext("attribute %s value %" PRId64 " out of "
-			    "range\n"), attr, i_val);
-		}
-
 	}
 
-	if (strings_ok) {
-		p = internal_property_create(pname, SCF_TYPE_INTEGER, 1, i_val);
-	} else {
-		p = internal_property_create(pname, SCF_TYPE_ASTRING, 1, val);
-	}
-
+	p = internal_property_create(pname, SCF_TYPE_COUNT, 1, val);
 	r = internal_attach_property(pgrp, p);
 
 	if (r != 0)
 		internal_property_free(p);
 
-	xmlFree(val);
+	xmlFree(str);
+	return (r);
+}
+
+static int
+new_opt_int_prop_from_attr(pgroup_t *pgrp, const char *pname, xmlNodePtr n,
+    const char *attr, const int64_t *dflt)
+{
+	int64_t val;
+	xmlChar *str;
+	property_t *p;
+	char *endptr;
+	int r;
+
+	str = xmlGetProp(n, (xmlChar *)attr);
+	if (str == NULL) {
+		if (dflt == NULL)
+			return (0);
+		val = *dflt;
+	} else {
+		errno = 0;
+		val = strtoll((char *)str, &endptr, 10);
+		if (errno != 0 || endptr == (char *)str || endptr[0] != '\0')
+			uu_die(gettext("illegal value \"%s\" for %s (%s)\n"),
+			    (char *)str, (errno != 0) ? strerror(errno) :
+			    gettext("Illegal character"));
+	}
+
+	p = internal_property_create(pname, SCF_TYPE_INTEGER, 1, val);
+	r = internal_attach_property(pgrp, p);
+
+	if (r != 0)
+		internal_property_free(p);
+
+	xmlFree(str);
 	return (r);
 }
 
@@ -1884,20 +1861,50 @@ lxml_get_scheduled_method(entity_t *entity, xmlNodePtr smeth)
 	start_pg = internal_pgroup_find_or_create(entity, "start",
 	    (char *)SCF_GROUP_METHOD);
 
-	// TODO
-	// interval astring required one of:
-	//     year,month,week,day,day_of_month,hour_minute
-	// frequency count optional default 1
-	// timezone astring optional default system TZ
-	// year count
-	// C Locale for names
-	// week_of_year integer (1-53 or -1 - -53) mutually exclusive with month
-	// month astring month name or 1-12 or -1 - -12
-	// day_of_month integer (1-31 -1 - -31) mutually exclusive with day
-	// weekday_of_month integer (1-5 or -1 - -5) if present, must have day
-	// day astring day of week 1-7 -1 - -7
-	// hour integer 0-23 -1 - -24
-	// minute integer 0-59 -1 - -60
+	if (new_str_prop_from_attr(pg, SCF_PROPERTY_INTERVAL, SCF_TYPE_ASTRING,
+	    smeth, interval_attr) != 0)
+		return (-1);
+
+	const uint64_t one = 1;
+	if (new_opt_count_prop_from_attr(pg, SCF_PROPERTY_FREQUENCY, smeth,
+	    frequency_attr, &one) != 0)
+		return (-1);
+
+	if (new_opt_str_prop_from_attr(pg, SCF_PROPERTY_TIMEZONE,
+	    SCF_TYPE_ASTRING, smeth, timezone_attr, NULL) != 0)
+		return (-1);
+
+	if (new_opt_count_prop_from_attr(pg, SCF_PROPERTY_YEAR, smeth,
+	    year_attr, NULL) != 0)
+		return (-1);
+
+	if (new_opt_int_prop_from_attr(pg, SCF_PROPERTY_WEEK_OF_YEAR, smeth,
+	    week_of_year_attr, NULL) != 0)
+		return (-1);
+
+	if (new_opt_str_prop_from_attr(pg, SCF_PROPERTY_MONTH, SCF_TYPE_ASTRING,
+	    smeth, month_attr, NULL) != 0)
+		return (-1);
+
+	if (new_opt_int_prop_from_attr(pg, SCF_PROPERTY_DAY_OF_MONTH, smeth,
+	    day_of_month_attr, NULL) != 0)
+		return (-1);
+
+	if (new_opt_int_prop_from_attr(pg, SCF_PROPERTY_WEEKDAY_OF_MONTH, smeth,
+	    weekday_of_month_attr, NULL) != 0)
+		return (-1);
+
+	if (new_opt_str_prop_from_attr(pg, SCF_PROPERTY_DAY, SCF_TYPE_ASTRING,
+	    smeth, day_attr, NULL) != 0)
+		return (-1);
+
+	if (new_opt_int_prop_from_attr(pg, SCF_PROPERTY_HOUR, smeth, hour_attr,
+	    NULL) != 0)
+		return (-1);
+
+	if (new_opt_int_prop_from_attr(pg, SCF_PROPERTY_MINUTE, smeth,
+	    minute_attr, NULL) != 0)
+		return (-1);
 
 	if (new_bool_prop_from_attr(pg, SCF_PROPERTY_RECOVER, smeth,
 	    recover_attr) != 0)
@@ -3876,6 +3883,12 @@ lxml_get_service(bundle_t *bundle, xmlNodePtr svc, svccfg_op_t op)
 			break;
 		case SC_INSTANCE_SINGLE:
 			(void) lxml_get_single_instance(s, cursor);
+			break;
+		case SC_PERIODIC_METHOD:
+			(void) lxml_get_periodic_method(s, cursor);
+			break;
+		case SC_SCHEDULED_METHOD:
+			(void) lxml_get_scheduled_method(s, cursor);
 			break;
 		default:
 			uu_die(gettext(
