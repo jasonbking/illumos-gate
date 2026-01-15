@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
  Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
- Copyright 2024 Jason King
+ Copyright 2026 Jason King
 
  CDDL HEADER START
 
@@ -1088,8 +1088,8 @@
 
 <!ELEMENT instance
 	( restarter?, dependency*, dependent*, method_context?,
-	exec_method*, notification_parameters*, property_group*,
-	template? ) >
+          exec_method*, periodic_method*, scheduled_method*,
+          notification_parameters*, property_group*, template? ) >
 
 <!ATTLIST instance
 	name		CDATA #REQUIRED
@@ -1119,8 +1119,8 @@
 <!ELEMENT service
 	( create_default_instance?, single_instance?, restarter?,
 	dependency*, dependent*, method_context?, exec_method*,
-	notification_parameters*, property_group*, instance*,
-	stability?, template? ) >
+        periodic_method*, scheduled_method*, notification_parameters*,
+        property_group*, instance*, stability?, template? ) >
 
 <!ATTLIST service
 	name		CDATA #REQUIRED
