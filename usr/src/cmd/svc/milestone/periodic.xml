@@ -1,0 +1,568 @@
+<?xml version="1.0"?>
+<!DOCTYPE service_bundle SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">
+<!--
+ Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
+ Copyright 2015 Nexenta Systems, Inc. All rights reserved.
+ Copyright 2026 Jason King
+
+ CDDL HEADER START
+
+ The contents of this file are subject to the terms of the
+ Common Development and Distribution License (the "License").
+ You may not use this file except in compliance with the License.
+
+ You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
+ or http://www.opensolaris.org/os/licensing.
+ See the License for the specific language governing permissions
+ and limitations under the License.
+
+ When distributing Covered Code, include this CDDL HEADER in each
+ file and include the License file at usr/src/OPENSOLARIS.LICENSE.
+ If applicable, add the following below this CDDL HEADER, with the
+ fields enclosed by brackets "[]" replaced with your own identifying
+ information: Portions Copyright [yyyy] [name of copyright owner]
+
+ CDDL HEADER END
+
+	NOTE:  This service manifest is not editable; its contents will
+	be overwritten by package or patch operations, including
+	operating system upgrade.  Make customizations in a different
+	file.
+-->
+
+<service_bundle type='manifest' name='peroidic'>
+
+<service
+	name='system/svc/periodic'
+	type='restarter'
+	version='1'>
+
+	<create_default_instance enabled='true' />
+
+	<single_instance/>
+
+	<!--
+		For now, just dummy entries until the code is written
+	-->
+
+	<exec_method
+		type='method'
+		name='start'
+		exec=':true'
+		timeout_seconds='0' />
+
+	<exec_method
+		type='method'
+		name='stop'
+		exec=':true'
+		timeout_seconds='0' />
+
+	<stability value='Unstable' />
+
+	<template>
+		<common_name>
+			<loctext xml:lang='C'>
+periodic and scheduled task restarter
+			</loctext>
+		</common_name>
+		<documentation>
+			<manpage title='svc.restartd' section='8'
+			    manpath='/usr/share/man' />
+			<manpage title='smf_method' section='7'
+			    manpath='/usr/share/man' />
+			<manpage title='smf' section='7'
+			    manpath='/usr/share/man' />
+		</documentation>
+
+		<pg_pattern name='restarter' type='framework'
+		   target='delegate' required='false'>
+			<description>
+				<loctext xml:lang='C'>
+Communicate restarter-set status of the service.
+				</loctext>
+			</description>
+			<prop_pattern name='logfile' type='astring'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+The logfile for restarter actions on this service and any direct output from execution.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='contract' type='count'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+Primary process contract for a 'contract' or 'child' service.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='start_pid' type='count'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+PID last launched as the start method for this service.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='start_method_timestamp' type='time'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+Time the start method was last run.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+			<!-- TODO XXX add more -->
+		</pg_pattern>
+
+		<pg_pattern name='periodic' type='periodic' target='delegate'
+		    required='false'>
+			<description>
+				<loctext xml:lang='C'>
+The periodic method defines the constraints svc.restartd uses to schedule service execution.
+				</loctext>
+			</description>
+			<prop_pattern name='delay' type='time'
+			     required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+startup delay
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The number of seconds after the service transitions to the online state to delay running the service.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='period' type='time'
+			    required='true'>
+				<common_name>
+					<loctext xml:lang='C'>
+execution interval
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The interval between successive executions of the service.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='jitter' type='time'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+execution interval jitter
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The maximum amount of time added to period to vary the execution inverval.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='persistent' type='boolean'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+Scheduling interval persistence
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+If true, the scheduling interval is mainted across reboots. If false, the
+scheduling interval is reset after a reboot.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='recover' type='boolean'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+Execute if interval missed
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+Run immediately if true and one or more execution intervals were missed due to
+downtime. Requires the persistent attribute to be set true to have any effect.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+		</pg_pattern>
+
+		<pg_pattern name='scheduled' type='scheduled' target='delegate'
+		    required='false'>
+			<description>
+				<loctext xml:lang='C'>
+The scheduled method defines the constraints svc.restartd uses to schedule service execution.
+				</loctext>
+			</decription>
+			<prop_pattern name='interval' type='astring'
+			    required='true'>
+				<common_name>
+					<loctext xml:lang='C'>
+Interval between executions
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The units of the execution frequency from the frequency property.
+					</loctext>
+				</decription>
+				<cardinality min='1' max='1'/>
+				<constraints>
+					<value name='year'>
+						<description>
+							<loctext xml:lang='C'>
+Years
+							</loctext>
+						</description>
+					</value>
+					<value name='month'>
+						<description>
+							<loctext xml:lang='C'>
+Months
+							</loctext>
+						</description>
+					</value>
+					<value name='week'>
+						<description>
+							<loctext xml:lang='C'>
+Weeks
+							</loctext>
+						</description>
+					</value>
+					<value name='day'>
+						<description>
+							<loctext xml:lang='C'>
+Days
+							</loctext>
+						</description>
+					</value>
+					<value name='day_of_month'>
+						<description>
+							<loctext xml:lang='C'>
+Day of the month (1 - 31 or -31 - -1)
+							</loctext>
+						</description>
+					</value>
+					<value name='hour'>
+						<description>
+							<loctext xml:lang='C'>
+Hour (0 - 23 or -24 - -1)
+							</loctext>
+						</description>
+					</value>
+					<value name='minute'>
+						<description>
+							<loctext xml:lang='C'>
+Minute (0 - 59 or -60 - -1)
+							</loctext>
+						</description>
+					</value>
+				</constraints>
+				<choices>
+					<include_values type='constraints'/>
+				</choices>
+			</prop_pattern>
+			<prop_pattern name='frequency' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+The frequency the service runs.
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The frequency (default 1) in unit intervals the service runs.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+
+
+			<!-- TODO XXX XXX -->
+		</pg_pattern>
+
+		<pg_pattern name='start' type='method' target='delegate'
+		    required='true'>
+			<description>
+				<loctext xml:lang='C'>
+The start method defines how svc.restartd should start the instance.
+				</loctext>
+			</description>
+			<prop_pattern name='exec' type='astring'
+			    required='true'>
+				<common_name>
+					<loctext xml:lang='C'>
+method executable
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The method executable may be a script, program, or keyword.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<values>
+					<value name=':true'>
+						<description>
+							<loctext xml:lang='C'>
+Always returns SMF_EXIT_OK. This token should be used when the start method is unnecessary for the particular service implementation.
+							</loctext>
+						</description>
+					</value>
+					<value name=':kill [-signal]'>
+						<description>
+							<loctext xml:lang='C'>
+Sends the specified signal, which is SIGTERM by default, to all processes in the primary instance contract. Always returns SMF_EXIT_OK. This token should be used to replace common pkill invocations.
+
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<choices>
+					<include_values type='values'/>
+				</choices>
+			</prop_pattern>
+
+			<prop_pattern name='type' type='astring'
+			    required='true'>
+				<description>
+					<loctext xml:lang='C'>
+A method may only be of type method.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<constraints>
+					<value name="method"/>
+				</constraints>
+			</prop_pattern>
+
+			<prop_pattern name='timeout_seconds' type='count'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+Number of seconds before the method is considered unresponsive.  After the method timeout expires, the method will be killed.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<values>
+					<value name="0">
+						<common_name>
+							<loctext xml:lang='C'>
+infinite
+							</loctext>
+						</common_name>
+						<description>
+							<loctext xml:lang='C'>
+This method will never time out.
+							</loctext>
+						</description>
+					</value>
+					<value name="-1">
+						<common_name>
+							<loctext xml:lang='C'>
+infinite (legacy)
+							</loctext>
+						</common_name>
+						<description>
+							<loctext xml:lang='C'>
+This method will never time out.  0 is the preferred value.
+							</loctext>
+						</description>
+					</value>
+				</values>
+			</prop_pattern>
+
+			<!-- method_context direct properties -->
+			<prop_pattern name='working_directory' type='astring'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+The working directory to launch the method from.  ":default" can be used as a token to indicate the home directory of the user specified by the credential or profile.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='project' type='astring'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+The project ID in numeric or text form.  :default can be used as a token to indicate a project identified by getdefaultproj(3PROJECT) for the user whose uid is used to launch the method.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='resource_pool' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+method context resource pool
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The resource pool name on which to launch the method.  :default can be used
+as a token to indicate the pool specified in the project(5) entry given in
+the project attribute.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+
+			<prop_pattern name='security_flags' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+method credential security flags
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+An optional string specifying the security flags as defined in security-flags(7).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<internal_separators>,</internal_separators>
+			</prop_pattern>
+
+			<!-- method_credential properties -->
+			<prop_pattern name='user' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+method credential user
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The user ID in numeric or text form.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='group' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+method credential group
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The group ID in numeric or text form.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='supp_groups' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+method credential supplemental groups
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+An optional string that specifies the supplemental group memberships by ID,
+in numeric or text form.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<internal_separators>,</internal_separators>
+			</prop_pattern>
+			<prop_pattern name='privileges' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+method credential privileges
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+An optional string specifying the privilege set as defined in privileges(7).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<internal_separators>,</internal_separators>
+			</prop_pattern>
+			<prop_pattern name='limit_privileges' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+method credential limit privilege set
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+An optional string specifying the limit privilege set as defined in
+privileges(7).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<internal_separators>,</internal_separators>
+			</prop_pattern>
+
+			<!-- method_profile properties -->
+			<prop_pattern name='use_profile' type='boolean'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+A boolean that specifies whether the profile should be used instead of the
+user, group, privileges, and limit_privileges properties.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='profile' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+method profile RBAC profile specification
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The name of an RBAC (role-based access control) profile which, along with the
+method executable, identifies an entry in exec_attr(5).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+
+			<!-- method_environment properties -->
+			<prop_pattern name='environment' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+method environment variables
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+Environment variables to insert into the environment of the method, in the
+form of a number of NAME=value strings.
+					</loctext>
+				</description>
+			</prop_pattern>
+		</pg_pattern>
+
+	</template>
+</service>
+
+</service_bundle>
