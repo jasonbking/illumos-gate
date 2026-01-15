@@ -1747,6 +1747,30 @@ out:
 }
 
 static int
+lxml_create_start_method(entity_t *e, pgroup_t **pgp)
+{
+	pgroup_t *pg;
+	property_t *p;
+	int r = 0;
+
+	*pgp = NULL;
+	pg = internal_pgroup_find_or_create(e, "start",
+	    (char *)SCF_GROUP_METHOD);
+
+	p = internal_property_create(SCF_PROPERTY_TYPE, SCF_TYPE_ASTRING, 1,
+	    (char *)SCF_GROUP_METHOD);
+	r = internal_attach_property(pg, p);
+
+	if (r != 0) {
+		internal_property_free(p);
+	} else {
+		*pgp = pg;
+	}
+
+	return (r);
+}
+
+static int
 lxml_get_periodic_method(entity_t *entity, xmlNodePtr pmeth)
 {
 	pgroup_t *pg;
@@ -1761,8 +1785,8 @@ lxml_get_periodic_method(entity_t *entity, xmlNodePtr pmeth)
 	pg = internal_pgroup_find_or_create(entity, "periodic",
 	    (char *)SCF_GROUP_PERIODIC);
 
-	start_pg = internal_pgroup_find_or_create(entity, "start",
-	    (char *)SCF_GROUP_METHOD);
+	if (lxml_create_start_method(entity, &start_pg) != 0)
+		return (-1);
 
 	if (new_str_prop_from_attr(pg, SCF_PROPERTY_PERIOD, SCF_TYPE_TIME,
 	    pmeth, period_attr) != 0)
@@ -1830,7 +1854,7 @@ lxml_get_periodic_method(entity_t *entity, xmlNodePtr pmeth)
 			break;
 
 		case SC_METHOD_CONTEXT:
-			(void) lxml_get_method_context(pg, cursor);
+			(void) lxml_get_method_context(start_pg, cursor);
 			break;
 
 		default:
@@ -1858,8 +1882,8 @@ lxml_get_scheduled_method(entity_t *entity, xmlNodePtr smeth)
 	pg = internal_pgroup_find_or_create(entity, "scheduled",
 	    (char *)SCF_GROUP_SCHEDULE);
 
-	start_pg = internal_pgroup_find_or_create(entity, "start",
-	    (char *)SCF_GROUP_METHOD);
+	if (lxml_create_start_method(entity, &start_pg) != 0)
+		return (-1);
 
 	if (new_str_prop_from_attr(pg, SCF_PROPERTY_INTERVAL, SCF_TYPE_ASTRING,
 	    smeth, interval_attr) != 0)
@@ -1952,7 +1976,7 @@ lxml_get_scheduled_method(entity_t *entity, xmlNodePtr smeth)
 			break;
 
 		case SC_METHOD_CONTEXT:
-			(void) lxml_get_method_context(pg, cursor);
+			(void) lxml_get_method_context(start_pg, cursor);
 			break;
 
 		default:
