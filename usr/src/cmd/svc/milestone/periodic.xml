@@ -106,7 +106,7 @@ Primary process contract for a 'contract' or 'child' service.
 				<description>
 					<loctext xml:lang='C'>
 PID last launched as the start method for this service.
-					</loctext>
+</loctext>
 				</description>
 				<visibility value='readonly'/>
 				<cardinality min='1' max='1'/>
@@ -292,6 +292,113 @@ The frequency (default 1) in unit intervals the service runs.
 					</loctext>
 				</description>
 				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='timezone' type='astring'
+			     required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+Timezone
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The optional timezone used to determine the run time of the service.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='year' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+Year
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The year to run the service
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='week_of_year' type='integer'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Ordinal week number
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The ISO 8601 week date year [1, 53]. Negative values [-53, -1] count backwards
+from the end of the year.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<constraints>
+					<range min='-53' max='53'/>
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='month' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Month
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The month of the year.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<constraints>
+					<range min='-12' max='-1'/>
+					<range min='1' max='12'/>
+					<value name='January'/>
+					<value name='February'/>
+					<value name='March'/>
+					<value name='April'/>
+					<value name='May'/>
+					<value name='June'/>
+					<value name='July'/>
+					<value name='August'/>
+					<value name='September'/>
+					<value name='October'/>
+					<value name='November'/>
+					<value name='December'/>
+					<value name='Jan'/>
+					<value name='Feb'/>
+					<value name='Mar'/>
+					<value name='Apr'/>
+					<!-- May already listed -->
+					<value name='Jun'/>
+					<value name='Jul'/>
+					<value name='Aug'/>
+					<value name='Sep'/>
+					<value name='Oct'/>
+					<value name='Nov'/>
+					<value name='Dec'/>
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='day_of_month' type='integer'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+Day of the month
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The day of the month [1, 31] or [-31, -1]. A negative number counts backwards
+from the last day of the month.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<constraints>
+					<range min='1' max='31'/>
+					<range min='-31' max='-1'/>
+				</constraints>
 			</prop_pattern>
 
 
