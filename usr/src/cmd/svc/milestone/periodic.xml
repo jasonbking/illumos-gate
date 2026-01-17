@@ -400,9 +400,106 @@ from the last day of the month.
 					<range min='-31' max='-1'/>
 				</constraints>
 			</prop_pattern>
-
-
-			<!-- TODO XXX XXX -->
+			<prop_pattern name='weekday_of_month' type='integer'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+Week of month
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The week of the month [1-5] or [-5 - -1].
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<constraints>
+					<range min='1' max='5'/>
+					<range min='-5' max='-1'/>
+				</contraints>
+			</prop_pattern>
+			<prop_pattern name='day' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+Day of Week
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The day of the week either as a C locality name or 3 letter abbreviation or
+a number in the range [1, 7] or [-7, -1]. Negative values start from the
+end of the week.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<constraints>
+					<range min='1' max='7'/>
+					<range min='-7' max='-1'/>
+					<value name='Monday'/>
+					<value name='Tuesday'/>
+					<value name='Wednesday'/>
+					<value name='Thursday'/>
+					<value name='Friday'/>
+					<value name='Saturday'/>
+					<value name='Sunday'/>
+					<value name='Mon'/>
+					<value name='Tue'/>
+					<value name='Wed'/>
+					<value name='Thu'/>
+					<value name='Fri'/>
+					<value name='Sat'/>
+					<value name='Sun'/>
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='hour' type='integer'
+				required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+Hour
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The hour expressed as an integer in [0, 23] or [-24, -1].
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+				<constraints>
+					<range min='-24' max='23'/>
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='minute' type='integer'
+				required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+Minute
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+The minute expressed as an integer in [0, 59] or [-60, -1].
+					</description>
+				<cardinality min='1' max='1'/>
+				<constraints>
+					<range min='-60' max='59'/>
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='recover' type='boolean'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+Recover execution>
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+If true, run a 'recovery' execution after startup if an execution was
+missed due to system downtime.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
 		</pg_pattern>
 
 		<pg_pattern name='start' type='method' target='delegate'
