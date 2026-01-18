@@ -28,6 +28,7 @@ include ../Makefile.cmd
 SUBDIR_CMD=		\
 	lsvcrun		\
 	mfstscan	\
+	periodic	\
 	rootisramdisk	\
 	servinfo	\
 	svcadm		\
