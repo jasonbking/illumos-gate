@@ -19,6 +19,7 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <libintl.h>
+#include <synch.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,6 +77,7 @@ typedef enum periodic_svctype {
 } periodic_svctype_t;
 
 typedef struct periodic_svc {
+	mutex_t			ps_lock;
 	char			*ps_fmri;
 	periodic_exec_t		ps_exec;
 	periodic_svctype_t	ps_type;
@@ -85,6 +87,9 @@ typedef struct periodic_svc {
 	} ps_u;
 } periodic_svc_t;
 
+periodic_svc_t *periodic_svc_get(const char *);
+void periodic_svc_add(periodic_svc_t *);
+void periodic_svc_rele(periodic_svc_t *);
 
 void log(const char *, ...) __PRINTFLIKE(0);
 void panic(const char *, ...) __PRINTFLIKE(0);

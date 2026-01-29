@@ -13,10 +13,12 @@
  * Copyright 2026 Jason King
  */
 
+#include <sys/debug.h>
 #include <sys/types.h>
 #include <errno.h>
+#include <librestart.h>
 #include <libscf.h>
-#include <libuutil>
+#include <libuutil.h>
 #include <locale.h>
 #include <pthread.h>
 #include <signal.h>
@@ -24,15 +26,18 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <syslog.h>
+#include <umem.h>
 #include <unistd.h>
 #include <upanic.h>
-#include <sys/debug.h>
 
 #include "periodic.h"
 
+static void nomem_cb(void);
 static void go_background(void);
 static void init_done(int, int, char *, ...);
 static void start_sig_thread(int);
+static int event_handler(restarter_event_t *);
+static char *event_get_instance(restarter_event_t *);
 
 static bool do_refresh;
 static bool do_exit;
@@ -46,6 +51,10 @@ char panicbuf[256];
 pthread_t sig_thread;
 char *my_fmri;
 int evport;
+restarter_event_handle_t evt_hdl;
+
+/* This includes the space for the terminating NUL byte */
+size_t max_fmri_len;
 
 int
 main(int argc, const char * const argv[])
@@ -55,6 +64,8 @@ main(int argc, const char * const argv[])
 #if !defined(TEXT_DOMAIN)
 #define	TEXT_DOMAIN "SYS_TEST"
 #endif
+
+	umem_nofail_callback(nomem_cb);
 
 	(void) textdomain(TEXT_DOMAIN);
 	(void) setlocale(LC_ALL, "");
@@ -69,17 +80,50 @@ main(int argc, const char * const argv[])
 	return (SMF_EXIT_OK);
 }
 
+static int
+event_handler(restarter_event_t *event)
+{
+	char			*inst_fmri;
+	periodic_svc_t		*svc;
+	restarter_event_type	evt_type;
+
+	inst_fmri = event_get_instance(event);
+	svc = periodic_svc_get(inst_fmri);
+	if (svc == NULL) {
+		/* TODO: create new service */
+	}
+	umem_free(inst_fmri, max_fmri_len);
+	inst_fmri = NULL;
+
+	evt_type = restarter_event_get_type(event);
+
+	/* TODO */
+
+	return (0);
+}
+
 static void
 init(int fd)
 {
-	sigset_t mask;
-	sigset_t omask;
+	sigset_t	mask;
+	sigset_t	omask;
+	int		ret;
 
 	VERIFY0(sigfillset(&mask));
 	VERIFY0(sigdelset(&mask, SIGABRT));
 	VERIFY0(sigprocmask(SIG_BLOCK, &mask, &omask));
 
 	start_sig_thread(fd);
+
+	/*
+	 * scf_limit(3SCF) states that this should not change over the
+	 * execution of a program (i.e. us), so it should be safe to cache
+	 * for the duration of svc.periodicd.
+	 */
+	max_fmri_len = scf_limit(SCF_LIMIT_MAX_FMRI_LENGTH) + 1;
+
+	ret = restarter_bind_handle(RESTARTER_EVENT_VERSION, my_fmri,
+	    event_handler, 0, &evt_hdl);
 
 	/* TODO */
 
@@ -193,6 +237,8 @@ sig_thread(void *arg)
 	int	fd = (uintptr_t)arg;
 	char	buf[SIG2STR_MAX];
 
+	VERIFY0(pthread_setname_np(pthread_self(), "signal"));
+
 	for (;;) {
 		struct signalfd_info info = { 0 };
 
@@ -231,12 +277,6 @@ sig_thread(void *arg)
 			continue;
 		}
 
-		/*
-		 * Make sure the flags we've set are visible to the
-		 * other threads.
-		 */
-		membar_producer();
-
 		if (do_exit) {
 			break;
 		}
@@ -272,6 +312,19 @@ start_sig_thread(int status_fd)
 	}
 }
 
+static char *
+event_get_instance(restarter_event_t *evt)
+{
+	char	*fmri;
+	size_t	len;
+
+	fmri = umem_zalloc(max_fmri_len, UMEM_NOFAIL);
+	len = restarter_event_get_instance(event, fmri, max_fmri_len);
+	VERIFY3U(len, <, max_fmri_len);
+
+	return (fmri);
+}
+
 void
 panic(const char *msg, ...) __PRINTFLIKE(0)
 {
@@ -283,6 +336,12 @@ panic(const char *msg, ...) __PRINTFLIKE(0)
 	va_end(ap);
 
 	upanic(panicbuf, n);
+}
+
+static int
+nomem_cb(void)
+{
+	panic("out of memory");
 }
 
 const char *
