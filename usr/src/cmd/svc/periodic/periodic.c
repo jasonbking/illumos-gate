@@ -15,6 +15,7 @@
 
 #include <sys/debug.h>
 #include <sys/types.h>
+#include <sys/signalfd.h>
 #include <errno.h>
 #include <librestart.h>
 #include <libscf.h>
@@ -24,6 +25,7 @@
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <string.h>
 #include <stdlib.h>
 #include <syslog.h>
 #include <umem.h>
@@ -32,9 +34,9 @@
 
 #include "periodic.h"
 
-static void nomem_cb(void);
+static int nomem_cb(void);
+static void init_done(int fd, int ret, const char *fmt, ...) __PRINTFLIKE(3);
 static void go_background(void);
-static void init_done(int, int, char *, ...);
 static void start_sig_thread(int);
 static int event_handler(restarter_event_t *);
 static char *event_get_instance(restarter_event_t *);
@@ -48,10 +50,10 @@ static bool do_exit;
  */
 char panicbuf[256];
 
-pthread_t sig_thread;
+pthread_t sig_thread_tid;
 char *my_fmri;
 int evport;
-restarter_event_handle_t evt_hdl;
+restarter_event_handle_t *evt_hdl;
 
 /* This includes the space for the terminating NUL byte */
 size_t max_fmri_len;
@@ -70,12 +72,12 @@ main(int argc, const char * const argv[])
 	(void) textdomain(TEXT_DOMAIN);
 	(void) setlocale(LC_ALL, "");
 
-	go_backgroud();
+	go_background();
 
 	while (!do_exit) {
 	}
 
-	(void) pthread_join(sig_thread, &status);
+	(void) pthread_join(sig_thread_tid, &status);
 
 	return (SMF_EXIT_OK);
 }
@@ -85,7 +87,7 @@ event_handler(restarter_event_t *event)
 {
 	char			*inst_fmri;
 	periodic_svc_t		*svc;
-	restarter_event_type	evt_type;
+	restarter_event_type_t	evt_type;
 
 	inst_fmri = event_get_instance(event);
 	svc = periodic_svc_get(inst_fmri);
@@ -96,6 +98,17 @@ event_handler(restarter_event_t *event)
 	inst_fmri = NULL;
 
 	evt_type = restarter_event_get_type(event);
+
+	switch (evt_type) {
+	case RESTARTER_EVENT_TYPE_ADD_INSTANCE:
+	case RESTARTER_EVENT_TYPE_ADMIN_REFRESH:
+	case RESTARTER_EVENT_TYPE_ADMIN_RESTART:
+	case RESTARTER_EVENT_TYPE_REMOVE_INSTANCE:
+	case RESTARTER_EVENT_TYPE_STOP_RESET:
+	case RESTARTER_EVENT_TYPE_STOP:
+	default:
+		break;
+	}
 
 	/* TODO */
 
@@ -122,14 +135,22 @@ init(int fd)
 	 */
 	max_fmri_len = scf_limit(SCF_LIMIT_MAX_FMRI_LENGTH) + 1;
 
+	if (!init_scf()) {
+		init_done(fd, EXIT_FAILURE, NULL);
+	}
+
 	ret = restarter_bind_handle(RESTARTER_EVENT_VERSION, my_fmri,
 	    event_handler, 0, &evt_hdl);
+	if (ret != 0) {
+		init_done(fd, EXIT_FAILURE,
+		    _("failed to register for restarter events: %s"),
+		    strerror(ret));
+	}
 
 	/* TODO */
 
 	if (setsid() < 0) {
-		init_done(pipe_fds[0], EXIT_FAILURE,
-		    _("failed to create session"));
+		init_done(fd, EXIT_FAILURE, _("failed to create session"));
 	}
 }
 
@@ -199,14 +220,14 @@ go_background(void)
 }
 
 static void
-init_done(int fd, int ret, const char *fmt, ...) __PRINTFLIKE(2)
+init_done(int fd, int ret, const char *fmt, ...)
 {
 	va_list ap;
 	ssize_t n;
 
 	if (fmt != NULL) {
 		va_start(ap, fmt);
-		vfprintf(stderr, fmt, ap);
+		(void) vfprintf(stderr, fmt, ap);
 		va_end(ap);
 
 		if (fmt[strlen(fmt) - 1] != '\n') {
@@ -215,7 +236,7 @@ init_done(int fd, int ret, const char *fmt, ...) __PRINTFLIKE(2)
 	}
 
 	do {
-		n = write(fd, ret, sizeof (ret));
+		n = write(fd, &ret, sizeof (ret));
 		if (n < 0) {
 			if (errno == EAGAIN || errno == EINTR) {
 				continue;
@@ -240,7 +261,7 @@ sig_thread(void *arg)
 	VERIFY0(pthread_setname_np(pthread_self(), "signal"));
 
 	for (;;) {
-		struct signalfd_info info = { 0 };
+		struct signalfd_siginfo info = { 0 };
 
 		n = read(fd, &info, sizeof (info));
 		if (n < 0) {
@@ -303,7 +324,7 @@ start_sig_thread(int status_fd)
 		    strerror(errno));
 	}
 
-	ret = pthread_create(&sig_thread, NULL, sig_thread,
+	ret = pthread_create(&sig_thread_tid, NULL, sig_thread,
 	    (void *)(uintptr_t)fd);
 	if (ret != 0) {
 		init_done(status_fd, EXIT_FAILURE,
@@ -319,17 +340,17 @@ event_get_instance(restarter_event_t *evt)
 	size_t	len;
 
 	fmri = umem_zalloc(max_fmri_len, UMEM_NOFAIL);
-	len = restarter_event_get_instance(event, fmri, max_fmri_len);
+	len = restarter_event_get_instance(evt, fmri, max_fmri_len);
 	VERIFY3U(len, <, max_fmri_len);
 
 	return (fmri);
 }
 
 void
-panic(const char *msg, ...) __PRINTFLIKE(0)
+panic(const char *msg, ...)
 {
 	ssize_t n;
-	va_args ap;
+	va_list ap;
 
 	va_start(ap, msg);
 	n = vsnprintf(panicbuf, sizeof (panicbuf), msg, ap);
