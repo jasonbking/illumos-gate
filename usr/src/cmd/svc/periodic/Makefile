@@ -15,8 +15,9 @@
 
 PROG = svc.periodicd
 OBJS = \
-       periodic.c \
-       sched.c
+       periodic.o \
+       sched.o \
+       smf.o
 
 SRCS = $(OBJS:%.o=%.c)
 
@@ -25,6 +26,8 @@ POFILE = $(OBJS:%.o=%.po)
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/cmd/Makefile.cmd.64
 include $(SRC)/cmd/Makefile.ctf
+
+CSTD =	$(CSTD_GNU99)
 
 $(NOT_RELEASE_BUILD)CPPFLAGS += -DDEBUG
 

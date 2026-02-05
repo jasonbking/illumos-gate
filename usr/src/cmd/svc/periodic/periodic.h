@@ -41,7 +41,7 @@ typedef struct periodic_exec {
 
 typedef struct periodic_data {
 	uint64_t	ps_delay;
-	uint64_t	ps_delay;
+	uint64_t	ps_n;
 	uint64_t	ps_period;
 	uint32_t	ps_jitter;
 	bool		ps_persistent;
@@ -80,6 +80,7 @@ typedef struct periodic_svc {
 	mutex_t			ps_lock;
 	char			*ps_fmri;
 	periodic_exec_t		ps_exec;
+	bool			ps_running;
 	periodic_svctype_t	ps_type;
 	union {
 		periodic_data_t		psu_periodic;
@@ -89,10 +90,14 @@ typedef struct periodic_svc {
 
 periodic_svc_t *periodic_svc_get(const char *);
 void periodic_svc_add(periodic_svc_t *);
+void periodic_svc_del(periodic_svc_t *);
 void periodic_svc_rele(periodic_svc_t *);
 
-void log(const char *, ...) __PRINTFLIKE(0);
-void panic(const char *, ...) __PRINTFLIKE(0);
+bool init_scf(void);
+void fini_scf(void);
+
+void log(const char *, ...) __PRINTFLIKE(1);
+void panic(const char *, ...) __PRINTFLIKE(1) __NORETURN;
 
 int64_t svc_next_run(const periodic_svc_t *);
 
