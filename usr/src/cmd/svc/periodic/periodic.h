@@ -57,6 +57,8 @@ typedef enum scheduled_ival {
 	SI_MINUTE,
 } scheduled_ival_t;
 
+#define	SCHED_IVAL_NONE	INT64_MAX
+
 typedef struct scheduled_data {
 	scheduled_ival_t	ss_interval;
 	uint64_t		ss_frequency;
@@ -87,6 +89,8 @@ typedef struct periodic_svc {
 		scheduled_data_t	psu_scheduled;
 	} ps_u;
 } periodic_svc_t;
+
+extern size_t max_fmri_len;
 
 periodic_svc_t *periodic_svc_get(const char *);
 void periodic_svc_add(periodic_svc_t *);

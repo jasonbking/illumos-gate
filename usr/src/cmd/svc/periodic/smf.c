@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <umem.h>
 
 #include "periodic.h"
 
@@ -48,6 +49,30 @@ struct names {
 	const char *abb;
 };
 
+static struct names months[] = {
+	{ "January", "Jan" },
+	{ "Februrary", "Feb" },
+	{ "March", "Mar" },
+	{ "April", "Apr" },
+	{ "May", "May" },
+	{ "June", "Jun" },
+	{ "July", "Jul" },
+	{ "August", "Aug" },
+	{ "October", "Oct" },
+	{ "November", "Nov" },
+	{ "December", "Dec" },
+};
+
+static struct names days[] = {
+	{ "Sunday", "Sun" },
+	{ "Monday", "Mon" },
+	{ "Tuesday", "Tue" },
+	{ "Wednesday", "Wed" },
+	{ "Thursday", "Thu" },
+	{ "Friday", "Fri" },
+	{ "Saturday", "Sat" },
+};
+
 struct proptbl {
 	const char 	*pt_name;
 	size_t		pt_offset;
@@ -55,11 +80,44 @@ struct proptbl {
 	bool		pt_required;
 };
 
+static scf_error_t parse_ival(scf_value_t *, void *, bool *);
+static scf_error_t parse_str(scf_value_t *, void *, bool *);
+static scf_error_t parse_count(scf_value_t *, void *, bool *);
+static scf_error_t parse_int(scf_value_t *, void *, bool *);
+static scf_error_t parse_bool(scf_value_t *, void *, bool *);
+static scf_error_t parse_week_of_year(scf_value_t *, void *, bool *);
+static scf_error_t parse_month(scf_value_t *, void *, bool *);
+static scf_error_t parse_day_of_month(scf_value_t *, void *, bool *);
+static scf_error_t parse_weekday_of_month(scf_value_t *, void *, bool *);
+static scf_error_t parse_day(scf_value_t *, void *, bool *);
+static scf_error_t parse_hour(scf_value_t *, void *, bool *);
+static scf_error_t parse_minute(scf_value_t *, void *, bool *);
+static scf_error_t parse_time(scf_value_t *, void *, bool *);
+
 static struct proptbl sched_tbl[] = {
     { "interval", offsetof(scheduled_data_t, ss_interval), parse_ival, true },
-    { "frequency", offsetof(scheduled_data_t, ss_frequency), parse_count, false },
+    { "frequency", offsetof(scheduled_data_t, ss_frequency), parse_count,
+	false },
     { "timezone", offsetof(scheduled_data_t, ss_timezone), parse_str, false },
     { "year", offsetof(scheduled_data_t, ss_year), parse_count, false },
+    { "week_of_year", offsetof(scheduled_data_t, ss_week_of_year),
+	parse_week_of_year, false },
+    { "month", offsetof(scheduled_data_t, ss_month), parse_month, false },
+    { "day_of_month", offsetof(scheduled_data_t, ss_day_of_month),
+	parse_day_of_month, false },
+    { "weekday_of_month", offsetof(scheduled_data_t, ss_weekday_of_month),
+	parse_weekday_of_month, false },
+    { "day", offsetof(scheduled_data_t, ss_day), parse_day, false },
+    { "hour", offsetof(scheduled_data_t, ss_hour), parse_hour, false },
+    { "minute", offsetof(scheduled_data_t, ss_minute), parse_minute, false },
+};
+
+static struct proptbl periodic_tbl[] = {
+    { "delay", offsetof(periodic_data_t, ps_delay), parse_time, false },
+    { "period", offsetof(periodic_data_t, ps_period), parse_time, true },
+    { "jitter", offsetof(periodic_data_t, ps_jitter), parse_time, false },
+    { "persistent", offsetof(periodic_data_t, ps_persistent), parse_bool,
+	false },
 };
 
 scf_handle_t *rep_hdl;
@@ -69,8 +127,26 @@ scf_transaction_entry_t *entry;
 scf_propertygroup_t *pg;
 scf_property_t *prop;
 scf_value_t *val;
+char *fmri;
 
-static bool bind_handle(void);
+static bool
+bind_handle(void)
+{
+	uint_t	i;
+	int	ret;
+
+	for (i = 0; i < BIND_SCF_TRIES; i++) {
+		ret = scf_handle_bind(rep_hdl);
+		if (ret == 0 || scf_error() == SCF_ERROR_IN_USE) {
+			return (true);
+		}
+	}
+
+	fprintf(stderr, _("failed to bind SCF handle: %s\n"),
+	    scf_strerror(scf_error()));
+
+	return (false);
+}
 
 bool
 init_scf(void)
@@ -88,6 +164,8 @@ init_scf(void)
 		rep_hdl = NULL;
 		return (false);
 	}
+
+	fmri = umem_zalloc(max_fmri_len, UMEM_NOFAIL);
 
 	inst = scf_instance_create(rep_hdl);
 	if (inst == NULL) {
@@ -140,29 +218,12 @@ failed:
 	return (false);
 }
 
-static bool
-bind_handle(void)
-{
-	uint_t	i;
-	int	ret;
-
-	for (i = 0; i < BIND_SCF_TRIES; i++) {
-		ret = scf_handle_bind(rep_hdl);
-		if (ret == 0 || scf_error() == SCF_ERROR_IN_USE) {
-			return (true);
-		}
-	}
-
-	fprintf(stderr, _("failed to bind SCF handle: %s\n"),
-	    scf_strerror(scf_error()));
-
-	return (false);
-}
-
 void
 fini_scf(void)
 {
 	(void) scf_handle_unbind(rep_hdl);
+
+	umem_free(fmri, max_fmri_len);
 
 	scf_value_destroy(val);
 	val = NULL;
@@ -186,7 +247,7 @@ fini_scf(void)
 	rep_hdl = NULL;
 }
 
-bool
+static bool
 ival_str_to_val(const char *str, scheduled_ival_t *ivp)
 {
 	if (strcmp(str, IVAL_YEAR) == 0) {
@@ -209,7 +270,46 @@ ival_str_to_val(const char *str, scheduled_ival_t *ivp)
 	return (true);
 }
 
-bool
+static scf_error_t
+parse_ival(scf_value_t *v, void *vp, bool *validp)
+{
+	ssize_t			len;
+	char			buf[MAX_IVAL_LEN] = { 0 };
+
+	*validp = false;
+
+	len = scf_value_get_astring(v, buf, sizeof (buf));
+	if (len < 0) {
+		return (scf_error());
+	}
+	if (len >= sizeof (buf)) {
+		goto done;
+	}
+
+	if (!ival_str_to_val(buf, vp)) {
+		goto done;
+	}
+
+	*validp = true;
+
+done:
+	return (SCF_ERROR_NONE);
+}
+
+static scf_error_t
+parse_count(scf_value_t *v, void *vp, bool *validp)
+{
+	*validp = false;
+
+	if (scf_value_get_count(v, vp) != 0) {
+		return (scf_error());
+	}
+
+	*validp = true;
+	return (SCF_ERROR_NONE);
+}
+
+static bool
 validate_week_of_year(int64_t val)
 {
 	if (val == INT64_MIN) {
@@ -222,6 +322,26 @@ validate_week_of_year(int64_t val)
 		return (true);
 	}
 	return (false);
+}
+
+static scf_error_t
+parse_week_of_year(scf_value_t *v, void *vp, bool *validp)
+{
+	int64_t *ip = vp;
+	scf_error_t e;
+
+	*validp = false;
+
+	e = parse_int(v, vp, validp);
+	if (e != SCF_ERROR_NONE) {
+		return (e);
+	}
+
+	if (validate_week_of_year(*ip)) {
+		*validp = true;
+	}
+
+	return (SCF_ERROR_NONE);
 }
 
 static bool
@@ -256,50 +376,24 @@ parse_named(const char *str, const struct names *names, size_t n, int64_t *vp)
 
 	*vp = val;
 	return (true);
-	return (false);
 }
 
-static struct names months[] = {
-	{ "January", "Jan" },
-	{ "Februrary", "Feb" },
-	{ "March", "Mar" },
-	{ "April", "Apr" },
-	{ "May", "May" },
-	{ "June", "Jun" },
-	{ "July", "Jul" },
-	{ "August", "Aug" },
-	{ "October", "Oct" },
-	{ "November", "Nov" },
-	{ "December", "Dec" },
-};
-
-static struct names days[] = {
-	{ "Sunday", "Sun" },
-	{ "Monday", "Mon" },
-	{ "Tuesday", "Tue" },
-	{ "Wednesday", "Wed" },
-	{ "Thursday", "Thu" },
-	{ "Friday", "Fri" },
-	{ "Saturday", "Sat" },
-};
-
-bool
-parse_month(const char *str, int64_t *vp)
+static bool
+month_to_val(const char *str, int64_t *vp)
 {
+	if (!parse_named(str, months, ARRAY_SIZE(months), vp)) {
+		return (false);
+	}
+
+	
 	return (parse_named(str, months, ARRAY_SIZE(months), vp));
 }
 
-bool
-parse_day(const char *str, int64_t *vp)
-{
-	return (parse_named(str, days, ARRAY_SIZE(days), vp));
-}
-
 static scf_error_t
-parse_ival(scf_value_t *v, void *vp, bool *validp)
+parse_month(scf_value_t *v, void *vp, bool *validp)
 {
-	ssize_t			len;
-	char			buf[IVAL_MAX_LEN] = { 0 };
+	ssize_t		len;
+	char		buf[9];
 
 	*validp = false;
 
@@ -307,29 +401,162 @@ parse_ival(scf_value_t *v, void *vp, bool *validp)
 	if (len < 0) {
 		return (scf_error());
 	}
-	if (len >= IVAL_MAX_LEN) {
-		goto done;
+
+	/* Size is too large -- i.e. invalid value */
+	if (len >= sizeof (buf)) {
+		return (SCF_ERROR_NONE);
 	}
 
-	if (!ival_str_to_val(buf, vp)) {
-		goto done;
+	if (month_to_val(buf, vp)) {
+		*validp = true;
 	}
-
-	*validp = true;
 
 	return (SCF_ERROR_NONE);
 }
 
-static scf_error_t
-parse_count(scf_value_t *v, void *vp, bool *validp)
+static bool
+validate_day_of_month(int64_t v)
 {
+	if (((v >= 1) && (v <= 31)) || ((v >= -31 && v <= -1))) {
+		return (true);
+	}
+	return (false);
+}
+
+static scf_error_t
+parse_day_of_month(scf_value_t *v, void *vp, bool *validp)
+{
+	int64_t		*ip = vp;
+	scf_error_t	e;
+
 	*validp = false;
 
-	if (scf_value_get_count(v, vp) != 0) {
+	e = parse_int(v, vp, validp);
+	if (e != SCF_ERROR_NONE) {
+		return (e);
+	}
+
+	if (validate_day_of_month(*ip)) {
+		*validp = true;
+	}
+
+	return (SCF_ERROR_NONE);
+}
+
+static bool
+validate_weekday_of_month(int64_t v)
+{
+	if (((v >= 1) && (v <= 7)) || ((v >= -7) && (v <= -1))) {
+		return (true);
+	}
+	return (false);
+}
+
+static scf_error_t
+parse_weekday_of_month(scf_value_t *v, void *vp, bool *validp)
+{
+	int64_t		*ip = vp;
+	scf_error_t	e;
+
+	*validp = false;
+
+	e = parse_int(v, vp, validp);
+	if (e != SCF_ERROR_NONE) {
+		return (e);
+	}
+
+	if (validate_weekday_of_month(*ip)) {
+		*validp = true;
+	}
+
+	return (SCF_ERROR_NONE);
+}
+
+static bool
+day_to_val(const char *str, int64_t *vp)
+{
+	return (parse_named(str, days, ARRAY_SIZE(days), vp));
+}
+
+static scf_error_t
+parse_day(scf_value_t *v, void *vp, bool *validp)
+{
+	ssize_t	len;
+	char	buf[10];
+
+	*validp = false;
+
+	len = scf_value_get_astring(v, buf, sizeof (buf));
+	if (len < 0) {
 		return (scf_error());
 	}
 
-	*validp = true;
+	if (len > sizeof (buf)) {
+		return (SCF_ERROR_NONE);
+	}
+
+	if (day_to_val(buf, vp)) {
+		*validp = true;
+	}
+
+	return (SCF_ERROR_NONE);
+}
+
+static bool
+validate_hour(int64_t v)
+{
+	if ((v >= -24) && (v <= 23)) {
+		return (true);
+	}
+	return (false);
+}
+
+static scf_error_t
+parse_hour(scf_value_t *v, void *vp, bool *validp)
+{
+	int64_t		*ip = vp;
+	scf_error_t	e;
+
+	*validp = false;
+
+	e = parse_int(v, vp, validp);
+	if (e != SCF_ERROR_NONE) {
+		return (e);
+	}
+
+	if (validate_hour(*ip)) {
+		*validp = true;
+	}
+
+	return (SCF_ERROR_NONE);
+}
+
+static bool
+validate_minute(int64_t v)
+{
+	if ((v >= -60) && (v <= 59)) {
+		return (true);
+	}
+	return (false);
+}
+
+static scf_error_t
+parse_minute(scf_value_t *v, void *vp, bool *validp)
+{
+	int64_t		*ip = vp;
+	scf_error_t	e;
+
+	*validp = false;
+
+	e = parse_int(v, vp, validp);
+	if (e != SCF_ERROR_NONE) {
+		return (e);
+	}
+
+	if (validate_minute(*ip)) {
+		*validp = true;
+	}
+
 	return (SCF_ERROR_NONE);
 }
 
@@ -351,7 +578,7 @@ parse_str(scf_value_t *v, void *vp, bool *validp)
 		return (SCF_ERROR_NO_MEMORY);
 	}
 
-	ret = scf_value_get_string(v, s, len + 1);
+	ret = scf_value_get_astring(v, s, len + 1);
 	if (ret < 0) {
 		free(s);
 		return (scf_error());
@@ -360,14 +587,120 @@ parse_str(scf_value_t *v, void *vp, bool *validp)
 	/* The value shouldn't change between invocations */
 	VERIFY3S(ret, ==, len);
 
-	*vp = s;
+	*(char **)vp = s;
 	*validp = true;
 
 	return (SCF_ERROR_NONE);
 }
 
 static scf_error_t
-parse_month(scf_value_t *v, void *vp, bool *validp)
+parse_int(scf_value_t *v, void *vp, bool *validp)
 {
-	/* TODO */
+	*validp = false;
+
+	if (scf_value_get_integer(v, vp) != 0) {
+		return (scf_error());
+	}
+
+	*validp = true;
+	return (SCF_ERROR_NONE);
 }
+
+static scf_error_t
+parse_time(scf_value_t *v, void *vp, bool *validp)
+{
+	/* We ignore the nanosecond portion of the time */
+	int32_t ns = 0;
+
+	*validp = false;
+
+	if (scf_value_get_time(v, vp, &ns) != 0) {
+		return (scf_error());
+	}
+
+	*validp = true;
+	return (SCF_ERROR_NONE);
+}
+
+static scf_error_t
+parse_bool(scf_value_t *v, void *vp, bool *validp)
+{
+	bool	*bp = vp;
+	uint8_t val = 0;
+
+	*validp = false;
+
+	if (scf_value_get_boolean(v, &val) != 0) {
+		return (scf_error());
+	}
+
+	*bp = (val == 0) ? false : true;
+
+	*validp = true;
+
+	return (SCF_ERROR_NONE);
+}
+
+static bool
+get_values(const scf_propertygroup_t *pg, const struct proptbl *tbl, uint_t n,
+    void *s)
+{
+	ssize_t	len = 0;
+
+	len = scf_pg_to_fmri(pg, fmri, max_fmri_len);
+	if (len < 0) {
+		log(_("failed to get fmri from property group: %s"),
+		    scf_strerror(scf_error()));
+		return (false);
+	}
+	VERIFY3S(n, <, max_fmri_len);
+
+	for (uint_t i = 0; i < n; i++, tbl++) {
+		uint8_t		*dest = (uint8_t *)s + tbl->pt_offset;
+		scf_error_t	e;
+		bool		valid;
+
+		if (scf_pg_get_property(pg, tbl->pt_name, prop) < 0) {
+			if (tbl->pt_required) {
+				log(_("%s: missing required %s property"),
+				    fmri, tbl->pt_name);
+				return (false);
+			}
+			continue;
+		}
+
+		if (scf_property_get_value(prop, val) < 0) {
+			log(_("%s: failed getting value of %s property: %s"),
+			    fmri, tbl->pt_name, scf_strerror(scf_error()));
+			return (false);
+		}
+
+		e = tbl->pt_parse(val, dest, &valid);
+		if (e != SCF_ERROR_NONE) {
+			log(_("%s: failed parsing value of %s property: %s"),
+			    fmri, tbl->pt_name, scf_strerror(e));
+			return (false);
+		}
+
+		if (!valid) {
+			log(_("%s: %s property's value is invalid"), fmri,
+			    tbl->pt_name);
+			return (false);
+		}
+	}
+
+	return (true);
+}
+
+bool
+get_scheduled_data(const scf_propertygroup_t *pg, scheduled_data_t *s)
+{
+	return (get_values(pg, sched_tbl, ARRAY_SIZE(sched_tbl), s));
+}
+
+bool
+get_periodic_data(const scf_propertygroup_t *pg, periodic_data_t *p)
+{
+	return (get_values(pg, periodic_tbl, ARRAY_SIZE(periodic_tbl), p));
+}
+

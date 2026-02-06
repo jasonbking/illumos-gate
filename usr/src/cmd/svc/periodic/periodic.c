@@ -16,11 +16,14 @@
 #include <sys/debug.h>
 #include <sys/types.h>
 #include <sys/signalfd.h>
+#include <sys/stat.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <librestart.h>
 #include <libscf.h>
 #include <libuutil.h>
 #include <locale.h>
+#include <paths.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -28,6 +31,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <syslog.h>
+#include <time.h>
 #include <umem.h>
 #include <unistd.h>
 #include <upanic.h>
@@ -121,10 +125,26 @@ init(int fd)
 	sigset_t	mask;
 	sigset_t	omask;
 	int		ret;
+	int		nullfd;
 
 	VERIFY0(sigfillset(&mask));
 	VERIFY0(sigdelset(&mask, SIGABRT));
 	VERIFY0(sigprocmask(SIG_BLOCK, &mask, &omask));
+
+	VERIFY0(chdir("/"));
+
+	nullfd = open(_PATH_DEVNULL, O_RDONLY);
+	if (nullfd < 0) {
+		init_done(fd, EXIT_FAILURE, _("failed to open %s: %s"),
+		    _PATH_DEVNULL, strerror(errno));
+	}
+	VERIFY3S(dup2(nullfd, STDIN_FILENO), >=, 0);
+
+	/* Make our pipefd fd 4, and close anything after that */
+	fd = dup2(fd, STDERR_FILENO + 1);
+	VERIFY3S(fd, >, STDERR_FILENO);
+
+	closefrom(fd + 1);
 
 	start_sig_thread(fd);
 
@@ -344,6 +364,33 @@ event_get_instance(restarter_event_t *evt)
 	VERIFY3U(len, <, max_fmri_len);
 
 	return (fmri);
+}
+
+void
+log(const char *msg, ...)
+{
+	char		buf[64] = { 0 };
+	struct tm	*lt;
+	time_t		now;
+	va_list		ap;
+
+	now = time(NULL);
+	lt = localtime(&now);
+	(void) strftime(buf, sizeof (buf), "%FT%T", lt);
+
+	flockfile(stdout);
+
+	printf("%s ", buf);
+
+	va_start(ap, msg);
+	vprintf(msg, ap);
+	va_end(ap);
+
+	if (msg[strlen(msg) - 1] != '\n') {
+		(void) fputc('\n', stdout);
+	}
+
+	funlockfile(stdout);
 }
 
 void
