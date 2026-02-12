@@ -28,6 +28,7 @@ extern "C" {
 #define	_(x) gettext(x)
 
 struct method_context;
+struct periodic_svc;
 
 typedef struct periodic_exec {
 	char			*pe_exec;
@@ -60,6 +61,7 @@ typedef enum scheduled_ival {
 #define	SCHED_IVAL_NONE	INT64_MAX
 
 typedef struct scheduled_data {
+	char			*ss_name;
 	scheduled_ival_t	ss_interval;
 	uint64_t		ss_frequency;
 	char			*ss_timezone;
@@ -71,6 +73,9 @@ typedef struct scheduled_data {
 	int64_t			ss_day;
 	int64_t			ss_hour;
 	int64_t			ss_minute;
+
+	int64_t			ss_last_run;
+	int64_t			ss_next_run;
 } scheduled_data_t;
 
 typedef enum periodic_svctype {
