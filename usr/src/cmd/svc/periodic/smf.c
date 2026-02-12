@@ -28,6 +28,9 @@
 
 #include "periodic.h"
 
+#define	PG_TYPE_SCHEDULE	"scheduled"
+#define	PG_TYPE_PERIODIC	"periodic"
+
 /*
  * How many times we try to bind to the SCF repository. The value was copied
  * from inetd given the lack of any better guidance on a value. That is to
@@ -95,6 +98,7 @@ static scf_error_t parse_minute(scf_value_t *, void *, bool *);
 static scf_error_t parse_time(scf_value_t *, void *, bool *);
 
 static struct proptbl sched_tbl[] = {
+    { "
     { "interval", offsetof(scheduled_data_t, ss_interval), parse_ival, true },
     { "frequency", offsetof(scheduled_data_t, ss_frequency), parse_count,
 	false },
@@ -121,12 +125,14 @@ static struct proptbl periodic_tbl[] = {
 };
 
 scf_handle_t *rep_hdl;
+scf_service_t *service;
 scf_instance_t *inst;
 scf_transaction_t *xact;
 scf_transaction_entry_t *entry;
 scf_propertygroup_t *pg;
 scf_property_t *prop;
 scf_value_t *val;
+scf_iter_t *iter;
 char *fmri;
 
 static bool
@@ -166,6 +172,13 @@ init_scf(void)
 	}
 
 	fmri = umem_zalloc(max_fmri_len, UMEM_NOFAIL);
+
+	iter = scf_iter_create(rep_hdl);
+	if (iter == NULL) {
+		fprintf(stderr, _("failed to create SCF iter object: %s\n"),
+		   scf_strerror(scf_error()));
+		goto failed;
+	}
 
 	inst = scf_instance_create(rep_hdl);
 	if (inst == NULL) {
@@ -242,6 +255,9 @@ fini_scf(void)
 
 	scf_instance_destroy(inst);
 	inst = NULL;
+
+	scf_iter_destroy(iter);
+	iter = NULL;
 
 	scf_handle_destroy(rep_hdl);
 	rep_hdl = NULL;
@@ -385,7 +401,6 @@ month_to_val(const char *str, int64_t *vp)
 		return (false);
 	}
 
-	
 	return (parse_named(str, months, ARRAY_SIZE(months), vp));
 }
 
@@ -702,5 +717,65 @@ bool
 get_periodic_data(const scf_propertygroup_t *pg, periodic_data_t *p)
 {
 	return (get_values(pg, periodic_tbl, ARRAY_SIZE(periodic_tbl), p));
+}
+
+bool
+get_service(periodic_svc_t *svc)
+{
+	int ret;
+
+	if (scf_handle_decode_fmri(rep_hdl, svc->ps_fmri, NULL, NULL, inst,
+	    NULL, NULL, 0) != 0) {
+		log(_("%s: failed to decode fmri: %s"), svc->ps_fmri,
+		    scf_strerror(scf_error()));
+		return (false);
+	}
+
+	if (scf_iter_instance_pgs_composed(iter, inst, NULL) != 0) {
+		log(_("%s: failed to iterate property groups: %s"),
+		    svc->ps_fmri, scf_strerror(scf_error()));
+		return (false);
+	}
+
+	while ((ret = scf_iter_next_pg(iter, pg)) == 1) {
+		char	*name;
+		ssize_t	n;
+		char	pg_type[10];
+
+		n = scf_pg_get_type(pg, pg_type, sizeof (pg_type));
+		if (n < 0) {
+			log(_("%s: failed to get property group type: %s"),
+			    svc->ps_fmri, scf_strerror(scf_error()));
+			return (false);
+		}
+		if (n >= sizeof (pg_type)) {
+			/* Can't be a pg we're interested in */
+			continue;
+		}
+
+		if (strcmp(pg_type, PG_TYPE_SCHEDULE) == 0) {
+			if (!get_scheduled_data(pg, &svc->ps_u.psu_scheduled)) {
+				return (false);
+			}
+			/* TODO -- get more bits */
+		} else if (strcmp(pg_type, PG_TYPE_PERIODIC) == 0) {
+			if (!get_periodic_data(pg, &svc->ps_u.psu_periodic)) {
+				return (false);
+			}
+			/* TODO -- get more bits */
+		} else {
+			continue;
+		}
+	}
+
+	if (ret < 0) {
+		log(_("%s: error iterating property groups: %s"),
+		    svc->ps_fmri, scf_strerror(scf_error()));
+		return (false);
+	}
+
+	/* TODO get common bits for service */
+
+	return (true);
 }
 
