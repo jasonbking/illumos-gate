@@ -26,6 +26,7 @@
 /*
  * Copyright (c) 2009, Intel Corporation.
  * All rights reserved.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #include <sys/ddi.h>
@@ -672,6 +673,9 @@ immu_qinv_intr_one_cache(immu_t *immu, uint_t iidx, immu_inv_wait_t *iwp)
 	qinv_wait_sync(immu, iwp);
 }
 
+/* Generate a bit mask of the lowest m bits */
+#define	GEN_MASK(m) (((uint_t)2 << m) - 1)
+
 /* queued invalidation interface -- invalidate interrupt entry caches */
 void
 immu_qinv_intr_caches(immu_t *immu, uint_t iidx, uint_t cnt,
@@ -684,7 +688,7 @@ immu_qinv_intr_caches(immu_t *immu, uint_t iidx, uint_t cnt,
 	/* requested interrupt count is not a power of 2 */
 	if (!ISP2(cnt)) {
 		for (i = 0; i < cnt; i++) {
-			qinv_iec_common(immu, iidx + cnt, 0, IEC_INV_INDEX);
+			qinv_iec_common(immu, iidx + i, 0, IEC_INV_INDEX);
 		}
 		qinv_wait_sync(immu, iwp);
 		return;
@@ -694,9 +698,33 @@ immu_qinv_intr_caches(immu_t *immu, uint_t iidx, uint_t cnt,
 		mask++;
 	}
 
-	if (mask > IMMU_ECAP_GET_MHMV(immu->immu_regs_excap)) {
+	/*
+	 * mask determines the number of contiguous entries (starting at
+	 * iidx) to invalidate. The Intel documentation is unfortunately not
+	 * as explicit here as it could be. The description doesn't state
+	 * it, but the name (index mask) and the corresponding table
+	 * (Table 22 in the Intel Virtualization Technology for Directed I/O
+	 * specification) suggest that the lowest 'mask' bits of iidx are
+	 * masked off in order to invalidate multiple entries with one
+	 * descriptor.
+	 *
+	 * The unstated implication is that iidx needs to be a multiple of
+	 * 2^mask in order to do this (i.e. the lowest 'mask' bits of iidx
+	 * must be zero so that a contiguous range of 2^mask entries are
+	 * invalidated starting at iidx).
+	 *
+	 * For large values of 'cnt', we could be more clever and submit
+	 * multiple descriptors with different mask values to invalidate the
+	 * range using fewer descriptors, however it's unclear if the
+	 * added complexity would justify any potential savings. Instead,
+	 * if we can't express the range [iidx, iidx + cnt) with a single
+	 * mask value, we revert to submitting individual descriptors for
+	 * each entry.
+	 */
+	if (mask > IMMU_ECAP_GET_MHMV(immu->immu_regs_excap) ||
+	    ((iidx & GEN_MASK(mask)) != 0)) {
 		for (i = 0; i < cnt; i++) {
-			qinv_iec_common(immu, iidx + cnt, 0, IEC_INV_INDEX);
+			qinv_iec_common(immu, iidx + i, 0, IEC_INV_INDEX);
 		}
 		qinv_wait_sync(immu, iwp);
 		return;
