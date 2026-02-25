@@ -235,11 +235,7 @@ extern page_t *page_get_high_mfn(mfn_t);
 extern hrtime_t tsc_gethrtime_tick_delta(void);
 extern hrtime_t tsc_gethrtime_params(uint64_t *, uint32_t *, uint8_t *);
 
-/*
- * PCIe Initialization functions
- */
-extern void pcie_cfgspace_init(void);
-extern void pcie_cfgspace_remap(void);
+extern void pci_cfgacc_mmio_remap(void);
 
 #endif /* _KERNEL */
 

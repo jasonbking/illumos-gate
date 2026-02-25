@@ -38,20 +38,6 @@ extern "C" {
 #endif
 
 /*
- * Memory mapped IO routines
- */
-extern uint8_t pcie_cfgspace_read_uint8(int bus, int dev, int func, int reg);
-extern uint16_t pcie_cfgspace_read_uint16(int bus, int dev, int func, int reg);
-extern uint32_t pcie_cfgspace_read_uint32(int bus, int dev, int func, int reg);
-extern void pcie_cfgspace_write_uint8(int bus, int dev, int func, int reg,
-    uint8_t val);
-extern void pcie_cfgspace_write_uint16(int bus, int dev, int func, int reg,
-    uint16_t val);
-extern void pcie_cfgspace_write_uint32(int bus, int dev, int func, int reg,
-    uint32_t val);
-
-
-/*
  * Generic Mechanism 1 routines
  * XX64 putb -> put8, putw -> put16 etc.
  */
@@ -153,9 +139,11 @@ extern void pci_orion_putl(uint8_t bus, uint8_t dev, uint8_t func, uint16_t reg,
 #define	PCI_MECH1_SPEC_CYCLE_DEV	0x1f	/* dev to request spec cyc */
 #define	PCI_MECH1_SPEC_CYCLE_FUNC	0x07	/* func to request spec cyc */
 
-extern uint64_t mcfg_mem_base;
-extern uint8_t mcfg_bus_start;
-extern uint8_t mcfg_bus_end;
+extern uint64_t *mcfg_mem_base;
+extern uint8_t *mcfg_bus_start;
+extern uint8_t *mcfg_bus_end;
+extern uint16_t *mcfg_segments;
+extern uint16_t mcfg_n_segments;
 
 /*
  * Mutexes for pci config space routines
