@@ -24,6 +24,7 @@
  * Use is subject to license terms.
  * Copyright 2018 Joyent, Inc.
  * Copyright 2019 Western Digital Corporation
+ * Copyright 2025-2026 RackTop Systems, Inc.
  */
 /*
  * Copyright (c) 2009-2010, Intel Corporation.
@@ -1039,7 +1040,7 @@ AcpiOsDerivePciId(ACPI_HANDLE rhandle, ACPI_HANDLE chandle,
 {
 	ACPI_HANDLE handle;
 	dev_info_t *dip;
-	int bus, device, func, devfn;
+	int seg, bus, device, func, devfn;
 
 	/*
 	 * See above - avoid recursing during scanning_d2a_map.
@@ -1059,6 +1060,9 @@ AcpiOsDerivePciId(ACPI_HANDLE rhandle, ACPI_HANDLE chandle,
 	 */
 	if (ACPI_SUCCESS(acpica_get_devinfo(handle, &dip)) &&
 	    (acpica_get_bdf(dip, &bus, &device, &func) >= 0)) {
+		seg = ddi_prop_get_int(DDI_DEV_T_ANY, dip, 0, "pci-segment", 0);
+
+		(*PciId)->Segment = seg;
 		(*PciId)->Bus = bus;
 		(*PciId)->Device = device;
 		(*PciId)->Function = func;
