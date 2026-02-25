@@ -28,6 +28,7 @@
  *
  * Copyright 2020 Joyent, Inc.
  * Copyright 2024 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -2509,25 +2510,47 @@ find_fw_table(ACPI_TABLE_RSDP *rsdp, char *signature)
 static void
 process_mcfg(ACPI_TABLE_MCFG *tp)
 {
-	ACPI_MCFG_ALLOCATION *cfg_baap;
-	char *cfg_baa_endp;
-	int64_t ecfginfo[4];
+	ACPI_MCFG_ALLOCATION *cfg_baap, *cfg_baa_endp;
+	uint64_t *ecfginfo;
+	size_t len;
+	uint_t i, n_segment;
 
 	cfg_baap = (ACPI_MCFG_ALLOCATION *)((uintptr_t)tp + sizeof (*tp));
-	cfg_baa_endp = ((char *)tp) + tp->Header.Length;
-	while ((char *)cfg_baap < cfg_baa_endp) {
-		if (cfg_baap->Address != 0 && cfg_baap->PciSegment == 0) {
-			ecfginfo[0] = cfg_baap->Address;
-			ecfginfo[1] = cfg_baap->PciSegment;
-			ecfginfo[2] = cfg_baap->StartBusNumber;
-			ecfginfo[3] = cfg_baap->EndBusNumber;
-			bsetprop(DDI_PROP_TYPE_INT64,
-			    MCFG_PROPNAME, strlen(MCFG_PROPNAME),
-			    ecfginfo, sizeof (ecfginfo));
-			break;
-		}
+	cfg_baa_endp = (ACPI_MCFG_ALLOCATION *)((uintptr_t)tp +
+	    tp->Header.Length);
+
+	n_segment = 0;
+	while (cfg_baap < cfg_baa_endp) {
+		if (cfg_baap->Address != 0)
+			n_segment++;
 		cfg_baap++;
 	}
+
+	if (n_segment == 0)
+		return;
+
+	len = n_segment * 4 * sizeof (int64_t);
+	ecfginfo = (uint64_t *)do_bsys_alloc(NULL, NULL, len,
+	    sizeof (uint64_t));
+	i = 0;
+
+	cfg_baap = (ACPI_MCFG_ALLOCATION *)((uintptr_t)tp + sizeof (*tp));
+	while (cfg_baap < cfg_baa_endp) {
+		if (cfg_baap->Address == 0) {
+			cfg_baap++;
+			continue;
+		}
+
+		ecfginfo[i++] = cfg_baap->Address;
+		ecfginfo[i++] = cfg_baap->PciSegment;
+		ecfginfo[i++] = cfg_baap->StartBusNumber;
+		ecfginfo[i++] = cfg_baap->EndBusNumber;
+
+		cfg_baap++;
+	}
+
+	bsetprop(DDI_PROP_TYPE_INT64, MCFG_PROPNAME, strlen(MCFG_PROPNAME),
+	    ecfginfo, len);
 }
 
 #ifndef __xpv
@@ -2963,8 +2986,9 @@ build_firmware_properties(struct xboot_info *xbp)
 		tp = find_fw_table(rsdp, ACPI_SIG_MCFG);
 	}
 #endif /* __xpv */
-	if (tp != NULL)
+	if (tp != NULL) {
 		process_mcfg((ACPI_TABLE_MCFG *)tp);
+	}
 
 	/*
 	 * Map the first HPET table (if it exists) and save the address.

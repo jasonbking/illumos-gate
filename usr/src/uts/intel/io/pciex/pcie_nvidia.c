@@ -43,8 +43,6 @@
 /* Globals */
 extern int pci_boot_debug;
 
-extern uint64_t mcfg_mem_base;
-
 boolean_t
 check_if_device_is_pciex(dev_info_t *cdip, uchar_t bus, uchar_t dev,
     uchar_t func, boolean_t *slot_valid, ushort_t *slot_number,

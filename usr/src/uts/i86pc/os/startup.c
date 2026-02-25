@@ -1932,7 +1932,7 @@ startup_vm(void)
 	 * If using memory-mapped IO, tell pcie to switch to device arena
 	 * mappings.
 	 */
-	pcie_cfgspace_remap();
+	pci_cfgacc_mmio_remap();
 
 	/*
 	 * Now that we've got more VA, as well as the ability to allocate from

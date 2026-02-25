@@ -62,10 +62,16 @@ int	PCI_PROBE_TYPE = 0;
 /*
  * No valid mcfg_mem_base by default, and accessing pci config space
  * in mem-mapped way is disabled.
+ *
+ * Other bits in the kernel uses these, so they've been extended for
+ * PCI segment support until those other bits can (hopefully) be
+ * reworked.
  */
-uint64_t mcfg_mem_base = 0;
-uint8_t mcfg_bus_start = 0;
-uint8_t mcfg_bus_end = 0xff;
+uint64_t *mcfg_mem_base;
+uint16_t *mcfg_segments;
+uint8_t *mcfg_bus_start;
+uint8_t *mcfg_bus_end;
+uint16_t mcfg_n_segments;
 
 /*
  * Maximum offset in config space when not using MMIO
@@ -93,10 +99,13 @@ void (*pci_putl_func)(uint8_t bus, uint8_t dev, uint8_t func, uint16_t reg,
 
 extern void (*pci_cfgacc_acc_p)(pci_cfgacc_req_t *req);
 
+extern void pci_cfgacc_mmio_init(void);
+
 /*
  * Internal routines
  */
 static int pci_check(void);
+static void pci_init_mmio(void);
 
 #if !defined(__xpv)
 static int pci_check_bios(void);
@@ -135,8 +144,6 @@ pci_cfgspace_init(void)
 static int
 pci_check(void)
 {
-	uint64_t ecfginfo[4];
-
 	/*
 	 * Only do this once.  NB:  If this is not a PCI system, and we
 	 * get called twice, we can't detect it and will probably die
@@ -146,29 +153,6 @@ pci_check(void)
 	 */
 	if (pci_bios_cfg_type != PCI_MECHANISM_UNKNOWN)
 		return (TRUE);
-
-	/*
-	 * Try to get a valid mcfg_mem_base in early boot
-	 * If failed, leave mem-mapped pci config space accessing disabled
-	 * until pci boot code (pci_autoconfig) makes sure this is a PCIE
-	 * platform.
-	 */
-	if (do_bsys_getprop(NULL, MCFG_PROPNAME, ecfginfo) != -1) {
-		mcfg_mem_base = ecfginfo[0];
-		mcfg_bus_start = ecfginfo[2];
-		mcfg_bus_end = ecfginfo[3];
-
-		if (mcfg_mem_base != 0) {
-			extern void pcie_cfgspace_init(void);
-
-			pci_bios_maxbus = mcfg_bus_end;
-
-			pci_bios_cfg_type = PCI_MECHANISM_MMIO;
-			pcie_cfgspace_init();
-
-			return (TRUE);
-		}
-	}
 
 #if defined(__xpv)
 	/*
@@ -260,19 +244,10 @@ pci_check(void)
 	default:
 		return (FALSE);
 	}
-#endif /* __xpv */
 
-	/*
-	 * Try to get a valid mcfg_mem_base in early boot
-	 * If failed, leave mem-mapped pci config space accessing disabled
-	 * until pci boot code (pci_autoconfig) makes sure this is a PCIE
-	 * platform.
-	 */
-	if (do_bsys_getprop(NULL, MCFG_PROPNAME, ecfginfo) != -1) {
-		mcfg_mem_base = ecfginfo[0];
-		mcfg_bus_start = ecfginfo[2];
-		mcfg_bus_end = ecfginfo[3];
-	}
+	pci_init_mmio();
+
+#endif /* __xpv */
 
 	/* See pci_cfgacc.c */
 	pci_cfgacc_acc_p = pci_cfgacc_acc;
@@ -373,4 +348,88 @@ pci_get_cfg_type(void)
 	}
 }
 
+static void
+pci_init_mmio(void)
+{
+	uint64_t *ecfg;
+	size_t len;
+	int ecfglen;
+
+	ecfglen = do_bsys_getproplen(bootops, MCFG_PROPNAME);
+	if (ecfglen <= 0)
+		return;
+
+	/*
+	 * For each entry in the MCFG table, there should be 4 values --
+	 * the physicall address of the configuration space, the segment
+	 * number, the starting bus, and the ending bus.
+	 */
+	if (ecfglen % (4 * sizeof (uint64_t)) != 0) {
+		return;
+	}
+
+	/*
+	 * We let this get cleaned up once we clean up the initial boot
+	 * mappings.
+	 */
+	ecfg = (uint64_t *)BOP_ALLOC(bootops, NULL, ecfglen, sizeof (uint64_t));
+
+	if (do_bsys_getprop(bootops, MCFG_PROPNAME, ecfg) < 0)
+		return;
+
+	mcfg_n_segments = ecfglen / (4 * sizeof (uint64_t));
+
+	/*
+	 * Since the early boot alloactor isn't very sophisticated, we
+	 * try to minimize allocations by doing this as one big chunk.
+	 * Logically the memory can be thought as:
+	 *
+	 * 	uint64_t	base_address[mcfg_n_segment];
+	 * 	uint16_t        segments[mcfg_n_segment];
+	 * 	uint8_t		bus_start[mcfg_n_segment];
+	 * 	uint8_t		bus_end[mcfg_n_segment];
+	 *
+	 * Which will pack nicely on x86 (no gaps).
+	 *
+	 * Eventually, it would be nice to eliminate the mcfg_xxx variables
+	 * altogether and directly reference the ACPI_MCFG_ALLOCATION entries
+	 * when needed instead of making what is in effect a copy of it.
+	 */
+	len = mcfg_n_segments * (sizeof (uint64_t) + sizeof (uint16_t) +
+	    sizeof (uint8_t) + sizeof (uint8_t));
+	mcfg_mem_base = (uint64_t *)BOP_ALLOC(bootops, (caddr_t)MISC_VA_BASE,
+	    len, sizeof (uint64_t) /* alignment */);
+	mcfg_segments = (uint16_t *)(mcfg_mem_base + mcfg_n_segments);
+	mcfg_bus_start = (uint8_t *)(mcfg_segments + mcfg_n_segments);
+	mcfg_bus_end = (uint8_t *)(mcfg_bus_start + mcfg_n_segments);
+
+	for (uint_t i = 0; i < mcfg_n_segments; i++) {
+		mcfg_mem_base[i] = ecfg[i * 4];
+		mcfg_segments[i] = (uint16_t)ecfg[(i * 4) + 1];
+		mcfg_bus_start[i] = (uint8_t)ecfg[(i * 4) + 2];
+		mcfg_bus_end[i] = (uint8_t)ecfg[(i * 4) + 3];
+#ifdef DEBUG
+		bop_printf(NULL, "MCFG [%u]:\taddr = 0x%p\n", i,
+		    (void *)mcfg_mem_base[i]);
+		bop_printf(NULL, "\t\tsegment = %u\n", mcfg_segments[i]);
+		bop_printf(NULL, "\t\tbus range = 0x%x - 0x%x\n",
+		    mcfg_bus_start[i], mcfg_bus_end[i]);
+#endif
+	}
+
+	/*
+	 * We leave the pci_{get,put}{b,w,l}_func pointers using the legacy
+	 * mechanism1 pointers for access to the segment 0 configuration space.
+	 * Most consumers will ultimately access PCI config space
+	 * via the pci_cfgacc_acc_p pointer which can do either MMIO or
+	 * IO based cfgspace access as appropriate (and can access the
+	 * configuration space for non-zero PCI segments). This allows the
+	 * existing code that depends on IO space access for working around
+	 * legacy hardware issues to stay mostly if not completely unmodified
+	 * until we have an opportunity to revisit the PCI probing code in
+	 * detail.
+	 */
+
+	pci_cfgacc_mmio_init();
+}
 #endif	/* __xpv */

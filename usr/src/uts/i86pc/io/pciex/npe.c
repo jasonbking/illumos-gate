@@ -28,6 +28,7 @@
  * Copyright 2012 Garrett D'Amore <garrett@damore.org>.  All rights reserved.
  * Copyright 2019 Joyent, Inc.
  * Copyright 2024 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -499,6 +500,77 @@ npe_setup_std_pcicfg_acc(dev_info_t *rdip, ddi_map_req_t *mp,
 	return (ret);
 }
 
+static boolean_t
+npe_setup_mmio_pcicfg_acc(dev_info_t *rdip, pci_acc_cfblk_t *cfp,
+    pci_regspec_t *pci_rp)
+{
+	uint64_t *ecfg;
+	uint64_t addr;
+	uint_t i, nelem;
+	int seg;
+	boolean_t ret = B_FALSE;
+
+	seg = ddi_prop_get_int(DDI_DEV_T_ANY, rdip, 0, "pci-segment", 0);
+
+	if (ddi_prop_lookup_int64_array(DDI_DEV_T_ANY, rdip, 0, "ecfg",
+	    (int64_t **)&ecfg, &nelem) != DDI_PROP_SUCCESS) {
+		return (B_FALSE);
+	}
+
+	if (nelem % 4 != 0)
+		goto done;
+
+	for (i = 0; i < nelem; i += 4) {
+		/*
+		 * Since we know nelem is a multiple of 4 by the earlier
+		 * check, ecfg[i + 0..3] will not overrun the array.
+		 */
+		if (ecfg[i + 1] != seg)
+			continue;
+
+		if (cfp->c_busnum < ecfg[i + 2] ||
+		    cfp->c_busnum > ecfg[i + 3]) {
+			/*
+			 * Either the ecfg property is invalid or the requested
+			 * bus is outside of the range. Fall back to I/O-based
+			 * config access.
+			 */
+			return (B_FALSE);
+		}
+
+		addr = ecfg[i];
+
+		/*
+		 * The address for memory mapped configuration
+		 * space may theoretically be anywhere in the
+		 * processor's physical address space.
+		 *
+		 * We need to set both phys_mid and phys_low to
+		 * account for this. Because we are mapping a
+		 * single device, which has 1 KiB region and
+		 * alignment requirements, along with the fact
+		 * that we only allow for segment 0, means that
+		 * the offset will always fit in the lower
+		 * 32-bit word.
+		 */
+		pci_rp->pci_phys_mid = (uint32_t)(addr >> 32);
+		pci_rp->pci_phys_low = (uint32_t)addr;
+
+		pci_rp->pci_phys_low += ((cfp->c_busnum << 20) |
+		    (cfp->c_devnum) << 15 | (cfp->c_funcnum << 12));
+
+		pci_rp->pci_size_hi = 0;
+		pci_rp->pci_size_low = PCIE_CONF_HDR_SIZE;
+
+		ret = B_TRUE;
+		break;
+	}
+
+done:
+	ddi_prop_free(ecfg);
+	return (ret);
+}
+
 static int
 npe_bus_map(dev_info_t *dip, dev_info_t *rdip, ddi_map_req_t *mp,
     off_t offset, off_t len, caddr_t *vaddrp)
@@ -513,7 +585,6 @@ npe_bus_map(dev_info_t *dip, dev_info_t *rdip, ddi_map_req_t *mp,
 	struct regspec64 reg;
 	pci_acc_cfblk_t	*cfp;
 	int		retval;
-	int64_t		*ecfginfo;
 	uint_t		nelem;
 	uint64_t	pci_rlength;
 
@@ -657,7 +728,6 @@ npe_bus_map(dev_info_t *dip, dev_info_t *rdip, ddi_map_req_t *mp,
 	 * ii) register with FMA
 	 */
 	if (space == PCI_ADDR_CONFIG) {
-
 		/* Can't map config space without a handle */
 		hp = (ddi_acc_hdl_t *)mp->map_handlep;
 		if (hp == NULL)
@@ -677,56 +747,13 @@ npe_bus_map(dev_info_t *dip, dev_info_t *rdip, ddi_map_req_t *mp,
 			    offset, len));
 		}
 
-
-		if (ddi_prop_lookup_int64_array(DDI_DEV_T_ANY, rdip, 0,
-		    "ecfg", &ecfginfo, &nelem) == DDI_PROP_SUCCESS) {
-
-			if (nelem != 4 ||
-			    cfp->c_busnum < ecfginfo[2] ||
-			    cfp->c_busnum > ecfginfo[3]) {
-				/*
-				 * Invalid property or Doesn't contain the
-				 * requested bus; fall back to standard
-				 * (I/O-based) config access.
-				 */
-				ddi_prop_free(ecfginfo);
-				return (npe_setup_std_pcicfg_acc(rdip, mp, hp,
-				    offset, len));
-			} else {
-				uint64_t addr = (uint64_t)ecfginfo[0];
-
-				/*
-				 * The address for memory mapped configuration
-				 * space may theoretically be anywhere in the
-				 * processor's physical address space.
-				 *
-				 * We need to set both phys_mid and phys_low to
-				 * account for this. Because we are mapping a
-				 * single device, which has 1 KiB region and
-				 * alignment requirements, along with the fact
-				 * that we only allow for segment 0, means that
-				 * the offset will always fit in the lower
-				 * 32-bit word.
-				 */
-				pci_rp->pci_phys_mid = (uint32_t)(addr >> 32);
-				pci_rp->pci_phys_low = (uint32_t)addr;
-
-				ddi_prop_free(ecfginfo);
-
-				pci_rp->pci_phys_low += ((cfp->c_busnum << 20) |
-				    (cfp->c_devnum) << 15 |
-				    (cfp->c_funcnum << 12));
-
-				pci_rp->pci_size_hi = 0;
-				pci_rp->pci_size_low = PCIE_CONF_HDR_SIZE;
-			}
-		} else {
+		if (!npe_setup_mmio_pcicfg_acc(rdip, cfp, pci_rp)) {
 			/*
 			 * Couldn't find the MMCFG property -- fall back to
 			 * standard config access
 			 */
-			return (npe_setup_std_pcicfg_acc(rdip, mp, hp,
-			    offset, len));
+			return (npe_setup_std_pcicfg_acc(rdip, mp, hp, offset,
+			    len));
 		}
 	}
 
