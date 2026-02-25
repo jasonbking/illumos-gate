@@ -29,6 +29,7 @@
 /*
  * Copyright 2012 Garrett D'Amore <garrett@damore.org>.  All rights reserved.
  * Copyright 2017 Joyent, Inc.
+ * Copyright 2025-2026 RackTop Systems, Inc.
  */
 
 /*
@@ -699,11 +700,15 @@ create_immu_devi(dev_info_t *rdip, int bus, int dev, int func,
 	boolean_t pciex = B_FALSE;
 	int kmflags;
 	boolean_t is_pcib = B_FALSE;
+	int seg;
 
 	/* bus ==  -1 indicate non-PCI device (no BDF) */
 	ASSERT(bus == -1 || bus >= 0);
 	ASSERT(dev >= 0);
 	ASSERT(func >= 0);
+
+	/* We default to segment 0 */
+	seg = ddi_prop_get_int(DDI_DEV_T_ANY, rdip, 0, "pci-segment", 0);
 
 	kmflags = (immu_flags & IMMU_FLAGS_NOSLEEP) ? KM_NOSLEEP : KM_SLEEP;
 	immu_devi = kmem_zalloc(sizeof (immu_devi_t), kmflags);
@@ -713,7 +718,7 @@ create_immu_devi(dev_info_t *rdip, int bus, int dev, int func,
 		return (NULL);
 	}
 	immu_devi->imd_dip = rdip;
-	immu_devi->imd_seg = 0; /* Currently seg can only be 0 */
+	immu_devi->imd_seg = seg;
 	immu_devi->imd_bus = bus;
 	immu_devi->imd_pcib_type = IMMU_PCIB_BAD;
 
