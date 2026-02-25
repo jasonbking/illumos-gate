@@ -21,6 +21,7 @@
 
 /*
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #include <sys/systm.h>
@@ -158,9 +159,19 @@ pci_cfgacc_mmio(pci_cfgacc_req_t *req)
 {
 	caddr_t vaddr;
 	paddr_t paddr;
+	int seg = 0;
+
+	/*
+	 * We assume access without a dip is legacy stuff to segment 0
+	 */
+	if (req->rcdip != NULL) {
+		seg = ddi_prop_get_int(DDI_DEV_T_ANY, req->rcdip, 0,
+		    "pci-segment", 0);
+		ASSERT3S(seg, <=, mcfg_max_segment);
+	}
 
 	paddr = (paddr_t)req->bdf << 12;
-	paddr += mcfg_mem_base + req->offset;
+	paddr += mcfg_mem_base[seg] + req->offset;
 
 	mutex_enter(&pcicfg_mmio_mutex);
 	vaddr = pci_cfgacc_map(paddr);
@@ -199,6 +210,24 @@ static boolean_t
 pci_cfgacc_valid(pci_cfgacc_req_t *req, uint16_t cfgspc_size)
 {
 	int sz = req->size;
+	int seg = 0;
+
+	if (req->rcdip != NULL) {
+		seg = ddi_prop_get_int(DDI_DEV_T_ANY, req->rcdip, 0,
+		    "pci-segment", 0);
+
+		if (seg > mcfg_max_segment)
+			return (B_FALSE);
+
+		/*
+		 * Out of an abundance of caution, and a lack of access to the
+		 * PCIe specs, we don't assume contiguous segment values
+		 * at least a this time, and need to assume gaps are
+		 * possible.
+		 */
+		if (seg > 0 && mcfg_mem_base[seg] == 0)
+			return (B_FALSE);
+	}
 
 	if (IS_P2ALIGNED(req->offset, sz) &&
 	    (req->offset + sz - 1 < cfgspc_size) &&
@@ -213,14 +242,29 @@ pci_cfgacc_valid(pci_cfgacc_req_t *req, uint16_t cfgspc_size)
 void
 pci_cfgacc_check_io(pci_cfgacc_req_t *req)
 {
+	int seg = 0;
 	uint8_t bus;
 
 	bus = PCI_BDF_BUS(req->bdf);
 
-	if (pci_cfgacc_force_io || (mcfg_mem_base == 0) ||
-	    (bus < mcfg_bus_start) || (bus > mcfg_bus_end) ||
-	    pci_cfgacc_find_workaround(req->bdf))
+	/*
+	 * We assume access without a dip is legacy stuff to segment 0
+	 */
+	if (req->rcdip != NULL) {
+		seg = ddi_prop_get_int(DDI_DEV_T_ANY, req->rcdip, 0,
+		    "pci-segment", 0);
+		ASSERT3S(seg, <=, mcfg_max_segment);
+	}
+
+	/* cfg access via IO space is not possible for segments > 0 */
+	if (seg > 0)
+		return;
+
+	if (pci_cfgacc_force_io || mcfg_mem_base == NULL ||
+	    mcfg_mem_base[0] == 0 || bus < mcfg_bus_start[0] ||
+	    bus > mcfg_bus_end[0] || pci_cfgacc_find_workaround(req->bdf)) {
 		req->ioacc = B_TRUE;
+	}
 }
 
 void

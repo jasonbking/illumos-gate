@@ -22,6 +22,7 @@
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2022 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #ifndef _SYS_PCI_CFGSPACE_IMPL_H
@@ -139,9 +140,10 @@ extern void pci_orion_putl(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
 #define	PCI_MECH1_SPEC_CYCLE_DEV	0x1f	/* dev to request spec cyc */
 #define	PCI_MECH1_SPEC_CYCLE_FUNC	0x07	/* func to request spec cyc */
 
-extern uint64_t mcfg_mem_base;
-extern uint8_t mcfg_bus_start;
-extern uint8_t mcfg_bus_end;
+extern uint64_t *mcfg_mem_base;
+extern uint8_t *mcfg_bus_start;
+extern uint8_t *mcfg_bus_end;
+extern uint16_t mcfg_max_segment;
 
 /*
  * Mutexes for pci config space routines

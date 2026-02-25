@@ -28,6 +28,7 @@
  * Copyright 2012 Garrett D'Amore <garrett@damore.org>.  All rights reserved.
  * Copyright 2019 Joyent, Inc.
  * Copyright 2024 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -657,6 +658,7 @@ npe_bus_map(dev_info_t *dip, dev_info_t *rdip, ddi_map_req_t *mp,
 	 * ii) register with FMA
 	 */
 	if (space == PCI_ADDR_CONFIG) {
+		int seg;
 
 		/* Can't map config space without a handle */
 		hp = (ddi_acc_hdl_t *)mp->map_handlep;
@@ -678,12 +680,14 @@ npe_bus_map(dev_info_t *dip, dev_info_t *rdip, ddi_map_req_t *mp,
 		}
 
 
+		seg = ddi_prop_get_int(DDI_DEV_T_ANY, rdip, 0,
+		    "pci-segment", 0);
+
 		if (ddi_prop_lookup_int64_array(DDI_DEV_T_ANY, rdip, 0,
 		    "ecfg", &ecfginfo, &nelem) == DDI_PROP_SUCCESS) {
-
-			if (nelem != 4 ||
-			    cfp->c_busnum < ecfginfo[2] ||
-			    cfp->c_busnum > ecfginfo[3]) {
+			if (nelem % 4 != 0 || nelem / 4 < seg ||
+			    cfp->c_busnum < ecfginfo[(seg * 4) + 2] ||
+			    cfp->c_busnum > ecfginfo[(seg * 4) + 3]) {
 				/*
 				 * Invalid property or Doesn't contain the
 				 * requested bus; fall back to standard
@@ -693,7 +697,11 @@ npe_bus_map(dev_info_t *dip, dev_info_t *rdip, ddi_map_req_t *mp,
 				return (npe_setup_std_pcicfg_acc(rdip, mp, hp,
 				    offset, len));
 			} else {
-				uint64_t addr = (uint64_t)ecfginfo[0];
+				/*
+				 * The first item in each 4-tuple of ecfg is
+				 * the ecfg address.
+				 */
+				uint64_t addr = (uint64_t)ecfginfo[seg * 4];
 
 				/*
 				 * The address for memory mapped configuration

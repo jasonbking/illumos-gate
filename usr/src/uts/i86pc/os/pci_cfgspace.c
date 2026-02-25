@@ -63,9 +63,10 @@ int	PCI_PROBE_TYPE = 0;
  * No valid mcfg_mem_base by default, and accessing pci config space
  * in mem-mapped way is disabled.
  */
-uint64_t mcfg_mem_base = 0;
-uint8_t mcfg_bus_start = 0;
-uint8_t mcfg_bus_end = 0xff;
+uint64_t *mcfg_mem_base;
+uint8_t *mcfg_bus_start;
+uint8_t *mcfg_bus_end;
+uint16_t mcfg_max_segment;
 
 /*
  * Maximum offset in config space when not using MMIO
@@ -135,7 +136,9 @@ pci_cfgspace_init(void)
 static int
 pci_check(void)
 {
-	uint64_t ecfginfo[4];
+	uint64_t *ecfginfo;
+	size_t len;
+	int ecfglen;
 
 	/*
 	 * Only do this once.  NB:  If this is not a PCI system, and we
@@ -245,12 +248,66 @@ pci_check(void)
 	 * until pci boot code (pci_autoconfig) makes sure this is a PCIE
 	 * platform.
 	 */
-	if (do_bsys_getprop(NULL, MCFG_PROPNAME, ecfginfo) != -1) {
-		mcfg_mem_base = ecfginfo[0];
-		mcfg_bus_start = ecfginfo[2];
-		mcfg_bus_end = ecfginfo[3];
+	ecfglen = do_bsys_getproplen(NULL, MCFG_PROPNAME);
+	if (ecfglen <= 0)
+		goto done;
+
+	/* XXX: Should we panic if this fails?* */
+	if (ecfglen % sizeof (uint64_t) != 0)
+		goto done;
+
+	if (ecfglen % 4 != 0)
+		goto done;
+
+	ecfginfo = (uint64_t *)BOP_ALLOC(bootops, NULL, ecfglen,
+	    sizeof (uint64_t));
+	if (do_bsys_getprop(NULL, MCFG_PROPNAME, ecfginfo) == -1) {
+		BOP_FREE(bootops, (caddr_t)ecfginfo, ecfglen);
+		goto done;
 	}
 
+	/*
+	 * The ecfginfo array is a sequence of:
+	 * [0] base address
+	 * [1] segment
+	 * [2] bus start
+	 * [3] bus end
+	 *
+	 * for each segment. We don't assume segments are consecu
+	 */
+	for (uint_t i = 0; i < ecfglen / sizeof (uint64_t); i += 4) {
+		if (ecfginfo[i + 1] > mcfg_max_segment)
+			mcfg_max_segment = ecfginfo[i + 1];
+	}
+
+	/*
+	 * Since the early boot alloactor isn't very sophisticated, we
+	 * try to minimize allocations by doing this as one big chunk.
+	 * Logically it can be thought of as:
+	 * 	uint64_t	base_address[mcfg_max_segment + 1];
+	 * 	uint8_t		bus_start[mcfg_max_segment + 1];
+	 * 	uint8_t		bus_end[mcfg_max_segment + 1];
+	 *
+	 * Which will pack nicely on x86 (no gaps).
+	 */
+	len = (mcfg_max_segment + 1) * (sizeof (uint64_t) + sizeof (uint8_t) +
+	    sizeof (uint8_t));
+	mcfg_mem_base = (uint64_t *)BOP_ALLOC(bootops, (caddr_t)MISC_VA_BASE,
+	    len, sizeof (uint64_t));
+	mcfg_bus_start = (uint8_t *)(mcfg_mem_base + mcfg_max_segment + 1);
+	mcfg_bus_end = mcfg_bus_start + mcfg_max_segment + 1;
+
+	for (uint_t i = 0; i < ecfglen / sizeof (uint64_t); i += 4) {
+		uint16_t seg = ecfginfo[i + 1];
+
+		mcfg_mem_base[seg] = ecfginfo[i + 0];
+		mcfg_bus_start[seg] = ecfginfo[i + 2];
+		mcfg_bus_end[seg] = ecfginfo[i + 3];
+	}
+
+	BOP_FREE(bootops, (caddr_t)ecfginfo, ecfglen);
+
+done:
 	/* See pci_cfgacc.c */
 	pci_cfgacc_acc_p = pci_cfgacc_acc;
 

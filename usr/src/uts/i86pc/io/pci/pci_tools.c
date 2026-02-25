@@ -24,6 +24,7 @@
 
 /*
  * Copyright 2026 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #include <sys/sysmacros.h>
@@ -48,6 +49,7 @@
 #include <sys/x86_archext.h>
 #include <sys/cpuvar.h>
 #include <sys/pci_cfgacc.h>
+#include <sys/debug.h>
 
 #ifdef __xpv
 #include <sys/hypervisor.h>
@@ -60,16 +62,21 @@
 
 #define	SUCCESS	0
 
-extern uint64_t mcfg_mem_base;
+/*
+ * XXX: These are defined in sys/pci_cfgspace_impl.h -- should we just
+ * import it so we're using one definition?
+ */
+extern uint64_t *mcfg_mem_base;
 extern uint_t pci_iocfg_max_offset;
+
 int pcitool_debug = 0;
 
 /* Max offset allowed into config space for a particular device. */
 static uint64_t max_cfg_size = PCI_CONF_HDR_SIZE;
 
 static uint64_t pcitool_swap_endian(uint64_t data, int size);
-static int pcitool_cfg_access(pcitool_reg_t *prg, boolean_t write_flag,
-    boolean_t io_access);
+static int pcitool_cfg_access(uint16_t, pcitool_reg_t *prg,
+    boolean_t write_flag, boolean_t io_access);
 static int pcitool_io_access(pcitool_reg_t *prg, boolean_t write_flag);
 static int pcitool_mem_access(pcitool_reg_t *prg, uint64_t virt_addr,
     boolean_t write_flag);
@@ -567,7 +574,7 @@ pcitool_swap_endian(uint64_t data, int size)
 
 /* Access device.  prg is modified. */
 static int
-pcitool_cfg_access(pcitool_reg_t *prg, boolean_t write_flag,
+pcitool_cfg_access(uint16_t seg, pcitool_reg_t *prg, boolean_t write_flag,
     boolean_t io_access)
 {
 	int size = PCITOOL_ACC_ATTR_SIZE(prg->acc_attr);
@@ -579,6 +586,11 @@ pcitool_cfg_access(pcitool_reg_t *prg, boolean_t write_flag,
 
 	if ((size <= 0) || (size > 8) || !ISP2(size)) {
 		prg->status = PCITOOL_INVALID_SIZE;
+		return (ENOTSUP);
+	}
+
+	if (seg > 0 && io_access) {
+		prg->status = PCITOOL_INVALID_ADDRESS;
 		return (ENOTSUP);
 	}
 
@@ -598,6 +610,20 @@ pcitool_cfg_access(pcitool_reg_t *prg, boolean_t write_flag,
 	}
 
 	prg->status = PCITOOL_SUCCESS;
+
+	/*
+	 * XXX: Since I belive this is called on the host bridge, we
+	 * have the segment, but since we're not passing a dip, we can't
+	 * do anything but the first segment.
+	 *
+	 * jbk--Can we set rcdip to our dip??? That seems like it might
+	 * solve the issue, but I'm not sure what the implications of
+	 * doing that might be (and if it'd result in something undesired.
+	 */
+	if (seg > 0) {
+		prg->status = PCITOOL_INVALID_ADDRESS;
+		return (ENOTSUP);
+	}
 
 	req.rcdip = NULL;
 	req.bdf = PCI_GETBDF(prg->bus_no, prg->dev_no, prg->func_no);
@@ -650,8 +676,10 @@ pcitool_cfg_access(pcitool_reg_t *prg, boolean_t write_flag,
 
 	/* Set phys_addr only if MMIO is used */
 	prg->phys_addr = 0;
-	if (!req.ioacc && mcfg_mem_base != 0) {
-		prg->phys_addr = mcfg_mem_base + prg->offset +
+
+	/* XXX: For now, only segment 0 is supported */
+	if (!req.ioacc && mcfg_mem_base != NULL && mcfg_mem_base[0] != 0) {
+		prg->phys_addr = mcfg_mem_base[0] + prg->offset +
 		    ((prg->bus_no << PCIEX_REG_BUS_SHIFT) |
 		    (prg->dev_no << PCIEX_REG_DEV_SHIFT) |
 		    (prg->func_no << PCIEX_REG_FUNC_SHIFT));
@@ -918,7 +946,7 @@ pcitool_unmap(uint64_t virt_addr, size_t num_pages)
 }
 
 static int
-pcitool_bar_find(uint8_t bar, boolean_t bridge, boolean_t cfg_io,
+pcitool_bar_find(uint16_t seg, uint8_t bar, boolean_t bridge, boolean_t cfg_io,
     pcitool_reg_t *cfg, uint64_t *pa, boolean_t *io_bar)
 {
 	uint8_t nbar = bridge ? PCI_BCNF_BASE_NUM : PCI_BASE_NUM;
@@ -928,7 +956,7 @@ pcitool_bar_find(uint8_t bar, boolean_t bridge, boolean_t cfg_io,
 		cfg->acc_attr = PCITOOL_ACC_ATTR_SIZE_4 |
 		    PCITOOL_ACC_ATTR_ENDN_LTL;
 		cfg->offset = PCI_CONF_BASE0 + i * 4;
-		int ret = pcitool_cfg_access(cfg, B_FALSE, cfg_io);
+		int ret = pcitool_cfg_access(seg, cfg, B_FALSE, cfg_io);
 		if (ret != 0) {
 			return (ret);
 		}
@@ -1089,6 +1117,10 @@ pcitool_dev_reg_ops(dev_info_t *dip, void *arg, int cmd, int mode)
 	pcitool_reg_t prg;
 	uint8_t	size;
 	uint64_t base_addr;
+	int seg;
+
+	seg = ddi_prop_get_int(DDI_DEV_T_ANY, dip, 0, "pci-segment", 0);
+	ASSERT3S(seg, <=, UINT16_MAX);
 
 	if (cmd != PCITOOL_DEVICE_SET_REG && cmd != PCITOOL_DEVICE_GET_REG) {
 		return (ENOTTY);
@@ -1143,7 +1175,7 @@ pcitool_dev_reg_ops(dev_info_t *dip, void *arg, int cmd, int mode)
 			goto copyout;
 		}
 
-		rval = pcitool_cfg_access(&prg, write_flag, cfgspace_io);
+		rval = pcitool_cfg_access(seg, &prg, write_flag, cfgspace_io);
 		goto copyout;
 	}
 
@@ -1161,7 +1193,7 @@ pcitool_dev_reg_ops(dev_info_t *dip, void *arg, int cmd, int mode)
 	bcopy(&prg, &cfg, sizeof (pcitool_reg_t));
 	cfg.acc_attr = PCITOOL_ACC_ATTR_SIZE_1 | PCITOOL_ACC_ATTR_ENDN_LTL;
 	cfg.offset = PCI_CONF_HEADER;
-	rval = pcitool_cfg_access(&cfg, B_FALSE, cfgspace_io);
+	rval = pcitool_cfg_access(seg, &cfg, B_FALSE, cfgspace_io);
 	if (rval != 0) {
 		prg.status = cfg.status;
 		goto copyout;
@@ -1201,8 +1233,8 @@ pcitool_dev_reg_ops(dev_info_t *dip, void *arg, int cmd, int mode)
 	 */
 	boolean_t io_space = B_FALSE;
 	if (prg.barnum != PCITOOL_ROM) {
-		rval = pcitool_bar_find(prg.barnum - 1, bridge, cfgspace_io,
-		    &cfg, &base_addr, &io_space);
+		rval = pcitool_bar_find(seg, prg.barnum - 1, bridge,
+		    cfgspace_io, &cfg, &base_addr, &io_space);
 		if (rval != 0) {
 			prg.status = cfg.status;
 			goto copyout;
@@ -1211,7 +1243,7 @@ pcitool_dev_reg_ops(dev_info_t *dip, void *arg, int cmd, int mode)
 		cfg.acc_attr = PCITOOL_ACC_ATTR_SIZE_4 |
 		    PCITOOL_ACC_ATTR_ENDN_LTL;
 		cfg.offset = PCI_CONF_ROM;
-		rval = pcitool_cfg_access(&cfg, B_FALSE, cfgspace_io);
+		rval = pcitool_cfg_access(seg, &cfg, B_FALSE, cfgspace_io);
 		if (rval != 0) {
 			prg.status = cfg.status;
 			goto copyout;
