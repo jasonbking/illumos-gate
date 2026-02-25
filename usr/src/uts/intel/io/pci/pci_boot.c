@@ -24,6 +24,7 @@
  * Copyright 2019 Western Digital Corporation
  * Copyright 2020 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2024 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -1863,6 +1864,20 @@ create_root_bus_dip(uchar_t bus)
 	if (create_pcie_root_bus(bus, dip) == B_FALSE)
 		(void) ndi_prop_update_string(DDI_DEV_T_NONE, dip,
 		    "device_type", "pci");
+
+	/*
+	 * Any root complexes created here can only be on segment 0.
+	 * Any root complexes on a segment > 0 are enumerated by ACPI
+	 * (and have their pci-segment property set as a part of that).
+	 *
+	 * We want all of the root complexes to have their pci-segment
+	 * property set before we start enumerating any children. We're
+	 * still early enough in the boot process that the options dip
+	 * won't exist, so we need to ensure looking up the pci-segment
+	 * property will terminate prior to reaching the root nexus (or
+	 * panic will ensue).
+	 */
+	(void) ndi_prop_update_int(DDI_DEV_T_NONE, dip, "pci-segment", 0);
 
 	(void) ndi_devi_bind_driver(dip, 0);
 	pci_bus_res[bus].dip = dip;

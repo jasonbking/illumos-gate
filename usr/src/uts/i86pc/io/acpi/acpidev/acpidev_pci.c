@@ -22,6 +22,8 @@
 /*
  * Copyright (c) 2010, Intel Corporation.
  * All rights reserved.
+ *
+ * Copyright 2025-2026 RackTop Systems, Inc.
  */
 
 #include <sys/types.h>
@@ -113,6 +115,22 @@ acpidev_pci_update_status(acpidev_walk_info_t *infop)
 		ASSERT(dip == NULL);
 		dhdl->aod_dip = NULL;
 		dhdl->aod_status &= ~ACPI_STA_DEVICE_ENABLED;
+	}
+
+	if (dip != NULL) {
+		/* If there is no _SEG method, we default to segment 0 */
+		int seg = 0;
+
+		(void) acpica_eval_int(infop->awi_hdl, METHOD_NAME__SEG, &seg);
+
+		/*
+		 * The PCI segment is a 16-bit value, and the ACPI spec
+		 * explicitly says that the segment value is in the lowest
+		 * 16 bits and the remainder are reserved.
+		 */
+		seg &= 0xffff;
+		(void) ndi_prop_update_int(DDI_DEV_T_NONE, dip, "pci-segment",
+		    seg);
 	}
 }
 
