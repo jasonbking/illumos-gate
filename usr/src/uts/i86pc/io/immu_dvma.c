@@ -29,6 +29,7 @@
 /*
  * Copyright 2012 Garrett D'Amore <garrett@damore.org>.  All rights reserved.
  * Copyright 2017 Joyent, Inc.
+ * Copyright 2025-2026 RackTop Systems, Inc.
  */
 
 /*
@@ -39,6 +40,7 @@
 
 #include <sys/sysmacros.h>
 #include <sys/pcie.h>
+#include <sys/pci_cfgacc.h>
 #include <sys/pci_cfgspace.h>
 #include <vm/hat_i86.h>
 #include <sys/memlist.h>
@@ -188,14 +190,19 @@ static domain_t *
 bdf_domain_lookup(immu_devi_t *immu_devi)
 {
 	domain_t *domain;
-	int16_t seg = immu_devi->imd_seg;
-	int16_t bus = immu_devi->imd_bus;
-	int16_t devfunc = immu_devi->imd_devfunc;
-	uintptr_t bdf = (seg << 16 | bus << 8 | devfunc);
+	int seg = immu_devi->imd_seg;
+	int bus = immu_devi->imd_bus;
+	int devfunc = immu_devi->imd_devfunc;
+	uintptr_t bdf;
 
-	if (seg < 0 || bus < 0 || devfunc < 0) {
+	if (seg < 0 || seg > UINT16_MAX || bus < 0 ||
+	    bus >= PCI_MAX_BUS_NUM || devfunc < 0 ||
+	    devfunc >= PCI_MAX_CHILDREN) {
 		return (NULL);
 	}
+
+	bdf = ((uintptr_t)seg << 16) | ((uintptr_t)bus << 8) |
+	    (uintptr_t)devfunc;
 
 	domain = NULL;
 	if (mod_hash_find(bdf_domain_hash,
@@ -211,14 +218,19 @@ bdf_domain_lookup(immu_devi_t *immu_devi)
 static void
 bdf_domain_insert(immu_devi_t *immu_devi, domain_t *domain)
 {
-	int16_t seg = immu_devi->imd_seg;
-	int16_t bus = immu_devi->imd_bus;
-	int16_t devfunc = immu_devi->imd_devfunc;
-	uintptr_t bdf = (seg << 16 | bus << 8 | devfunc);
+	int seg = immu_devi->imd_seg;
+	int bus = immu_devi->imd_bus;
+	int devfunc = immu_devi->imd_devfunc;
+	uintptr_t bdf;
 
-	if (seg < 0 || bus < 0 || devfunc < 0) {
+	if (seg < 0 || seg > UINT16_MAX || bus < 0 ||
+	    bus >= PCI_MAX_BUS_NUM || devfunc < 0 ||
+	    devfunc >= PCI_MAX_CHILDREN) {
 		return;
 	}
+
+	bdf = ((uintptr_t)seg << 16) | ((uintptr_t)bus << 8) |
+	    (uintptr_t)devfunc;
 
 	(void) mod_hash_insert(bdf_domain_hash, (void *)bdf, (void *)domain);
 }
@@ -555,8 +567,7 @@ device_is_display(uint_t classcode)
  * Function that determines if device is PCIEX and/or PCIEX bridge
  */
 static boolean_t
-device_is_pciex(
-	uchar_t bus, uchar_t dev, uchar_t func, boolean_t *is_pcib)
+device_is_pciex(dev_info_t *rdip, uint16_t bdf, boolean_t *is_pcib)
 {
 	ushort_t cap;
 	ushort_t capsp;
@@ -566,17 +577,17 @@ device_is_pciex(
 
 	*is_pcib = B_FALSE;
 
-	status = pci_getw_func(bus, dev, func, PCI_CONF_STAT);
+	status = pci_cfgacc_get16(rdip, bdf, PCI_CONF_STAT);
 	if (!(status & PCI_STAT_CAP))
 		return (B_FALSE);
 
-	capsp = pci_getb_func(bus, dev, func, PCI_CONF_CAP_PTR);
+	capsp = pci_cfgacc_get8(rdip, bdf, PCI_CONF_CAP_PTR);
 	while (cap_count-- && capsp >= PCI_CAP_PTR_OFF) {
 		capsp &= PCI_CAP_PTR_MASK;
-		cap = pci_getb_func(bus, dev, func, capsp);
+		cap = pci_cfgacc_get8(rdip, bdf, capsp);
 
 		if (cap == PCI_CAP_ID_PCI_E) {
-			status = pci_getw_func(bus, dev, func, capsp + 2);
+			status = pci_cfgacc_get16(rdip, bdf, capsp + 2);
 			/*
 			 * See section 7.8.2 of PCI-Express Base Spec v1.0a
 			 * for Device/Port Type.
@@ -589,7 +600,7 @@ device_is_pciex(
 			is_pciex = B_TRUE;
 		}
 
-		capsp = (*pci_getb_func)(bus, dev, func,
+		capsp = pci_cfgacc_get8(rdip, bdf,
 		    capsp + PCI_CAP_NEXT_PTR);
 	}
 
@@ -699,11 +710,16 @@ create_immu_devi(dev_info_t *rdip, int bus, int dev, int func,
 	boolean_t pciex = B_FALSE;
 	int kmflags;
 	boolean_t is_pcib = B_FALSE;
+	int seg;
+	uint16_t bdf;
 
 	/* bus ==  -1 indicate non-PCI device (no BDF) */
 	ASSERT(bus == -1 || bus >= 0);
 	ASSERT(dev >= 0);
 	ASSERT(func >= 0);
+
+	/* We default to segment 0 */
+	seg = ddi_prop_get_int(DDI_DEV_T_ANY, rdip, 0, "pci-segment", 0);
 
 	kmflags = (immu_flags & IMMU_FLAGS_NOSLEEP) ? KM_NOSLEEP : KM_SLEEP;
 	immu_devi = kmem_zalloc(sizeof (immu_devi_t), kmflags);
@@ -713,7 +729,7 @@ create_immu_devi(dev_info_t *rdip, int bus, int dev, int func,
 		return (NULL);
 	}
 	immu_devi->imd_dip = rdip;
-	immu_devi->imd_seg = 0; /* Currently seg can only be 0 */
+	immu_devi->imd_seg = seg;
 	immu_devi->imd_bus = bus;
 	immu_devi->imd_pcib_type = IMMU_PCIB_BAD;
 
@@ -726,7 +742,8 @@ create_immu_devi(dev_info_t *rdip, int bus, int dev, int func,
 	immu_devi->imd_sec = 0;
 	immu_devi->imd_sub = 0;
 
-	revclass = pci_getl_func(bus, dev, func, PCI_CONF_REVID);
+	bdf = PCI_GETBDF(bus, dev, func);
+	revclass = pci_cfgacc_get32(rdip, bdf, PCI_CONF_REVID);
 
 	classcode = IMMU_PCI_REV2CLASS(revclass);
 	baseclass = IMMU_PCI_CLASS2BASE(classcode);
@@ -734,12 +751,12 @@ create_immu_devi(dev_info_t *rdip, int bus, int dev, int func,
 
 	if (baseclass == PCI_CLASS_BRIDGE && subclass == PCI_BRIDGE_PCI) {
 
-		immu_devi->imd_sec = pci_getb_func(bus, dev, func,
+		immu_devi->imd_sec = pci_cfgacc_get8(rdip, bdf,
 		    PCI_BCNF_SECBUS);
-		immu_devi->imd_sub = pci_getb_func(bus, dev, func,
+		immu_devi->imd_sub = pci_cfgacc_get8(rdip, bdf,
 		    PCI_BCNF_SUBBUS);
 
-		pciex = device_is_pciex(bus, dev, func, &is_pcib);
+		pciex = device_is_pciex(rdip, bdf, &is_pcib);
 		if (pciex  == B_TRUE && is_pcib == B_TRUE) {
 			immu_devi->imd_pcib_type = IMMU_PCIB_PCIE_PCI;
 		} else if (pciex == B_TRUE) {
