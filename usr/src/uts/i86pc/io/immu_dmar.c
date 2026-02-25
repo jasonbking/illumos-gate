@@ -777,12 +777,12 @@ match_bdf(dev_info_t *ddip, void *arg)
 	immu_arg_t *imarg = (immu_arg_t *)arg;
 	immu_devi_t *immu_devi;
 
-	ASSERT(ddip);
-	ASSERT(imarg);
-	ASSERT(imarg->ima_seg == 0);
-	ASSERT(imarg->ima_bus >= 0);
-	ASSERT(imarg->ima_devfunc >= 0);
-	ASSERT(imarg->ima_ddip == NULL);
+	ASSERT3P(ddip, !=, NULL);
+	ASSERT3P(imarg, !=, NULL);
+	ASSERT3S(imarg->ima_seg, >=, 0);
+	ASSERT3S(imarg->ima_bus, >=, 0);
+	ASSERT3S(imarg->ima_devfunc, >=, 0);
+	ASSERT3P(imarg->ima_ddip, ==, NULL);
 
 	/* rdip can be NULL */
 
