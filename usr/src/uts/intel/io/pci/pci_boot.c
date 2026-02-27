@@ -1,4 +1,4 @@
-/*
+/, 0*
  * CDDL HEADER START
  *
  * The contents of this file are subject to the terms of the
@@ -285,11 +285,11 @@ extern dev_info_t *pcie_get_rc_dip(dev_info_t *);
 /*
  * Module prototypes
  */
-static void enumerate_bus_devs(uchar_t bus, int config_op);
-static void create_root_bus_dip(uchar_t bus);
+static void enumerate_bus_devs(uint16_t seg, uchar_t bus, int config_op);
+static void create_root_bus_dip(uint16_t, uchar_t bus);
 static void process_devfunc(uchar_t, uchar_t, uchar_t, int);
-static boolean_t add_reg_props(dev_info_t *, uchar_t, uchar_t, uchar_t, int,
-    boolean_t);
+static boolean_t add_reg_props(dev_info_t *, uint16_t, uchar_t, uchar_t,
+    uchar_t, int, boolean_t);
 static void add_ppb_props(dev_info_t *, uchar_t, uchar_t, uchar_t, boolean_t,
     boolean_t);
 static void add_bus_range_prop(int);
@@ -383,7 +383,7 @@ dump_memlists_impl(const char *tag, int bus)
 }
 
 static boolean_t
-pci_rc_scan_cb(uint32_t busno, void *arg)
+pci_rc_scan_cb(uint16_t seg, uint32_t busno, void *arg)
 {
 	if (busno > pci_boot_maxbus) {
 		dcmn_err(CE_NOTE, "platform root complex scan returned bus "
@@ -393,7 +393,7 @@ pci_rc_scan_cb(uint32_t busno, void *arg)
 
 	if (pci_bus_res[busno].par_bus == (uchar_t)-1 &&
 	    pci_bus_res[busno].dip == NULL) {
-		create_root_bus_dip((uchar_t)busno);
+		create_root_bus_dip(seg, (uchar_t)busno);
 	}
 
 	return (B_TRUE);
@@ -595,7 +595,7 @@ pci_setup_tree(void)
 	}
 
 	pci_bus_res[0].root_addr = root_bus_addr++;
-	create_root_bus_dip(0);
+	create_root_bus_dip(0, 0);
 	enumerate_bus_devs(0, CONFIG_INFO);
 
 	/*
@@ -1593,6 +1593,15 @@ cmd_enable:
 	pci_putw(bus, dev, func, PCI_CONF_COMM, cmd_reg);
 }
 
+static boolean_t
+pci_slot_name_cb(uint16_t seg, uint32_t bus, void *arg __unused)
+{
+	uint_t idx = get_idx(seg);
+
+	pci_prd_slot_name(seg, bus, pci_bus_res[seg][bus].dip);
+	return (B_TRUE);
+}
+
 void
 pci_reprogram(void)
 {
@@ -1608,9 +1617,9 @@ pci_reprogram(void)
 	 * ask the platform if it wants to change the name of the slot.
 	 */
 	pci_prd_root_complex_iter(pci_rc_scan_cb, NULL);
-	for (bus = 0; bus <= pci_boot_maxbus; bus++) {
-		pci_prd_slot_name(bus, pci_bus_res[bus].dip);
-	}
+
+	pci_prd_bus_iter(PCI_PRD_BUS_ALL_SEG, pci_slot_name_cb, NULL);
+
 	pci_unitaddr_cache_init();
 
 	/*
@@ -1840,7 +1849,7 @@ populate_bus_res(uchar_t bus)
  * Create top-level bus dips, i.e. /pci@0,0, /pci@1,0...
  */
 static void
-create_root_bus_dip(uchar_t bus)
+create_root_bus_dip(uint16_t seg, uchar_t bus)
 {
 	int pci_regs[] = {0, 0, 0};
 	dev_info_t *dip;
@@ -1865,19 +1874,7 @@ create_root_bus_dip(uchar_t bus)
 		(void) ndi_prop_update_string(DDI_DEV_T_NONE, dip,
 		    "device_type", "pci");
 
-	/*
-	 * Any root complexes created here can only be on segment 0.
-	 * Any root complexes on a segment > 0 are enumerated by ACPI
-	 * (and have their pci-segment property set as a part of that).
-	 *
-	 * We want all of the root complexes to have their pci-segment
-	 * property set before we start enumerating any children. We're
-	 * still early enough in the boot process that the options dip
-	 * won't exist, so we need to ensure looking up the pci-segment
-	 * property will terminate prior to reaching the root nexus (or
-	 * panic will ensue).
-	 */
-	(void) ndi_prop_update_int(DDI_DEV_T_NONE, dip, "pci-segment", 0);
+	(void) ndi_prop_update_int(DDI_DEV_T_NONE, dip, "pci-segment", seg);
 
 	(void) ndi_devi_bind_driver(dip, 0);
 	pci_bus_res[bus].dip = dip;
@@ -1888,39 +1885,45 @@ create_root_bus_dip(uchar_t bus)
  * and those with their own expansion rom, create device nodes
  * to hold the already configured device details.
  */
-void
-enumerate_bus_devs(uchar_t bus, int config_op)
+static void
+enumerate_bus_devs(uint16_t seg, uchar_t bus, int config_op)
 {
+	struct pci_devfunc *devlist = NULL, *entry;
+	uint_t idx;
 	uchar_t dev, func, nfunc, header;
 	ushort_t venid;
-	struct pci_devfunc *devlist = NULL, *entry;
 
 	if (bus_debug(bus)) {
 		if (config_op == CONFIG_NEW) {
-			dcmn_err(CE_NOTE, "configuring pci bus 0x%x", bus);
-		} else if (config_op == CONFIG_FIX) {
+			dcmn_err(CE_NOTE, "configuring pci seg %u bus 0x%x",
+			    seg, bus);
+		} else if (config_op == CONFIG_FIXi && seg == 0) {
 			dcmn_err(CE_NOTE,
 			    "fixing devices on pci bus 0x%x", bus);
 		} else {
-			dcmn_err(CE_NOTE, "enumerating pci bus 0x%x", bus);
+			dcmn_err(CE_NOTE, "enumerating pci seg %u bus 0x%x",
+			    seg, bus);
 		}
 	}
 
+	idx = xxx; /* XXX */
+
 	if (config_op == CONFIG_NEW) {
-		devlist = (struct pci_devfunc *)pci_bus_res[bus].privdata;
+		devlist = (struct pci_devfunc *)pci_bus_res[idx][bus].privdata;
 		while (devlist) {
 			entry = devlist;
 			devlist = entry->next;
 			if (entry->reprogram ||
-			    pci_bus_res[bus].io_reprogram ||
-			    pci_bus_res[bus].mem_reprogram) {
+			    pci_bus_res[idx][bus].io_reprogram ||
+			    pci_bus_res[idx][bus].mem_reprogram) {
 				/* reprogram device(s) */
-				(void) add_reg_props(entry->dip, bus,
-				    entry->dev, entry->func, CONFIG_NEW, 0);
+				(void) add_reg_props(entry->dip, seg, bus,
+				    entry->dev, entry->func, CONFIG_NEW,
+				    B_FALSE);
 			}
 			kmem_free(entry, sizeof (*entry));
 		}
-		pci_bus_res[bus].privdata = NULL;
+		pci_bus_res[idx][bus].privdata = NULL;
 		return;
 	}
 
@@ -2127,22 +2130,31 @@ add_undofix_entry(uint8_t bus, uint8_t dev, uint8_t fn,
 	undolist = newundo;
 }
 
+static boolean_t
+add_pci_fixes_cb(uint16_t seg __unused, uint32_t bus, void *arg __unused)
+{
+	enumerate_bus_devs(0, bus, CONFIG_FIX);
+	return (B_TRUE);
+}
+
 void
 add_pci_fixes(void)
 {
-	int i;
-
-	for (i = 0; i <= pci_boot_maxbus; i++) {
-		/*
-		 * For each bus, apply needed fixes to the appropriate devices.
-		 * This must be done before the main enumeration loop because
-		 * some fixes must be applied to devices normally encountered
-		 * later in the pci scan (e.g. if a fix to device 7 must be
-		 * applied before scanning device 6, applying fixes in the
-		 * normal enumeration loop would obviously be too late).
-		 */
-		enumerate_bus_devs(i, CONFIG_FIX);
-	}
+	/*
+	 * For each bus, apply needed fixes to the appropriate devices.
+	 * This must be done before the main enumeration loop because
+	 * some fixes must be applied to devices normally encountered
+	 * later in the pci scan (e.g. if a fix to device 7 must be
+	 * applied before scanning device 6, applying fixes in the
+	 * normal enumeration loop would obviously be too late).
+	 *
+	 * For now, we assume this should only be necessary for devices
+	 * that can possibly appear in segment 0. Based on the code in
+	 * process_devfunc(), all of the devices that need fixing appear to
+	 * be old hardware that would never be present on a system with
+	 * multiple segments.
+	 */
+	pci_prd_bus_iter(0, add_pci_fixes_cb, NULL);
 }
 
 void
@@ -2277,7 +2289,7 @@ process_devfunc(uchar_t bus, uchar_t dev, uchar_t func, int config_op)
 
 	/* make sure parent bus dip has been created */
 	if (pci_bus_res[bus].dip == NULL)
-		create_root_bus_dip(bus);
+		create_root_bus_dip(0, bus);
 
 	ndi_devi_alloc_sleep(pci_bus_res[bus].dip, DEVI_PSEUDO_NEXNAME,
 	    DEVI_SID_NODEID, &dip);
@@ -2894,8 +2906,8 @@ add_bar_reg_props(int op, uchar_t bus, uchar_t dev, uchar_t func, uint_t bar,
  * Add the "reg" and "assigned-addresses" property
  */
 static boolean_t
-add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
-    int op, boolean_t pciide)
+add_reg_props(dev_info_t *dip, uint16_t seg, uchar_t bus, uchar_t dev,
+    uchar_t func, int op, boolean_t pciide)
 {
 	uchar_t baseclass, subclass, progclass, header;
 	uint_t bar, value, devloc, base;
@@ -2909,12 +2921,15 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 	pci_regspec_t regs[16] = {{0}};
 	pci_regspec_t assigned[15] = {{0}};
 	int nreg, nasgn;
+	uint_t idx;
 
-	io_avail = &pci_bus_res[bus].io_avail;
-	io_used = &pci_bus_res[bus].io_used;
-	mem_avail = &pci_bus_res[bus].mem_avail;
-	mem_used = &pci_bus_res[bus].mem_used;
-	pmem_avail = &pci_bus_res[bus].pmem_avail;
+	idx = xxx; /* XXX */
+
+	io_avail = &pci_bus_res[idx][bus].io_avail;
+	io_used = &pci_bus_res[idx][bus].io_used;
+	mem_avail = &pci_bus_res[idx][bus].mem_avail;
+	mem_used = &pci_bus_res[idx][bus].mem_used;
+	pmem_avail = &pci_bus_res[idx][bus].pmem_avail;
 
 	dump_memlists("add_reg_props start", bus);
 
@@ -3005,7 +3020,7 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 		if (base != 0) {
 			(void) pci_memlist_remove(mem_avail, base, len);
 			pci_memlist_insert(mem_used, base, len);
-			pci_bus_res[bus].mem_size += len;
+			pci_bus_res[idx][bus].mem_size += len;
 		}
 	}
 
@@ -3049,7 +3064,7 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 		(void) pci_memlist_remove(mem_avail, 0xa0000, 0x20000);
 		(void) pci_memlist_remove(pmem_avail, 0xa0000, 0x20000);
 		pci_memlist_insert(mem_used, 0xa0000, 0x20000);
-		pci_bus_res[bus].mem_size += 0x20000;
+		pci_bus_res[idx][bus].mem_size += 0x20000;
 	}
 
 	/* add the hard-decode, aliased address spaces for 8514 */
@@ -3075,7 +3090,7 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 		nreg++, nasgn++;
 		(void) pci_memlist_remove(io_avail, 0x2ea, 0x6);
 		pci_memlist_insert(io_used, 0x2ea, 0x6);
-		pci_bus_res[bus].io_size += 0x6;
+		pci_bus_res[idx][bus].io_size += 0x6;
 	}
 
 done:
@@ -3515,63 +3530,42 @@ add_bus_available_prop(int bus)
 	kmem_free(sp, count * sizeof (*sp));
 }
 
+static boolean_t
+alloc_res_seg(uint16_t seg, void *arg)
+{
+	size_t max_bus = pci_prd_bax_bus(seg);
+	uint_t *ip = arg;
+	uint_t i = *ip;
+
+	pci_bus_res[i++] = kmem_zalloc(max_bus * sizeof (pci_bus_resource),
+	    KM_SLEEP);
+
+	*ip = i;
+	return (B_TRUE);
+}
+
 static void
 alloc_res_array(void)
 {
-	static uint_t array_size = 0;
-	uint_t old_size;
-	void *old_res;
+	size_t len;
+	uint_t i;
 
-	if (mcfg_base_addr != NULL) {
-		/*
-		 * If we have the MCFG data, we can allocate once
-		 * and we're done.
-		 */
-		if (pci_bus_res != NULL)
-			return;
-
-		size_t len;
-
-		len = (mcfg_max_segment + 1) *
-		    sizeof (struct pci_bus_resource *);
-		pci_bus_res = kmem_zalloc(len, KM_SLEEP);
-
-		for (uint_t i = 0; i <= mcfg_max_segment; i++) {
-			if (mcfg_bus_addr[i] == 0)
-				continue;
-
-			len = (mcfg_bus_end[i] + 1) *
-			    sizeof (struct pci_bus_resource);
-			pci_bus_res[i] = kmem_zalloc(len, KM_SLEEP);
-		}
-
+	if (pci_bus_res != NULL)
 		return;
-	}
 
-	if (pci_bus_res == NULL) {
-		pci_bus_res = kmem_zalloc(sizeof (struct pci_bus_resource *),
-		    KM_SLEEP);
-	}
+	/*
+	 * Size pci_bus_res to hold all the buses that might be present.
+	 * This probably ends up being larger than needed. If it's a problem
+	 * in practice, this is only used during boot, so it could be freed
+	 * once we're done.
+	 */
+	len = (size_t)pci_prd_num_segments() *
+	    sizeof (struct pci_bus_resource *);
 
-	if (array_size > pci_boot_maxbus + 1)
-		return;	/* array is big enough */
+	pci_bus_res = kmem_zalloc(len, KM_SLEEP);
 
-	old_size = array_size;
-	old_res = pci_bus_res[0];
-
-	if (array_size == 0)
-		array_size = 16;	/* start with a reasonable number */
-
-	while (array_size <= pci_boot_maxbus + 1)
-		array_size <<= 1;
-	pci_bus_res[0] = (struct pci_bus_resource *)kmem_zalloc(
-	    array_size * sizeof (struct pci_bus_resource), KM_SLEEP);
-
-	if (old_res != NULL) {	/* copy content and free old array */
-		bcopy(old_res, pci_bus_res[0],
-		    old_size * sizeof (struct pci_bus_resource));
-		kmem_free(old_res, old_size * sizeof (struct pci_bus_resource));
-	}
+	i = 0;
+	pci_prd_segment_iter(alloc_res_seg, &i);
 }
 
 static void

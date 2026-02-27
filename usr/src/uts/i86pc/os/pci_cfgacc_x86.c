@@ -116,38 +116,31 @@ pci_cfgacc_io(pci_cfgacc_req_t *req)
 	switch (req->size) {
 	case 1:
 		if (req->write)
-			(*pci_putb_func)(bus, dev, func,
-			    ioacc_offset, VAL8(req));
+			pci_putb(0, bus, dev, func, ioacc_offset, VAL8(req));
 		else
-			VAL8(req) = (*pci_getb_func)(bus, dev, func,
-			    ioacc_offset);
+			VAL8(req) = pci_getb(0, bus, dev, func, ioacc_offset);
 		break;
 	case 2:
 		if (req->write)
-			(*pci_putw_func)(bus, dev, func,
-			    ioacc_offset, VAL16(req));
+			pci_putw(0, bus, dev, func, ioacc_offset, VAL16(req));
 		else
-			VAL16(req) = (*pci_getw_func)(bus, dev, func,
-			    ioacc_offset);
+			VAL16(req) = pci_getw(0, bus, dev, func, ioacc_offset);
 		break;
 	case 4:
 		if (req->write)
-			(*pci_putl_func)(bus, dev, func,
-			    ioacc_offset, VAL32(req));
+			pci_putl(0, bus, dev, func, ioacc_offset, VAL32(req));
 		else
-			VAL32(req) = (*pci_getl_func)(bus, dev, func,
-			    ioacc_offset);
+			VAL32(req) = pci_getl(0, bus, dev, func, ioacc_offset);
 		break;
 	case 8:
 		if (req->write) {
-			(*pci_putl_func)(bus, dev, func,
-			    ioacc_offset, VAL64(req) & 0xffffffff);
-			(*pci_putl_func)(bus, dev, func,
-			    ioacc_offset + 4, VAL64(req) >> 32);
+			pci_putl(0, bus, dev, func, ioacc_offset,
+			    VAL64(req) & 0xffffffff);
+			pci_putl(0, bus, dev, func, ioacc_offset + 4,
+			    VAL64(req) >> 32);
 		} else {
-			VAL64(req) = (*pci_getl_func)(bus, dev, func,
-			    ioacc_offset);
-			VAL64(req) |= (uint64_t)(*pci_getl_func)(bus, dev, func,
+			VAL64(req) = pci_getl(0, bus, dev, func, ioacc_offset);
+			VAL64(req) |= (uint64_t)pci_getl(bus, dev, func,
 			    ioacc_offset + 4) << 32;
 		}
 		break;

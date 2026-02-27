@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2023 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #ifndef _SYS_PLAT_PCI_PRD_H
@@ -62,9 +63,10 @@ typedef enum pci_prd_rsrc {
 
 typedef struct pci_prd_upcalls {
 	/*
-	 * Return a dev_info_t, if one exists, for this PCI bus.
+	 * Return a dev_info_t, if one exists, for this PCI bus on the given
+	 * PCI segment.
 	 */
-	dev_info_t *(*pru_bus2dip_f)(uint32_t);
+	dev_info_t *(*pru_bus2dip_f)(uint16_t, uint32_t);
 } pci_prd_upcalls_t;
 
 /*
@@ -82,20 +84,36 @@ extern int pci_prd_init(pci_prd_upcalls_t *);
 extern void pci_prd_fini(void);
 
 /*
- * Return the maximum PCI bus on this platform that should be searched. This
- * number is the last bus number that should be scanned. e.g. a value of 0x10
- * indicates that we will search buses [0, 0x10]. In general, it is expected
- * that platforms will just return 0xff (PCI_MAX_BUS_NUM - 1) unless for some
- * reason it has other knowledge here.
+ * Return the maximum PCI segment value on the system that should be
+ * searched. This is the last segment number scanned--e.g. a value of 0x01
+ * indicated that we will search segments [0, 0x1].
  */
-extern uint32_t pci_prd_max_bus(void);
+extern uint16_t pci_prd_max_segment(void);
+
+/*
+ * Return the number of PCI segments on the system. It's possible PCI
+ * segments values may not be contigious. We assume (at least for now) that
+ * segment 0 should always exist, so this should always return a value >= 1
+ * on any system with PCI.
+ */
+extern uint16_t pci_prd_num_segments(void);
+
+/*
+ * Return the maximum PCI bus on this platform that should be searched for
+ * the given segment. This number is the last bus number that should be
+ * scanned. e.g. a value of 0x10 indicates that we will search buses [0, 0x10].
+ * In general, it is expected that platforms will just return 0xff
+ * (PCI_MAX_BUS_NUM - 1) unless for some reason it has other knowledge here.
+ */
+extern uint32_t pci_prd_max_bus(uint16_t);
 
 /*
  * Look up a set of resources that should be assigned to the PCI bus. In
  * general, it is expected that these are only the buses that are assigned to
  * root complexes.
  */
-extern struct memlist *pci_prd_find_resource(uint32_t, pci_prd_rsrc_t);
+extern struct memlist *pci_prd_find_resource(uint16_t, uint32_t,
+    pci_prd_rsrc_t);
 
 /*
  * Originally when only using BIOS-derived (pre-ACPI) sources on i86pc, the
@@ -113,15 +131,35 @@ extern boolean_t pci_prd_multi_root_ok(void);
  * function determines whether we should continue iterating (B_TRUE) or
  * terminate (B_FALSE).
  */
-typedef boolean_t (*pci_prd_root_complex_f)(uint32_t, void *);
+typedef boolean_t (*pci_prd_root_complex_f)(uint16_t, uint32_t, void *);
 extern void pci_prd_root_complex_iter(pci_prd_root_complex_f, void *);
+
+/*
+ * This is used to iterate over all of the PCI segments present on the
+ * system. One callback will be emitted for each PCI segment via a call to
+ * the callback function. The return value of the callback function determines
+ * whether we should continue iterating (B_TRUE) or terminate (B_FALSE).
+ */
+typedef boolean_t (*pci_prd_segment_f)(uint16_t, void *);
+extern void pci_prd_segment_iter(pci_prd_segment_f, void *);
+
+/*
+ * This is used to iterate over all possible bus values for a given segment
+ * (or all segments if PCI_PRD_BUS_ALL_SEG is used). One callback will be
+ * emitted for each bus via a call to the callback function. The return
+ * value of the callback function determines whether we should continue
+ * iterating (B_TRUE) or terminate (B_FALSE).
+ */
+#define	PCI_PRD_BUS_ALL_SEG	UINT32_MAX
+typedef boolean_t (*pci_prd_bus_f)(uint16_t, uint32_t, void *);
+extern void pci_prd_bus_iter(uint32_t, pci_prd_bus_f, void *);
 
 /*
  * Give the chance for a platform to go through and use knowledge that it
  * has (such as the traditional BIOS PCI IRQ routing table) to name the PCI(e)
  * slot.
  */
-extern void pci_prd_slot_name(uint32_t, dev_info_t *);
+extern void pci_prd_slot_name(uint16_t, uint32_t, dev_info_t *);
 
 /*
  * These are a series of flags that indicate how certain compatibility options

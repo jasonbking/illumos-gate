@@ -22,6 +22,7 @@
  * Copyright (c) 2006, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2020 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2022 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #include <sys/types.h>
@@ -233,7 +234,7 @@ pci_bios_bus_iter(pci_prd_root_complex_f cbfunc, void *arg)
 	int i;
 	for (i = 0; i < pci_irq_nroutes; i++) {
 		if (pci_irq_routes[i].pir_slot != 0) {
-			if (!cbfunc(pci_irq_routes[i].pir_bus, arg)) {
+			if (!cbfunc(0, pci_irq_routes[i].pir_bus, arg)) {
 				return;
 			}
 		}
