@@ -22,6 +22,8 @@
 /*
  * Copyright 2005 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -135,7 +137,7 @@ pci_neptune_disable()
 }
 
 uint8_t
-pci_neptune_getb(int bus, int device, int function, int reg)
+pci_neptune_getb(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg)
 {
 	uint8_t	val;
 
@@ -148,7 +150,7 @@ pci_neptune_getb(int bus, int device, int function, int reg)
 }
 
 uint16_t
-pci_neptune_getw(int bus, int device, int function, int reg)
+pci_neptune_getw(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg)
 {
 	uint16_t val;
 
@@ -161,7 +163,7 @@ pci_neptune_getw(int bus, int device, int function, int reg)
 }
 
 uint32_t
-pci_neptune_getl(int bus, int device, int function, int reg)
+pci_neptune_getl(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg)
 {
 	uint32_t val;
 
@@ -174,7 +176,8 @@ pci_neptune_getl(int bus, int device, int function, int reg)
 }
 
 void
-pci_neptune_putb(int bus, int device, int function, int reg, uint8_t val)
+pci_neptune_putb(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg,
+    uint8_t val)
 {
 	pci_neptune_enable();
 
@@ -184,7 +187,8 @@ pci_neptune_putb(int bus, int device, int function, int reg, uint8_t val)
 }
 
 void
-pci_neptune_putw(int bus, int device, int function, int reg, uint16_t val)
+pci_neptune_putw(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg,
+    uint16_t val)
 {
 	pci_neptune_enable();
 
@@ -194,7 +198,8 @@ pci_neptune_putw(int bus, int device, int function, int reg, uint16_t val)
 }
 
 void
-pci_neptune_putl(int bus, int device, int function, int reg, uint32_t val)
+pci_neptune_putl(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg,
+    uint32_t val)
 {
 	pci_neptune_enable();
 

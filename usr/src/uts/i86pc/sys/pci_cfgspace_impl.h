@@ -41,36 +41,51 @@ extern "C" {
  * Generic Mechanism 1 routines
  * XX64 putb -> put8, putw -> put16 etc.
  */
-extern uint8_t pci_mech1_getb(int bus, int dev, int func, int reg);
-extern uint16_t pci_mech1_getw(int bus, int dev, int func, int reg);
-extern uint32_t pci_mech1_getl(int bus, int dev, int func, int reg);
-extern void pci_mech1_putb(int bus, int dev, int func, int reg, uint8_t val);
-extern void pci_mech1_putw(int bus, int dev, int func, int reg, uint16_t val);
-extern void pci_mech1_putl(int bus, int dev, int func, int reg, uint32_t val);
+extern uint8_t pci_mech1_getb(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern uint16_t pci_mech1_getw(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern uint32_t pci_mech1_getl(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern void pci_mech1_putb(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint8_t val);
+extern void pci_mech1_putw(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint16_t val);
+extern void pci_mech1_putl(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint32_t val);
 
 /*
  * AMD family >= 0x10 Mechanism 1 routines with ECS support
  */
 extern boolean_t pci_check_amd_ioecs(void);
-extern uint8_t pci_mech1_amd_getb(int bus, int dev, int func, int reg);
-extern uint16_t pci_mech1_amd_getw(int bus, int dev, int func, int reg);
-extern uint32_t pci_mech1_amd_getl(int bus, int dev, int func, int reg);
-extern void pci_mech1_amd_putb(int bus, int dev, int func, int reg,
-    uint8_t val);
-extern void pci_mech1_amd_putw(int bus, int dev, int func, int reg,
-    uint16_t val);
-extern void pci_mech1_amd_putl(int bus, int dev, int func, int reg,
-    uint32_t val);
+extern uint8_t pci_mech1_amd_getb(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern uint16_t pci_mech1_amd_getw(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern uint32_t pci_mech1_amd_getl(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern void pci_mech1_amd_putb(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg, uint8_t val);
+extern void pci_mech1_amd_putw(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg, uint16_t val);
+extern void pci_mech1_amd_putl(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg, uint32_t val);
 
 /*
  * Generic Mechanism 2 routines
  */
-extern uint8_t pci_mech2_getb(int bus, int dev, int func, int reg);
-extern uint16_t pci_mech2_getw(int bus, int dev, int func, int reg);
-extern uint32_t pci_mech2_getl(int bus, int dev, int func, int reg);
-extern void pci_mech2_putb(int bus, int dev, int func, int reg, uint8_t val);
-extern void pci_mech2_putw(int bus, int dev, int func, int reg, uint16_t val);
-extern void pci_mech2_putl(int bus, int dev, int func, int reg, uint32_t val);
+extern uint8_t pci_mech2_getb(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern uint16_t pci_mech2_getw(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern uint32_t pci_mech2_getl(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern void pci_mech2_putb(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint8_t val);
+extern void pci_mech2_putw(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint16_t val);
+extern void pci_mech2_putl(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint32_t val);
 
 /*
  * Intel Neptune routines.  Neptune is Mech 1, except that BIOSes
@@ -78,12 +93,18 @@ extern void pci_mech2_putl(int bus, int dev, int func, int reg, uint32_t val);
  * Mech 1.  The chipset's buggy, so we have to do it carefully.
  */
 extern boolean_t pci_check_neptune(void);
-extern uint8_t pci_neptune_getb(int bus, int dev, int func, int reg);
-extern uint16_t pci_neptune_getw(int bus, int dev, int func, int reg);
-extern uint32_t pci_neptune_getl(int bus, int dev, int func, int reg);
-extern void pci_neptune_putb(int bus, int dev, int func, int reg, uint8_t val);
-extern void pci_neptune_putw(int bus, int dev, int func, int reg, uint16_t val);
-extern void pci_neptune_putl(int bus, int dev, int func, int reg, uint32_t val);
+extern uint8_t pci_neptune_getb(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern uint16_t pci_neptune_getw(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern uint32_t pci_neptune_getl(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern void pci_neptune_putb(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg, uint8_t val);
+extern void pci_neptune_putw(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg, uint16_t val);
+extern void pci_neptune_putl(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg, uint32_t val);
 
 /*
  * Intel Orion routines.  Orion is Mech 1, except that there's a bug
@@ -91,12 +112,18 @@ extern void pci_neptune_putl(int bus, int dev, int func, int reg, uint32_t val);
  * around accesses to config space.
  */
 extern boolean_t pci_is_broken_orion(void);
-extern uint8_t pci_orion_getb(int bus, int dev, int func, int reg);
-extern uint16_t pci_orion_getw(int bus, int dev, int func, int reg);
-extern uint32_t pci_orion_getl(int bus, int dev, int func, int reg);
-extern void pci_orion_putb(int bus, int dev, int func, int reg, uint8_t val);
-extern void pci_orion_putw(int bus, int dev, int func, int reg, uint16_t val);
-extern void pci_orion_putl(int bus, int dev, int func, int reg, uint32_t val);
+extern uint8_t pci_orion_getb(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern uint16_t pci_orion_getw(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern uint32_t pci_orion_getl(uint8_t bus, uint8_t dev, uint8_t func,
+    uint8_t reg);
+extern void pci_orion_putb(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint8_t val);
+extern void pci_orion_putw(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint16_t val);
+extern void pci_orion_putl(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint32_t val);
 
 /*
  * Generic PCI constants.  Probably these should be in pci.h.

@@ -176,7 +176,7 @@ FuncEnableInboundPostingnc82454()
 }
 
 uint8_t
-pci_orion_getb(int bus, int device, int function, int reg)
+pci_orion_getb(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg)
 {
 	uint8_t	val;
 
@@ -189,7 +189,7 @@ pci_orion_getb(int bus, int device, int function, int reg)
 }
 
 uint16_t
-pci_orion_getw(int bus, int device, int function, int reg)
+pci_orion_getw(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg)
 {
 	uint16_t val;
 
@@ -202,7 +202,7 @@ pci_orion_getw(int bus, int device, int function, int reg)
 }
 
 uint32_t
-pci_orion_getl(int bus, int device, int function, int reg)
+pci_orion_getl(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg)
 {
 	uint32_t	val;
 
@@ -215,7 +215,8 @@ pci_orion_getl(int bus, int device, int function, int reg)
 }
 
 void
-pci_orion_putb(int bus, int device, int function, int reg, uint8_t val)
+pci_orion_putb(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg,
+    uint8_t val)
 {
 	FuncDisableInboundPostingnc82454();
 
@@ -225,7 +226,8 @@ pci_orion_putb(int bus, int device, int function, int reg, uint8_t val)
 }
 
 void
-pci_orion_putw(int bus, int device, int function, int reg, uint16_t val)
+pci_orion_putw(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg,
+    uint16_t val)
 {
 	FuncDisableInboundPostingnc82454();
 
@@ -235,7 +237,8 @@ pci_orion_putw(int bus, int device, int function, int reg, uint16_t val)
 }
 
 void
-pci_orion_putl(int bus, int device, int function, int reg, uint32_t val)
+pci_orion_putl(uint8_t bus, uint8_t device, uint8_t function, uint8_t reg,
+    uint32_t val)
 {
 	FuncDisableInboundPostingnc82454();
 

@@ -23,6 +23,7 @@
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2019 Joyent, Inc.
  * Copyright 2024 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -80,12 +81,15 @@ uint_t pci_iocfg_max_offset = 0xff;
  * Pci_cfgacc_get/put functions shoul be used as more common interfaces,
  * which also provide accessing pci config space via mem-mapped way.
  */
-uint8_t (*pci_getb_func)(int bus, int dev, int func, int reg);
-uint16_t (*pci_getw_func)(int bus, int dev, int func, int reg);
-uint32_t (*pci_getl_func)(int bus, int dev, int func, int reg);
-void (*pci_putb_func)(int bus, int dev, int func, int reg, uint8_t val);
-void (*pci_putw_func)(int bus, int dev, int func, int reg, uint16_t val);
-void (*pci_putl_func)(int bus, int dev, int func, int reg, uint32_t val);
+uint8_t (*pci_getb_func)(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg);
+uint16_t (*pci_getw_func)(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg);
+uint32_t (*pci_getl_func)(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg);
+void (*pci_putb_func)(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint8_t val);
+void (*pci_putw_func)(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint16_t val);
+void (*pci_putl_func)(uint8_t bus, uint8_t dev, uint8_t func, uint8_t reg,
+    uint32_t val);
 
 extern void (*pci_cfgacc_acc_p)(pci_cfgacc_req_t *req);
 
