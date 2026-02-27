@@ -26,6 +26,7 @@
 
 /*
  * Copyright 2021 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -73,7 +74,7 @@ pci_mech2_config_restore(uint8_t oldstatus)
 }
 
 uint8_t
-pci_mech2_getb(int bus, int device, int function, int reg)
+pci_mech2_getb(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg)
 {
 	uint8_t tmp;
 	uint8_t val;
@@ -89,7 +90,7 @@ pci_mech2_getb(int bus, int device, int function, int reg)
 }
 
 uint16_t
-pci_mech2_getw(int bus, int device, int function, int reg)
+pci_mech2_getw(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg)
 {
 	uint8_t	tmp;
 	uint16_t val;
@@ -105,7 +106,7 @@ pci_mech2_getw(int bus, int device, int function, int reg)
 }
 
 uint32_t
-pci_mech2_getl(int bus, int device, int function, int reg)
+pci_mech2_getl(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg)
 {
 	uint8_t		tmp;
 	uint32_t	val;
@@ -121,7 +122,8 @@ pci_mech2_getl(int bus, int device, int function, int reg)
 }
 
 void
-pci_mech2_putb(int bus, int device, int function, int reg, uint8_t val)
+pci_mech2_putb(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg,
+    uint8_t val)
 {
 	uint8_t	tmp;
 
@@ -134,7 +136,8 @@ pci_mech2_putb(int bus, int device, int function, int reg, uint8_t val)
 }
 
 void
-pci_mech2_putw(int bus, int device, int function, int reg, uint16_t val)
+pci_mech2_putw(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg,
+    uint16_t val)
 {
 	uint8_t	tmp;
 
@@ -147,7 +150,8 @@ pci_mech2_putw(int bus, int device, int function, int reg, uint16_t val)
 }
 
 void
-pci_mech2_putl(int bus, int device, int function, int reg, uint32_t val)
+pci_mech2_putl(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg,
+    uint32_t val)
 {
 	uint8_t	tmp;
 
