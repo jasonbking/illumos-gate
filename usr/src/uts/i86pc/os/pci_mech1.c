@@ -26,6 +26,7 @@
 
 /*
  * Copyright 2021 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -47,7 +48,7 @@
  */
 
 uint8_t
-pci_mech1_getb(int bus, int device, int function, int reg)
+pci_mech1_getb(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg)
 {
 	uint8_t val;
 	if (device == PCI_MECH1_SPEC_CYCLE_DEV &&
@@ -67,7 +68,7 @@ pci_mech1_getb(int bus, int device, int function, int reg)
 }
 
 uint16_t
-pci_mech1_getw(int bus, int device, int function, int reg)
+pci_mech1_getw(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg)
 {
 	uint16_t val;
 
@@ -88,7 +89,7 @@ pci_mech1_getw(int bus, int device, int function, int reg)
 }
 
 uint32_t
-pci_mech1_getl(int bus, int device, int function, int reg)
+pci_mech1_getl(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg)
 {
 	uint32_t val;
 
@@ -109,7 +110,8 @@ pci_mech1_getl(int bus, int device, int function, int reg)
 }
 
 void
-pci_mech1_putb(int bus, int device, int function, int reg, uint8_t val)
+pci_mech1_putb(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg,
+    uint8_t val)
 {
 	if (device == PCI_MECH1_SPEC_CYCLE_DEV &&
 	    function == PCI_MECH1_SPEC_CYCLE_FUNC) {
@@ -127,7 +129,8 @@ pci_mech1_putb(int bus, int device, int function, int reg, uint8_t val)
 }
 
 void
-pci_mech1_putw(int bus, int device, int function, int reg, uint16_t val)
+pci_mech1_putw(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg,
+      uint16_t val)
 {
 	if (device == PCI_MECH1_SPEC_CYCLE_DEV &&
 	    function == PCI_MECH1_SPEC_CYCLE_FUNC) {
@@ -145,7 +148,8 @@ pci_mech1_putw(int bus, int device, int function, int reg, uint16_t val)
 }
 
 void
-pci_mech1_putl(int bus, int device, int function, int reg, uint32_t val)
+pci_mech1_putl(uint8_t bus, uint8_t device, uint8_t function, uint16_t reg,
+    uint32_t val)
 {
 	if (device == PCI_MECH1_SPEC_CYCLE_DEV &&
 	    function == PCI_MECH1_SPEC_CYCLE_FUNC) {
