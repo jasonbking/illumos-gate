@@ -23,6 +23,7 @@
  * Use is subject to license terms.
  * Copyright 2018 Joyent, Inc.
  * Copyright 2024 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #ifndef _SYS_PCI_IMPL_H
@@ -117,7 +118,8 @@ struct pci_bus_resource {
 	uint_t io_size;		/* existing children required I/O space size */
 };
 
-extern struct pci_bus_resource *pci_bus_res;
+/* XXX: This is really x86 only */
+extern struct pci_bus_resource **pci_bus_res;
 
 extern struct memlist *pci_memlist_alloc(void);
 extern void pci_memlist_free(struct memlist *);

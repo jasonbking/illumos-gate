@@ -3522,22 +3522,53 @@ alloc_res_array(void)
 	uint_t old_size;
 	void *old_res;
 
+	if (mcfg_base_addr != NULL) {
+		/*
+		 * If we have the MCFG data, we can allocate once
+		 * and we're done.
+		 */
+		if (pci_bus_res != NULL)
+			return;
+
+		size_t len;
+
+		len = (mcfg_max_segment + 1) *
+		    sizeof (struct pci_bus_resource *);
+		pci_bus_res = kmem_zalloc(len, KM_SLEEP);
+
+		for (uint_t i = 0; i <= mcfg_max_segment; i++) {
+			if (mcfg_bus_addr[i] == 0)
+				continue;
+
+			len = (mcfg_bus_end[i] + 1) *
+			    sizeof (struct pci_bus_resource);
+			pci_bus_res[i] = kmem_zalloc(len, KM_SLEEP);
+		}
+
+		return;
+	}
+
+	if (pci_bus_res == NULL) {
+		pci_bus_res = kmem_zalloc(sizeof (struct pci_bus_resource *),
+		    KM_SLEEP);
+	}
+
 	if (array_size > pci_boot_maxbus + 1)
 		return;	/* array is big enough */
 
 	old_size = array_size;
-	old_res = pci_bus_res;
+	old_res = pci_bus_res[0];
 
 	if (array_size == 0)
 		array_size = 16;	/* start with a reasonable number */
 
 	while (array_size <= pci_boot_maxbus + 1)
 		array_size <<= 1;
-	pci_bus_res = (struct pci_bus_resource *)kmem_zalloc(
+	pci_bus_res[0] = (struct pci_bus_resource *)kmem_zalloc(
 	    array_size * sizeof (struct pci_bus_resource), KM_SLEEP);
 
-	if (old_res) {	/* copy content and free old array */
-		bcopy(old_res, pci_bus_res,
+	if (old_res != NULL) {	/* copy content and free old array */
+		bcopy(old_res, pci_bus_res[0],
 		    old_size * sizeof (struct pci_bus_resource));
 		kmem_free(old_res, old_size * sizeof (struct pci_bus_resource));
 	}
