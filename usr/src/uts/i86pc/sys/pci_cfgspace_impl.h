@@ -38,6 +38,20 @@ extern "C" {
 #endif
 
 /*
+ * Memory mapped IO routines
+ */
+extern uint8_t pcie_cfgspace_read_uint8(int bus, int dev, int func, int reg);
+extern uint16_t pcie_cfgspace_read_uint16(int bus, int dev, int func, int reg);
+extern uint32_t pcie_cfgspace_read_uint32(int bus, int dev, int func, int reg);
+extern void pcie_cfgspace_write_uint8(int bus, int dev, int func, int reg,
+    uint8_t val);
+extern void pcie_cfgspace_write_uint16(int bus, int dev, int func, int reg,
+    uint16_t val);
+extern void pcie_cfgspace_write_uint32(int bus, int dev, int func, int reg,
+    uint32_t val);
+
+
+/*
  * Generic Mechanism 1 routines
  * XX64 putb -> put8, putw -> put16 etc.
  */

@@ -27,6 +27,7 @@
 # Copyright 2020 Joyent, Inc.
 # Copyright 2023 Oxide Computer Company
 # Copyright 2021 Jason King
+# Copyright 2026 RackTop Systems, Inc.
 #
 #	This Makefile defines file modules in the directory uts/i86pc
 #	and its children. These are the source files which are i86pc
@@ -110,6 +111,7 @@ CORE_OBJS +=			\
 	pci_cfgspace.o		\
 	pci_mech1.o		\
 	pci_mech1_amd.o		\
+	pci_mech_mmio.o		\
 	pci_mech2.o		\
 	pci_neptune.o		\
 	pci_orion.o		\

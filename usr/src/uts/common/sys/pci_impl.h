@@ -54,6 +54,7 @@ extern "C" {
 #if defined(__i386) || defined(__amd64)
 #define	PCI_MECHANISM_1			1
 #define	PCI_MECHANISM_2			2
+#define	PCI_MECHANISM_MMIO		3
 #else
 #error "Unknown processor type"
 #endif

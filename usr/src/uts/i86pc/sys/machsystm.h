@@ -26,6 +26,7 @@
  * Copyright (c) 2010, Intel Corporation.
  * All rights reserved.
  * Copyright 2018 Joyent, Inc.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #ifndef _SYS_MACHSYSTM_H
@@ -233,6 +234,12 @@ extern page_t *page_get_high_mfn(mfn_t);
 
 extern hrtime_t tsc_gethrtime_tick_delta(void);
 extern hrtime_t tsc_gethrtime_params(uint64_t *, uint32_t *, uint8_t *);
+
+/*
+ * PCIe Initialization functions
+ */
+extern void pcie_cfgspace_init(void);
+extern void pcie_cfgspace_remap(void);
 
 #endif /* _KERNEL */
 
