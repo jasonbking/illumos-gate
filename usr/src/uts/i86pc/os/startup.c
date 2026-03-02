@@ -28,6 +28,7 @@
  * Copyright (c) 2020 Carlos Neira <cneirabustos@gmail.com>
  * Copyright 2025 Oxide Computer Company
  * Copyright 2025 Edgecast Cloud LLC.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 /*
  * Copyright (c) 2010, Intel Corporation.
@@ -1926,6 +1927,12 @@ startup_vm(void)
 	 */
 	device_arena = vmem_create("device", (void *)toxic_addr,
 	    toxic_size, MMU_PAGESIZE, NULL, NULL, NULL, 0, VM_SLEEP);
+
+	/*
+	 * If using memory-mapped IO, tell pcie to switch to device arena
+	 * mappings.
+	 */
+	pcie_cfgspace_remap();
 
 	/*
 	 * Now that we've got more VA, as well as the ability to allocate from

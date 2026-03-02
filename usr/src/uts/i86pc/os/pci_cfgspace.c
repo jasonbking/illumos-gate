@@ -147,6 +147,29 @@ pci_check(void)
 	if (pci_bios_cfg_type != PCI_MECHANISM_UNKNOWN)
 		return (TRUE);
 
+	/*
+	 * Try to get a valid mcfg_mem_base in early boot
+	 * If failed, leave mem-mapped pci config space accessing disabled
+	 * until pci boot code (pci_autoconfig) makes sure this is a PCIE
+	 * platform.
+	 */
+	if (do_bsys_getprop(NULL, MCFG_PROPNAME, ecfginfo) != -1) {
+		mcfg_mem_base = ecfginfo[0];
+		mcfg_bus_start = ecfginfo[2];
+		mcfg_bus_end = ecfginfo[3];
+
+		if (mcfg_mem_base != 0) {
+			extern void pcie_cfgspace_init(void);
+
+			pci_bios_maxbus = mcfg_bus_end;
+
+			pci_bios_cfg_type = PCI_MECHANISM_MMIO;
+			pcie_cfgspace_init();
+
+			return (TRUE);
+		}
+	}
+
 #if defined(__xpv)
 	/*
 	 * only support PCI config mechanism 1 in i86xpv. This should be fine

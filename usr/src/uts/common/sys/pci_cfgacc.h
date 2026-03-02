@@ -21,6 +21,7 @@
 /*
  * Copyright 2009 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
+ *
  */
 
 #ifndef	_PCI_CFGACC_H
@@ -39,6 +40,10 @@ extern "C" {
 	((((uint16_t)b & 0xff) << 8) + (((uint8_t)d & 0x1f) << 3) + \
 	((uint8_t)f & 0x7)) :	\
 	((((uint16_t)b & 0xff) << 8) + ((uint8_t)f & 0xff)))
+
+#define	PCI_CFGACC_BUS(req)	(((req->bdf) & 0xff00) >> 8)
+#define	PCI_CFGACC_DEV(req)	(((req->bdf) & 0xf8) >> 3)
+#define	PCI_CFGACC_FUNC(req)	((req->bdf) & 0x7)
 
 typedef union pci_cfg_data {
 	uint8_t b;
