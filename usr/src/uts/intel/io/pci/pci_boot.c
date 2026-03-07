@@ -39,6 +39,13 @@
  *				reprogram any devices which were not set up by
  *				the system firmware. On this first call, the
  *				reprogram parameter is set to 0.
+ *   pci_init()
+ *   				Creates the initial root complex (bus 0).
+ *   				No programming of any hardware is done at
+ *   				this time. This merely allows access to the
+ *   				appropriate PCI configuration space for
+ *   				fixups/device enumeration/etc
+ *
  *   add_pci_fixes()
  *	enumerate_bus_devs(CONFIG_FIX)
  *	    <foreach bus>
@@ -394,7 +401,7 @@ pci_rc_scan_cb(uint32_t busno, void *arg)
 	if (pci_bus_res[busno].par_bus == (uchar_t)-1 &&
 	    pci_bus_res[busno].dip == NULL) {
 		create_root_bus_dip((uchar_t)busno);
-	}
+}
 
 	return (B_TRUE);
 }
@@ -578,14 +585,10 @@ pci_unitaddr_cache_create(void)
 	nvf_wake_daemon();
 }
 
-
-/*
- * Enumerate all PCI devices
- */
 void
-pci_setup_tree(void)
+pci_init(void)
 {
-	uint_t i, root_bus_addr = 0;
+	uint_t i;
 
 	alloc_res_array();
 	for (i = 0; i <= pci_boot_maxbus; i++) {
@@ -594,8 +597,23 @@ pci_setup_tree(void)
 		pci_bus_res[i].sub_bus = i;
 	}
 
-	pci_bus_res[0].root_addr = root_bus_addr++;
+	/*
+	 * create_root_bus_dip() requires root_addr[bus] is assigned,
+	 * so we do that now
+	 */
+	pci_bus_res[0].root_addr = 0;
 	create_root_bus_dip(0);
+}
+
+/*
+ * Enumerate all PCI devices
+ */
+void
+pci_setup_tree(void)
+{
+	/* We assigned addr 0 in pci_init(), so start with 1 */
+	uint_t i, root_bus_addr = 1;
+
 	enumerate_bus_devs(0, CONFIG_INFO);
 
 	/*
