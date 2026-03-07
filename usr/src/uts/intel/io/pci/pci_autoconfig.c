@@ -22,6 +22,7 @@
  * Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
  * Use is subject to license terms.
  * Copyright 2022 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -49,6 +50,7 @@ extern int pci_boot_maxbus;
 /*
  * Interface routines
  */
+void pci_init(void);
 void pci_enumerate(int);
 void pci_setup_tree(void);
 void pci_reprogram(void);
@@ -121,6 +123,7 @@ pci_enumerate(int reprogram)
 	 */
 	if (reprogram == 0) {
 		pci_boot_maxbus = pci_prd_max_bus();
+		pci_init();
 	}
 
 	add_pci_fixes();
