@@ -390,7 +390,7 @@ dump_memlists_impl(const char *tag, int bus)
 }
 
 static boolean_t
-pci_rc_scan_cb(uint32_t busno, void *arg)
+pci_rc_scan_cb(uint16_t seg, uint32_t busno, void *arg)
 {
 	if (busno > pci_boot_maxbus) {
 		dcmn_err(CE_NOTE, "platform root complex scan returned bus "

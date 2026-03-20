@@ -24,6 +24,7 @@
  * Copyright 2019 Western Digital Corporation
  * Copyright 2020 OmniOS Community Edition (OmniOSce) Association.
  * Copyright 2024 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -697,7 +698,7 @@ static ACPI_STATUS
 pci_process_acpi_device(ACPI_HANDLE hdl, UINT32 level, void *ctx, void **rv)
 {
 	ACPI_DEVICE_INFO *adi;
-	int busnum;
+	int busnum, seg;
 	pci_prd_acpi_cb_t *cb = ctx;
 
 	/*
@@ -723,6 +724,16 @@ pci_process_acpi_device(ACPI_HANDLE hdl, UINT32 level, void *ctx, void **rv)
 
 	AcpiOsFree(adi);
 
+	/* Default to segment 0 if one isn't given */
+	if (ACPI_FAILURE(acpica_eval_int(hdl, METHOD_NAME__SEG, &seg)))
+		seg = 0;
+
+	if (seg > UINT16_MAX) {
+		dcmn_err(CE_NOTE, "%s: invalid segment value %d", __func__,
+		    seg);
+		return (AE_CTRL_DEPTH);
+	}
+
 	/*
 	 * acpica_get_busno() will check the presence of _BBN and
 	 * fail if not present. It will then use the _CRS method to
@@ -742,8 +753,10 @@ pci_process_acpi_device(ACPI_HANDLE hdl, UINT32 level, void *ctx, void **rv)
 			return (AE_CTRL_DEPTH);
 		}
 
-		if (cb->ppac_func((uint32_t)busnum, cb->ppac_arg))
+		if (cb->ppac_func((uint16_t)seg, (uint32_t)busnum,
+		    cb->ppac_arg)) {
 			return (AE_CTRL_DEPTH);
+		}
 		return (AE_CTRL_TERMINATE);
 	}
 

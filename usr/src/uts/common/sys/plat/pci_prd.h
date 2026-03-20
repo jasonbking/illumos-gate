@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2023 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 #ifndef _SYS_PLAT_PCI_PRD_H
@@ -109,11 +110,12 @@ extern boolean_t pci_prd_multi_root_ok(void);
  * This is used to allow the PCI enumeration code to ask the platform about any
  * PCI root complexes that it might know about which might not be discovered
  * through the normal scanning process. One callback will be emitted for each
- * PCI bus via a call to the callback function. The return value of the callback
+ * PCI bus via a call to the callback function with the PCI segment and bus
+ * values as parameters (respectively). The return value of the callback
  * function determines whether we should continue iterating (B_TRUE) or
  * terminate (B_FALSE).
  */
-typedef boolean_t (*pci_prd_root_complex_f)(uint32_t, void *);
+typedef boolean_t (*pci_prd_root_complex_f)(uint16_t, uint32_t, void *);
 extern void pci_prd_root_complex_iter(pci_prd_root_complex_f, void *);
 
 /*
