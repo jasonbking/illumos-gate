@@ -233,7 +233,13 @@ pci_bios_bus_iter(pci_prd_root_complex_f cbfunc, void *arg)
 	int i;
 	for (i = 0; i < pci_irq_nroutes; i++) {
 		if (pci_irq_routes[i].pir_slot != 0) {
-			if (!cbfunc(pci_irq_routes[i].pir_bus, arg)) {
+			/*
+			 * Systems with multiple PCI segments on x86 must
+			 * use ACPI to discover those segments, so any
+			 * buses we discover here can only be on the
+			 * default segment 0.
+			 */
+			if (!cbfunc(0, pci_irq_routes[i].pir_bus, arg)) {
 				return;
 			}
 		}
