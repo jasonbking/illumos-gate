@@ -2325,7 +2325,7 @@ process_devfunc(dev_info_t *rcdip, uchar_t bus, uchar_t dev, uchar_t func,
 	gfx_entry_t *gfxp;
 	pcie_req_id_t bdf;
 
-	prop_ret = pci_prop_data_fill(NULL, bus, dev, func, &prop_data);
+	prop_ret = pci_prop_data_fill(rcdip, NULL, bus, dev, func, &prop_data);
 	if (prop_ret != PCI_PROP_OK) {
 		cmn_err(CE_WARN, MSGHDR "failed to get basic PCI data: 0x%x",
 		    "pci", bus, dev, func, prop_ret);
