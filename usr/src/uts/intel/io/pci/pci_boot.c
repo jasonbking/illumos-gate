@@ -197,12 +197,6 @@
 #include <sys/pci_cfgacc_x86.h>
 #include <sys/plat/pci_prd.h>
 
-#define	pci_getb	(*pci_getb_func)
-#define	pci_getw	(*pci_getw_func)
-#define	pci_getl	(*pci_getl_func)
-#define	pci_putb	(*pci_putb_func)
-#define	pci_putw	(*pci_putw_func)
-#define	pci_putl	(*pci_putl_func)
 #define	dcmn_err	if (pci_boot_debug != 0) cmn_err
 #define	bus_debug(bus)	(pci_boot_debug != 0 && pci_debug_bus_start != -1 && \
 	    pci_debug_bus_end != -1 && (bus) >= pci_debug_bus_start && \
@@ -261,10 +255,11 @@ typedef enum {
 #define	DEVID_AMD8111_LPC	0x7468
 
 struct pci_fixundo {
+	uint16_t		seg;
 	uint8_t			bus;
 	uint8_t			dev;
 	uint8_t			fn;
-	void			(*undofn)(uint8_t, uint8_t, uint8_t);
+	void			(*undofn)(uint16_t, uint8_t, uint8_t, uint8_t);
 	struct pci_fixundo	*next;
 };
 
@@ -302,7 +297,7 @@ static void add_ppb_props(dev_info_t *, uchar_t, uchar_t, uchar_t, boolean_t,
 static void add_bus_range_prop(int);
 static void add_ranges_prop(int, boolean_t);
 static void add_bus_available_prop(int);
-static int get_pci_cap(uchar_t bus, uchar_t dev, uchar_t func, uint8_t cap_id);
+static int get_pci_cap(dev_info_t *dip, pcie_req_id_t bdf, uint8_t cap_id);
 static void fix_ppb_res(uchar_t, boolean_t);
 static void alloc_res_array(void);
 static void create_ioapic_node(int bus, int dev, int fn, ushort_t vendorid,
@@ -370,6 +365,19 @@ get_rcdip(uint16_t seg)
 	ASSERT3P(dip, !=, NULL);
 
 	return (dip);
+}
+
+static uint16_t
+get_segment(dev_info_t *dip)
+{
+	int seg;
+
+	seg = ddi_prop_get_int(DDI_DEV_T_ANY, dip, 0, "pci-segment", 0);
+
+	/* We set it, so this should be valid */
+	ASSERT3S(seg, >=, 0);
+	ASSERT3S(seg, <=, UINT16_MAX);
+	return (seg);
 }
 
 static void
@@ -922,7 +930,7 @@ get_parbus_res(uchar_t parbus, uchar_t bus, uint64_t size, uint64_t align,
  * given a cap_id, return its cap_id location in config space
  */
 static int
-get_pci_cap(uchar_t bus, uchar_t dev, uchar_t func, uint8_t cap_id)
+get_pci_cap(dev_info_t *dip, pcie_req_id_t bdf, uint8_t cap_id)
 {
 	uint8_t curcap, cap_id_loc;
 	uint16_t status;
@@ -933,21 +941,21 @@ get_pci_cap(uchar_t bus, uchar_t dev, uchar_t func, uint8_t cap_id)
 	 * Also please note that for type 1 devices, the
 	 * offset could change. Should support type 1 next.
 	 */
-	status = pci_getw(bus, dev, func, PCI_CONF_STAT);
+	status = pci_cfgacc_get16(dip, bdf, PCI_CONF_STAT);
 	if (!(status & PCI_STAT_CAP)) {
 		return (-1);
 	}
-	cap_id_loc = pci_getb(bus, dev, func, PCI_CONF_CAP_PTR);
+	cap_id_loc = pci_cfgacc_get8(dip, bdf, PCI_CONF_CAP_PTR);
 
 	/* Walk the list of capabilities */
 	while (cap_id_loc && cap_id_loc != (uint8_t)-1) {
-		curcap = pci_getb(bus, dev, func, cap_id_loc);
+		curcap = pci_cfgacc_get8(dip, bdf, cap_id_loc);
 
 		if (curcap == cap_id) {
 			location = cap_id_loc;
 			break;
 		}
-		cap_id_loc = pci_getb(bus, dev, func, cap_id_loc + 1);
+		cap_id_loc = pci_cfgacc_get8(dip, bdf, cap_id_loc + 1);
 	}
 	return (location);
 }
@@ -1201,7 +1209,7 @@ fix_ppb_res(uchar_t secbus, boolean_t prog_sub)
 		return;
 
 	/* some entries may be empty due to discontiguous bus numbering */
-	dip = pci_bus_res[secbus].dip;
+	dip = pci_boot_bus_to_dip(secbus);
 	if (dip == NULL)
 		return;
 
@@ -1224,9 +1232,9 @@ fix_ppb_res(uchar_t secbus, boolean_t prog_sub)
 	/*
 	 * If pcie bridge, check to see if link is enabled
 	 */
-	cap_ptr = get_pci_cap(bus, dev, func, PCI_CAP_ID_PCI_E);
+	cap_ptr = get_pci_cap(dip, bdf, PCI_CAP_ID_PCI_E);
 	if (cap_ptr != -1) {
-		uint16_t reg = pci_getw(bus, dev, func,
+		uint16_t reg = pci_cfgacc_get16(dip, bdf,
 		    (uint16_t)cap_ptr + PCIE_LINKCTL);
 		if ((reg & PCIE_LINKCTL_LINK_DISABLE) != 0) {
 			dcmn_err(CE_NOTE, MSGHDR "link is disabled",
@@ -2151,8 +2159,8 @@ is_pciide(const pci_prop_data_t *prop)
 }
 
 static void
-add_undofix_entry(uint8_t bus, uint8_t dev, uint8_t fn,
-    void (*undofn)(uint8_t, uint8_t, uint8_t))
+add_undofix_entry(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn,
+    void (*undofn)(uint16_t, uint8_t, uint8_t, uint8_t))
 {
 	struct pci_fixundo *newundo;
 
@@ -2162,6 +2170,7 @@ add_undofix_entry(uint8_t bus, uint8_t dev, uint8_t fn,
 	 * Adding an item to this list means that we must turn its NMIENABLE
 	 * bit back on at a later time.
 	 */
+	newundo->seg = seg;
 	newundo->bus = bus;
 	newundo->dev = dev;
 	newundo->fn = fn;
@@ -2195,6 +2204,7 @@ void
 undo_pci_fixes(void)
 {
 	struct pci_fixundo *nextundo;
+	uint16_t seg;
 	uint8_t bus, dev, fn;
 
 	/*
@@ -2202,12 +2212,12 @@ undo_pci_fixes(void)
 	 * fixes may require selective undo.
 	 */
 	while (undolist != NULL) {
-
+		seg = undolist->seg;
 		bus = undolist->bus;
 		dev = undolist->dev;
 		fn = undolist->fn;
 
-		(*(undolist->undofn))(bus, dev, fn);
+		(*(undolist->undofn))(seg, bus, dev, fn);
 
 		nextundo = undolist->next;
 		kmem_free(undolist, sizeof (struct pci_fixundo));
@@ -2216,25 +2226,35 @@ undo_pci_fixes(void)
 }
 
 static void
-undo_amd8111_pci_fix(uint8_t bus, uint8_t dev, uint8_t fn)
+undo_amd8111_pci_fix(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn)
 {
+	dev_info_t *dip;
+	pcie_req_id_t bdf;
 	uint8_t val8;
 
-	val8 = pci_getb(bus, dev, fn, LPC_IO_CONTROL_REG_1);
+	dip = get_rcdip(seg);
+	bdf = PCI_GETBDF(bus, dev, fn);
+
+	val8 = pci_cfgacc_get8(dip, bdf, LPC_IO_CONTROL_REG_1);
 	/*
 	 * The NMIONERR bit is turned back on to allow the SMM BIOS
 	 * to handle more critical PCI errors (e.g. PERR#).
 	 */
 	val8 |= AMD8111_ENABLENMI;
-	pci_putb(bus, dev, fn, LPC_IO_CONTROL_REG_1, val8);
+	pci_cfgacc_put8(dip, bdf, LPC_IO_CONTROL_REG_1, val8);
 }
 
 static void
-pci_fix_amd8111(uint8_t bus, uint8_t dev, uint8_t fn)
+pci_fix_amd8111(uint16_t seg, uint8_t bus, uint8_t dev, uint8_t fn)
 {
+	dev_info_t *dip;
+	pcie_req_id_t bdf;
 	uint8_t val8;
 
-	val8 = pci_getb(bus, dev, fn, LPC_IO_CONTROL_REG_1);
+	dip = get_rcdip(seg);
+	bdf = PCI_GETBDF(bus, dev, fn);
+
+	val8 = pci_cfgacc_get8(dip, bdf, LPC_IO_CONTROL_REG_1);
 
 	if ((val8 & AMD8111_ENABLENMI) == 0)
 		return;
@@ -2246,9 +2266,9 @@ pci_fix_amd8111(uint8_t bus, uint8_t dev, uint8_t fn)
 	 */
 	val8 &= ~AMD8111_ENABLENMI;
 
-	pci_putb(bus, dev, fn, LPC_IO_CONTROL_REG_1, val8);
+	pci_cfgacc_put8(dip, bdf, LPC_IO_CONTROL_REG_1, val8);
 
-	add_undofix_entry(bus, dev, fn, undo_amd8111_pci_fix);
+	add_undofix_entry(seg, bus, dev, fn, undo_amd8111_pci_fix);
 }
 
 static void
@@ -2312,6 +2332,8 @@ process_devfunc(dev_info_t *rcdip, uchar_t bus, uchar_t dev, uchar_t func,
 		return;
 	}
 
+	bdf = PCI_GETBDF(bus, dev, func);
+
 	if (prop_data.ppd_header == PCI_HEADER_CARDBUS &&
 	    config_op == CONFIG_INFO) {
 		/* Record the # of cardbus bridges found on the bus */
@@ -2321,17 +2343,17 @@ process_devfunc(dev_info_t *rcdip, uchar_t bus, uchar_t dev, uchar_t func,
 	if (config_op == CONFIG_FIX) {
 		if (prop_data.ppd_vendid == VENID_AMD &&
 		    prop_data.ppd_devid == DEVID_AMD8111_LPC) {
-			pci_fix_amd8111(bus, dev, func);
+			uint16_t seg = get_segment(rcdip);
+
+			pci_fix_amd8111(seg, bus, dev, func);
 		}
 		return;
 	}
 
 	/* make sure parent bus dip has been created */
 	if (pci_bus_res[bus].dip == NULL) {
-		int seg;
+		uint16_t seg = get_segment(rcdip);
 
-		seg = ddi_prop_get_int(DDI_DEV_T_ANY, rcdip, 0,
-		    "pci-segment", 0);
 		create_root_bus_dip(seg, bus);
 	}
 
@@ -2573,20 +2595,23 @@ pciide_adjust_bar(uchar_t progcl, uint_t bar, uint_t *basep, uint_t *lenp)
  *	 1	Properties have been assigned, reprogramming required
  */
 static int
-add_bar_reg_props(int op, uchar_t bus, uchar_t dev, uchar_t func, uint_t bar,
-    ushort_t offset, pci_regspec_t *regs, pci_regspec_t *assigned,
-    ushort_t *bar_sz, boolean_t pciide)
+add_bar_reg_props(dev_info_t *dip, int op, uchar_t bus, uchar_t dev,
+    uchar_t func, uint_t bar, ushort_t offset, pci_regspec_t *regs,
+    pci_regspec_t *assigned, ushort_t *bar_sz, boolean_t pciide)
 {
 	uint8_t baseclass, subclass, progclass;
 	uint32_t base, devloc;
 	uint16_t command = 0;
+	pcie_req_id_t bdf;
 	int reprogram = 0;
 	uint64_t value;
 
 	devloc = PCI_REG_MAKE_BDFR(bus, dev, func, 0);
-	baseclass = pci_getb(bus, dev, func, PCI_CONF_BASCLASS);
-	subclass = pci_getb(bus, dev, func, PCI_CONF_SUBCLASS);
-	progclass = pci_getb(bus, dev, func, PCI_CONF_PROGCLASS);
+	bdf = PCI_GETBDF(bus, dev, func);
+
+	baseclass = pci_cfgacc_get8(dip, bdf, PCI_CONF_BASCLASS);
+	subclass = pci_cfgacc_get8(dip, bdf, PCI_CONF_SUBCLASS);
+	progclass = pci_cfgacc_get8(dip, bdf, PCI_CONF_PROGCLASS);
 
 	/*
 	 * Determine the size of the BAR by writing 0xffffffff to the base
@@ -2598,20 +2623,20 @@ add_bar_reg_props(int op, uchar_t bus, uchar_t dev, uchar_t func, uint_t bar,
 	 * side-effect of making the bridge transparent to secondary-bus
 	 * activity (see sections 4.1-4.3 of the PCI-PCI Bridge Spec V1.2).
 	 */
-	base = pci_getl(bus, dev, func, offset);
+	base = pci_cfgacc_get32(dip, bdf, offset);
 
 	if (baseclass != PCI_CLASS_BRIDGE) {
-		command = (uint_t)pci_getw(bus, dev, func, PCI_CONF_COMM);
-		pci_putw(bus, dev, func, PCI_CONF_COMM,
+		command = (uint_t)pci_cfgacc_get16(dip, bdf, PCI_CONF_COMM);
+		pci_cfgacc_put16(dip, bdf, PCI_CONF_COMM,
 		    command & ~(PCI_COMM_MAE | PCI_COMM_IO));
 	}
 
-	pci_putl(bus, dev, func, offset, 0xffffffff);
-	value = pci_getl(bus, dev, func, offset);
-	pci_putl(bus, dev, func, offset, base);
+	pci_cfgacc_put32(dip, bdf, offset, 0xffffffff);
+	value = pci_cfgacc_get32(dip, bdf, offset);
+	pci_cfgacc_put32(dip, bdf, offset, base);
 
 	if (baseclass != PCI_CLASS_BRIDGE)
-		pci_putw(bus, dev, func, PCI_CONF_COMM, command);
+		pci_cfgacc_put16(dip, bdf, PCI_CONF_COMM, command);
 
 	/* I/O Space */
 	if ((pciide && bar < 4) || (base & PCI_BASE_SPACE_IO) != 0) {
@@ -2694,8 +2719,8 @@ add_bar_reg_props(int op, uchar_t bus, uchar_t dev, uchar_t func, uint_t bar,
 				    "I/O REPROG 0x%x ~ 0x%x",
 				    "pci", bus, dev, func,
 				    bar, base, len);
-				pci_putl(bus, dev, func, offset, base | type);
-				nbase = pci_getl(bus, dev, func, offset);
+				pci_cfgacc_put32(dip, bdf, offset, base | type);
+				nbase = pci_cfgacc_get32(dip, bdf, offset);
 				nbase &= PCI_BASE_IO_ADDR_M;
 
 				if (base != nbase) {
@@ -2704,13 +2729,13 @@ add_bar_reg_props(int op, uchar_t bus, uchar_t dev, uchar_t func, uint_t bar,
 					    "FAILED READBACK 0x%x",
 					    "pci", bus, dev, func,
 					    bar, base, len, nbase);
-					pci_putl(bus, dev, func, offset, 0);
+					pci_cfgacc_put32(dip, bdf, offset, 0);
 					if (baseclass != PCI_CLASS_BRIDGE) {
 						/* Disable PCI_COMM_IO bit */
-						command = pci_getw(bus, dev,
-						    func, PCI_CONF_COMM);
+						command = pci_cfgacc_get16(dip,
+						    bdf, PCI_CONF_COMM);
 						command &= ~PCI_COMM_IO;
-						pci_putw(bus, dev, func,
+						pci_cfgacc_put16(dip, bdf,
 						    PCI_CONF_COMM, command);
 					}
 					pci_memlist_insert(io_avail, base, len);
@@ -2732,12 +2757,11 @@ add_bar_reg_props(int op, uchar_t bus, uchar_t dev, uchar_t func, uint_t bar,
 
 		if ((base & PCI_BASE_TYPE_M) == PCI_BASE_TYPE_ALL) {
 			*bar_sz = PCI_BAR_SZ_64;
-			base_hi = pci_getl(bus, dev, func, offset + 4);
-			pci_putl(bus, dev, func, offset + 4,
-			    0xffffffff);
-			value |= (uint64_t)pci_getl(bus, dev, func,
+			base_hi = pci_cfgacc_get32(dip, bdf, offset + 4);
+			pci_cfgacc_put32(dip, bdf, offset + 4, 0xffffffff);
+			value |= (uint64_t)pci_cfgacc_get32(dip, bdf,
 			    offset + 4) << 32;
-			pci_putl(bus, dev, func, offset + 4, base_hi);
+			pci_cfgacc_put32(dip, bdf, offset + 4, base_hi);
 			phys_hi = PCI_ADDR_MEM64;
 			value &= PCI_BASE_M_ADDR64_M;
 		} else {
@@ -2873,13 +2897,13 @@ add_bar_reg_props(int op, uchar_t bus, uchar_t dev, uchar_t func, uint_t bar,
 				    pf ? "PMEM" : "MEM",
 				    *bar_sz == PCI_BAR_SZ_64 ? "64" : "",
 				    fbase, len);
-				pci_putl(bus, dev, func, offset, base | type);
-				nbase = pci_getl(bus, dev, func, offset);
+				pci_cfgacc_put32(dip, bdf, offset, base | type);
+				nbase = pci_cfgacc_get32(dip, bdf, offset);
 
 				if (*bar_sz == PCI_BAR_SZ_64) {
-					pci_putl(bus, dev, func,
+					pci_cfgacc_put32(dip, bdf,
 					    offset + 4, base_hi);
-					nbase_hi = pci_getl(bus, dev, func,
+					nbase_hi = pci_cfgacc_get32(dip, bdf,
 					    offset + 4);
 				}
 
@@ -2896,18 +2920,18 @@ add_bar_reg_props(int op, uchar_t bus, uchar_t dev, uchar_t func, uint_t bar,
 					    fbase, len,
 					    nbase_hi << 32 | nbase);
 
-					pci_putl(bus, dev, func, offset, 0);
+					pci_cfgacc_put32(dip, bdf, offset, 0);
 					if (*bar_sz == PCI_BAR_SZ_64) {
-						pci_putl(bus, dev, func,
+						pci_cfgacc_put32(dip, bdf,
 						    offset + 4, 0);
 					}
 
 					if (baseclass != PCI_CLASS_BRIDGE) {
 						/* Disable PCI_COMM_MAE bit */
-						command = pci_getw(bus, dev,
-						    func, PCI_CONF_COMM);
+						command = pci_cfgacc_get16(dip,
+						    bdf, PCI_CONF_COMM);
 						command &= ~PCI_COMM_MAE;
-						pci_putw(bus, dev, func,
+						pci_cfgacc_put16(dip, bdf,
 						    PCI_CONF_COMM, command);
 					}
 
@@ -2955,6 +2979,7 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 {
 	uchar_t baseclass, subclass, progclass, header;
 	uint_t bar, value, devloc, base;
+	pcie_req_id_t bdf;
 	ushort_t bar_sz, offset, end;
 	int max_basereg, reprogram = B_FALSE;
 
@@ -2974,15 +2999,17 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 
 	dump_memlists("add_reg_props start", bus);
 
+	bdf = PCI_GETBDF(bus, dev, func);
 	devloc = PCI_REG_MAKE_BDFR(bus, dev, func, 0);
 	regs[0].pci_phys_hi = devloc;
 	nreg = 1;	/* rest of regs[0] is all zero */
 	nasgn = 0;
 
-	baseclass = pci_getb(bus, dev, func, PCI_CONF_BASCLASS);
-	subclass = pci_getb(bus, dev, func, PCI_CONF_SUBCLASS);
-	progclass = pci_getb(bus, dev, func, PCI_CONF_PROGCLASS);
-	header = pci_getb(bus, dev, func, PCI_CONF_HEADER) & PCI_HEADER_TYPE_M;
+	baseclass = pci_cfgacc_get8(dip, bdf, PCI_CONF_BASCLASS);
+	subclass = pci_cfgacc_get8(dip, bdf, PCI_CONF_SUBCLASS);
+	progclass = pci_cfgacc_get8(dip, bdf, PCI_CONF_PROGCLASS);
+	header = pci_cfgacc_get8(dip, bdf, PCI_CONF_HEADER);
+	header &= PCI_HEADER_TYPE_M;
 
 	switch (header) {
 	case PCI_HEADER_ZERO:
@@ -3005,7 +3032,7 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 	    bar++, offset += bar_sz) {
 		int ret;
 
-		ret = add_bar_reg_props(op, bus, dev, func, bar, offset,
+		ret = add_bar_reg_props(dip, op, bus, dev, func, bar, offset,
 		    &regs[nreg], &assigned[nasgn], &bar_sz, pciide);
 
 		if (bar_sz == PCI_BAR_SZ_64)
@@ -3037,10 +3064,10 @@ add_reg_props(dev_info_t *dip, uchar_t bus, uchar_t dev, uchar_t func,
 	 * Determine the size of the ROM base reg; don't write reserved bits
 	 * ROM isn't in the PCI memory space.
 	 */
-	base = pci_getl(bus, dev, func, offset);
-	pci_putl(bus, dev, func, offset, PCI_BASE_ROM_ADDR_M);
-	value = pci_getl(bus, dev, func, offset);
-	pci_putl(bus, dev, func, offset, base);
+	base = pci_cfgacc_get32(dip, bdf, offset);
+	pci_cfgacc_put32(dip, bdf, offset, PCI_BASE_ROM_ADDR_M);
+	value = pci_cfgacc_get32(dip, bdf, offset);
+	pci_cfgacc_put32(dip, bdf, offset, base);
 	if (value & PCI_BASE_ROM_ENABLE)
 		value &= PCI_BASE_ROM_ADDR_M;
 	else
