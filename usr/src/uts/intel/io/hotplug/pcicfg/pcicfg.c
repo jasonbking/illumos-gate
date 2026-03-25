@@ -3399,10 +3399,13 @@ pcicfg_update_bridge(pcicfg_phdl_t *entry, ddi_acc_handle_t handle)
 	}
 }
 
+extern dev_info_t *pcie_get_rc_dip(dev_info_t *);
+
 static int
 pcicfg_probe_children(dev_info_t *parent, uint_t bus, uint_t device,
     uint_t func, uint_t *highest_bus, pcicfg_flags_t flags, boolean_t is_pcie)
 {
+	dev_info_t		*rcdip;
 	dev_info_t		*new_child;
 	ddi_acc_handle_t	config_handle;
 	int			ret = PCICFG_FAILURE;
@@ -3417,6 +3420,8 @@ pcicfg_probe_children(dev_info_t *parent, uint_t bus, uint_t device,
 
 	ndi_devi_alloc_sleep(parent, DEVI_PSEUDO_NEXNAME,
 	    (pnode_t)DEVI_SID_NODEID, &new_child);
+
+	rcdip = pcie_get_rc_dip(new_child);
 
 	if (pcicfg_add_config_reg(new_child, bus, device, func)
 	    != DDI_SUCCESS) {
@@ -3446,7 +3451,7 @@ pcicfg_probe_children(dev_info_t *parent, uint_t bus, uint_t device,
 	 */
 	(void) pcicfg_device_off(config_handle);
 
-	prop_ret = pci_prop_data_fill(config_handle, bus, device, func,
+	prop_ret = pci_prop_data_fill(rcdip, config_handle, bus, device, func,
 	    &prop_data);
 	if (prop_ret != PCI_PROP_OK) {
 		cmn_err(CE_WARN, "hotplug: failed to get basic PCI data for "
