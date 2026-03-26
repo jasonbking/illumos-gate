@@ -53,6 +53,8 @@
 #include "mps_table.h"
 #include "pcihrt.h"
 
+#define	MAX(a, b) ((a) > (b) ? (a) : (b))
+
 extern int pci_bios_maxbus;
 
 int pci_prd_debug = 0;
