@@ -63,9 +63,10 @@ typedef enum pci_prd_rsrc {
 
 typedef struct pci_prd_upcalls {
 	/*
-	 * Return a dev_info_t, if one exists, for this PCI bus.
+	 * Return a dev_info_t, if one exists, for the PCI bus on the given
+	 * PCI segment.
 	 */
-	dev_info_t *(*pru_bus2dip_f)(uint32_t);
+	dev_info_t *(*pru_bus2dip_f)(uint16_t, uint32_t);
 } pci_prd_upcalls_t;
 
 /*
@@ -83,20 +84,37 @@ extern int pci_prd_init(pci_prd_upcalls_t *);
 extern void pci_prd_fini(void);
 
 /*
+ * Return the number of PCI segments that exist on the running system.
+ * Note that segment numbers can be discontiguous, however segment 0
+ * should always exist.
+ */
+extern uint16_t pci_prd_num_segments(void);
+
+/*
+ * Return the minimum PCI bus on the given segment that should be searched.
+ * Normally this is 0, but non-zero PCI segments may only support a reduced
+ * range of buses.
+ *
+ * If the segment doesn't exist, -1 (UINT32_MAX) is returned.
+ */
+extern uint32_t pci_prd_min_bus(uint16_t);
+
+/*
  * Return the maximum PCI bus on this platform that should be searched. This
  * number is the last bus number that should be scanned. e.g. a value of 0x10
  * indicates that we will search buses [0, 0x10]. In general, it is expected
  * that platforms will just return 0xff (PCI_MAX_BUS_NUM - 1) unless for some
  * reason it has other knowledge here.
  */
-extern uint32_t pci_prd_max_bus(void);
+extern uint32_t pci_prd_max_bus(uint16_t);
 
 /*
- * Look up a set of resources that should be assigned to the PCI bus. In
- * general, it is expected that these are only the buses that are assigned to
- * root complexes.
+ * Look up a set of resources that should be assigned to the PCI bus on the
+ * given PCI segment. In general, it is expected that these are only the buses
+ * that are assigned to root complexes.
  */
-extern struct memlist *pci_prd_find_resource(uint32_t, pci_prd_rsrc_t);
+extern struct memlist *pci_prd_find_resource(uint16_t, uint32_t,
+    pci_prd_rsrc_t);
 
 /*
  * Originally when only using BIOS-derived (pre-ACPI) sources on i86pc, the
@@ -123,7 +141,7 @@ extern void pci_prd_root_complex_iter(pci_prd_root_complex_f, void *);
  * has (such as the traditional BIOS PCI IRQ routing table) to name the PCI(e)
  * slot.
  */
-extern void pci_prd_slot_name(uint32_t, dev_info_t *);
+extern void pci_prd_slot_name(uint16_t, uint32_t, dev_info_t *);
 
 /*
  * These are a series of flags that indicate how certain compatibility options

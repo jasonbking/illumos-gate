@@ -54,7 +54,7 @@ void pci_init(void);
 void pci_enumerate(int);
 void pci_setup_tree(void);
 void pci_reprogram(void);
-dev_info_t *pci_boot_bus_to_dip(uint32_t);
+dev_info_t *pci_boot_bus_to_dip(uint16_t, uint32_t);
 
 static struct modlmisc modlmisc = {
 	&mod_miscops, "PCI BIOS interface"
@@ -122,7 +122,7 @@ pci_enumerate(int reprogram)
 	 * bus that we should use is.
 	 */
 	if (reprogram == 0) {
-		pci_boot_maxbus = pci_prd_max_bus();
+		pci_boot_maxbus = pci_prd_max_bus(0);
 		pci_init();
 	}
 

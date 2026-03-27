@@ -74,11 +74,12 @@ static void acpi_pci_probe(void);
 static int mps_find_bus_res(uint32_t, pci_prd_rsrc_t, struct memlist **);
 static void hrt_probe(void);
 static int hrt_find_bus_res(uint32_t, pci_prd_rsrc_t, struct memlist **);
-static size_t acpi_find_bus_res(uint32_t, pci_prd_rsrc_t, struct memlist **);
+static size_t acpi_find_bus_res(uint16_t, uint32_t, pci_prd_rsrc_t,
+    struct memlist **);
 static uchar_t *find_sig(uchar_t *cp, int len, char *sig);
 static int checksum(unsigned char *cp, int len);
 static ACPI_STATUS acpi_wr_cb(ACPI_RESOURCE *rp, void *context);
-static void acpi_trim_bus_ranges(void);
+static void acpi_trim_bus_ranges(int);
 
 /*
  * -1 = attempt ACPI resource discovery
@@ -87,10 +88,10 @@ static void acpi_trim_bus_ranges(void);
  */
 volatile int acpi_resource_discovery = -1;
 
-struct memlist *acpi_io_res[PCI_MAX_BUS_NUM];
-struct memlist *acpi_mem_res[PCI_MAX_BUS_NUM];
-struct memlist *acpi_pmem_res[PCI_MAX_BUS_NUM];
-struct memlist *acpi_bus_res[PCI_MAX_BUS_NUM];
+struct memlist ***acpi_io_res;
+struct memlist ***acpi_mem_res;
+struct memlist ***acpi_pmem_res;
+struct memlist ***acpi_bus_res;
 
 /*
  * This indicates whether or not we have a traditional x86 BIOS present or not.
@@ -102,30 +103,66 @@ static boolean_t pci_prd_have_bios = B_TRUE;
  */
 extern int pci_bios_maxbus;
 
+static int
+seg_to_idx(uint16_t segment)
+{
+	if (mcfg_bus_start == NULL) {
+		if (segment != 0) {
+			return (-1);
+		}
+		return (0);
+	}
+
+	for (int i = 0; i < mcfg_n_segments; i++) {
+		if (mcfg_segments[i] == segment) {
+			return (i);
+		}
+	}
+
+	return (-1);
+}
+
 static void
 acpi_pci_probe(void)
 {
 	ACPI_HANDLE ah;
-	int bus;
+	int seg, bus, min_bus, max_bus;
+	uint_t i, nseg;
 
 	if (acpi_resource_discovery == 0)
 		return;
 
-	for (bus = 0; bus <= pci_bios_maxbus; bus++) {
-		dev_info_t *dip;
+	nseg = MAX(mcfg_n_segments, 1);
+	for (i = 0; i < nseg; i++) {
+		if (mcfg_n_segments == 0) {
+			seg = 0;
+			min_bus = 0;
+			max_bus = pci_bios_maxbus;
+		} else {
+			seg = mcfg_segments[i];
+			min_bus = mcfg_bus_start[i];
+			max_bus = mcfg_bus_end[i];
+		}
 
-		dip = prd_upcalls->pru_bus2dip_f(bus);
-		if (dip == NULL ||
-		    (ACPI_FAILURE(acpica_get_handle(dip, &ah))))
-			continue;
+		for (bus = min_bus; bus <= max_bus; bus++) {
+			dev_info_t *dip;
+			uint64_t v = (uint64_t)seg << 8 | bus;
 
-		(void) AcpiWalkResources(ah, "_CRS", acpi_wr_cb,
-		    (void *)(uintptr_t)bus);
+			dip = prd_upcalls->pru_bus2dip_f(seg, bus);
+			if (dip == NULL ||
+			    (ACPI_FAILURE(acpica_get_handle(dip, &ah))))
+				continue;
+
+			(void) AcpiWalkResources(ah, "_CRS", acpi_wr_cb,
+			    (void *)(uintptr_t)v);
+		}
 	}
 
 	if (acpi_cb_cnt > 0) {
 		acpi_resource_discovery = 1;
-		acpi_trim_bus_ranges();
+		for (i = 0; i < nseg; i++) {
+			acpi_trim_bus_ranges(i);
+		}
 	}
 }
 
@@ -137,7 +174,7 @@ acpi_pci_probe(void)
  * be trimmed to "0..7", in the example).
  */
 static void
-acpi_trim_bus_ranges(void)
+acpi_trim_bus_ranges(int idx)
 {
 	struct memlist *ranges, *current;
 	int bus;
@@ -152,7 +189,7 @@ acpi_trim_bus_ranges(void)
 	for (bus = 0; bus < PCI_MAX_BUS_NUM; bus++) {
 		struct memlist *prev, *orig, *new;
 		/* skip buses with no range entry */
-		if ((orig = acpi_bus_res[bus]) == NULL)
+		if ((orig = acpi_bus_res[idx][bus]) == NULL)
 			continue;
 
 		/*
@@ -206,22 +243,31 @@ acpi_trim_bus_ranges(void)
 }
 
 static size_t
-acpi_find_bus_res(uint32_t bus, pci_prd_rsrc_t type, struct memlist **res)
+acpi_find_bus_res(uint16_t segment, uint32_t bus, pci_prd_rsrc_t type,
+    struct memlist **res)
 {
 	ASSERT3U(bus, <, PCI_MAX_BUS_NUM);
 
+	int idx = seg_to_idx(segment);
+
+	if (idx == -1) {
+		/* If the segment doesn't exist, there's 0 resources */
+		*res = NULL;
+		return (0);
+	}
+
 	switch (type) {
 	case PCI_PRD_R_IO:
-		*res = acpi_io_res[bus];
+		*res = acpi_io_res[idx][bus];
 		break;
 	case PCI_PRD_R_MMIO:
-		*res = acpi_mem_res[bus];
+		*res = acpi_mem_res[idx][bus];
 		break;
 	case PCI_PRD_R_PREFETCH:
-		*res = acpi_pmem_res[bus];
+		*res = acpi_pmem_res[idx][bus];
 		break;
 	case PCI_PRD_R_BUS:
-		*res = acpi_bus_res[bus];
+		*res = acpi_bus_res[idx][bus];
 		break;
 	default:
 		*res = NULL;
@@ -233,22 +279,28 @@ acpi_find_bus_res(uint32_t bus, pci_prd_rsrc_t type, struct memlist **res)
 }
 
 static struct memlist **
-rlistpp(UINT8 t, UINT8 caching, int bus)
+rlistpp(uint16_t segment, uint8_t bus, ACPI_RESOURCE_ADDRESS *a)
 {
-	switch (t) {
+	int idx = seg_to_idx(segment);
+
+	if (idx == -1) {
+		return (NULL);
+	}
+
+	switch (a->ResourceType) {
 	case ACPI_MEMORY_RANGE:
-		if (caching == ACPI_PREFETCHABLE_MEMORY)
-			return (&acpi_pmem_res[bus]);
+		if (a->Info.Mem.Caching == ACPI_PREFETCHABLE_MEMORY)
+			return (&acpi_pmem_res[idx][bus]);
 		else
-			return (&acpi_mem_res[bus]);
+			return (&acpi_mem_res[idx][bus]);
 		break;
 
 	case ACPI_IO_RANGE:
-		return (&acpi_io_res[bus]);
+		return (&acpi_io_res[idx][bus]);
 		break;
 
 	case ACPI_BUS_NUMBER_RANGE:
-		return (&acpi_bus_res[bus]);
+		return (&acpi_bus_res[idx][bus]);
 		break;
 	}
 
@@ -256,8 +308,8 @@ rlistpp(UINT8 t, UINT8 caching, int bus)
 }
 
 static void
-acpi_dbg(uint_t bus, uint64_t addr, uint64_t len, uint8_t caching, uint8_t type,
-    char *tag)
+acpi_dbg(uint16_t seg, uint_t bus, uint64_t addr, uint64_t len,
+    uint8_t caching, uint8_t type, char *tag)
 {
 	char *s;
 
@@ -276,7 +328,7 @@ acpi_dbg(uint_t bus, uint64_t addr, uint64_t len, uint8_t caching, uint8_t type,
 		break;
 	}
 
-	dprintf("ACPI: bus %x %s/%s %lx/%lx (Caching: %x)\n", bus,
+	dprintf("ACPI: seg %u bus %x %s/%s %lx/%lx (Caching: %x)\n", seg, bus,
 	    tag, s, addr, len, caching);
 }
 
@@ -284,7 +336,10 @@ acpi_dbg(uint_t bus, uint64_t addr, uint64_t len, uint8_t caching, uint8_t type,
 static ACPI_STATUS
 acpi_wr_cb(ACPI_RESOURCE *rp, void *context)
 {
-	int bus = (intptr_t)context;
+	struct memlist **mlp;
+	uint16_t seg = (uintptr_t)context >> 8;
+	uint8_t bus = (uintptr_t)context & 0xff;
+	int idx = seg_to_idx(seg);
 
 	/* ignore consumed resources */
 	if (rp->Data.Address.ProducerConsumer == 1)
@@ -313,10 +368,10 @@ acpi_wr_cb(ACPI_RESOURCE *rp, void *context)
 		if (rp->Data.Io.AddressLength == 0)
 			break;
 		acpi_cb_cnt++;
-		memlist_rsrc_add(&acpi_io_res[bus], rp->Data.Io.Minimum,
+		memlist_rsrc_add(&acpi_io_res[idx][bus], rp->Data.Io.Minimum,
 		    rp->Data.Io.AddressLength);
 		if (pci_prd_debug != 0) {
-			acpi_dbg(bus, rp->Data.Io.Minimum,
+			acpi_dbg(seg, bus, rp->Data.Io.Minimum,
 			    rp->Data.Io.AddressLength, 0, ACPI_IO_RANGE, "IO");
 		}
 		break;
@@ -353,12 +408,11 @@ acpi_wr_cb(ACPI_RESOURCE *rp, void *context)
 		if (rp->Data.Address16.Address.AddressLength == 0)
 			break;
 		acpi_cb_cnt++;
-		memlist_rsrc_add(rlistpp(rp->Data.Address16.ResourceType,
-		    rp->Data.Address.Info.Mem.Caching, bus),
-		    rp->Data.Address16.Address.Minimum,
+		mlp = rlistpp(seg, bus, &rp->Data.Address);
+		memlist_rsrc_add(mlp, rp->Data.Address16.Address.Minimum,
 		    rp->Data.Address16.Address.AddressLength);
 		if (pci_prd_debug != 0) {
-			acpi_dbg(bus,
+			acpi_dbg(seg, bus,
 			    rp->Data.Address16.Address.Minimum,
 			    rp->Data.Address16.Address.AddressLength,
 			    rp->Data.Address.Info.Mem.Caching,
@@ -370,12 +424,12 @@ acpi_wr_cb(ACPI_RESOURCE *rp, void *context)
 		if (rp->Data.Address32.Address.AddressLength == 0)
 			break;
 		acpi_cb_cnt++;
-		memlist_rsrc_add(rlistpp(rp->Data.Address32.ResourceType,
-		    rp->Data.Address.Info.Mem.Caching, bus),
+		mlp = rlistpp(seg, bus, &rp->Data.Address);
+		memlist_rsrc_add(mlp,
 		    rp->Data.Address32.Address.Minimum,
 		    rp->Data.Address32.Address.AddressLength);
 		if (pci_prd_debug != 0) {
-			acpi_dbg(bus,
+			acpi_dbg(seg, bus,
 			    rp->Data.Address32.Address.Minimum,
 			    rp->Data.Address32.Address.AddressLength,
 			    rp->Data.Address.Info.Mem.Caching,
@@ -388,12 +442,12 @@ acpi_wr_cb(ACPI_RESOURCE *rp, void *context)
 			break;
 
 		acpi_cb_cnt++;
-		memlist_rsrc_add(rlistpp(rp->Data.Address64.ResourceType,
-		    rp->Data.Address.Info.Mem.Caching, bus),
+		mlp = rlistpp(seg, bus, &rp->Data.Address);
+		memlist_rsrc_add(mlp,
 		    rp->Data.Address64.Address.Minimum,
 		    rp->Data.Address64.Address.AddressLength);
 		if (pci_prd_debug != 0) {
-			acpi_dbg(bus,
+			acpi_dbg(seg, bus,
 			    rp->Data.Address64.Address.Minimum,
 			    rp->Data.Address64.Address.AddressLength,
 			    rp->Data.Address.Info.Mem.Caching,
@@ -405,12 +459,12 @@ acpi_wr_cb(ACPI_RESOURCE *rp, void *context)
 		if (rp->Data.ExtAddress64.Address.AddressLength == 0)
 			break;
 		acpi_cb_cnt++;
-		memlist_rsrc_add(rlistpp(rp->Data.ExtAddress64.ResourceType,
-		    rp->Data.Address.Info.Mem.Caching, bus),
+		mlp = rlistpp(seg, bus, &rp->Data.Address);
+		memlist_rsrc_add(mlp,
 		    rp->Data.ExtAddress64.Address.Minimum,
 		    rp->Data.ExtAddress64.Address.AddressLength);
 		if (pci_prd_debug != 0) {
-			acpi_dbg(bus,
+			acpi_dbg(seg, bus,
 			    rp->Data.ExtAddress64.Address.Minimum,
 			    rp->Data.ExtAddress64.Address.AddressLength,
 			    rp->Data.Address.Info.Mem.Caching,
@@ -658,19 +712,63 @@ checksum(unsigned char *cp, int len)
 	return ((int)(cksum & 0xFF));
 }
 
-uint32_t
-pci_prd_max_bus(void)
+uint16_t
+pci_prd_num_segments(void)
 {
-	return ((uint32_t)pci_bios_maxbus);
+	return (mcfg_n_segments);
+}
+
+uint32_t
+pci_prd_min_bus(uint16_t segment)
+{
+	if (mcfg_bus_start == NULL) {
+		if (segment == 0) {
+			return (0);
+		}
+		return (UINT32_MAX);
+	}
+
+	for (uint_t i = 0; i < mcfg_n_segments; i++) {
+		if (mcfg_segments[i] == segment) {
+			return (mcfg_bus_start[i]);
+		}
+	}
+
+	return (UINT32_MAX);
+}
+
+uint32_t
+pci_prd_max_bus(uint16_t segment)
+{
+	if (mcfg_bus_end == NULL) {
+		if (segment == 0) {
+			return ((uint32_t)pci_bios_maxbus);
+		}
+		return (UINT32_MAX);
+	}
+
+	for (uint_t i = 0; i < mcfg_n_segments; i++) {
+		if (mcfg_segments[i] == segment) {
+			return (mcfg_bus_end[i]);
+		}
+	}
+
+	return (UINT32_MAX);
 }
 
 struct memlist *
-pci_prd_find_resource(uint32_t bus, pci_prd_rsrc_t rsrc)
+pci_prd_find_resource(uint16_t segment, uint32_t bus, pci_prd_rsrc_t rsrc)
 {
 	struct memlist *res = NULL;
+	uint32_t min_bus, max_bus;
 
-	if (bus > pci_bios_maxbus)
+	min_bus = pci_prd_min_bus(segment);
+	max_bus = pci_prd_max_bus(segment);
+
+	if (min_bus == UINT32_MAX || min_bus > bus || max_bus == UINT32_MAX ||
+	    bus > max_bus) {
 		return (NULL);
+	}
 
 	if (tbl_init == 0) {
 		tbl_init = 1;
@@ -681,8 +779,12 @@ pci_prd_find_resource(uint32_t bus, pci_prd_rsrc_t rsrc)
 		}
 	}
 
-	if (acpi_find_bus_res(bus, rsrc, &res) > 0)
+	if (acpi_find_bus_res(segment, bus, rsrc, &res) > 0)
 		return (res);
+
+	/* We can only have multiple segments with ACPI */
+	if (segment > 0)
+		return (NULL);
 
 	if (pci_prd_have_bios && hrt_find_bus_res(bus, rsrc, &res) > 0)
 		return (res);
@@ -800,7 +902,7 @@ pci_prd_root_complex_iter(pci_prd_root_complex_f func, void *arg)
  * as special as apparently that can't be represented in the IRQ routing table.
  */
 void
-pci_prd_slot_name(uint32_t bus, dev_info_t *dip)
+pci_prd_slot_name(uint16_t segment, uint32_t bus, dev_info_t *dip)
 {
 	char slotprop[256];
 	int len;
@@ -810,11 +912,15 @@ pci_prd_slot_name(uint32_t bus, dev_info_t *dip)
 		return;
 
 	if (dip != NULL) {
-		if (ddi_prop_lookup_string(DDI_DEV_T_ANY, pci_bus_res[bus].dip,
+		dev_info_t *bdip;
+
+		bdip = prd_upcalls->pru_bus2dip_f(segment, bus);
+
+		if (ddi_prop_lookup_string(DDI_DEV_T_ANY, bdip,
 		    DDI_PROP_DONTPASS, "slot-names", &slotcap_name) !=
 		    DDI_SUCCESS || strcmp(slotcap_name, "pcie0") != 0) {
-			(void) ndi_prop_remove(DDI_DEV_T_NONE,
-			    pci_bus_res[bus].dip, "slot-names");
+			(void) ndi_prop_remove(DDI_DEV_T_NONE, bdip,
+			    "slot-names");
 		}
 	}
 
@@ -856,6 +962,9 @@ pci_prd_compat_flags(void)
 int
 pci_prd_init(pci_prd_upcalls_t *upcalls)
 {
+	size_t sz;
+	uint_t i, nseg;
+
 	if (ddi_prop_exists(DDI_DEV_T_ANY, ddi_root_node(), DDI_PROP_DONTPASS,
 	    "efi-systab")) {
 		pci_prd_have_bios = B_FALSE;
@@ -863,20 +972,56 @@ pci_prd_init(pci_prd_upcalls_t *upcalls)
 
 	prd_upcalls = upcalls;
 
+	nseg = MAX(mcfg_n_segments, 1);
+	sz = nseg * sizeof (struct memlist *);
+
+	acpi_io_res = kmem_zalloc(sz, KM_SLEEP);
+	acpi_mem_res = kmem_zalloc(sz, KM_SLEEP);
+	acpi_pmem_res = kmem_zalloc(sz, KM_SLEEP);
+	acpi_bus_res = kmem_zalloc(sz, KM_SLEEP);
+
+	sz = PCI_MAX_BUS_NUM * sizeof (struct memlist *);
+
+	for (i = 0; i < nseg; i++) {
+		acpi_io_res[i] = kmem_zalloc(sz, KM_SLEEP);
+		acpi_mem_res[i] = kmem_zalloc(sz, KM_SLEEP);
+		acpi_pmem_res[i] = kmem_zalloc(sz, KM_SLEEP);
+		acpi_bus_res[i] = kmem_zalloc(sz, KM_SLEEP);
+	}
+
 	return (0);
 }
 
 void
 pci_prd_fini(void)
 {
+	size_t sz;
 	int bus;
+	uint_t idx, nseg;
 
-	for (bus = 0; bus <= pci_bios_maxbus; bus++) {
-		memlist_rsrc_free(&acpi_io_res[bus]);
-		memlist_rsrc_free(&acpi_mem_res[bus]);
-		memlist_rsrc_free(&acpi_pmem_res[bus]);
-		memlist_rsrc_free(&acpi_bus_res[bus]);
+	sz = PCI_MAX_BUS_NUM * sizeof (struct memlist *);
+	nseg = MAX(mcfg_n_segments, 1);
+
+	for (idx = 0; idx < nseg; idx++) {
+		for (bus = 0; bus < PCI_MAX_BUS_NUM; bus++) {
+			memlist_rsrc_free(&acpi_io_res[idx][bus]);
+			memlist_rsrc_free(&acpi_mem_res[idx][bus]);
+			memlist_rsrc_free(&acpi_pmem_res[idx][bus]);
+			memlist_rsrc_free(&acpi_bus_res[idx][bus]);
+		}
+
+		kmem_free(acpi_bus_res[idx], sz);
+		kmem_free(acpi_pmem_res[idx], sz);
+		kmem_free(acpi_mem_res[idx], sz);
+		kmem_free(acpi_io_res[idx], sz);
 	}
+
+	sz = nseg * sizeof (struct memlist *);
+
+	kmem_free(acpi_bus_res, sz);
+	kmem_free(acpi_pmem_res, sz);
+	kmem_free(acpi_mem_res, sz);
+	kmem_free(acpi_io_res, sz);
 }
 
 static struct modlmisc pci_prd_modlmisc_i86pc = {

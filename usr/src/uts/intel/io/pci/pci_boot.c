@@ -1711,7 +1711,7 @@ pci_reprogram(void)
 	 */
 	pci_prd_root_complex_iter(pci_rc_scan_cb, NULL);
 	for (bus = 0; bus <= pci_boot_maxbus; bus++) {
-		pci_prd_slot_name(bus, pci_bus_res[bus].dip);
+		pci_prd_slot_name(0, bus, pci_bus_res[bus].dip);
 	}
 	pci_unitaddr_cache_init();
 
@@ -1886,10 +1886,10 @@ populate_bus_res(uchar_t bus)
 {
 	struct pci_bus_resource *r = &pci_bus_res[bus];
 
-	r->pmem_avail = pci_prd_find_resource(bus, PCI_PRD_R_PREFETCH);
-	r->mem_avail = pci_prd_find_resource(bus, PCI_PRD_R_MMIO);
-	r->io_avail = pci_prd_find_resource(bus, PCI_PRD_R_IO);
-	r->bus_avail = pci_prd_find_resource(bus, PCI_PRD_R_BUS);
+	r->pmem_avail = pci_prd_find_resource(0, bus, PCI_PRD_R_PREFETCH);
+	r->mem_avail = pci_prd_find_resource(0, bus, PCI_PRD_R_MMIO);
+	r->io_avail = pci_prd_find_resource(0, bus, PCI_PRD_R_IO);
+	r->bus_avail = pci_prd_find_resource(0, bus, PCI_PRD_R_BUS);
 
 	dump_memlists("populate_bus_res", bus);
 
