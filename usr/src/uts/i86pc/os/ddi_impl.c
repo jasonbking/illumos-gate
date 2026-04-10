@@ -26,6 +26,7 @@
  * Copyright 2016 Nexenta Systems, Inc.
  * Copyright 2018 Joyent, Inc.
  * Copyright 2026 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -86,7 +87,7 @@ char *platform_module_list[] = {
 };
 
 /* pci bus resource maps */
-struct pci_bus_resource *pci_bus_res;
+struct pci_bus_resource **pci_bus_res;
 
 size_t dma_max_copybuf_size = 0x101000;		/* 1M + 4K */
 

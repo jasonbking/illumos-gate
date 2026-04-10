@@ -90,6 +90,17 @@ extern void pci_prd_fini(void);
  */
 extern uint16_t pci_prd_num_segments(void);
 
+/* Return the largest segment number that exists on the running system. */
+extern uint16_t pci_prd_max_segment(void);
+
+/*
+ * Return the next segment number after the given segment. Returns UINT32_MAX
+ * if the given segment number is the last segment that exists on the
+ * running system. Segment numbers can be discontiguous, so this provides
+ * a way to iterate through the segment values that exist on the system.
+ */
+extern uint32_t pci_prd_next_segment(uint16_t);
+
 /*
  * Return the minimum PCI bus on the given segment that should be searched.
  * Normally this is 0, but non-zero PCI segments may only support a reduced

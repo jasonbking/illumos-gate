@@ -715,12 +715,61 @@ checksum(unsigned char *cp, int len)
 uint16_t
 pci_prd_num_segments(void)
 {
-	return (mcfg_n_segments);
+	uint16_t nseg = 0;
+	uint_t i, j;
+
+	if (mcfg_n_segments == 0)
+		return (1);
+
+	for (i = 0; i < mcfg_n_segments; i++) {
+		for (j = 0; j < i; j++) {
+			if (mcfg_segments[i] == mcfg_segments[j])
+				break;
+		}
+
+		if (j == i)
+			nseg++;
+	}
+
+	return (nseg);
+}
+
+uint16_t
+pci_prd_max_segment(void)
+{
+	uint_t i;
+	uint16_t max = 0;
+
+	for (i = 0; i < mcfg_n_segments; i++) {
+		if (mcfg_segments[i] > max) {
+			max = mcfg_segments[i];
+		}
+	}
+
+	return (max);
+}
+
+uint32_t
+pci_prd_next_segment(uint16_t segment)
+{
+	uint_t i;
+	uint32_t next = UINT32_MAX;
+
+	for (i = 0; i < mcfg_n_segments; i++) {
+		if (mcfg_segments[i] > segment &&
+		    mcfg_segments[i] < next) {
+			next = mcfg_segments[i];
+		}
+	}
+
+	return (next);
 }
 
 uint32_t
 pci_prd_min_bus(uint16_t segment)
 {
+	uint32_t min = UINT32_MAX;
+
 	if (mcfg_bus_start == NULL) {
 		if (segment == 0) {
 			return (0);
@@ -729,17 +778,19 @@ pci_prd_min_bus(uint16_t segment)
 	}
 
 	for (uint_t i = 0; i < mcfg_n_segments; i++) {
-		if (mcfg_segments[i] == segment) {
-			return (mcfg_bus_start[i]);
-		}
+		if (mcfg_segments[i] == segment &&
+		    mcfg_bus_start[i] < min)
+			min = mcfg_bus_start[i];
 	}
 
-	return (UINT32_MAX);
+	return (min);
 }
 
 uint32_t
 pci_prd_max_bus(uint16_t segment)
 {
+	uint32_t max = UINT32_MAX;
+
 	if (mcfg_bus_end == NULL) {
 		if (segment == 0) {
 			return ((uint32_t)pci_bios_maxbus);
@@ -749,11 +800,12 @@ pci_prd_max_bus(uint16_t segment)
 
 	for (uint_t i = 0; i < mcfg_n_segments; i++) {
 		if (mcfg_segments[i] == segment) {
-			return (mcfg_bus_end[i]);
+			if (max == UINT32_MAX || mcfg_bus_end[i] > max)
+				max = mcfg_bus_end[i];
 		}
 	}
 
-	return (UINT32_MAX);
+	return (max);
 }
 
 struct memlist *
@@ -905,6 +957,7 @@ void
 pci_prd_slot_name(uint16_t segment, uint32_t bus, dev_info_t *dip)
 {
 	char slotprop[256];
+	dev_info_t *bdip = NULL;
 	int len;
 	char *slotcap_name;
 
@@ -912,13 +965,12 @@ pci_prd_slot_name(uint16_t segment, uint32_t bus, dev_info_t *dip)
 		return;
 
 	if (dip != NULL) {
-		dev_info_t *bdip;
-
 		bdip = prd_upcalls->pru_bus2dip_f(segment, bus);
 
-		if (ddi_prop_lookup_string(DDI_DEV_T_ANY, bdip,
+		if (bdip != NULL &&
+		    (ddi_prop_lookup_string(DDI_DEV_T_ANY, bdip,
 		    DDI_PROP_DONTPASS, "slot-names", &slotcap_name) !=
-		    DDI_SUCCESS || strcmp(slotcap_name, "pcie0") != 0) {
+		    DDI_SUCCESS || strcmp(slotcap_name, "pcie0") != 0)) {
 			(void) ndi_prop_remove(DDI_DEV_T_NONE, bdip,
 			    "slot-names");
 		}
@@ -927,10 +979,10 @@ pci_prd_slot_name(uint16_t segment, uint32_t bus, dev_info_t *dip)
 
 	len = pci_slot_names_prop(bus, slotprop, sizeof (slotprop));
 	if (len > 0) {
-		if (dip != NULL) {
+		if (bdip != NULL) {
 			ASSERT((len % sizeof (int)) == 0);
 			(void) ndi_prop_update_int_array(DDI_DEV_T_NONE,
-			    pci_bus_res[bus].dip, "slot-names",
+			    bdip, "slot-names",
 			    (int *)slotprop, len / sizeof (int));
 		} else {
 			cmn_err(CE_NOTE, "!BIOS BUG: Invalid bus number in PCI "
