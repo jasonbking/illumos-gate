@@ -14,7 +14,7 @@
  * Copyright 2019 Joyent, Inc.
  * Copyright 2017 Tegile Systems, Inc.  All rights reserved.
  * Copyright 2020 Ryan Zezeski
- * Copyright 2020 RackTop Systems, Inc.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -137,6 +137,8 @@ extern "C" {
 #define	I40E_MAX_MTU	9706
 #define	I40E_MIN_MTU	ETHERMIN
 #define	I40E_DEF_MTU	ETHERMTU
+
+#define	I40E_MIN_MSS	64
 
 /*
  * Interrupt throttling related values. Interrupt throttling values are defined
@@ -555,6 +557,7 @@ typedef struct i40e_txq_stat {
 	kstat_named_t	itxs_err_context;	/* Total context failures */
 
 	kstat_named_t	itxs_num_unblocked;	/* Number of MAC unblocks */
+	kstat_named_t	itxs_bad_mss;		/* Given an unsupported MSS */
 } i40e_txq_stat_t;
 
 /*
