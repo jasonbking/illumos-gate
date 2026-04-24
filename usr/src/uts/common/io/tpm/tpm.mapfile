@@ -45,7 +45,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	crypto_provider_notification	{ FLAGS = EXTERN };
 	crypto_register_provider	{ FLAGS = EXTERN };
 	crypto_unregister_provider	{ FLAGS = EXTERN };
-	
+
 	id_alloc			{ FLAGS = EXTERN };
 	id_alloc_nosleep		{ FLAGS = EXTERN };
 	id_free				{ FLAGS = EXTERN };
