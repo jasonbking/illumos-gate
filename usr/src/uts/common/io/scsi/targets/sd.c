@@ -1056,6 +1056,7 @@ static void sd_reset_target(struct sd_lun *un, struct scsi_pkt *pktp);
 
 static void sd_start_stop_unit_callback(void *arg);
 static void sd_start_stop_unit_task(void *arg);
+static void sd_reassign_block_task(void *arg);
 
 static void sd_taskq_create(void);
 static void sd_taskq_delete(void);
@@ -1076,6 +1077,8 @@ static int sd_send_scsi_START_STOP_UNIT(sd_ssc_t *ssc, int pc_flag,
 static int sd_send_scsi_INQUIRY(sd_ssc_t *ssc, uchar_t *bufaddr,
     size_t buflen, uchar_t evpd, uchar_t page_code, size_t *residp);
 static int sd_send_scsi_TEST_UNIT_READY(sd_ssc_t *ssc, int flag);
+static int sd_send_scsi_REASSIGN_BLOCKS(sd_ssc_t *ssc, diskaddr_t lba,
+    int path_flag);
 static int sd_send_scsi_PERSISTENT_RESERVE_IN(sd_ssc_t *ssc,
     uchar_t usr_cmd, uint16_t data_len, uchar_t *data_bufp);
 static int sd_send_scsi_PERSISTENT_RESERVE_OUT(sd_ssc_t *ssc,
@@ -1197,6 +1200,14 @@ static void sd_read_modify_write_task(void * arg);
 static int
 sddump_do_read_of_rmw(struct sd_lun *un, uint64_t blkno, uint64_t nblk,
     struct buf **bpp);
+
+typedef struct sd_reassign_info {
+	struct sd_lun	*sri_un;
+	diskaddr_t	sri_lba;
+} sd_reassign_info_t;
+
+#define	SD_REASSIGN_PARAM_LONG_LBA	0x02
+#define	SD_REASSIGN_PARAM_DESC_LEN	8
 
 
 /*
@@ -17613,6 +17624,7 @@ sd_sense_key_medium_or_hardware_error(struct sd_lun *un, uint8_t *sense_datap,
 {
 	struct sd_sense_info	si;
 	uint8_t sense_key = scsi_sense_key(sense_datap);
+	uint8_t op = SD_GET_PKT_OPCODE(pktp) & 0x1F;
 
 	ASSERT(un != NULL);
 	ASSERT(mutex_owned(SD_MUTEX(un)));
@@ -17624,6 +17636,28 @@ sd_sense_key_medium_or_hardware_error(struct sd_lun *un, uint8_t *sense_datap,
 	si.ssi_pfa_flag = FALSE;
 
 	if (sense_key == KEY_MEDIUM_ERROR) {
+		/*
+		 * Issue REASSIGN BLOCKS on first medium-error read retry if
+		 * valid sense LBA information is available.
+		 */
+		if ((op == SCMD_READ) && (xp->xb_retry_count == 0)) {
+			uint64_t sense_lba;
+			sd_reassign_info_t *ri;
+
+			if (scsi_sense_info_uint64(sense_datap, SENSE_LENGTH,
+			    &sense_lba)) {
+				ri = kmem_alloc(sizeof (*ri), KM_NOSLEEP);
+				if (ri != NULL) {
+					ri->sri_un = un;
+					ri->sri_lba = (diskaddr_t)sense_lba;
+					if ((sd_tq == NULL) || (taskq_dispatch(sd_tq,
+					    sd_reassign_block_task, ri,
+					    KM_NOSLEEP) == TASKQID_INVALID)) {
+						kmem_free(ri, sizeof (*ri));
+					}
+				}
+			}
+		}
 		SD_UPDATE_ERRSTATS(un, sd_rq_media_err);
 	}
 
@@ -19837,6 +19871,40 @@ sd_start_stop_unit_task(void *arg)
 	SD_TRACE(SD_LOG_IO, un, "sd_start_stop_unit_task: exit\n");
 }
 
+/*
+ *    Function: sd_reassign_block_task
+ *
+ * Description: Deferred reassign-block operation for medium read errors.
+ *
+ *     Context: Executes in a taskq() thread context
+ */
+static void
+sd_reassign_block_task(void *arg)
+{
+	sd_reassign_info_t	*ri = arg;
+	struct sd_lun		*un;
+	sd_ssc_t		*ssc;
+	int			rval;
+
+	ASSERT(ri != NULL);
+	un = ri->sri_un;
+	ASSERT(un != NULL);
+	ASSERT(!mutex_owned(SD_MUTEX(un)));
+
+	ssc = sd_ssc_init(un);
+	rval = sd_send_scsi_REASSIGN_BLOCKS(ssc, ri->sri_lba,
+	    SD_PATH_DIRECT_PRIORITY);
+	if (rval != 0) {
+		SD_ERROR(SD_LOG_ERROR, un,
+		    "sd_reassign_block_task: REASSIGN BLOCKS failed for "
+		    "lba=0x%llx (err=%d)\n", (u_longlong_t)ri->sri_lba, rval);
+		sd_ssc_assessment(ssc, SD_FMT_IGNORE);
+	}
+	sd_ssc_fini(ssc);
+
+	kmem_free(ri, sizeof (*ri));
+}
+
 
 /*
  *    Function: sd_send_scsi_INQUIRY
@@ -20028,6 +20096,78 @@ sd_send_scsi_TEST_UNIT_READY(sd_ssc_t *ssc, int flag)
 	}
 
 	SD_TRACE(SD_LOG_IO, un, "sd_send_scsi_TEST_UNIT_READY: exit\n");
+
+	return (status);
+}
+
+/*
+ *    Function: sd_send_scsi_REASSIGN_BLOCKS
+ *
+ * Description: Issue the SCSI REASSIGN BLOCKS command for one LBA.
+ *
+ *     Context: Can sleep.
+ */
+static int
+sd_send_scsi_REASSIGN_BLOCKS(sd_ssc_t *ssc, diskaddr_t lba, int path_flag)
+{
+	struct scsi_extended_sense	sense_buf;
+	union scsi_cdb		cdb;
+	struct uscsi_cmd	ucmd_buf;
+	uint8_t			param_list[12];
+	uint64_t		be_lba;
+	int			status;
+	struct sd_lun		*un;
+
+	ASSERT(ssc != NULL);
+	un = ssc->ssc_un;
+	ASSERT(un != NULL);
+	ASSERT(!mutex_owned(SD_MUTEX(un)));
+
+	SD_TRACE(SD_LOG_IO, un,
+	    "sd_send_scsi_REASSIGN_BLOCKS: entry: lba=0x%llx\n",
+	    (u_longlong_t)lba);
+
+	bzero(&cdb, sizeof (cdb));
+	bzero(&ucmd_buf, sizeof (ucmd_buf));
+	bzero(&sense_buf, sizeof (sense_buf));
+	bzero(param_list, sizeof (param_list));
+
+	/*
+	 * Defect list header:
+	 *   byte 0: LONGLBA
+	 *   bytes 2-3: defect list length (single 8-byte descriptor)
+	 */
+	param_list[0] = SD_REASSIGN_PARAM_LONG_LBA;
+	param_list[3] = SD_REASSIGN_PARAM_DESC_LEN;
+	be_lba = BE_64((uint64_t)lba);
+	bcopy(&be_lba, &param_list[4], sizeof (be_lba));
+
+	cdb.scc_cmd = SCMD_REASSIGN_BLOCK;
+	SD_FILL_SCSI1_LUN_CDB(un, &cdb);
+
+	ucmd_buf.uscsi_cdb	= (char *)&cdb;
+	ucmd_buf.uscsi_cdblen	= CDB_GROUP0;
+	ucmd_buf.uscsi_bufaddr	= (caddr_t)param_list;
+	ucmd_buf.uscsi_buflen	= sizeof (param_list);
+	ucmd_buf.uscsi_rqbuf	= (caddr_t)&sense_buf;
+	ucmd_buf.uscsi_rqlen	= sizeof (sense_buf);
+	ucmd_buf.uscsi_flags	= USCSI_WRITE | USCSI_RQENABLE |
+	    USCSI_SILENT | USCSI_DIAGNOSE;
+	ucmd_buf.uscsi_timeout	= un->un_cmd_timeout;
+
+	status = sd_ssc_send(ssc, &ucmd_buf, FKIOCTL, UIO_SYSSPACE, path_flag);
+
+	switch (status) {
+	case 0:
+		sd_ssc_assessment(ssc, SD_FMT_STANDARD);
+		break;
+	case EIO:
+		if (ucmd_buf.uscsi_status == STATUS_RESERVATION_CONFLICT)
+			status = EACCES;
+		break;
+	default:
+		break;
+	}
 
 	return (status);
 }
