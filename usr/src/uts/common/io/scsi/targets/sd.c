@@ -17624,7 +17624,7 @@ sd_sense_key_medium_or_hardware_error(struct sd_lun *un, uint8_t *sense_datap,
 {
 	struct sd_sense_info	si;
 	uint8_t sense_key = scsi_sense_key(sense_datap);
-	uint8_t op = SD_GET_PKT_OPCODE(pktp) & 0x1F;
+	uint8_t opcode = SD_GET_PKT_OPCODE(pktp) & 0x1F;
 
 	ASSERT(un != NULL);
 	ASSERT(mutex_owned(SD_MUTEX(un)));
@@ -17640,7 +17640,7 @@ sd_sense_key_medium_or_hardware_error(struct sd_lun *un, uint8_t *sense_datap,
 		 * Issue REASSIGN BLOCKS on first medium-error read retry if
 		 * valid sense LBA information is available.
 		 */
-		if ((op == SCMD_READ) && (xp->xb_retry_count == 0)) {
+		if ((opcode == SCMD_READ) && (xp->xb_retry_count == 0)) {
 			uint64_t sense_lba;
 			sd_reassign_info_t *ri;
 
@@ -17650,9 +17650,11 @@ sd_sense_key_medium_or_hardware_error(struct sd_lun *un, uint8_t *sense_datap,
 				if (ri != NULL) {
 					ri->sri_un = un;
 					ri->sri_lba = (diskaddr_t)sense_lba;
-					if ((sd_tq == NULL) || (taskq_dispatch(sd_tq,
+					if (sd_tq == NULL) {
+						kmem_free(ri, sizeof (*ri));
+					} else if (taskq_dispatch(sd_tq,
 					    sd_reassign_block_task, ri,
-					    KM_NOSLEEP) == TASKQID_INVALID)) {
+					    KM_NOSLEEP) == TASKQID_INVALID) {
 						kmem_free(ri, sizeof (*ri));
 					}
 				}
@@ -20114,7 +20116,7 @@ sd_send_scsi_REASSIGN_BLOCKS(sd_ssc_t *ssc, diskaddr_t lba, int path_flag)
 	union scsi_cdb		cdb;
 	struct uscsi_cmd	ucmd_buf;
 	uint8_t			param_list[12];
-	uint64_t		be_lba;
+	uint64_t		lba_be64;
 	int			status;
 	struct sd_lun		*un;
 
@@ -20139,8 +20141,8 @@ sd_send_scsi_REASSIGN_BLOCKS(sd_ssc_t *ssc, diskaddr_t lba, int path_flag)
 	 */
 	param_list[0] = SD_REASSIGN_PARAM_LONG_LBA;
 	param_list[3] = SD_REASSIGN_PARAM_DESC_LEN;
-	be_lba = BE_64((uint64_t)lba);
-	bcopy(&be_lba, &param_list[4], sizeof (be_lba));
+	lba_be64 = BE_64((uint64_t)lba);
+	bcopy(&lba_be64, &param_list[4], sizeof (lba_be64));
 
 	cdb.scc_cmd = SCMD_REASSIGN_BLOCK;
 	SD_FILL_SCSI1_LUN_CDB(un, &cdb);
