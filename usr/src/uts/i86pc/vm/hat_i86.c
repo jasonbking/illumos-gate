@@ -4529,7 +4529,7 @@ hat_cpu_offline(struct cpu *cpup)
 }
 
 /*
- * Function called after all CPUs are brought online.
+ * Function called before other CPUs are brought online.
  * Used to remove low address boot mappings.
  */
 void

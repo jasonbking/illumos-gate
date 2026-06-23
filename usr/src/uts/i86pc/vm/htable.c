@@ -1740,6 +1740,7 @@ htable_walk(
 					return (pte);
 				}
 				htable_release(ht);
+				va = NEXT_ENTRY_VA(va, l);
 				break;
 			}
 
