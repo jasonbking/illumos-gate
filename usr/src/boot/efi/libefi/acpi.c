@@ -95,7 +95,7 @@ acpi_find_table(const char *sig)
 			if (acpi_checksum(sdp, sdp->Length))
 				continue;
 
-			if (ACPI_COMPARE_NAME(sig, sdp->Signature))
+			if (ACPI_COMPARE_NAMESEG(sig, sdp->Signature))
 				return (sdp);
 		}
 	}
@@ -119,7 +119,7 @@ acpi_find_table(const char *sig)
 			if (acpi_checksum(sdp, sdp->Length))
 				continue;
 
-			if (ACPI_COMPARE_NAME(sig, sdp->Signature))
+			if (ACPI_COMPARE_NAMESEG(sig, sdp->Signature))
 				return (sdp);
 		}
 	}
