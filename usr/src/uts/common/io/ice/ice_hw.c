@@ -379,21 +379,23 @@ ice_sw_rule_err(ice_cq_errno_t e)
 #define	ADD_RULE_SZ	(sizeof (ice_sw_lookup_t) + RULE_DATA_SZ)
 
 typedef enum init_rule_flags {
-	IRF_RX = 	0,
+	IRF_RX =	0,
 	IRF_TX =	(1 << 0),
 	IRF_LB =	(1 << 1)
 } init_rule_flags_t;
 
 static void *
-ice_init_rule(ice_sw_lookup_t *lk, uint16_t vsi_id, uint16_t src,
+ice_init_rule(ice_sw_lookup_t *lk, uint16_t rid, uint16_t vsi_id, uint16_t src,
     init_rule_flags_t flags)
 {
 	uint32_t action;
 
-	action = ICE_SW_RULE_ACT_T_LOGICAL_PORT_FWD |
+	action =
+	    ICE_SW_RULE_ACT_T_LOGICAL_PORT_FWD |
 	    ICE_SW_RULE_ACT_LAN_EN |
 	    ICE_SW_RULE_ACT_SET_VSI(0, vsi_id) |
 	    ICE_SW_RULE_ACT_VSI_VALID;
+
 	if ((flags & IRF_LB) != 0) {
 		action |= ICE_SW_RULE_ACT_LB_EN;
 	}
@@ -402,23 +404,12 @@ ice_init_rule(ice_sw_lookup_t *lk, uint16_t vsi_id, uint16_t src,
 	    LE_16(ICE_SW_RULE_T_LOOKUP_TX) :
 	    LE_16(ICE_SW_RULE_T_LOOKUP_RX);
 
-	lk->iswl_rid = LE_16(ICE_SW_RECIPE_PROMISC);
+	lk->iswl_rid = LE_16(rid);
 	lk->iswl_source = LE_16(src);
 	lk->iswl_action = LE_32(action);
 	lk->iswl_header_len = LE_16(RULE_DATA_SZ);
 
 	return (&lk->iswl_data[RULE_DATA_SZ]);
-}
-
-static void *
-ice_init_remove_rule(ice_sw_lookup_t *lk, uint16_t rid)
-{
-	/*
-	 * Unlike adding, we don't need to specify any data -- just
-	 * specify the rule id to delete
-	 */
-	lk->iswl_index = LE_16(rid);
-	return (lk->iswl_data);
 }
 
 /*
@@ -429,7 +420,7 @@ ice_init_remove_rule(ice_sw_lookup_t *lk, uint16_t rid)
  * the appropriate switch rule to pass the traffic. On success, it
  * sets *idxp to the rule index returned by the hardware.
  */
-int
+bool
 ice_add_mac(ice_t *ice, uint_t vsi_id, const uint8_t *mac, uint16_t *idxp)
 {
 	uint8_t		buf[ADD_RULE_SZ] = { 0 };
@@ -443,7 +434,8 @@ ice_add_mac(ice_t *ice, uint_t vsi_id, const uint8_t *mac, uint16_t *idxp)
 	 * appears to be how it's ice_add_mac() creates the rule, so we
 	 * do the same.
 	 */
-	end = ice_init_rule(lk, vsi_id, vsi_id, IRF_TX|IRF_LB);
+	end = ice_init_rule(lk, ICE_SW_RECIPE_MAC, vsi_id, vsi_id,
+	    IRF_TX|IRF_LB);
 	len = (uintptr_t)end - (uintptr_t)lk;
 
 	ASSERT3U(len, <=, sizeof (buf));
@@ -452,19 +444,19 @@ ice_add_mac(ice_t *ice, uint_t vsi_id, const uint8_t *mac, uint16_t *idxp)
 	bcopy(mac, lk->iswl_data, ETHERADDRL);
 
 	if (!ice_cmd_switch_rules(ice, ICE_CQ_OP_ADD_SW_RULES, 1, buf, len)) {
-		return (EIO);
+		return (false);
 	}
 
 	if (lk->iswl_hdr.iswrh_status != 0) {
 		ice_error(ice, "failed to add mac %02x:%02x:%02x:%02x:%02x: %s",
 		    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
 		    ice_sw_rule_err(lk->iswl_hdr.iswrh_status));
-		return (EIO);
+		return (false);
 	}
 
 	*idxp = LE_16(lk->iswl_index);
 
-	return (0);
+	return (true);
 }
 
 #define	NRULE	4
@@ -515,13 +507,13 @@ ice_promisc_on(ice_t *ice)
 		flags = params[i].is_tx ? IRF_TX : IRF_RX;
 
 		r[i] = next;
-		next = ice_init_rule(r[i], vsi->ivsi_id, params[i].src, flags);
+		next = ice_init_rule(r[i], ICE_SW_RECIPE_PROMISC,
+		    vsi->ivsi_id, params[i].src, flags);
 
 		r[i]->iswl_data[0] = 0x02;
-		r[i]->iswl_data[6] = 0x02;
-
 		if (params[i].is_mcast) {
 			r[i]->iswl_data[0] |= 0x01;
+			r[i]->iswl_data[6] = 0x02;
 		}
 	}
 
@@ -537,7 +529,7 @@ ice_promisc_on(ice_t *ice)
 	n_rids = 0;
 	for (i = 0; i < NRULE; i++) {
 		if (r[i]->iswl_hdr.iswrh_status == 0) {
-			rids[n_rids++] = r[i]->iswl_index;
+			rids[n_rids++] = LE_16(r[i]->iswl_index);
 		} else {
 			ice_error(ice, "failed to add %s rule: %s", r_str[i],
 			    ice_sw_rule_err(r[i]->iswl_hdr.iswrh_status));
@@ -572,29 +564,38 @@ ice_promisc_off(ice_t *ice)
 		ice->ice_promisc_rid_rx,
 		ice->ice_promisc_m_rid_rx,
 	};
-	int	ret;
-	
-	ret = ice_remove_rule(ice, NRULE, rids);
-	return ((ret == 0) ? true : false);
+
+	return (ice_remove_rule(ice, NRULE, rids));
 }
 #undef NRULE
+
+static void *
+ice_init_remove_rule(ice_sw_lookup_t *lk, uint16_t rid)
+{
+	/*
+	 * Unlike adding, we don't need to specify any data -- just
+	 * specify the rule id to delete
+	 */
+	lk->iswl_index = LE_16(rid);
+	return (lk->iswl_data);
+}
 
 /*
  * This removes the switch rule given by the given rule index (set by the
  * hardware when a rule is added). This is used both to remove MAC addresses
  * as well as VLAN rules.
  */
-int
-ice_remove_rule(ice_t *ice, uint16_t nrule, uint16_t *rids)
+bool
+ice_remove_rule(ice_t *ice, uint16_t nrule, const uint16_t *rids)
 {
 	ice_sw_lookup_t	*lk, *next;
 	void		*buf;
 	size_t		buflen;
 	size_t		len;
-	int		ret = 0;
+	bool		ret;
 
 	if (nrule == 0) {
-		return (0);
+		return (true);
 	}
 
 	buflen = (size_t)nrule * sizeof (ice_sw_lookup_t);
@@ -609,10 +610,8 @@ ice_remove_rule(ice_t *ice, uint16_t nrule, uint16_t *rids)
 	len = (uintptr_t)next - (uintptr_t)buf;
 	ASSERT3U(len, <=, buflen);
 
-	if (!ice_cmd_switch_rules(ice, ICE_CQ_OP_REMOVE_SW_RULES, nrule, buf,
-	    len)) {
-		ret = EIO;
-	}
+	ret = ice_cmd_switch_rules(ice, ICE_CQ_OP_REMOVE_SW_RULES, nrule, buf,
+	    len);
 
 	kmem_free(buf, buflen);
 	return (ret);

@@ -206,8 +206,8 @@ ice_parse_tx_sched(ice_t *ice, const uint8_t *buf, size_t buflen,
 				 * bad entry, but it's all we have.
 				 */
 				ice_error(ice, "default TX scheduler node "
-				  "on branch %u index %u with parent TEID 0x%x "
-				  "has invalid TEID", i, j, pteid);
+				    "on branch %u index %u with parent TEID "
+				    "0x%x has invalid TEID", i, j, pteid);
 				goto done;
 			}
 
@@ -228,7 +228,7 @@ ice_parse_tx_sched(ice_t *ice, const uint8_t *buf, size_t buflen,
 				    "children", pteid);
 				goto done;
 			}
-			
+
 			if (el->ihtse_eltype == ICE_TX_SCHED_ET_SOFT_SE) {
 				ice->ice_tx_sched_entry = j;
 			}
@@ -374,7 +374,7 @@ ice_tx_sched_add_vsi_node(ice_t *ice, ice_vsi_t *vsi)
 	    &args)) {
 		goto done;
 	}
-	
+
 	node = args.ava_node;
 	ASSERT3P(node, !=, NULL);
 

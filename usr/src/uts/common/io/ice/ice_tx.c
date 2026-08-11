@@ -150,6 +150,7 @@
  * threads trying to TX on the same ring at the same time).
  */
 
+/* Note these are defined in the order we attempt each method */
 typedef enum ice_tx_pkt_method {
 	ITPM_NORMAL,		/* Try binding and copying based on frag size */
 	ITPM_COPY_MSS,		/* Try to copy the current mss segment */
@@ -161,45 +162,77 @@ typedef struct ice_tx_pkt {
 	mblk_t			*itxp_mp;
 	mac_ether_offload_info_t itxp_meo;
 	size_t			itxp_hdrlen;	/* Size of L2+L3+L4 headers */
-	size_t			itxp_msglen;	/* Total pkt length */
 
-	/* descriptor data */
-	ice_tx_ctrl_block_t	*itxp_tcbs[ICE_TX_MAX_LSO_DESC];
-	uint64_t		itxp_addrs[ICE_TX_MAX_LSO_DESC];
-	uint16_t		itxp_lens[ICE_TX_MAX_LSO_DESC];
-	uint8_t			itxp_ntcb;
-	uint8_t			itxp_desc_total;
+	ice_tx_ctrl_block_t	*itxp_tcbs;
+	ice_tx_ctrl_block_t	*itxp_tcb_tail;
+	size_t			itxp_ntcbs;
+	size_t			itxp_ndesc;
 
 	bool			itxp_lso;
 	ice_tx_pkt_method_t	itxp_method;
 	uint32_t		itxp_mss;
-	uint8_t			itxp_segmax;
 
 	/* mss frame tracking */
-	uint8_t			itxp_segcnt;
 	uint16_t		itxp_seglen;
+	uint8_t			itxp_segcnt;
+	uint8_t			itxp_segmax;
+
+	/* Stats for this packet */
+	uint32_t		itxp_bind_fails;
+
+	uint32_t		itxp_mss_retries;
+	uint32_t		itxp_mss_full_copies;
+
+	uint32_t		itxp_copy_bytes;
+	uint32_t		itxp_copy_segs;
+	uint32_t		itxp_bind_bytes;
+	uint32_t		itxp_bind_segs;
 
 	/* rollback state */
 	mblk_t			*itxp_prev_mp_seg;
 	size_t			itxp_prev_off;
+
+	ice_tx_ctrl_block_t	*itxp_prev_tcb_tail;
+	uint16_t		itxp_prev_ndesc;
 	uint16_t		itxp_prev_seglen;
 	uint8_t			itxp_prev_segcnt;
-	uint8_t			itxp_prev_ntcb;
-	uint8_t			itxp_prev_desc_total;
+	uint8_t			itxp_prev_ntcbs;
+
+	uint32_t		itxp_prev_copy_bytes;
+	uint32_t		itxp_prev_copy_segs;
+	uint32_t		itxp_prev_bind_bytes;
+	uint32_t		itxp_prev_bind_segs;
 
 	/* initial state for rolling back to start of packet */
 	mblk_t			*itxp_init_mp_seg;
 	size_t			itxp_init_off;
-} ice_tx_pkt_t;
+} __aligned(64) ice_tx_pkt_t;
+
+typedef struct ice_tx_pkt_iter {
+	ice_tx_ctrl_block_t	*itpi_tcb;
+	ddi_dma_handle_t	itpi_dmah;
+	const ddi_dma_cookie_t	*itpi_ic;
+	ddi_dma_cookie_t	itpi_cookie;
+} ice_tx_pkt_iter_t;
 
 static kmem_cache_t *ice_tx_pkt_cache;
 
 static inline uintptr_t
+ice_qtx_index(const ice_tx_ring_t *txr)
+{
+	return (txr->itxr_index + txr->itxr_ice->ice_first_txq);
+}
+
+static inline uintptr_t
+ice_qtx_tail(const ice_tx_ring_t *txr)
+{
+	return (ICE_QTX_TAIL(ice_qtx_index(txr)));
+}
+
+static inline uintptr_t
 ice_qint_tqctl(const ice_tx_ring_t *txr)
 {
-	uintptr_t base = ICE_REG_QINT_TQCTL_BASE;
-
-	return (base + txr->itxr_index * 4);
+	return (ICE_REG_QINT_TQCTL(ice_qtx_index(txr)));
 }
 
 static inline ice_tx_ring_t *
@@ -217,7 +250,7 @@ ice_tx_next(const ice_tx_ring_t *txr, uint16_t idx, uint16_t amt)
 	ASSERT3U(idx, <, txr->itxr_size);
 
 	val = idx + amt;
-	if (idx > txr->itxr_size)
+	if (val >= txr->itxr_size)
 		val -= txr->itxr_size;
 
 	ASSERT3U(val, <, txr->itxr_size);
@@ -242,24 +275,36 @@ ice_tcb_alloc(ice_tx_ring_t *txr)
 
 	mutex_exit(&txr->itxr_tcb_lock);
 
+	ASSERT3P(tcb->itcb_next, ==, NULL);
+	tcb->itcb_ring = txr;
+
 	return (tcb);
 }
 
 static void
-ice_tcb_free(ice_tx_ring_t *txr, ice_tx_ctrl_block_t *tcb)
+ice_tcb_free(ice_tx_ctrl_block_t *tcb)
 {
+	ice_t		*ice;
+	ice_tx_ring_t	*txr;
+
 	if (tcb == NULL)
 		return;
+
+	ASSERT3P(tcb->itcb_ring, !=, NULL);
+	ASSERT3P(tcb->itcb_next, ==, NULL);
+
+	txr = tcb->itcb_ring;
+	ice = txr->itxr_ice;
 
 	switch (tcb->itcb_type) {
 	case ITCB_NOT_USED:
 		break;
 	case ITCB_SMALL_COPY:
-		ice_small_buf_free(txr->itxr_ice, tcb->itcb_buf);
+		ice_buf_pool_free(&ice->ice_small_bufs, tcb->itcb_buf);
 		tcb->itcb_buf = NULL;
 		break;
 	case ITCB_COPY:
-		ice_buf_free(txr->itxr_ice, tcb->itcb_buf);
+		ice_buf_pool_free(&ice->ice_bufs, tcb->itcb_buf);
 		tcb->itcb_buf = NULL;
 		break;
 	case ITCB_BIND:
@@ -282,8 +327,8 @@ ice_tcb_free(ice_tx_ring_t *txr, ice_tx_ctrl_block_t *tcb)
 	mutex_enter(&txr->itxr_tcb_lock);
 
 	ASSERT3U(txr->itxr_tcb_nfree, <, txr->itxr_size);
-	txr->itxr_tcb_nfree++;
 	txr->itxr_tcb_free_list[txr->itxr_tcb_nfree] = tcb;
+	txr->itxr_tcb_nfree++;
 
 	mutex_exit(&txr->itxr_tcb_lock);
 }
@@ -291,6 +336,9 @@ ice_tcb_free(ice_tx_ring_t *txr, ice_tx_ctrl_block_t *tcb)
 static inline bool
 ice_tcb_is_copy(const ice_tx_ctrl_block_t *tcb)
 {
+	if (tcb == NULL)
+		return (false);
+
 	switch (tcb->itcb_type) {
 	case ITCB_SMALL_COPY:
 	case ITCB_COPY:
@@ -412,22 +460,58 @@ ice_tx_quiesce(ice_tx_ring_t *txr)
 static inline void
 ice_tx_pkt_checkpoint(ice_tx_pkt_t *pkt, mblk_t *mp, size_t off)
 {
+	ASSERT3P(mp, !=, NULL);
+
 	pkt->itxp_prev_seglen = pkt->itxp_seglen;
 	pkt->itxp_prev_segcnt = pkt->itxp_segcnt;
 
-	pkt->itxp_prev_ntcb = pkt->itxp_ntcb;
-	pkt->itxp_prev_desc_total = pkt->itxp_desc_total;
+	pkt->itxp_prev_tcb_tail = pkt->itxp_tcb_tail;
+	pkt->itxp_prev_ntcbs = pkt->itxp_ntcbs;
+	pkt->itxp_prev_ndesc = pkt->itxp_ndesc;
 	pkt->itxp_prev_mp_seg = mp;
 	pkt->itxp_prev_off = off;
+
+	pkt->itxp_prev_copy_bytes = pkt->itxp_copy_bytes;
+	pkt->itxp_prev_copy_segs = pkt->itxp_copy_segs;
+	pkt->itxp_prev_bind_bytes = pkt->itxp_bind_bytes;
+	pkt->itxp_prev_bind_segs = pkt->itxp_bind_segs;
 }
 
+static inline size_t
+ice_tx_pkt_msglen(const ice_tx_pkt_t *pkt)
+{
+	return (pkt->itxp_meo.meoi_len);
+}
+
+static inline uint16_t
+ice_tx_pkt_desc_needed(const ice_tx_pkt_t *pkt)
+{
+	uint16_t n = pkt->itxp_ndesc;
+
+	/*
+	 * LSO requires an additional descriptor to hold the TX
+	 * context
+	 */
+	if (pkt->itxp_lso)
+		n++;
+
+	return (n);
+}
+
+
 /*
- * Add a tcb to the packet. If adding this tcb crosses the current mss segment
- * boundary, we cache the initial state (tcb, mp, off) at the start of the
- * new mss segment in case we need to rollback to it.
+ * Add a `tcb `to `pkt` . `mp` and `off` reflect the location in the packet
+ * data just after the data in `tcb`. If we can add this tcb without
+ * violating the hardware's segmentation rules, we return true. Otherwise
+ * we return false.
  *
- * Returns true if successfully added, false if adding this tcb would
- * exceed the per-mss descriptor limit.
+ * If the tcb is added successfully, if it also crosses the current mss
+ * segment boundary, it 'checkpoints'. That is, The value of `mp` and `off`
+ * are saved (along with some other internal bookkeeping information) so
+ * we are able to undo things and rollback the state of pkt as it is when
+ * we return now -- basically the start of a new mss segment boundary (that
+ * way we can retry by copying the entire mss segment).
+ *
  */
 static bool
 ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
@@ -435,7 +519,7 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 {
 	const ddi_dma_cookie_t	*c;
 	ddi_dma_handle_t	h;
-	uint16_t		segcnt;
+	size_t			init_ndesc;
 	uint16_t		init_seglen;
 	uint8_t			init_segcnt;
 	bool			need_checkpoint;
@@ -445,19 +529,26 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 
 	h = ice_tcb_dma_handle(tcb);
 
-	ASSERT3U(pkt->itxp_ntcb + 1, <, ARRAY_SIZE(pkt->itxp_tcbs));
-
+	/*
+	 * For non-LSO, we're limited to ICE_TX_MAX_COOKIE (8) cookies
+	 * total. We fail saving so we can fall back to copying.
+	 */
 	if (!pkt->itxp_lso &&
-	    pkt->itxp_segcnt + ice_tcb_ncookies(tcb) > ICE_TX_MAX_DESC) {
+	    pkt->itxp_segcnt + ice_tcb_ncookies(tcb) > ICE_TX_MAX_COOKIE) {
 		return (false);
 	}
 
-	pkt->itxp_tcbs[pkt->itxp_ntcb++] = tcb;
-
+	init_ndesc = pkt->itxp_ndesc;
 	init_seglen = pkt->itxp_seglen;
 	init_segcnt = pkt->itxp_segcnt;
-	segcnt = 0;
 	need_checkpoint = false;
+
+	/*
+	 * A copy TCB uses a preallocated DMA buffer constructed so that
+	 * it should only ever use 1 cookie.
+	 */
+	IMPLY(ice_tcb_is_copy(tcb), ddi_dma_ncookies(h) == 1);
+
 	/*
 	 * Gather up all of the physical addresses and lengths for this
 	 * tcb (for DMA mapped data, there may be more than one cookie)
@@ -466,25 +557,37 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 	    c = ddi_dma_cookie_iter(h, c)) {
 		uint16_t len;
 
+		/*
+		 * Whenever we accumulate enough bytes to cross an mss
+		 * boundary (pkt->itxp_seglen >= mss), we reset itxp_seglen
+		 * and itxp_segcnt. If we are at the maximum and start
+		 * the loop again, we've failed (and need to resort to
+		 * some amount of copying).
+		 */
 		if (pkt->itxp_segcnt == pkt->itxp_segmax)
 			goto fail;
 
 		/*
-		 * itcb_len is the total length of data managed by this tcb.
-		 * If there are multiple cookies, then we need the length
-		 * of the current 'chunk' from this cookie (i.e. dmac_size).
-		 * If there is only a single cookie, the size of the DMA
-		 * cookie may be larger than the amount of valid data (e.g.
-		 * if we use a preallocated DMA buffer, we may not use all
-		 * of the space in it), so in this instance the length of
-		 * the chunk is the length of the data covered by this tcb.
+		 * itcb_len is the total amount of data represented by this
+		 * tcb. As noted above, a copy TCB uses a preallocated DMA
+		 * buffer. This buffer may be larger than the amount of
+		 * data present. However since it also only contains 1
+		 * cookie, itcb_len _is_ the size of the segment's data.
+		 *
+		 * For a bound TCB, there may be multiple cookies, so
+		 * itcb_len may not match this cookie's dmac_size
 		 */
-		len = (segcnt > 0) ? c->dmac_size : tcb->itcb_len;
+		IMPLY(ice_tcb_is_copy(tcb), tcb->itcb_len <= c->dmac_size);
+		len = ice_tcb_is_copy(tcb) ? tcb->itcb_len : c->dmac_size;
 
-		pkt->itxp_addrs[pkt->itxp_desc_total] = c->dmac_laddress;
-		pkt->itxp_lens[pkt->itxp_desc_total] = len;
+		/*
+		 * Track the total number of TX descriptor entries that
+		 * will be needed for this packet. This is equivalent to
+		 * the total number of DMA cookies we use.
+		 */
+		pkt->itxp_ndesc++;
 
-		pkt->itxp_desc_total++;
+		/* Update our mss frame accounting */
 		pkt->itxp_segcnt++;
 		pkt->itxp_seglen += len;
 
@@ -498,20 +601,43 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 			if (!pkt->itxp_lso)
 				goto fail;
 
+			/*
+			 * If this descriptor straddles an mss boundary,
+			 * the NIC will DMA the remaining data in the
+			 * descriptor when it starts the next packet, so
+			 * we must reflect that in our accounting
+			 */
 			pkt->itxp_seglen %= pkt->itxp_mss;
 			pkt->itxp_segcnt = (pkt->itxp_seglen == 0) ? 0 : 1;
+
+			/*
+			 * But we also need create a new checkpoint once
+			 * we've finished adding this tcb
+			 */
 			need_checkpoint = true;
 		}
-		segcnt++;
 	}
 
+	/* Append this tcb onto the end of the list */
+	if (pkt->itxp_tcb_tail != NULL) {
+		pkt->itxp_tcb_tail->itcb_next = tcb;
+	} else {
+		pkt->itxp_tcbs = tcb;
+	}
+	pkt->itxp_tcb_tail = tcb;
+	pkt->itxp_ntcbs++;
+
 	if (need_checkpoint) {
+		ASSERT(pkt->itxp_lso);
 		ice_tx_pkt_checkpoint(pkt, mp, off);
 
 		/*
 		 * Since we've finished with this mss segment, we can
-		 * revert to attempting to bind larger fragments as long
-		 * as we haven't fallen back to copying the entire packet.
+		 * revert to our default behavior of binding larger fragments.
+		 *
+		 * If we're desperate enough to resort to copying the
+		 * entire packet (ITPM_COPY_ALL), we never switch back to
+		 * either prior behavior for this packet.
 		 */
 		if (pkt->itxp_method == ITPM_COPY_MSS)
 			pkt->itxp_method = ITPM_NORMAL;
@@ -520,17 +646,41 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 	return (true);
 
 fail:
-	while (segcnt > 0) {
-		--pkt->itxp_desc_total;
-		pkt->itxp_addrs[pkt->itxp_desc_total] = 0;
-		pkt->itxp_lens[pkt->itxp_desc_total] = 0;
-		segcnt--;
-	}
-	pkt->itxp_tcbs[--pkt->itxp_ntcb] = NULL;
-
+	pkt->itxp_ndesc = init_ndesc;
 	pkt->itxp_segcnt = init_segcnt;
 	pkt->itxp_seglen = init_seglen;
+
 	return (false);
+}
+
+static bool
+ice_tx_pkt_sync(ice_tx_pkt_t *pkt)
+{
+	ice_tx_ctrl_block_t *tcb = pkt->itxp_tcbs;
+
+	while (tcb != NULL) {
+		ddi_dma_handle_t h = ice_tcb_dma_handle(tcb);
+
+		/*
+		 * Since we're syncing the entire range, this should
+		 * always succeed.
+		 */
+		VERIFY0(ddi_dma_sync(h, 0, 0, DDI_DMA_SYNC_FORDEV));
+
+		if (ice_check_dma_handle(h) != DDI_FM_OK) {
+			ice_t *ice = pkt->itxp_ring->itxr_ice;
+
+			ddi_fm_service_impact(ice->ice_dip,
+			    DDI_SERVICE_DEGRADED);
+			atomic_or_32(&ice->ice_state, ICE_ERROR);
+
+			return (false);
+		}
+
+		tcb = tcb->itcb_next;
+	}
+
+	return (true);
 }
 
 /*
@@ -540,13 +690,15 @@ fail:
 static void
 ice_tx_pkt_retry_mss_seg(ice_tx_pkt_t *pkt, mblk_t **mpp, size_t *offp)
 {
+	ice_tx_ctrl_block_t *tcb;
+	ice_tx_ctrl_block_t *next;
+
 	/* We should never retry once we're copying the whole packet */
 	VERIFY3S(pkt->itxp_method, !=, ITPM_COPY_ALL);
 
-	pkt->itxp_ring->itxr_stats.ictxs_mss_retries.value.ui64++;
+	pkt->itxp_mss_retries++;
 
 	if (pkt->itxp_method == ITPM_COPY_MSS) {
-		VERIFY(pkt->itxp_lso);
 		/*
 		 * We need to rollback to the initial packet state. This
 		 * should only ever happen with LSO packets -- since a non
@@ -560,31 +712,56 @@ ice_tx_pkt_retry_mss_seg(ice_tx_pkt_t *pkt, mblk_t **mpp, size_t *offp)
 
 		pkt->itxp_prev_mp_seg = pkt->itxp_init_mp_seg;
 		pkt->itxp_prev_off = pkt->itxp_init_off;
+		pkt->itxp_prev_tcb_tail = pkt->itxp_tcbs;
 		pkt->itxp_prev_seglen = 0;
 		pkt->itxp_prev_segcnt = 0;
-		pkt->itxp_prev_ntcb = 1;
-		pkt->itxp_prev_desc_total = 1;
-		pkt->itxp_ring->itxr_stats.ictxs_full_copies.value.ui64++;
+		pkt->itxp_prev_ntcbs = 1;
+		pkt->itxp_prev_ndesc = 1;
+		pkt->itxp_mss_full_copies++;
+
 		// XXX dtrace probe?
 	}
 
-	/* First pop off and free any tcbs that were added */
-	while (pkt->itxp_ntcb > pkt->itxp_prev_ntcb) {
-		ice_tx_ctrl_block_t *tcb;
+	pkt->itxp_tcb_tail = pkt->itxp_prev_tcb_tail;
 
-		--pkt->itxp_ntcb;
-		tcb = pkt->itxp_tcbs[pkt->itxp_ntcb];
-		pkt->itxp_tcbs[pkt->itxp_ntcb]  = NULL;
+	/*
+	 * Release all of the entries _after_ the previous tail so it
+	 * becomes the new tail.
+	 *
+	 * If there is no previous tail, this can only happen for a non-LSO
+	 * packet as we always have the initial tcb for the header (which
+	 * always stays)
+	 */
+	if (pkt->itxp_prev_tcb_tail == NULL) {
+		ASSERT(!pkt->itxp_lso);
 
-		ice_tcb_free(tcb->itcb_ring, tcb);
+		tcb = pkt->itxp_tcbs;
+		pkt->itxp_tcbs = NULL;
+	} else {
+		/*
+		 * Release all of the entries _after_ the previous tail so it
+		 * becomes the new tail.
+		 */
+		tcb = pkt->itxp_tcb_tail->itcb_next;
+		pkt->itxp_tcb_tail->itcb_next = NULL;
 	}
 
-	/* Clear out the (paddr, len) for the tcbs we freed */
-	while (pkt->itxp_desc_total > pkt->itxp_prev_desc_total) {
-		--pkt->itxp_desc_total;
-		pkt->itxp_addrs[pkt->itxp_desc_total] = 0;
-		pkt->itxp_lens[pkt->itxp_desc_total] = 0;
+	while (tcb != NULL) {
+		next = tcb->itcb_next;
+
+		tcb->itcb_next = NULL;
+		ice_tcb_free(tcb);
+		tcb = next;
+
+		pkt->itxp_ntcbs--;
 	}
+	ASSERT3U(pkt->itxp_ntcbs, ==, pkt->itxp_prev_ntcbs);
+
+	/* Adjust our statistics */
+	pkt->itxp_copy_bytes = pkt->itxp_prev_copy_bytes;
+	pkt->itxp_copy_segs = pkt->itxp_prev_copy_segs;
+	pkt->itxp_bind_bytes = pkt->itxp_prev_bind_bytes;
+	pkt->itxp_bind_segs = pkt->itxp_prev_bind_segs;
 
 	pkt->itxp_seglen = pkt->itxp_prev_seglen;
 	pkt->itxp_segcnt = pkt->itxp_prev_segcnt;
@@ -592,12 +769,13 @@ ice_tx_pkt_retry_mss_seg(ice_tx_pkt_t *pkt, mblk_t **mpp, size_t *offp)
 	*mpp = pkt->itxp_prev_mp_seg;
 	*offp = pkt->itxp_prev_off;
 
+	/* Advance to the next method */
 	pkt->itxp_method++;
 }
 
 static uint_t
-ice_tx_copy_fragment(ice_tx_ctrl_block_t *tcb, const mblk_t *mp, size_t off,
-    size_t len)
+ice_tx_copy_fragment(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb,
+    const mblk_t *mp, size_t off, size_t len)
 {
 	const void	*src = mp->b_rptr + off;
 	void		*dest = tcb->itcb_buf->idb_va + tcb->itcb_len;
@@ -609,30 +787,33 @@ ice_tx_copy_fragment(ice_tx_ctrl_block_t *tcb, const mblk_t *mp, size_t off,
 	ASSERT3P(src, <, mp->b_wptr);
 	ASSERT3U(len, <=, MBLKL(mp));
 	ASSERT3U((uintptr_t)src + len, <=, (uintptr_t)mp->b_wptr);
-
-	ASSERT3U(ice_tcb_remaining(tcb), >, 0);
-	ASSERT3U(ice_tcb_remaining(tcb) + len, <=, tcb->itcb_buf->idb_len);
+	ASSERT3U(ice_tcb_remaining(tcb), >=, len);
 
 	bcopy(src, dest, to_copy);
 	tcb->itcb_len += to_copy;
 
-	tcb->itcb_ring->itxr_stats.ictxs_copy_bytes.value.ui64 += to_copy;
-	tcb->itcb_ring->itxr_stats.ictxs_copy_frags.value.ui64++;
+	pkt->itxp_copy_bytes += to_copy;
+	pkt->itxp_copy_segs++;
+
 	return (to_copy);
 }
 
 static ice_tx_ctrl_block_t *
-ice_tx_bind_fragment(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, const mblk_t *mp,
-    size_t off, size_t len)
+ice_tx_bind_fragment(ice_tx_pkt_t *pkt, const mblk_t *mp, size_t off,
+    size_t len)
 {
 	ice_tx_ctrl_block_t	*tcb;
 	ddi_dma_handle_t	h;
 	int			ret;
 
-	tcb = ice_tcb_alloc(txr);
+	tcb = ice_tcb_alloc(pkt->itxp_ring);
 	if (tcb == NULL)
 		return (NULL);
 
+	/*
+	 * We need to set this now so we can obtain the correct DMA
+	 * handle.
+	 */
 	tcb->itcb_type = pkt->itxp_lso ? ITCB_LSO_BIND : ITCB_BIND;
 
 	h = ice_tcb_dma_handle(tcb);
@@ -640,15 +821,17 @@ ice_tx_bind_fragment(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, const mblk_t *mp,
 	    MBLKL(mp) - off, DDI_DMA_WRITE | DDI_DMA_STREAMING,
 	    DDI_DMA_DONTWAIT, NULL, NULL, NULL);
 	if (ret != DDI_DMA_MAPPED) {
+		/* Reset the type so we don't try to unbind in ice_tcb_free() */
 		tcb->itcb_type = ITCB_NOT_USED;
-		ice_tcb_free(txr, tcb);
-		txr->itxr_stats.ictxs_bind_fails.value.ui64++;
+		ice_tcb_free(tcb);
+		pkt->itxp_bind_fails++;
 		return (NULL);
 	}
 
 	tcb->itcb_len = len;
-	txr->itxr_stats.ictxs_bind_bytes.value.ui64 += len;
-	txr->itxr_stats.ictxs_bind_frags.value.ui64++;
+	pkt->itxp_bind_bytes += len;
+	pkt->itxp_bind_segs++;
+
 	return (tcb);
 }
 
@@ -660,49 +843,112 @@ ice_tx_bind_fragment(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, const mblk_t *mp,
 static bool
 ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 {
+	ice_t		*ice = txr->itxr_ice;
 	uint32_t	lsoflags;
 
+	ASSERT(!MUTEX_HELD(&txr->itxr_lock));
+
 	bzero(pkt, sizeof (*pkt));
+
+	mac_ether_offload_info(mp, &pkt->itxp_meo);
 
 	pkt->itxp_ring = txr;
 	pkt->itxp_hdrlen = pkt->itxp_meo.meoi_l2hlen +
 	    pkt->itxp_meo.meoi_l3hlen + pkt->itxp_meo.meoi_l4hlen;
 
+	/* XXX probably should log this, maybe even a dtrace probe */
+	if (pkt->itxp_meo.meoi_len < pkt->itxp_hdrlen)
+		return (false);
+
 	pkt->itxp_mp = mp;
-	pkt->itxp_msglen = msgdsize(mp);
-	pkt->itxp_segmax = ICE_TX_MAX_DESC;
+	pkt->itxp_segmax = ICE_TX_MAX_COOKIE;
 
 	pkt->itxp_init_mp_seg = mp;
 	pkt->itxp_init_off = 0;
 
-	if (pkt->itxp_msglen < pkt->itxp_hdrlen)
-		return (false);
-
 	mac_lso_get(mp, &pkt->itxp_mss, &lsoflags);
 	if ((lsoflags & HW_LSO) != 0) {
-		if (pkt->itxp_mss < ICE_TX_LSO_MIN_MSS) {
+		/*
+		 * Since we're doing LSO, each packet that goes out the
+		 * wire consists of pkt->itxp_hdrlen bytes (the header) +
+		 * up to pkt->itxp_mss bytes of data (the final packet
+		 * that gets sent may have less).
+		 *
+		 * XXX Since this is coming from mac_ether_offload_info(),
+		 * can we rely on sanity and turn this into an ASSERT()?
+		 */
+		if (pkt->itxp_hdrlen + pkt->itxp_mss >
+		    pkt->itxp_meo.meoi_len) {
 			/*
-			 * The MSS is too small. If we can send the packet
-			 * as a normal packet, we'll attempt that, otherwise
-			 * we drop it.
+			 * XXX: If we don't turn this into an assert,
+			 * should we add a stat for this? dtrace probe?
 			 */
-			txr->itxr_stats.ictxs_badmss.value.ui64++;
+			return (false);
+		}
 
-			pkt->itxp_mss = 0;
-			if (pkt->itxp_msglen > txr->itxr_ice->ice_max_mtu) {
-				return (false);
-			}
+		/*
+		 * Upstack requested LSO and the packet meets the
+		 * hardware's LSO requirements. If LSO support is turned on
+		 * and the packet meets the minimum size, we will attempt
+		 * to send using LSO.
+		 *
+		 * XXX: Might we want to also skip LSO if the packet size
+		 * is < MTU but larger than the minimum MSS (i.e. we
+		 * can just send as 1 packet over the wire)?
+		 */
+		if (ice->ice_tx_lso_enable &&
+		    pkt->itxp_mss >= ICE_TX_LSO_MIN_MSS) {
+			pkt->itxp_lso = true;
+
+			/*
+			 * Reserve 1 segment in each over the wire
+			 * segment for the header.
+			 */
+			pkt->itxp_segmax--;
 			return (true);
 		}
 
-		if (pkt->itxp_msglen - pkt->itxp_hdrlen < pkt->itxp_mss)
+		/*
+		 * Packet was too small for the NIC to do LSO. We'll
+		 * fallback and send as a non-LSO packet, but note
+		 * the event.
+		 *
+		 * XXX: Might it be better to turn it into an atomic inc?
+		 */
+		mutex_enter(&txr->itxr_lock);
+		txr->itxr_stats.ictxs_badmss.value.ui64++;
+		mutex_exit(&txr->itxr_lock);
+
+		/* Fall through to non-LSO case */
+	} else {
+		/*
+		 * For a non-LSO packet, it better be small enough for
+		 * us to send.
+		 */
+		if (pkt->itxp_meo.meoi_len > ice->ice_frame_size) {
+			mutex_enter(&txr->itxr_lock);
+			txr->itxr_stats.ictxs_toobig.value.ui64++;
+			mutex_exit(&txr->itxr_lock);
+
 			return (false);
-
-		pkt->itxp_lso = true;
-
-		/* Reserve 1 segment / descriptor for the header */
-		pkt->itxp_segmax--;
+		}
 	}
+
+	/*
+	 * For the non-LSO case, we treat the MTU as the MSS.
+	 * This is arguably stretching terminology to potential
+	 * abuse, but itxp_mss is used to determine how much
+	 * data can fit in an OTW packet. For LSO, this is
+	 * after accounting for headers (and is reflected in
+	 * the value set by mac_lso_get() since we're letting the
+	 * NIC take care of the headers for each OTW packet.
+	 *
+	 * For non-LSO though, we supply everything including the
+	 * header, so using the frame size serves as a check against
+	 * receiving an oversized packet from up stack.
+	 */
+	pkt->itxp_mss = txr->itxr_ice->ice_frame_size;
+	pkt->itxp_lso = false;
 
 	return (true);
 }
@@ -710,10 +956,112 @@ ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 static void
 ice_tx_pkt_fini(ice_tx_pkt_t *pkt)
 {
-	for (uint_t i = 0; i < pkt->itxp_ntcb; i++)
-		ice_tcb_free(pkt->itxp_ring, pkt->itxp_tcbs[i]);
+	ice_tx_ctrl_block_t	*tcb, *next;
+
+	tcb = pkt->itxp_tcbs;
+	while (tcb != NULL) {
+		next = tcb->itcb_next;
+
+		tcb->itcb_next = NULL;
+		ice_tcb_free(tcb);
+
+		tcb = next;
+	}
 
 	bzero(pkt, sizeof (*pkt));
+}
+
+/*
+ * To simplify writing the descriptors, there are a few helper functions
+ * defined that will iterate through all of the ddi_dma_cookie_ts for
+ * the packet. Specifically, the intended (simplified) flow is:
+ *
+ * ice_tx_pkt_init
+ * ice_tx_pkt_prepare
+ * while ((c = ice_tx_pkt_iter(pkt, iter)) != NULL
+ *     <write descriptor using c>
+ *     c = ice_tx_pkt_iter_next(iter)
+ *
+ */
+static inline const ddi_dma_cookie_t *
+ice_tx_pkt_iter_cookie(ice_tx_pkt_iter_t *iter)
+{
+	if (iter->itpi_ic == NULL)
+		return (NULL);
+
+	iter->itpi_cookie = *iter->itpi_ic;
+
+	/*
+	 * itcb_len is the total length of data managed by the tcb.
+	 * When we are copying data into a preallocated DMA buffer
+	 * (ITCB_SMALL_COPY or ITCB_COPY), it's possible the destination
+	 * DMA buffer (and thus it's cookie size) will be larger than
+	 * the actual amount of valid data in it.
+	 *
+	 * When we're doing DMA binding though, we expect each
+	 * cookie for the DMA handle to reflect the actual amount of
+	 * data present.
+	 */
+	if (iter->itpi_ic->dmac_size > iter->itpi_tcb->itcb_len) {
+		ASSERT3S(iter->itpi_tcb->itcb_type, !=, ITCB_BIND);
+		ASSERT3S(iter->itpi_tcb->itcb_type, !=, ITCB_LSO_BIND);
+		iter->itpi_cookie.dmac_size = iter->itpi_tcb->itcb_len;
+	}
+
+	return (&iter->itpi_cookie);
+}
+
+static inline const ddi_dma_cookie_t *
+ice_tx_pkt_iter_next_tcb(ice_tx_pkt_iter_t *iter, ice_tx_ctrl_block_t *tcb)
+{
+	if (tcb == NULL)
+		return (NULL);
+
+	iter->itpi_tcb = tcb;
+	iter->itpi_dmah = ice_tcb_dma_handle(iter->itpi_tcb);
+	return (ddi_dma_cookie_iter(iter->itpi_dmah, NULL));
+}
+
+static const ddi_dma_cookie_t *
+ice_tx_pkt_iter(ice_tx_pkt_t *pkt, ice_tx_pkt_iter_t *iter)
+{
+	const ddi_dma_cookie_t *c;
+
+	c = ice_tx_pkt_iter_next_tcb(iter, pkt->itxp_tcbs);
+	if (c == NULL) {
+		ASSERT3U(pkt->itxp_ntcbs, ==, 0);
+		return (NULL);
+	}
+	iter->itpi_ic = c;
+
+	return (ice_tx_pkt_iter_cookie(iter));
+}
+
+static const ddi_dma_cookie_t *
+ice_tx_pkt_iter_next(ice_tx_pkt_iter_t *iter)
+{
+	const ddi_dma_cookie_t *c;
+
+	if (iter->itpi_ic == NULL)
+		return (NULL);
+
+	c = ddi_dma_cookie_iter(iter->itpi_dmah, iter->itpi_ic);
+	if (c == NULL)
+		c = ice_tx_pkt_iter_next_tcb(iter, iter->itpi_tcb->itcb_next);
+
+	iter->itpi_ic = c;
+	return (ice_tx_pkt_iter_cookie(iter));
+}
+
+static inline bool
+ice_tx_try_bind(ice_t *ice, ice_tx_pkt_t *pkt, size_t len)
+{
+	if (pkt->itxp_method == ITPM_NORMAL &&
+	    len >= ice->ice_tx_dma_min) {
+		return (true);
+	}
+
+	return (false);
 }
 
 /*
@@ -731,10 +1079,19 @@ ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	size_t				to_copy;
 	size_t				mlen;
 
-	if (pkt->itxp_lso || pkt->itxp_msglen < ICE_TX_SMALL_PKT) {
+	/*
+	 * For LSO, we want a small buffer for the header (if possible)
+	 * For non-LSO packets, we want to copy into a small buffer if
+	 * the packet is sufficiently small.
+	 */
+	if (pkt->itxp_lso ||
+	    (ice_tx_pkt_msglen(pkt) < ICE_TX_SMALL_PKT &&
+	    ice_tx_pkt_msglen(pkt) < ice->ice_tx_dma_min)) {
 		size_t remaining;
 
-		remaining = pkt->itxp_lso ? pkt->itxp_hdrlen : pkt->itxp_msglen;
+		remaining = pkt->itxp_lso ?
+		    pkt->itxp_hdrlen : ice_tx_pkt_msglen(pkt);
+		ASSERT3U(remaining, >, 0);
 
 		tcb = ice_tcb_alloc(txr);
 		if (tcb == NULL)
@@ -744,16 +1101,17 @@ ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 		 * Try to use a small buf, but fallback to a full sized one
 		 * if none are available.
 		 */
-		tcb->itcb_buf = ice_small_buf_alloc(ice);
+		tcb->itcb_buf = ice_buf_pool_alloc(&ice->ice_small_bufs);
 		tcb->itcb_type = ITCB_SMALL_COPY;
 		if (tcb->itcb_buf == NULL) {
-			tcb->itcb_buf = ice_buf_alloc(ice);
+			tcb->itcb_buf =
+			    ice_buf_pool_alloc(&ice->ice_bufs);
 			tcb->itcb_type = ITCB_COPY;
 		}
 
 		/* If neither are availble, we fail */
 		if (tcb->itcb_buf == NULL) {
-			ice_tcb_free(txr, tcb);
+			ice_tcb_free(tcb);
 			return (false);
 		}
 
@@ -773,7 +1131,7 @@ ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 			mlen = MBLKL(mp);
 			to_copy = MIN(mlen, remaining);
 
-			n = ice_tx_copy_fragment(tcb, mp, off, to_copy);
+			n = ice_tx_copy_fragment(pkt, tcb, mp, off, to_copy);
 			ASSERT3U(n, ==, to_copy);
 
 			remaining -= n;
@@ -800,17 +1158,22 @@ ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 			}
 		}
 
-		if (pkt->itxp_lso) {
-			/*
-			 * As noted above, we want to keep the header separate
-			 * from the data when doing TSO/LSO, so add it now.
-			 * This is the first tcb and has just the packet
-			 * headers -- it should never exceed the mss
-			 * segment limits, so it should always succeed.
-			 */
-			VERIFY(ice_tx_pkt_add_tcb(pkt, tcb, mp, off));
-			tcb = NULL;
+		/* If we have a 'small' packet, we should be done */
+		IMPLY(ice_tx_pkt_msglen(pkt) < ICE_TX_SMALL_PKT, mp == NULL);
 
+		/*
+		 * If a small packet, we can go ahead and add the TCB
+		 * (note that mp is used to 'checkpoint' the packet
+		 * state for LSO, so can be NULL in the non-LSO case).
+		 * If this is an LSO packet, we want to save off the
+		 * header in its own TCB to simplify the accounting
+		 * we have to do to comply with the DMA requirements
+		 * of the NIC for each segment it offloads for us.
+		 */
+		VERIFY(ice_tx_pkt_add_tcb(pkt, tcb, mp, off));
+		tcb = NULL;
+
+		if (pkt->itxp_lso) {
 			/*
 			 * Reset the mss segment counters since the header
 			 * doesn't count against the limits.
@@ -833,36 +1196,87 @@ ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 		}
 	}
 
+	/*
+	 * The general idea is bind large fragments, copy small fragments.
+	 * If a bind fails, we want to fall back to try to copy.
+	 * If we have a bunch of consecutive small segments linked together, we
+	 * want to copy them all into one contiguous buffer.
+	 *
+	 * This latter desire adds a bit of subtlety to the implementation.
+	 * `tcb` holds the last buffer we copied into or NULL if the
+	 * previous tcb was bound (or we're just starting). We cannot
+	 * add `tcb` until we've either successfully bound the next bit
+	 * of data, or we've filled tcb up. At the same time, any time we
+	 * attempt to add a tcb to the packet, we may fail the mss segment
+	 * limitations and have to roll back to the start of the mss-sized
+	 * segment.
+	 */
 	while (mp != NULL) {
 		mlen = MBLKL(mp) - off;
 
-		if (mlen >= ice->ice_tx_dma_min &&
-		    pkt->itxp_method == ITPM_NORMAL &&
-		    (tcb = ice_tx_bind_fragment(txr, pkt, mp, off, mlen)) !=
-		    NULL) {
+		if (ice_tx_try_bind(ice, pkt, mlen)) {
+			ice_tx_ctrl_block_t *btcb;
+
+			btcb = ice_tx_bind_fragment(pkt, mp, off, mlen);
+			if (btcb == NULL)
+				goto try_copy;
+
+			/*
+			 * Note we have to add tcb first. It has the data
+			 * from the previous iteration of the loop. If tcb is
+			 * NULL, ice_tx_pkg_add_tcb() ignores it and
+			 * returns success.
+			 */
 			if (!ice_tx_pkt_add_tcb(pkt, tcb, mp, off)) {
-				ice_tcb_free(txr, tcb);
-				tcb = NULL;
+				ice_tcb_free(tcb);
+				ice_tcb_free(btcb);
+				ice_tx_pkt_retry_mss_seg(pkt, &mp, &off);
+				continue;
+			}
+			/*
+			 * Now that it's been added, we need to set it
+			 * to NULL so we don't try to add more to it
+			 * and instead allocate a new tcb if we need
+			 * to copy.
+			 */
+			tcb = NULL;
+
+			/*
+			 * If we successfully bound, then we've added
+			 * the remainder of this mp. Update mp and off
+			 * to reflect the start of the next mblk_t segment
+			 * (if any).
+			 */
+			mp = mp->b_cont;
+			off = 0;
+
+			/* And then add the bound tcb */
+			if (!ice_tx_pkt_add_tcb(pkt, btcb, mp, off)) {
+				ice_tcb_free(btcb);
 				ice_tx_pkt_retry_mss_seg(pkt, &mp, &off);
 				continue;
 			}
 
-			off = 0;
-			mp = mp->b_cont;
-			tcb = NULL;
 			continue;
 		}
 
-		if (!ice_tcb_is_copy(tcb)) {
+try_copy:
+		IMPLY(tcb != NULL, ice_tcb_is_copy(tcb));
+
+		if (tcb == NULL) {
 			tcb = ice_tcb_alloc(txr);
 			if (tcb == NULL)
 				return (false);
 
 			tcb->itcb_type = ITCB_COPY;
-			// TODO alloc regular DMA buffer
+			tcb->itcb_buf = ice_buf_pool_alloc(&ice->ice_bufs);
+			if (tcb->itcb_buf == NULL) {
+				ice_tcb_free(tcb);
+				return (false);
+			}
 		}
 
-		off += ice_tx_copy_fragment(tcb, mp, off, mlen);
+		off += ice_tx_copy_fragment(pkt, tcb, mp, off, mlen);
 
 		/*
 		 * If the tcb is full or this is the last mblk_t fragment,
@@ -871,7 +1285,7 @@ ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 		if ((ice_tcb_remaining(tcb) == 0) ||
 		    ((off == mlen) && mp->b_cont == NULL)) {
 			if (!ice_tx_pkt_add_tcb(pkt, tcb, mp, off)) {
-				ice_tcb_free(txr, tcb);
+				ice_tcb_free(tcb);
 				tcb = NULL;
 				ice_tx_pkt_retry_mss_seg(pkt, &mp, &off);
 				continue;
@@ -906,12 +1320,11 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 {
 	const mac_ether_offload_info_t	*meo = &pkt->itxp_meo;
 	ice_txq_stat_t			*stats = &pkt->itxp_ring->itxr_stats;
+	uint64_t			cmd = 0;
+	uint64_t			offset = 0;
 	uint32_t			start, chkflags;
 
 	mac_hcksum_get(pkt->itxp_mp, &start, NULL, NULL, NULL, &chkflags);
-
-	if (chkflags == 0 && !pkt->itxp_lso)
-		return (true);
 
 	if (chkflags & HCK_IPV4_HDRCKSUM) {
 		if ((meo->meoi_flags & MEOI_L2INFO_SET) == 0) {
@@ -927,11 +1340,16 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 			return (false);
 		}
 
-		*qw1p |= ICE_TX_DESC_CMD_IIPT_IPV4_CSUM;
-		*qw1p |= (meo->meoi_l2hlen >> 1) <<
-		    ICE_TX_DESC_LENGTH_MACLEN_SHIFT;
-		*qw1p |= (meo->meoi_l3hlen >> 1) <<
-		    ICE_TX_DESC_LENGTH_IPLEN_SHIFT;
+		cmd = ICE_TX_DESC_CMD_SET_IIPT(cmd,
+		    ICE_TX_DESC_CMD_IIPT_IPV4_CKSUM);
+
+		/* This is in units of words (uint16_t's) */
+		offset = ICE_TX_DESC_OFFSET_SET_MACLEN(offset,
+		    meo->meoi_l2hlen >> 1);
+
+		/* While this is in units of dwords (uint32_t's) */
+		offset = ICE_TX_DESC_OFFSET_SET_IPLEN(offset,
+		    meo->meoi_l3hlen >> 2);
 	}
 
 	if (chkflags & HCK_PARTIALCKSUM) {
@@ -952,52 +1370,82 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 
 			switch (meo->meoi_l3proto) {
 			case ETHERTYPE_IP:
-				*qw1p |= ICE_TX_DESC_CMD_IIPT_IPV4;
+				cmd = ICE_TX_DESC_CMD_SET_IIPT(cmd,
+				    ICE_TX_DESC_CMD_IIPT_IPV4_NOCKSUM);
 				break;
 			case ETHERTYPE_IPV6:
-				*qw1p |= ICE_TX_DESC_CMD_IIPT_IPV6;
+				cmd = ICE_TX_DESC_CMD_SET_IIPT(cmd,
+				    ICE_TX_DESC_CMD_IIPT_IPV6);
 				break;
 			default:
 				stats->ictxs_hck_badl3.value.ui64++;
 				return (false);
 			}
 
-			*qw1p |= (meo->meoi_l2hlen >> 1) <<
-			    ICE_TX_DESC_LENGTH_MACLEN_SHIFT;
-			*qw1p |= (meo->meoi_l3hlen >> 1) <<
-			    ICE_TX_DESC_LENGTH_IPLEN_SHIFT;
+			/* This is in units of words (uint16_t's) */
+			offset = ICE_TX_DESC_OFFSET_SET_MACLEN(offset,
+			    meo->meoi_l2hlen >> 1);
+
+			/* This is in units of dwords (uint32_t's) */
+			offset = ICE_TX_DESC_OFFSET_SET_IPLEN(offset,
+			    meo->meoi_l3hlen >> 2);
 		}
 
 		switch (meo->meoi_l4proto) {
 		case IPPROTO_TCP:
-			*qw1p |= ICE_TX_DESC_CMD_L4T_EOFT_TCP;
+			cmd = ICE_TX_DESC_CMD_SET_L4T(cmd,
+			    ICE_TX_DESC_CMD_L4T_TCP);
 			break;
 		case IPPROTO_UDP:
-			*qw1p |= ICE_TX_DESC_CMD_L4T_EOFT_UDP;
+			cmd = ICE_TX_DESC_CMD_SET_L4T(cmd,
+			    ICE_TX_DESC_CMD_L4T_UDP);
 			break;
 		case IPPROTO_SCTP:
-			*qw1p |= ICE_TX_DESC_CMD_L4T_EOFT_SCTP;
+			cmd = ICE_TX_DESC_CMD_SET_L4T(cmd,
+			    ICE_TX_DESC_CMD_L4T_SCTP);
 			break;
 		default:
 			stats->ictxs_hck_badl4.value.ui64++;
 			return (false);
 		}
 
-		*qw1p |= (meo->meoi_l4hlen >> 1) <<
-		    ICE_TX_DESC_LENGTH_L4_FC_LE_SHIFT;
+		/* This is in units of dwords (uint32_t's) */
+		offset = ICE_TX_DESC_OFFSET_SET_L4LEN(offset,
+		    meo->meoi_l4hlen >> 2);
 	}
+
+	/*
+	 * 10.5.3.1.1 - For TSO (aka LSO), if IPV4, the L4T must be 0b11
+	 * (aka ICE_TX_DESC_CMD_IIPT_IPV4_CKSUM)
+	 */
+	IMPLY(pkt->itxp_lso,
+	    (ICE_TX_DESC_CMD_IIPT(cmd) == ICE_TX_DESC_CMD_IIPT_IPV4_CKSUM) ||
+	    (ICE_TX_DESC_CMD_IIPT(cmd) == ICE_TX_DESC_CMD_IIPT_IPV6));
+
+	/* Also if L4T != 0, L4LEN must be set */
+	IMPLY(ICE_TX_DESC_CMD_L4T(cmd) != 0,
+	    ICE_TX_DESC_OFFSET_L4LEN(offset) != 0);
+
+	*qw1p = ICE_TX_DESC_SET_CMD(*qw1p, cmd);
+	*qw1p = ICE_TX_DESC_SET_OFFSET(*qw1p, offset);
+
+	/* If IL2TAG1 is not set, L2TAG1 should be set to zero */
+	IMPLY((*qw1p & ICE_TX_DESC_CMD_IL2TAG1) == 0,
+	    ICE_TX_DESC_L2TAG1(*qw1p) == 0);
 
 	if (!pkt->itxp_lso)
 		return (true);
 
-	uint64_t tsolen = pkt->itxp_msglen - pkt->itxp_hdrlen;
-
 	tx_ctx->itxd_qw0 = 0;
-	tx_ctx->itxd_qw1 =
-	    ICE_TX_DESC_DTYPE_CONTEXT |
-	    ICE_TX_CTX_DESC_TSO |
-	    (tsolen << ICE_TXD_QW1_TSO_LEN_SHIFT) |
-	    ((uint64_t)pkt->itxp_mss << ICE_TXD_QW1_TSO_MSS_SHIFT);
+
+	/* Reuse cmd for the TX Context descriptor CMD field */
+	cmd = ICE_TX_CTXD_SET_CMD(0, ICE_TX_CTXD_CMD_TSO);
+	cmd = ICE_TX_CTXD_SET_TLEN(cmd,
+	    ice_tx_pkt_msglen(pkt) - pkt->itxp_hdrlen);
+
+	tx_ctx->itxd_qw1 = ICE_TX_DESC_SET_DTYPE(0, ICE_TX_DESC_DTYPE_TCTX);
+	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_CMD(tx_ctx->itxd_qw1, cmd);
+	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_MSS(tx_ctx->itxd_qw1, pkt->itxp_mss);
 
 	return (true);
 }
@@ -1018,49 +1466,22 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	uint16_t		tail;
 	uint16_t		desc_needed;
 	uint16_t		desc_used;
+	ice_tx_pkt_iter_t	iter;
+	const ddi_dma_cookie_t	*c;
 
 	ASSERT(MUTEX_HELD(&txr->itxr_lock));
 
-	desc_needed = pkt->itxp_desc_total;
+	desc_needed = ice_tx_pkt_desc_needed(pkt);
 
-	/*
-	 * If using LSO, we need an additional slot for the TX context
-	 * descriptor.
-	 */
-	if (pkt->itxp_lso)
-		desc_needed++;
+	ASSERT3U(desc_needed, >, 0);
+	ASSERT3U(desc_needed, <=, txr->itxr_avail);
 
-	if (txr->itxr_avail < desc_needed)
-		return (0);
-
-	/* Sync all of the data buffers */
-	for (uint_t i = 0; i < pkt->itxp_ntcb; i++) {
-		ddi_dma_handle_t h;
-
-		h = ice_tcb_dma_handle(pkt->itxp_tcbs[i]);
-
-		/*
-		 * We always sync the whole region, so this should
-		 * always succeed.
-		 */
-		VERIFY0(ddi_dma_sync(h, 0, 0, DDI_DMA_SYNC_FORDEV));
-
-		if (ice_check_dma_handle(h) != DDI_FM_OK) {
-			ddi_fm_service_impact(ice->ice_dip,
-			    DDI_SERVICE_DEGRADED);
-			atomic_or_32(&ice->ice_state, ICE_ERROR);
-			return (-1);
-		}
-	}
+	(void) ice_tx_pkt_sync(pkt);
 
 	tx_ctx_desc.itxd_qw0 = 0;
 	tx_ctx_desc.itxd_qw1 = 0;
 
-	/*
-	 * On the 700-series chips, this was the ICRC flag, on the 800-series
-	 * chips it's marked as 'Reserved, must be 1b' (Section 10.5.3.1.1)
-	 */
-	init_qw1 = (1ULL << 2);
+	init_qw1 = ICE_TX_DESC_CMD_RESV;
 
 	if (txr->itxr_ice->ice_tx_hcksum_enable &&
 	    !ice_tx_hcksum_init(pkt, &tx_ctx_desc, &init_qw1)) {
@@ -1068,10 +1489,12 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	}
 
 	desc_used = 0;
+
 	tail = txr->itxr_tail;
-	desc = &txr->itxr_descs[tail];
 
 	if (pkt->itxp_lso) {
+		desc = &txr->itxr_descs[tail];
+
 		/* Write out the TX context descriptor to the ring */
 		desc->itxd_qw0 = LE_64(tx_ctx_desc.itxd_qw0);
 		desc->itxd_qw1 = LE_64(tx_ctx_desc.itxd_qw1);
@@ -1079,21 +1502,22 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 		txr->itxr_tcbs[tail] = NULL;
 
 		tail = ice_tx_next(txr, tail, 1);
-		desc = &txr->itxr_descs[tail];
 		desc_used++;
 	}
 
-	for (uint_t i = 0; i < pkt->itxp_desc_total; i++) {
-		uint64_t qw1 = init_qw1;
+	for (c = ice_tx_pkt_iter(pkt, &iter); c != NULL;
+	    c = ice_tx_pkt_iter_next(&iter)) {
+		uint64_t qw1;
 
-		qw1 |=
-		    ((uint64_t)pkt->itxp_lens[i] << ICE_TX_DESC_LENGTH_SHIFT);
+		desc = &txr->itxr_descs[tail];
 
-		desc->itxd_qw0 = LE_64(pkt->itxp_addrs[i]);
+		qw1 = ICE_TX_DESC_SET_DTYPE(init_qw1, ICE_TX_DESC_DTYPE_DATA);
+		qw1 = ICE_TX_DESC_SET_BSIZE(qw1, c->dmac_size);
+
+		desc->itxd_qw0 = LE_64(c->dmac_laddress);
 		desc->itxd_qw1 = LE_64(qw1);
 
 		tail = ice_tx_next(txr, tail, 1);
-		desc = &txr->itxr_descs[tail];
 		desc_used++;
 	}
 
@@ -1101,7 +1525,7 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	 * desc is now the last descriptor, set the EOP and RS (report
 	 * status) bits.
 	 */
-	desc->itxd_qw1 |= LE_64(ICE_TX_DESC_EOP|ICE_TX_DESC_RS);
+	desc->itxd_qw1 |= LE_64(ICE_TX_DESC_CMD_EOP|ICE_TX_DESC_CMD_RS);
 	ASSERT3U(desc_used, ==, desc_needed);
 
 	/* Done updating descriptors, so sync the ring to the device */
@@ -1125,7 +1549,7 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	txr->itxr_tail = tail;
 	txr->itxr_avail -= desc_used;
 
-	ice_reg_write(ice, ICE_QTX_TAIL(txr->itxr_index), txr->itxr_tail);
+	ice_reg_write(ice, ice_qtx_tail(txr), txr->itxr_tail);
 
 	/*
 	 * Save mp in the last tcb we used so we can free it when we
@@ -1133,12 +1557,20 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	 * tcb so as we recycle the tcbs, we don't free the mblk until
 	 * all of the descriptors for the packet have been processed.
 	 */
-	ASSERT3U(pkt->itxp_ntcb, >, 0);
-	pkt->itxp_tcbs[pkt->itxp_ntcb - 1]->itcb_mp = pkt->itxp_mp;
+	ASSERT3U(pkt->itxp_ntcbs, >, 0);
+	pkt->itxp_tcb_tail->itcb_mp = pkt->itxp_mp;
 
 	pkt->itxp_mp = NULL;
 
-	// TODO update tx stats
+	txr->itxr_stats.ictxs_bind_fails.value.ui64 += pkt->itxp_bind_fails;
+	txr->itxr_stats.ictxs_copy_bytes.value.ui64 += pkt->itxp_copy_bytes;
+	txr->itxr_stats.ictxs_copy_frags.value.ui64 += pkt->itxp_copy_segs;
+	txr->itxr_stats.ictxs_bind_bytes.value.ui64 += pkt->itxp_bind_bytes;
+	txr->itxr_stats.ictxs_bind_frags.value.ui64 += pkt->itxp_bind_segs;
+
+	txr->itxr_stats.ictxs_packets.value.ui64++;
+	txr->itxr_stats.ictxs_bytes.value.ui64 +=
+	    ice_tx_pkt_msglen(pkt);
 
 	return (desc_used);
 }
@@ -1158,6 +1590,7 @@ ice_ring_tx(void *arg, mblk_t *mp)
 	pkt = kmem_cache_alloc(ice_tx_pkt_cache, KM_NOSLEEP);
 	if (pkt == NULL) {
 		txr->itxr_stats.ictxs_no_pkt_cache.value.ui64++;
+		ice_tx_exit(txr);
 		return (mp);
 	}
 
@@ -1165,6 +1598,7 @@ ice_ring_tx(void *arg, mblk_t *mp)
 		mblk_t		*mp_next = mp->b_next;
 		int		n;
 		uint16_t	tail;
+		uint16_t	desc_needed;
 
 		mp->b_next = NULL;
 
@@ -1183,11 +1617,25 @@ ice_ring_tx(void *arg, mblk_t *mp)
 			break;
 		}
 
-		/* If we're shutting down, just drop everything */
-		if (!ice_tx_enter(txr)) {
-			freemsgchain(mp);
-			mp = NULL;
-			break;
+		mutex_enter(&txr->itxr_lock);
+
+		desc_needed = ice_tx_pkt_desc_needed(pkt);
+		if (txr->itxr_avail < desc_needed) {
+			/*
+			 * Try to recycle and re-check if we can
+			 * send
+			 */
+			if (!ice_tx_recycle_ring(txr) ||
+			    txr->itxr_avail < desc_needed) {
+				txr->itxr_blocked = true;
+				txr->itxr_stats.ictxs_blocked.value.ui64++;
+
+				mutex_exit(&txr->itxr_lock);
+
+				ice_tx_pkt_fini(pkt);
+				mp->b_next = mp_next;
+				break;
+			}
 		}
 
 		tail = txr->itxr_tail;
@@ -1195,9 +1643,8 @@ ice_ring_tx(void *arg, mblk_t *mp)
 		n = ice_tx_send_pkt(txr, pkt);
 		if (n < 0) {
 			/* Asked to drop packet */
-			ice_tx_exit(txr);
+			mutex_exit(&txr->itxr_lock);
 
-			ice_tx_pkt_fini(pkt);
 			freemsg(mp);
 
 			if ((ice->ice_state & ICE_ERROR) != 0) {
@@ -1211,68 +1658,34 @@ ice_ring_tx(void *arg, mblk_t *mp)
 			 * being in an error state, we'll just move on to
 			 * the next packet.
 			 */
+			ice_tx_pkt_fini(pkt);
 			mp = mp_next;
 			continue;
-		} else if (n == 0) {
-			/*
-			 * Not enough descriptors are available. Try to
-			 * reap any used TX descriptors and try to send
-			 * again.
-			 */
-
-			if (!ice_tx_recycle_ring(txr)) {
-				txr->itxr_blocked = true;
-				ice_tx_exit(txr);
-				mp->b_next = mp_next;
-				break;
-			}
-
-			n = ice_tx_send_pkt(txr, pkt);
-			if (n < 0) {
-				ice_tx_exit(txr);
-
-				ice_tx_pkt_fini(pkt);
-				freemsg(mp);
-
-				if ((ice->ice_state & ICE_ERROR) != 0) {
-					freemsgchain(mp_next);
-					mp = NULL;
-					break;
-				}
-
-				mp = mp_next;
-				continue;
-			} else if (n == 0) {
-				/* Give up and reschedule */
-				txr->itxr_stats.ictxs_blocked.value.ui64++;
-				txr->itxr_blocked = true;
-				ice_tx_exit(txr);
-				mp->b_next = mp_next;
-				break;
-			}
 		}
 
-		ice_tx_exit(txr);
+		ASSERT(MUTEX_HELD(&txr->itxr_lock));
 
-		ASSERT3U(n, >, 0);
-		ASSERT3U(pkt->itxp_ntcb, <=, n);
+		ASSERT3U(n, ==, desc_needed);
+		ASSERT3U(pkt->itxp_ntcbs, <=, n);
 
 		/*
 		 * Move used tcbs in pkt onto the tcb ring. These will get
 		 * freed when we recycle.
 		 */
-		hrtime_t now = gethrtime();
-		for (uint_t i = 0; i < n; i++) {
-			txr->itxr_tcbs[tail] =
-			    (i < pkt->itxp_ntcb) ? pkt->itxp_tcbs[i] : NULL;
-			pkt->itxp_tcbs[i] = NULL;
+		pkt->itxp_tcbs->itcb_tx_time = gethrtime();
+		txr->itxr_tcbs[tail] = pkt->itxp_tcbs;
+		pkt->itxp_tcbs = pkt->itxp_tcb_tail = NULL;
 
-			txr->itxr_tcbs[tail]->itcb_tx_time = now;
+		mutex_exit(&txr->itxr_lock);
 
-			tail = ice_tx_next(txr, tail, 1);
-		}
-		pkt->itxp_ntcb = 0;
+		/*
+		 * We've moved the TCBs from pkt onto the TX ring, so we
+		 * don't want pkt to access them anymore.
+		 */
+		pkt->itxp_ntcbs = 0;
 		pkt->itxp_mp = NULL;
+
+		ice_tx_pkt_fini(pkt);
 
 		mp = mp_next;
 	}
@@ -1280,13 +1693,15 @@ ice_ring_tx(void *arg, mblk_t *mp)
 	ice_tx_pkt_fini(pkt);
 	kmem_cache_free(ice_tx_pkt_cache, pkt);
 
+	ice_tx_exit(txr);
+
 	return (mp);
 }
 
 static inline bool
 ice_tx_desc_done(const ice_tx_desc_t *desc)
 {
-	uint64_t dtype = desc->itxd_qw1 & ICE_TX_DESC_DTYPE_MASK;
+	uint64_t dtype = ICE_TX_DESC_DTYPE(LE_64(desc->itxd_qw1));
 	return (dtype == ICE_TX_DESC_DTYPE_DONE);
 }
 
@@ -1294,11 +1709,10 @@ bool
 ice_tx_recycle_ring(ice_tx_ring_t *txr)
 {
 	ice_t			*ice = txr->itxr_ice;
-	ice_tx_ctrl_block_t	*tcbs[ICE_TX_MAX_LSO_DESC];
+	ice_tx_ctrl_block_t	*tcb, *next;
 	uint32_t		n, head;
 
 	ASSERT(MUTEX_HELD(&txr->itxr_lock));
-
 	ASSERT3U(txr->itxr_avail, <=, txr->itxr_size);
 
 	if (txr->itxr_avail == txr->itxr_size) {
@@ -1307,11 +1721,13 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 			mac_tx_ring_update(ice->ice_mac_hdl,
 			    txr->itxr_mactxring);
 		}
+
 		return (true);
 	}
 
-	if (!ice_dma_sync(ice, &txr->itxr_dma, DDI_DMA_SYNC_FORKERNEL))
+	if (!ice_dma_sync(ice, &txr->itxr_dma, DDI_DMA_SYNC_FORKERNEL)) {
 		return (false);
+	}
 
 	n = 0;
 	head = txr->itxr_head;
@@ -1324,30 +1740,35 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 		txr->itxr_descs[head].itxd_qw0 = 0;
 		txr->itxr_descs[head].itxd_qw1 = 0;
 
-		tcbs[n] = txr->itxr_tcbs[head];
+		tcb = txr->itxr_tcbs[head];
+		while (tcb != NULL) {
+			next = tcb->itcb_next;
+			tcb->itcb_next = NULL;
+			ice_tcb_free(tcb);
+			tcb = next;
+		}
+
 		txr->itxr_tcbs[head] = NULL;
 
 		n++;
 		head = ice_tx_next(txr, head, 1);
 	}
 
-	if (n > 0) {
-		txr->itxr_head = head;
-		txr->itxr_avail += n;
+	txr->itxr_head = head;
+	txr->itxr_avail += n;
 
-		// XXX add tx update threshold?
+	// XXX add tx update threshold?
 
-		if (txr->itxr_blocked) {
-			txr->itxr_blocked = false;
-			mac_tx_ring_update(ice->ice_mac_hdl,
-			    txr->itxr_mactxring);
-		}
+	if (txr->itxr_blocked) {
+		txr->itxr_blocked = false;
+
+		mutex_exit(&txr->itxr_lock);
+
+		mac_tx_ring_update(ice->ice_mac_hdl,
+		    txr->itxr_mactxring);
+
+		mutex_enter(&txr->itxr_lock);
 	}
-
-	mutex_exit(&txr->itxr_lock);
-
-	for (uint_t i = 0; i < n; i++)
-		ice_tcb_free(txr, tcbs[i]);
 
 	return ((n > 0) ? true : false);
 }
@@ -1377,7 +1798,10 @@ ice_tx_setup_bufs(ice_tx_ring_t *txr)
 	txr->itxr_descs = (ice_tx_desc_t *)txr->itxr_dma.idb_va;
 
 	len = txr->itxr_size * sizeof (ice_tx_ctrl_block_t *);
+
 	txr->itxr_tcbs = kmem_zalloc(len, KM_SLEEP);
+	txr->itxr_avail = txr->itxr_size;
+
 	txr->itxr_tcb_free_list = kmem_zalloc(len, KM_SLEEP);
 
 	for (uint_t i = 0; i < txr->itxr_size; i++) {
@@ -1411,13 +1835,34 @@ ice_tx_setup_bufs(ice_tx_ring_t *txr)
 static void
 ice_tx_teardown_bufs(ice_tx_ring_t *txr)
 {
-	size_t len;
+	ice_tx_ctrl_block_t *tcb;
+	size_t ringlen;
 
-	len = txr->itxr_size * sizeof (ice_tx_ctrl_block_t *);
+	ringlen = txr->itxr_size * sizeof (ice_tx_ctrl_block_t *);
+
+	IMPLY(txr->itxr_tcb_nfree > 0, txr->itxr_tcb_free_list != NULL);
+
+	/*
+	 * There might have been packets in flight that haven't been
+	 * recycled. Put those back on the free list now.
+	 */
+	while (txr->itxr_avail < txr->itxr_size) {
+		tcb = txr->itxr_tcbs[txr->itxr_head];
+		ASSERT3P(tcb, !=, NULL);
+
+		ice_tcb_free(tcb);
+		txr->itxr_tcbs[txr->itxr_head] = NULL;
+		txr->itxr_avail++;
+
+		txr->itxr_head = ice_tx_next(txr, txr->itxr_head, 1);
+	}
+
+	if (txr->itxr_tcbs != NULL) {
+		kmem_free(txr->itxr_tcbs, ringlen);
+		txr->itxr_tcbs = NULL;
+	}
 
 	while (txr->itxr_tcb_nfree > 0) {
-		ice_tx_ctrl_block_t *tcb;
-
 		tcb = txr->itxr_tcb_free_list[--txr->itxr_tcb_nfree];
 		txr->itxr_tcb_free_list[txr->itxr_tcb_nfree] = NULL;
 
@@ -1427,17 +1872,8 @@ ice_tx_teardown_bufs(ice_tx_ring_t *txr)
 	}
 
 	if (txr->itxr_tcb_free_list != NULL) {
-		kmem_free(txr->itxr_tcb_free_list, len);
+		kmem_free(txr->itxr_tcb_free_list, ringlen);
 		txr->itxr_tcb_free_list = NULL;
-	}
-
-	if (txr->itxr_tcbs != NULL) {
-#ifdef DEBUG
-		for (uint_t i = 0; i < txr->itxr_size; i++)
-			ASSERT3P(txr->itxr_tcbs[i], ==, NULL);
-#endif
-		kmem_free(txr->itxr_tcbs, len);
-		txr->itxr_tcbs = NULL;
 	}
 
 	if (txr->itxr_descs != NULL) {
@@ -1457,21 +1893,24 @@ ice_ring_tx_start(mac_ring_driver_t mri, uint64_t gen)
 
 	ASSERT3P(vsi, !=, NULL);
 
+	mutex_enter(&txr->itxr_lock);
+
 	if (!ice_tx_setup_bufs(txr)) {
 		ice_tx_teardown_bufs(txr);
+		mutex_exit(&txr->itxr_lock);
 		return (-1);
 	}
 
 	ring_pa = txr->itxr_dma.idb_cookie.dmac_laddress;
 
 	/* Double check the ring's physical address is properly aligned */
-	ASSERT3U(P2PHASE(ring_pa, (1ULL << 7)), ==, 0);
+	ASSERT(IS_P2ALIGNED(ring_pa, (1ULL << ICE_HW_TXQ_CTX_BASE_SHIFT)));
 
 	bzero(&ctx, sizeof (ctx));
 
-	ASSERT3U(vsi->ivsi_id, <, 768);
+	ASSERT3U(vsi->ivsi_id, <=, ICE_VSI_MAX);
 
-	ctx.ihtc_base = ring_pa >> 7;
+	ctx.ihtc_base = ring_pa >> ICE_HW_TXQ_CTX_BASE_SHIFT;
 	ctx.ihtc_vmvf_type = ICE_HW_TXQ_CTX_VMVF_TYPE_PF;
 	ctx.ihtc_vsi_id = vsi->ivsi_id;
 	ctx.ihtc_qlen = txr->itxr_size;
@@ -1483,17 +1922,26 @@ ice_ring_tx_start(mac_ring_driver_t mri, uint64_t gen)
 	 * the mapped TX queue id. We probably would also need to be
 	 * mindful of the lower limit (2K vs. 16K) for TSO queues when
 	 * allocating/assigning TX queues to a mac NIC.
+	 *
+	 * Note that this value is in PF space, so we don't need to
+	 * adjust it.
 	 */
 	ctx.ihtc_tso_queue = txr->itxr_index;
 
 	if (!ice_cmd_add_txq_grp(ice, vsi, txr, &ctx)) {
 		ice_tx_teardown_bufs(txr);
+		mutex_exit(&txr->itxr_lock);
 		return (-1);
 	}
 
 	// TODO anything else?
 
 	txr->itxr_head = txr->itxr_tail = 0;
+	txr->itxr_avail = txr->itxr_size;
+	txr->itxr_quiesce = false;
+
+	mutex_exit(&txr->itxr_lock);
+
 	return (0);
 }
 
@@ -1501,12 +1949,14 @@ void
 ice_ring_tx_stop(mac_ring_driver_t mri)
 {
 	ice_tx_ring_t		*txr = (ice_tx_ring_t *)mri;
-	ice_t			*ice = txr->itxr_ice;	
+	ice_t			*ice = txr->itxr_ice;
 
 	if (!ice_cmd_disable_queue(ice, txr)) {
 		ice_error(ice, "failed to disable TX queue %u",
 		    txr->itxr_index);
 	}
+
+	(void) ice_tx_quiesce(txr);
 
 	ice_tx_teardown_bufs(txr);
 }
@@ -1516,10 +1966,12 @@ ice_ring_tx_intr_enable(mac_intr_handle_t intrh)
 {
 	ice_tx_ring_t	*txr = (ice_tx_ring_t *)intrh;
 	ice_t		*ice = txr->itxr_ice;
-	uint32_t	val = ice_reg_read(ice, ice_qint_tqctl(txr));
+	uint32_t	val;
 
+	val = ice_reg_read(ice, ice_qint_tqctl(txr));
 	val = ICE_REG_PFINT_CAUSE_ENA_SET(val, 1);
 	ice_reg_write(ice, ice_qint_tqctl(txr), val);
+
 	return (0);
 }
 
@@ -1528,10 +1980,12 @@ ice_ring_tx_intr_disable(mac_intr_handle_t intrh)
 {
 	ice_tx_ring_t	*txr = (ice_tx_ring_t *)intrh;
 	ice_t		*ice = txr->itxr_ice;
-	uint32_t	val = ice_reg_read(ice, ice_qint_tqctl(txr));
+	uint32_t	val;
 
+	val = ice_reg_read(ice, ice_qint_tqctl(txr));
 	val = ICE_REG_PFINT_CAUSE_ENA_SET(val, 0);
 	ice_reg_write(ice, ice_qint_tqctl(txr), val);
+
 	return (0);
 }
 
@@ -1541,8 +1995,14 @@ ice_tx_interrupt(ice_t *ice, ice_intr_handler_t *h)
 
 	ice_tx_ring_t	*txr = ice_ih_to_txr(h);
 
+	if (!ice_tx_enter(txr))
+		return;
+
 	mutex_enter(&txr->itxr_lock);
+
 	(void) ice_tx_recycle_ring(txr);
+	ice_tx_exit_nolock(txr);
+
 	mutex_exit(&txr->itxr_lock);
 }
 
@@ -1569,15 +2029,28 @@ ice_ring_tx_stat(mac_ring_driver_t rh, uint_t stat, uint64_t *val)
 void
 ice_tx_start(ice_t *ice)
 {
+	ddi_dma_attr_t	attr;
+	size_t		n, bufsz;
+
+	bufsz = MIN(ice->ice_mtu, ICE_MAX_PKT_DMA_BUFSZ);
+	/* Arbitrary for now */
+	n = 20000;
+
+	ice_pkt_dma_attr(ice, &attr);
+	ice_buf_pool_init(ice, &ice->ice_bufs, n, bufsz, &attr);
+	ice_buf_pool_init(ice, &ice->ice_small_bufs, n / 3, ICE_TX_SMALL_PKT,
+	    &attr);
 }
 
 void
 ice_tx_stop(ice_t *ice)
 {
+	ice_buf_pool_fini(&ice->ice_small_bufs);
+	ice_buf_pool_fini(&ice->ice_bufs);
 }
 
 static int
-ice_tx_pkt_ctor(void *buf, void *arg __unused, int kmflags __unused)
+ice_tx_pkt_ctor(void *buf, void *arg __unused, int kmflags)
 {
 	bzero(buf, sizeof (ice_tx_pkt_t));
 	return (0);
@@ -1587,13 +2060,14 @@ void
 ice_tx_init(void)
 {
 	ice_tx_pkt_cache = kmem_cache_create("ice_tx_pkt_t",
-	    sizeof (ice_tx_pkt_t), 8, ice_tx_pkt_ctor, NULL, NULL, NULL, NULL,
-	    0);
+	    sizeof (ice_tx_pkt_t), 64, ice_tx_pkt_ctor, NULL, NULL, NULL,
+	    NULL, 0);
 }
 
 void
 ice_tx_fini(void)
 {
 	kmem_cache_destroy(ice_tx_pkt_cache);
+
 	ice_tx_pkt_cache = NULL;
 }
