@@ -94,22 +94,20 @@ extern "C" {
 #define	ICE_TX_MAX_BUFSZ	0x0000000000003FFFull
 
 /*
+ * Cap packet DMA buffers to avoid painifully slow allocations
+ */
+#define	ICE_MAX_PKT_DMA_BUFSZ	4096
+
+/*
  * The maximum number of descriptors (including any tx context descriptors)
  * used to transmit a single packet.
  */
 #define	ICE_TX_MAX_COOKIE	8
 
-/*
- * The maximum number of descriptors (including any tx context descriptors)
- * used when transmitting an LSO packet. This is somewhat arbitrary since
- * the hardware itself can do an unlimited number of descriptors as long
- * as every MSS sized chunk of data fits within ICE_TX_MAX_COOKIE - 1
- * descriptors (each segment consumes a descriptor for the header).
- */
-#define	ICE_TX_LSO_MAX_COOKIE	32
-
 /* The smallest supported MSS value when using LSO. */
 #define	ICE_TX_LSO_MIN_MSS	88
+
+#define	ICE_TX_LSO_MAXLEN	(64 * 1024)
 
 /*
  * Minimum alignment for TX/RX descriptor rings
@@ -241,6 +239,15 @@ typedef struct ice_dma_buffer {
 	ddi_dma_cookie_t	idb_cookie;
 } ice_dma_buffer_t;
 
+typedef struct ice_buf_pool {
+	kmutex_t		ibp_lock;
+	ice_dma_buffer_t	*ibp_bufs;
+	ice_dma_buffer_t	**ibp_free;
+	size_t			ibp_buflen;
+	size_t			ibp_nbuf;
+	size_t			ibp_nfree;
+} ice_buf_pool_t;
+
 typedef enum ice_controlq_flags {
 	ICE_CONTROLQ_F_ENABLED	= 1 << 0,
 	ICE_CONTROLQ_F_BUSY	= 1 << 1,
@@ -281,7 +288,6 @@ typedef struct ice_vsi {
 	uint16_t		ivsi_nvlan;
 	uint16_t		*ivsi_vlan;
 	list_t			ivsi_macs;
-	uint16_t		ivsi_mac_rule_idx;
 	uint16_t		ivsi_bcast_rule_idx;
 } ice_vsi_t;
 #define	ICE_VSI_MAX	767
@@ -339,6 +345,7 @@ typedef enum ice_tcb_type {
 struct ice_tx_ring;
 typedef struct ice_tx_ctrl_block {
 	struct ice_tx_ring	*itcb_ring;
+	struct ice_tx_ctrl_block *itcb_next;
 	ice_tcb_type_t		itcb_type;
 	uint32_t		itcb_len;
 	ice_dma_buffer_t	*itcb_buf;
@@ -346,16 +353,13 @@ typedef struct ice_tx_ctrl_block {
 	ddi_dma_handle_t	itcb_dmah;
 	ddi_dma_handle_t	itcb_lso_dmah;
 	hrtime_t		itcb_tx_time;
-} ice_tx_ctrl_block_t;
+} __aligned(64) ice_tx_ctrl_block_t;
 
 /* The maximum size of a TX ring */
 #define	ICE_TX_RING_MAX_SIZE	0x1FE0
 
 /* A rather arbitrary default */
 #define	ICE_TX_RING_DEFAULT_SIZE	1024
-
-#define	ICE_TX_MAX_DESC		8
-#define	ICE_TX_MAX_LSO_DESC	32
 
 struct ice;
 
@@ -384,12 +388,16 @@ typedef struct ice_txq_stat {
 	kstat_named_t		ictxs_drops;
 	kstat_named_t		ictxs_blocked;
 	kstat_named_t		ictxs_badmss;
+	kstat_named_t		ictxs_toobig;
 } ice_txq_stat_t;
 
 typedef struct ice_tx_ring {
-	ice_intr_handler_t	itxr_intr;
 	struct ice		*itxr_ice;		/* RO */
+	ice_intr_handler_t	itxr_intr;		/* RO */
+	mac_ring_handle_t	itxr_mactxring;		/* RO */
+	uint32_t		itxr_vec;		/* RO */
 
+	/* Set/cleared at ring stop/start, RO while ring is running */
 	uint32_t		itxr_teid;
 
 	kmutex_t		itxr_lock;
@@ -397,8 +405,6 @@ typedef struct ice_tx_ring {
 	uint_t			itxr_active;
 	bool			itxr_quiesce;
 	bool			itxr_blocked;
-
-	mac_ring_handle_t	itxr_mactxring;
 
 	ice_tx_ctrl_block_t	**itxr_tcbs;
 	ice_tx_desc_t		*itxr_descs;
@@ -414,11 +420,9 @@ typedef struct ice_tx_ring {
 	ice_tx_ctrl_block_t	**itxr_tcb_free_list;
 	uint16_t		itxr_tcb_nfree;
 
-	uint32_t		itxr_vec;
-
 	kstat_t			*itxr_kstat;
 	ice_txq_stat_t		itxr_stats;
-} ice_tx_ring_t;
+} __aligned(64) ice_tx_ring_t;
 
 /* The maximum number of descriptors that can be used for 1 packet */
 #define	ICE_RX_MAX_DESC		5
@@ -482,6 +486,7 @@ typedef struct ice_rx_ring {
 
 	mac_ring_handle_t	irxr_macrxring;
 	uint64_t		irxr_rxgen;
+	bool			irxr_poll;
 
 	ice_rx_desc_t		*irxr_descs;
 	ice_rx_ctrl_block_t	**irxr_rcbs;
@@ -496,7 +501,7 @@ typedef struct ice_rx_ring {
 
 	kstat_t			*irxr_kstat;
 	ice_rxq_stat_t		irxr_stats;
-} ice_rx_ring_t;
+} __aligned(64) ice_rx_ring_t;
 
 /*
  * Consolidated information about firmware all in one structure.
@@ -566,7 +571,8 @@ typedef enum ice_work_task {
 	ICE_WORK_CONTROLQ		= 1 << 0,
 	ICE_WORK_NEED_RESET		= 1 << 1,
 	ICE_WORK_RESET_DETECTED		= 1 << 2,
-	ICE_WORK_LINK_STATUS_EVENT	= 1 << 3
+	ICE_WORK_LINK_STATUS_EVENT	= 1 << 3,
+	ICE_WORK_MAL_DETECTED		= 1 << 4,
 } ice_work_task_t;
 
 typedef enum ice_task_status {
@@ -833,38 +839,15 @@ typedef struct ice {
 
 	/* protects ice_rxbuf_onloan */
 	kmutex_t		ice_rxbuf_lock;
+	kcondvar_t		ice_rxbuf_cv;
 	ice_rx_ctrl_block_t	*ice_rcbs;
 	ice_rx_ctrl_block_t	**ice_free_rcbs;
 	uint_t			ice_used_rcbs_cnt;
 	uint_t			ice_n_rcbs;
 	uint_t			ice_rxbuf_onloan;
 
-	/*
-	 * We have two pools of buffers -- 'regular' sized buffers whose
-	 * size is capped at PAGESIZE (4096) bytes for TX and RX, and
-	 * another buffer for small packets (<= 512 bytes). Currently the
-	 * small packets are just used on TX, but could also be used for
-	 * headers on RX in the future. This is to help reduce the amount
-	 * of static kernel memory we use by having a pool that can be
-	 * shared by all rings.
-	 *
-	 * For diagnostic purposes, the ice_dma_buffer_ts are allocated as
-	 * an array, and then we use the pointer array (ice_dma_bufs,
-	 * ice_dma_small_bufs) for tracking allocated/freed for each
-	 * individual ice_dma_buffer_t.
-	 */
-	kmutex_t		ice_buf_lock;
-	ice_dma_buffer_t	*ice_bufs;
-	ice_dma_buffer_t	**ice_dma_bufs;
-	uint_t			ice_buf_sz;
-	uint_t			ice_buf_alloc;
-
-	kmutex_t		ice_small_buf_lock;
-	ice_dma_buffer_t	*ice_small_bufs;
-	ice_dma_buffer_t	**ice_dma_small_bufs;
-	uint_t			ice_small_buf_sz;
-	uint_t			ice_small_buf_alloc;
-
+	ice_buf_pool_t		ice_bufs;
+	ice_buf_pool_t		ice_small_bufs;
 } ice_t;
 
 static inline bool
@@ -877,6 +860,8 @@ ice_is_running(const ice_t *ice)
 
 	return (true);
 }
+
+extern const uint8_t ice_bcast_mac[ETHERADDRL];
 
 extern void ice_set_mac(ice_t *);
 
@@ -891,6 +876,8 @@ extern void ice_schedule(ice_t *, ice_work_task_t);
 
 extern boolean_t ice_link_status_update(ice_t *);
 
+extern void ice_update_mtu(ice_t *, uint_t);
+
 /*
  * DMA functions
  */
@@ -904,10 +891,14 @@ extern void ice_dma_free(ice_dma_buffer_t *);
 extern bool ice_dma_alloc(ice_t *, ice_dma_buffer_t *, ddi_dma_attr_t *,
     ddi_device_acc_attr_t *, bool, size_t, bool);
 extern int ice_check_dma_handle(ddi_dma_handle_t);
-extern ice_dma_buffer_t *ice_small_buf_alloc(ice_t *);
-extern void ice_small_buf_free(ice_t *, ice_dma_buffer_t *);
-extern ice_dma_buffer_t *ice_buf_alloc(ice_t *);
-extern void ice_buf_free(ice_t *, ice_dma_buffer_t *);
+
+extern void ice_buf_pool_init(ice_t *, ice_buf_pool_t *, size_t, size_t,
+    ddi_dma_attr_t *);
+extern void ice_buf_pool_fini(ice_buf_pool_t *);
+extern ice_dma_buffer_t *ice_buf_pool_alloc(ice_buf_pool_t *);
+extern void ice_buf_pool_free(ice_buf_pool_t *, ice_dma_buffer_t *);
+extern size_t ice_buf_pool_size(const ice_buf_pool_t *);
+extern size_t ice_buf_pool_nfree(const ice_buf_pool_t *);
 
 static inline bool
 ice_dma_sync(ice_t *ice, ice_dma_buffer_t *dma, uint_t flags)
@@ -926,7 +917,7 @@ extern bool ice_load_ddp(ice_t *);
 extern void ice_buf_init(ice_t *);
 extern void ice_buf_fini(ice_t *);
 
-extern void ice_rx_start(ice_t *);
+extern bool ice_rx_start(ice_t *);
 extern void ice_rx_stop(ice_t *);
 extern void ice_tx_start(ice_t *);
 extern void ice_tx_stop(ice_t *);
@@ -966,6 +957,7 @@ extern bool ice_cmd_release_global_lock(ice_t *);
 extern bool ice_cmd_get_caps(ice_t *, bool, uint_t *, ice_capability_t **);
 extern bool ice_cmd_mac_read(ice_t *, uint8_t *);
 extern bool ice_cmd_get_phy_abilities(ice_t *, ice_phy_abilities_t *, bool);
+extern bool ice_cmd_set_max_mtu(ice_t *, uint16_t);
 
 typedef enum {
 	ICE_LSE_NO_CHANGE,
@@ -1003,8 +995,8 @@ extern bool ice_cmd_download_pkg(ice_t *, const void *, size_t, bool);
 
 extern bool ice_promisc_on(ice_t *);
 extern bool ice_promisc_off(ice_t *);
-extern int ice_add_mac(ice_t *, uint_t, const uint8_t *, uint16_t *);
-extern int ice_remove_rule(ice_t *, uint16_t, uint16_t *);
+extern bool ice_add_mac(ice_t *, uint_t, const uint8_t *, uint16_t *);
+extern bool ice_remove_rule(ice_t *, uint16_t, const uint16_t *);
 
 /*
  * NVM related functions

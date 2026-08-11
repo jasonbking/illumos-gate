@@ -166,12 +166,12 @@ ice_nvm_init(ice_t *ice)
 	}
 	ifi->ifi_nvm_eetrack = (high << 16) | low;
 
-	if (!ice_nvm_read_uint16(ice, ICE_NVM_EETRACK_1, &low)) {
+	if (!ice_nvm_read_uint16(ice, ICE_NVM_EETRACK_ORIG_1, &low)) {
 		ice_error(ice, "failed to read NVM structure version");
 		goto err;
 	}
 
-	if (!ice_nvm_read_uint16(ice, ICE_NVM_EETRACK_2, &high)) {
+	if (!ice_nvm_read_uint16(ice, ICE_NVM_EETRACK_ORIG_2, &high)) {
 		ice_error(ice, "failed to read NVM structure version");
 		goto err;
 	}

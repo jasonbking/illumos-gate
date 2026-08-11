@@ -273,6 +273,20 @@ typedef struct ice_cq_cmd_nvm_read {
 #define	ICE_CQ_NVM_READ_LAST_COMMAND	0x01
 #define	ICE_CQ_NVM_READ_SKIP_SHADOW	0x80
 
+typedef struct ice_cq_cmd_set_mac_cfg {
+	uint16_t	iccsmc_mtu;
+	uint8_t		iccsmc_pacing_cfg;
+	uint8_t		iccsmc_tx_tpri;
+	uint16_t	iccsmc_tx_tval;
+	uint16_t	iccsmc_fc_thres;
+	uint8_t		iccsmc_drop_blocked_pkts;
+	uint8_t		iccsmc_rsvd[7];
+} ice_cq_cmd_set_mac_cfg_t;
+#define	ICE_CQ_SET_MAC_CFG_PACING(r, v)		ice_bitset8(r, 6, 3, v)
+#define	ICE_CQ_SET_MAC_CFG_PACING_TYPE(r, v)	ice_bitset8(r, 7, 7, v)
+#define	ICE_CQ_SET_MAC_CFG_PACING_DATA		0
+#define	ICE_CQ_SET_MAC_CFG_PACING_FIXED		1
+
 typedef struct ice_cq_cmd_manage_mac_read {
 	uint16_t	iccmmr_flags;
 	uint16_t	iccmmr_rsvd;
@@ -509,6 +523,7 @@ typedef union ice_cq_cmd {
 	ice_cq_cmd_nvm_read_t icc_nvm_read;
 	ice_cq_cmd_manage_mac_read_t icc_mac_read;
 	ice_cq_cmd_get_phy_abilities_t icc_phy_abilities;
+	ice_cq_cmd_set_mac_cfg_t icc_set_mac_cfg;
 	ice_cq_cmd_get_link_status_t icc_get_link_status;
 	ice_cq_cmd_set_event_mask_t icc_set_event_mask;
 	ice_cq_cmd_setup_link_t icc_setup_link;

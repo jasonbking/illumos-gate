@@ -11,6 +11,7 @@
 
 /*
  * Copyright 2019, Joyent, Inc.
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -104,6 +105,9 @@ ice_intr_msix_disable(ice_t *ice, int vector)
 void
 ice_intr_hw_fini(ice_t *ice)
 {
+	for (uint_t i = 1; i < ice->ice_nintrs; i++)
+		ice_intr_msix_disable(ice, i);
+
 	ice_intr_msix_disable(ice, 0);
 
 	/*
@@ -141,11 +145,24 @@ ice_intr_hw_init(ice_t *ice)
 	ice_intr_itr_set(ice, ICE_ITR_INDEX_TX, ice->ice_itr_tx);
 	ice_intr_itr_set(ice, ICE_ITR_INDEX_OTHER, ice->ice_itr_other);
 
-	/*
-	 * XXX Eventually program allocated RX and TX queues.
-	 */
 	ice_intr_program(ice, ICE_REG_PFINT_FW_CTL, 0, ICE_ITR_INDEX_OTHER);
 	ice_intr_cause_enable(ice, ICE_REG_PFINT_FW_CTL);
+
+	for (i = 0; i < ice->ice_num_txq; i++) {
+		const ice_tx_ring_t *txr = &ice->ice_txr[i];
+
+		ice_intr_program(ice, ICE_REG_QINT_TQCTL(txr->itxr_index),
+		    txr->itxr_vec, ICE_ITR_INDEX_TX);
+		ice_intr_cause_enable(ice, ICE_REG_QINT_TQCTL(txr->itxr_index));
+	}
+
+	for (i = 0; i < ice->ice_num_vsis * ice->ice_num_rxq_per_vsi; i++) {
+		const ice_rx_ring_t *rxr = &ice->ice_rxr[i];
+
+		ice_intr_program(ice, ICE_REG_QINT_RQCTL(rxr->irxr_index),
+		    rxr->irxr_vec, ICE_ITR_INDEX_RX);
+		ice_intr_cause_enable(ice, ICE_REG_QINT_RQCTL(rxr->irxr_index));
+	}
 
 	/*
 	 * Set up the OICR register. First we want to make sure nothing that was
@@ -167,6 +184,9 @@ ice_intr_hw_init(ice_t *ice)
 	 * XXX Enable interrupts other than Int 0.
 	 */
 	ice_intr_msix_enable(ice, 0);
+
+	for (i = 1; i < ice->ice_nintrs; i++)
+		ice_intr_msix_enable(ice, i);
 
 	return (B_TRUE);
 }
@@ -226,9 +246,9 @@ ice_intr_misc_work(ice_t *ice)
 		 * We are not currently enabling any VFs, so if this fires,
 		 * that's a very suspicious thing and indicates that we need to
 		 * question what's going on with hardware and probably deserves
-		 * a reset.
+		 * a reset (or we've programmed the NIC wrong).
 		 */
-		work |= ICE_WORK_NEED_RESET;
+		work |= ICE_WORK_MAL_DETECTED;
 	}
 
 	if (ICE_REG_PFINT_OICR_GET(oicr, ICE_REG_OICR_GRST) != 0) {
@@ -261,12 +281,12 @@ ice_intr_msix(caddr_t arg, caddr_t arg2)
 		return (DDI_INTR_CLAIMED);
 	}
 
-	ice_error(ice, "fired MSI-X interrupt %u", vector);
-
 	handlers = &ice->ice_intr_handlers[vector];
 	for (h = list_head(handlers); h != NULL; h = list_next(handlers, h)) {
 		h->iih_handler(ice, h);
 	}
+
+	ice_intr_msix_enable(ice, vector);
 
 	return (DDI_INTR_CLAIMED);
 }
@@ -277,8 +297,6 @@ ice_intr_msi(caddr_t arg, caddr_t arg2)
 	ice_t			*ice = (ice_t *)arg;
 	list_t			*handlers;
 	ice_intr_handler_t	*h;
-
-	ice_error(ice, "fired MSI interrupt");
 
 	handlers = &ice->ice_intr_handlers[0];
 	for (h = list_head(handlers); h != NULL; h = list_next(handlers, h)) {
@@ -295,10 +313,9 @@ ice_intr_intx(caddr_t arg, caddr_t arg2)
 	list_t			*handlers;
 	ice_intr_handler_t	*h;
 
-	ice_error(ice, "fired INT-X interrupt");
-
 	handlers = &ice->ice_intr_handlers[0];
 	for (h = list_head(handlers); h != NULL; h = list_next(handlers, h)) {
+		ASSERT3P(h->iih_handler, !=,  NULL);
 		h->iih_handler(ice, h);
 	}
 	return (DDI_INTR_CLAIMED);
@@ -311,6 +328,7 @@ ice_intr_add_handler(ice_t *ice, uint_t vector, ice_intr_handler_t *h)
 
 	ASSERT3U(vector, <, ice->ice_nintrs);
 	ASSERT(!list_link_active(&h->iih_node));
+	ASSERT3P(h->iih_handler, !=,  NULL);
 
 	handlers = &ice->ice_intr_handlers[vector];
 	list_insert_tail(handlers, h);

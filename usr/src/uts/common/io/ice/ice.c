@@ -33,6 +33,10 @@ static uint8_t ice_ver_patch = 3;
 static uint8_t ice_ver_rc = 0;
 static char ice_ver_str[] = "1.43.3-k";
 
+const uint8_t ice_bcast_mac[ETHERADDRL] = {
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+};
+
 void
 ice_error(ice_t *ice, const char *fmt, ...)
 {
@@ -221,6 +225,15 @@ ice_check_mode(ice_t *ice)
 	return (false);
 }
 
+void
+ice_update_mtu(ice_t *ice, uint_t mtu)
+{
+	ice->ice_mtu = mtu;
+
+	/* XXX: This should be updated once we support vlan tagging */
+	ice->ice_frame_size = mtu + sizeof (struct ether_header) + ETHERFCSL;
+}
+
 /*
  * Initialize any properties that we want to support via a driver.conf option.
  */
@@ -228,10 +241,11 @@ static void
 ice_properties_init(ice_t *ice)
 {
 	/* XXX Come here and handle things like mtu, etc. */
-	ice->ice_mtu = ICE_MTU_DEFAULT;
 	ice->ice_itr_rx = ICE_ITR_RX_DEFAULT;
 	ice->ice_itr_tx = ICE_ITR_TX_DEFAULT;
 	ice->ice_itr_other = ICE_ITR_OTHER_DEFAULT;
+
+	ice_update_mtu(ice, ICE_MTU_DEFAULT);
 }
 
 static boolean_t
@@ -809,6 +823,100 @@ out:
 	return (valid);
 }
 
+static const char *ice_mal_tx_str[] = {
+	"wrong descriptor format/order",
+	"descriptor fetch failed",
+	"tail descriptor is not DDESC with EOP/NOP",
+	"false scheduling",
+	"tail value is bigger than ring length",
+	"more than 8 data commands in packet",
+	"zero packets sent in quanta and no head update in this quanta",
+	"packet too small or packet too big",
+	"TSO: TLEN is not coherent with sum",
+	"TSO: tail reached before TLEN ended",
+	"TSO: headers are spread > 3 descriptors",
+	"TSO: sum of TSO buffers < sum of headers",
+	"TSO: sum of TSH headers is 0/MSS is 0/TLEN is 0",
+	"SSO: quanta does not include a whole number of SSO packets",
+	"SSO+TSO: quanta bytes before additions exceed pkt_len*64",
+	"SSO+TSO: quanta commands exceed max_cmds_in_sq",
+	"TSO: total_descs_in_lso is not coherent with last_lso_quanta",
+	"TSO: total_descs_in_lso is not coherent with TLEN",
+	"TSO: quanta bytes is spread on more than max descriptors in quanta",
+	"number of packets in quanta mismatch",
+};
+
+/*
+ * Handle a malicious packet event. The name can be a bit misleaning since
+ * it really just means the driver sent something to the NIC that it
+ * considered invalid. This could be malicious (or more likely) indicative
+ * of a driver bug, so reporting these can be useful regardless of the
+ * intent.
+ */
+static void
+ice_handle_mal(ice_t *ice)
+{
+	const char *eventstr = "";
+	uint32_t v;
+	uint32_t event;
+
+	v = ice_reg_read(ice, ICE_GL_MDET_TX_TCLAN);
+
+	if (ICE_GL_MDET_VALID(v)) {
+		eventstr = "unknown";
+
+		event = ICE_GL_MDET_EVENT(v);
+		if (event < ARRAY_SIZE(ice_mal_tx_str)) {
+			eventstr = ice_mal_tx_str[event];
+		}
+
+		ice_error(ice, "malicious driver event '%s' (%u) on "
+		    "PF 0x%x VF 0x%x TX queue %u", eventstr, event,
+		    ICE_GL_MDET_PF_NUM(v),
+		    ICE_GL_MDET_VF_NUM(v),
+		    ICE_GL_MDET_QNUM(v));
+
+		/*
+		 * XXX: compare PF num with ours, write 0xffffffff back
+		 * to ICE_GL_MDET_TX_TCLAN if so
+		 */
+
+		v = ice_reg_read(ice, ICE_PF_MDET_TX_TCLAN);
+		if (ICE_PF_MDET_VALID(v)) {
+			ice_reg_write(ice, ICE_PF_MDET_TX_TCLAN, 0xffff);
+			ice_error(ice, "need reinit");
+			/* XXX need reinit */
+		}
+	}
+
+	v = ice_reg_read(ice, ICE_GL_MDET_RX);
+	if (ICE_GL_MDET_VALID(v)) {
+		eventstr = "unknown";
+		event = ICE_GL_MDET_EVENT(v);
+
+		if (event == 1) {
+			eventstr = "descriptor fetch failed";
+		}
+
+		ice_error(ice, "malicious driver event '%s' (%u) on "
+		    "PF 0x%x VF 0x%x RX queue %u", eventstr, event,
+		    ICE_GL_MDET_PF_NUM(v),
+		    ICE_GL_MDET_VF_NUM(v),
+		    ICE_GL_MDET_QNUM(v));
+
+		/*
+		 * Similarly, if PF matches, write 0xffff to
+		 * ICE_GL_MDET_RX
+		 */
+		v = ice_reg_read(ice, ICE_PF_MDET_RX);
+		if (ICE_PF_MDET_VALID(v)) {
+			ice_reg_write(ice, ICE_PF_MDET_RX, 0xffff);
+			ice_error(ice, "need reinit");
+			/* XXX need reinit */
+		}
+	}
+}
+
 static void
 ice_schedule_taskq(void *arg)
 {
@@ -847,6 +955,11 @@ start:
 			    "to controlq event");
 		}
 		work &= ~ICE_WORK_LINK_STATUS_EVENT;
+	}
+
+	if ((work & ICE_WORK_MAL_DETECTED) != 0) {
+		ice_handle_mal(ice);
+		work &= ~ICE_WORK_MAL_DETECTED;
 	}
 
 	if ((work & ICE_WORK_NEED_RESET) != 0) {
@@ -1165,16 +1278,9 @@ ice_vsi_rss_init(ice_t *ice, ice_vsi_t *vsi)
 	 * a per-VSI basis, but should happen globally.
 	 */
 
-	/*
-	 * XXX This currently doesn't work and it's not 100% clear why. It may
-	 * be because we haven't actually assigned any queues to the VSI yet.
-	 * When we come back to RX we should sort this out and re-enable this.
-	 */
-#if 0
 	if (!ice_cmd_set_rss_lut(ice, vsi, rss_lut, sizeof (rss_lut))) {
 		return (B_FALSE);
 	}
-#endif
 
 	return (B_TRUE);
 }
@@ -1201,9 +1307,9 @@ ice_vsi_alloc(ice_t *ice, uint_t vsi_id, ice_vsi_type_t type)
 	 * whether these queue allocations are in the function space or in the
 	 * global space.
 	 */
-	vsi->ivsi_nrxq = 1;
+	vsi->ivsi_nrxq = ice->ice_num_rxq_per_vsi;
 	vsi->ivsi_frxq = 0;
-	vsi->ivsi_ntxq = 1;
+	vsi->ivsi_ntxq = ice->ice_num_txq;
 
 	ice_vsi_context_fill(ice, vsi);
 
@@ -1357,6 +1463,8 @@ ice_tx_ring_init(ice_t *ice, ice_tx_ring_t *txr, uint_t index)
 	txr->itxr_index = index;
 	txr->itxr_size = ICE_TX_RING_DEFAULT_SIZE;
 	txr->itxr_teid = ICE_TX_SCHED_TEID_INVALID;
+	txr->itxr_quiesce = true;
+
 	mutex_init(&txr->itxr_lock, NULL, MUTEX_DRIVER, pri);
 	mutex_init(&txr->itxr_tcb_lock, NULL, MUTEX_DRIVER, pri);
 	cv_init(&txr->itxr_cv, NULL, CV_DRIVER, NULL);
@@ -1378,7 +1486,7 @@ ice_tx_ring_init(ice_t *ice, ice_tx_ring_t *txr, uint_t index)
 	txr->itxr_kstat->ks_data = tqs;
 
 	kstat_named_init(&tqs->ictxs_bytes, "bytes", KSTAT_DATA_UINT64);
-	kstat_named_init(&tqs->ictxs_packets, "packet", KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_packets, "packets", KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_bind_bytes, "bind_bytes",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_bind_frags, "bind_frags",
@@ -1410,7 +1518,9 @@ ice_tx_ring_init(ice_t *ice, ice_tx_ring_t *txr, uint_t index)
 	kstat_named_init(&tqs->ictxs_drops, "drops", KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_blocked, "blocked", KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_badmss, "bad_mss", KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_toobig,"too_big", KSTAT_DATA_UINT64);
 
+	kstat_install(txr->itxr_kstat);
 	return (true);
 }
 
@@ -1443,16 +1553,23 @@ ice_ring_fini(ice_t *ice)
 		ice_intr_remove_handler(ice, rxr->irxr_vec, &rxr->irxr_intr);
 		ice_rx_ring_fini(rxr);
 	}
+
+	cv_destroy(&ice->ice_rxbuf_cv);
+	mutex_destroy(&ice->ice_small_bufs.ibp_lock);
+	mutex_destroy(&ice->ice_bufs.ibp_lock);
+	mutex_destroy(&ice->ice_rxbuf_lock);
 }
 
 static bool
 ice_ring_init(ice_t *ice)
 {
+	size_t nrxq;
 	size_t len;
 	uint_t i;
 	uint32_t vector = 1;	/* Vec 0 is for the controlq */
 
-	len = ice->ice_num_rxq_per_vsi * sizeof (ice_rx_ring_t);
+	nrxq = ice->ice_num_rxq_per_vsi * ice->ice_num_vsis;
+	len = nrxq * sizeof (ice_rx_ring_t);
 	ice->ice_rxr = kmem_zalloc(len, KM_SLEEP);
 
 	for (i = 0; i < ice->ice_num_rxq_per_vsi; i++) {
@@ -1474,8 +1591,7 @@ ice_ring_init(ice_t *ice)
 	 * >= when comparing the # of vectors we want for a given 'scheme'
 	 * (vector per queue, vector per tx/rx queue pair, etc).
 	 */
-
-	if (ice->ice_nintrs > ice->ice_num_rxq_per_vsi + ice->ice_num_txq) {
+	if (ice->ice_nintrs > nrxq + ice->ice_num_txq) {
 		/* Every ring gets its own vector */
 		for (i = 0; i < ice->ice_num_rxq_per_vsi; i++) {
 			ASSERT3U(vector, <, ice->ice_nintrs);
@@ -1486,17 +1602,16 @@ ice_ring_init(ice_t *ice)
 			ASSERT3U(vector, <, ice->ice_nintrs);
 			ice->ice_txr[i].itxr_vec = vector++;
 		}
-	} else if (ice->ice_nintrs > MAX(ice->ice_num_rxq_per_vsi,
-	    ice->ice_num_txq)) {
+	} else if (ice->ice_nintrs > MAX(nrxq, ice->ice_num_txq)) {
 		/*
 		 * Try to pair up (as much as possible) a TX and RX queue
 		 * to an interrupt vector.
 		 */
-		uint_t nvec = MAX(ice->ice_num_rxq_per_vsi, ice->ice_num_txq);
+		uint_t nvec = MAX(nrxq, ice->ice_num_txq);
 
 		for (i = 0; i < nvec; i++) {
 			ASSERT3U(vector, <, ice->ice_nintrs);
-			if (i < ice->ice_num_rxq_per_vsi)
+			if (i < nrxq)
 				ice->ice_rxr[i].irxr_vec = vector;
 			if (i < ice->ice_num_txq)
 				ice->ice_txr[i].itxr_vec = vector;
@@ -1506,7 +1621,7 @@ ice_ring_init(ice_t *ice)
 	} else {
 		/* Just distribute the rings over the interrupts we have */
 
-		for (i = 0; i < ice->ice_num_rxq_per_vsi; i++) {
+		for (i = 0; i < nrxq; i++) {
 			ice->ice_rxr[i].irxr_vec = vector++;
 			vector %= ice->ice_nintrs;
 
@@ -1529,17 +1644,28 @@ ice_ring_init(ice_t *ice)
 	 * Now that the vectors have been assigned, we can add the handlers
 	 * to the appropriate vector.
 	 */
-	for (i = 0; i < ice->ice_num_rxq_per_vsi; i++) {
+	for (i = 0; i < nrxq; i++) {
 		ice_rx_ring_t *rxr = &ice->ice_rxr[i];
 
+		rxr->irxr_intr.iih_handler = ice_rx_interrupt;
 		ice_intr_add_handler(ice, rxr->irxr_vec, &rxr->irxr_intr);
 	}
 
 	for (i = 0; i < ice->ice_num_txq; i++) {
 		ice_tx_ring_t *txr = &ice->ice_txr[i];
 
+		txr->itxr_intr.iih_handler = ice_tx_interrupt;
 		ice_intr_add_handler(ice, txr->itxr_vec, &txr->itxr_intr);
 	}
+
+	mutex_init(&ice->ice_rxbuf_lock, NULL, MUTEX_DRIVER,
+	    DDI_INTR_PRI(ice->ice_intr_pri));
+	cv_init(&ice->ice_rxbuf_cv, NULL, CV_DRIVER, NULL);
+
+	mutex_init(&ice->ice_bufs.ibp_lock, NULL, MUTEX_DRIVER,
+	    DDI_INTR_PRI(ice->ice_intr_pri));
+	mutex_init(&ice->ice_small_bufs.ibp_lock, NULL, MUTEX_DRIVER,
+	    DDI_INTR_PRI(ice->ice_intr_pri));
 
 	return (true);
 
@@ -1676,6 +1802,9 @@ ice_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 
 	ice->ice_rx_rsize = ICE_TX_RING_DEFAULT_SIZE;
 
+	/* XXX: make this a prop */
+	ice->ice_rx_limit_per_intr = 256;
+
 	list_create(&ice->ice_mc_macs, sizeof (ice_vsi_mac_t),
 	    offsetof(ice_vsi_mac_t, ivm_node));
 
@@ -1738,6 +1867,10 @@ ice_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	ice->ice_seq |= ICE_ATTACH_CAPS;
 
 	if (!ice_cmd_mac_read(ice, ice->ice_mac)) {
+		goto err;
+	}
+
+	if (!ice_cmd_set_max_mtu(ice, ice->ice_max_mtu)) {
 		goto err;
 	}
 

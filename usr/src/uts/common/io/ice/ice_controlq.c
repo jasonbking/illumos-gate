@@ -420,7 +420,7 @@ ice_controlq_rq_desc_reset(ice_controlq_t *cqp, uint_t ent)
 	desc->icqd_command.icc_generic.iccg_data_high =
 	    LE_32(dmap->idb_cookie.dmac_laddress >> 32);
 	desc->icqd_command.icc_generic.iccg_data_low =
-LE_32(dmap->idb_cookie.dmac_laddress & UINT32_MAX);
+	    LE_32(dmap->idb_cookie.dmac_laddress & UINT32_MAX);
 }
 
 void
@@ -667,7 +667,7 @@ ice_cmd_submit(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc, void *buf,
 		ICE_DMA_SYNC(extra, DDI_DMA_SYNC_FORDEV);
 	}
 
-	ICE_DMA_SYNC(&ice->ice_arq.icq_dma, DDI_DMA_SYNC_FORDEV);
+	ICE_DMA_SYNC(&cqp->icq_dma, DDI_DMA_SYNC_FORDEV);
 
 	cqp->icq_tail = ice_controlq_incr(cqp, cqp->icq_tail);
 	ice_reg_write(ice, cqp->icq_reg_tail, cqp->icq_tail);
@@ -694,7 +694,7 @@ ice_cmd_submit(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc, void *buf,
 		return (false);
 	}
 
-	ICE_DMA_SYNC(&ice->ice_arq.icq_dma, DDI_DMA_SYNC_FORKERNEL);
+	ICE_DMA_SYNC(&cqp->icq_dma, DDI_DMA_SYNC_FORKERNEL);
 
 	/*
 	 * Verify that DD is set.
@@ -736,7 +736,7 @@ ice_cmd_result(ice_cq_desc_t *desc, ice_cq_errno_t *errp, uint8_t *hwcode)
 
 	return (false);
 }
- 
+
 static bool
 ice_cmd_ckerr(ice_t *ice, ice_cq_desc_t *desc, const char *msg, ...)
 {
@@ -817,7 +817,6 @@ ice_cmd_driver_version(ice_t *ice, uint8_t maj, uint8_t min, uint8_t patch,
 	dv->iccdv_minor = min;
 	dv->iccdv_build = patch;
 	dv->iccdv_sub_build = rc;
-	// iccdv_data_{high,low}
 	ice_cmd_indirect_init(&desc, ICE_CQ_OP_DRIVER_VERSION, slen, true);
 
 	if (!ice_cmd_submit(ice, &ice->ice_asq, &desc, (void *)str,
@@ -1452,6 +1451,36 @@ ice_cmd_get_switch_config(ice_t *ice, void *buf, size_t bufsize, uint16_t first,
 	return (true);
 }
 
+/*
+ * This sets the MTU on the physical port of the NIC, which can be
+ * different (though for sanity >=) the MTU of a VSI. More technically, it
+ * appears TX rings are capped at this value, while RX rings can have
+ * their own MTU (again for sanity <= this MTU).
+ *
+ * In other words, if one considers the ice NIC as a switch with the
+ * physical port being the uplink and the VSIs as the 'ports' exposed to
+ * the OS, this sets the MTU on the uplink port.
+ *
+ * We make sure this is set at the max, and then enforce the MTU via
+ * mac(9E).
+ */
+bool
+ice_cmd_set_max_mtu(ice_t *ice, uint16_t mtu)
+{
+	ice_cq_cmd_set_mac_cfg_t	*mac;
+	ice_cq_desc_t			desc;
+
+	ice_cmd_direct_init(&desc, ICE_CQ_OP_SET_MAC_CONFIG);
+	mac = &desc.icqd_command.icc_set_mac_cfg;
+	mac->iccsmc_mtu = LE_16(mtu);
+
+	if (!ice_cmd_submit(ice, &ice->ice_asq, &desc, NULL, ICE_CMD_COPY_NONE)) {
+		return (false);
+	}
+
+	return (ice_cmd_ckerr(ice, &desc, "set mac config"));
+}
+
 bool
 ice_cmd_free_vsi(ice_t *ice, ice_vsi_t *vsi, bool keep)
 {
@@ -1633,7 +1662,7 @@ ice_cmd_set_rss_lut(ice_t *ice, ice_vsi_t *vsi, void *buf, uint_t len)
 		return (false);
 	}
 
-	ice_cmd_indirect_init(&desc, ICE_CQ_OP_SET_RSS_KEY, len, true);
+	ice_cmd_indirect_init(&desc, ICE_CQ_OP_SET_RSS_LUT, len, true);
 	lut = &desc.icqd_command.icc_set_rss_lut;
 	lut->iccsrl_vsi_id = LE_16(vsi->ivsi_id | ICE_CQ_VSI_VALID);
 
@@ -1744,9 +1773,9 @@ ice_cmd_add_sched_elements(ice_t *ice, uint16_t *ngroup,
 
 		gp = (ice_hw_sched_grp_t *)&gp->ihsg_elems[nelems];
 	}
-	
+
 	ice_cmd_indirect_init(&desc, ICE_CQ_OP_ADD_SCHED_ELEMENTS, len, true);
-	
+
 	add = &desc.icqd_command.icc_add_sched_elements;
 	add->iccase_ngroups = LE_16(*ngroup);
 
@@ -1902,8 +1931,8 @@ ice_cmd_add_txq_grp(ice_t *ice, ice_vsi_t *vsi, ice_tx_ring_t *txr,
  * bytes
  */
 #define	DISABLE_SZ \
-    (P2ROUNDUP(sizeof (ice_hw_txq_disable_grp_t) + 1 * sizeof (uint16_t), \
-    sizeof (uint32_t)))
+	(P2ROUNDUP(sizeof (ice_hw_txq_disable_grp_t) + 1 * sizeof (uint16_t), \
+	sizeof (uint32_t)))
 
 bool
 ice_cmd_disable_queue(ice_t *ice, ice_tx_ring_t *txr)
@@ -1951,7 +1980,7 @@ ice_cmd_disable_queue(ice_t *ice, ice_tx_ring_t *txr)
 
 	VERIFY(ice_tx_sched_del_elt(ice, txnode, false));
 	txr->itxr_teid = ICE_TX_SCHED_TEID_INVALID;
-	
+
 	ret = true;
 
 done:
@@ -1999,7 +2028,7 @@ ice_cmd_switch_rules(ice_t *ice, ice_cq_opcode_t op, uint16_t nrules,
 	 * command at least updates the descriptor with the assigned index
 	 * from the hardware, which we need to later reference it.
 	 */
-	return (ice_cmd_ckerr(ice, &desc, "switch rules %s", opstr));
+	return (ice_cmd_ckerr(ice, &desc, "%s switch rules", opstr));
 }
 
 bool

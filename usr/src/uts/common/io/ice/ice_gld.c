@@ -18,6 +18,7 @@
  * Describe the purpose of this file.
  */
 
+#include <sys/dlpi.h>
 #include "ice.h"
 
 /*
@@ -92,7 +93,6 @@ ice_group_add_mac(void *arg, const uint8_t *mac_addr)
 	ice_t		*ice = arg;
 	ice_vsi_t	*vsi;
 	ice_vsi_mac_t	*mac;
-	int		ret = 0;
 
 	/*
 	 * For now, we assume we're always using the first VSI. If
@@ -115,22 +115,40 @@ ice_group_add_mac(void *arg, const uint8_t *mac_addr)
 		 *
 		 * XXX: might a dtrace probe or kstat be of use?
 		 */
+#ifdef DEBUG
+		ice_error(ice, "tried to add existing mac "
+		    "%02x:%02x:%02x:%02x:%02x:%02x",
+		    mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3],
+		    mac_addr[4], mac_addr[5]);
+#endif
+
 		goto fail;
 	}
 
-	ret = ice_add_mac(ice, vsi->ivsi_id, mac_addr, &mac->ivm_idx);
-	if (ret != 0) {
+	if (!ice_add_mac(ice, vsi->ivsi_id, mac_addr, &mac->ivm_idx)) {
 		goto fail;
 	}
 
 	list_insert_tail(&vsi->ivsi_macs, mac);
 	mutex_exit(&vsi->ivsi_lock);
+
+#ifdef DEBUG
+	ice_error(ice, "added mac %02x:%02x:%02x:%02x:%02x:%02x",
+	    mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4],
+	    mac_addr[5]);
+#endif
+
 	return (0);
 
 fail:
 	mutex_exit(&vsi->ivsi_lock);
+
+	ice_error(ice, "failed to add mac %02x:%02x:%02x:%02x:%02x:%02x",
+	    mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4],
+	    mac_addr[5]);
+
 	kmem_free(mac, sizeof (*mac));
-	return (ret);
+	return (EIO);
 }
 
 static int
@@ -147,16 +165,39 @@ ice_group_remove_mac(void *arg, const uint8_t *mac_addr)
 	mac = ice_vsi_find_mac(vsi, mac_addr);
 	if (mac == NULL) {
 		mutex_exit(&vsi->ivsi_lock);
+
+#ifdef DEBUG
+		ice_error(ice, "tried to remove non-existent mac "
+		    "%02x:%02x:%02x:%02x:%02x:%02x",
+		    mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3],
+		    mac_addr[4], mac_addr[5]);
+#endif
+
 		return (ENOENT);
 	}
 
-	ret = ice_remove_rule(ice, 1, &mac->ivm_idx);
-	if (ret == 0) {
-		list_remove(&vsi->ivsi_macs, mac);
+	if (!ice_remove_rule(ice, 1, &mac->ivm_idx)) {
+		ice_error(ice, "failed to remove mac "
+		    "%02x:%02x:%02x:%02x:%02x:%02x",
+		    mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3],
+		    mac_addr[4], mac_addr[5]);
+		ret = EIO;
+		goto done;
 	}
 
+	list_remove(&vsi->ivsi_macs, mac);
+	kmem_free(mac, sizeof (*mac));
+
+#ifdef DEBUG
+	ice_error(ice, "removed mac "
+	    "%02x:%02x:%02x:%02x:%02x:%02x",
+	    mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3],
+	    mac_addr[4], mac_addr[5]);
+#endif
+
+done:
 	mutex_exit(&vsi->ivsi_lock);
-	return (0);
+	return (ret);
 }
 
 static void
@@ -166,6 +207,7 @@ ice_fill_rx_ring(void *arg, mac_ring_type_t rtype, const int group_index,
 	ice_t		*ice = arg;
 	ice_rx_ring_t	*rxr;
 
+	/* We currently only have one group */
 	ASSERT3S(group_index, ==, 0);
 	ASSERT3S(ring_index, <, ice->ice_num_rxq_per_vsi);
 
@@ -180,20 +222,26 @@ ice_fill_rx_ring(void *arg, mac_ring_type_t rtype, const int group_index,
 	infop->mri_intr.mi_handle = (mac_intr_handle_t)rxr;
 	infop->mri_intr.mi_enable = ice_ring_rx_intr_enable;
 	infop->mri_intr.mi_disable = ice_ring_rx_intr_disable;
+
+	if ((ice->ice_intr_type & DDI_INTR_TYPE_MSIX) != 0) {
+		ASSERT3U(rxr->irxr_vec, <, ice->ice_nintrs);
+
+		infop->mri_intr.mi_ddi_handle =
+		    ice->ice_intr_handles[rxr->irxr_vec];
+	}
 }
 
 static void
-ice_fill_tx_ring(void *arg, mac_ring_type_t rtype, const int group_index,
-    const int ring_index, mac_ring_info_t *infop, mac_ring_handle_t rh)
+ice_fill_tx_ring(void *arg, mac_ring_type_t rtype,
+    const int group_index, const int ring_index,
+    mac_ring_info_t *infop, mac_ring_handle_t rh)
 {
 	ice_t		*ice = arg;
 	ice_tx_ring_t	*txr;
 
-	// XXX: This appears to be called with a group_index of -1
-	// it's unclear if this is a bug in mac, or a documentation
-	// oversight. Since we don't need it, we skip the check
-	// until we know what the correct behavior is supposed to be.
-	// ASSERT3S(group_index, ==, 0);
+	/* We currently don't use TX ring groups */
+	ASSERT3S(group_index, ==, -1);
+
 	ASSERT3S(ring_index, <, ice->ice_num_txq);
 
 	txr = &ice->ice_txr[ring_index];
@@ -207,6 +255,13 @@ ice_fill_tx_ring(void *arg, mac_ring_type_t rtype, const int group_index,
 	infop->mri_intr.mi_handle = (mac_intr_handle_t)txr;
 	infop->mri_intr.mi_enable = ice_ring_tx_intr_enable;
 	infop->mri_intr.mi_disable = ice_ring_tx_intr_disable;
+
+	if ((ice->ice_intr_type & DDI_INTR_TYPE_MSIX) != 0) {
+		ASSERT3U(txr->itxr_vec, <, ice->ice_nintrs);
+
+		infop->mri_intr.mi_ddi_handle =
+		    ice->ice_intr_handles[txr->itxr_vec];
+	}
 }
 
 static void
@@ -256,7 +311,17 @@ ice_m_stat(void *arg, uint_t stat, uint64_t *valp)
 static void
 ice_m_stop(void *arg)
 {
-	ice_t *ice = arg;
+	ice_t		*ice = arg;
+	ice_vsi_t	*vsi = list_head(&ice->ice_vsi);
+
+	ASSERT3P(vsi, !=, NULL);
+
+	ice->ice_shutdown = true;
+	membar_producer();
+
+	if (!ice_remove_rule(ice, 1, &vsi->ivsi_bcast_rule_idx)) {
+		ice_error(ice, "failed to remove brodcast address");
+	}
 
 	if (!ice_cmd_setup_link(ice, B_FALSE)) {
 		ice_error(ice, "failed to stop link");
@@ -274,18 +339,32 @@ ice_m_stop(void *arg)
 
 	ice_tx_stop(ice);
 	ice_rx_stop(ice);
-	ice_buf_fini(ice);
+
+	atomic_and_uint(&ice->ice_state, ~ICE_STARTED);
 }
 
 static int
 ice_m_start(void *arg)
 {
-	ice_t *ice = arg;
-	uint16_t mask;
+	ice_t		*ice = arg;
+	ice_vsi_t	*vsi = list_head(&ice->ice_vsi);
+	uint16_t	mask;
 
-	ice_buf_init(ice);
+	ASSERT3P(vsi, !=, NULL);
 
-	ice_rx_start(ice);
+	/*
+	 * The mac framework serializes calls to m_start and m_stop, so
+	 * we're ok to set this without a lock.
+	 */
+	ice->ice_shutdown = false;
+	membar_producer();
+
+	if (!ice_rx_start(ice)) {
+		ice->ice_shutdown = true;
+		membar_producer();
+		return (EIO);
+	}
+
 	ice_tx_start(ice);
 
 	if (!ice_intr_hw_init(ice)) {
@@ -328,6 +407,19 @@ ice_m_start(void *arg)
 
 		(void) ice_link_status_update(ice);
 	}
+
+	/*
+	 * It appears mac will call the mgi_addmac(9E) method with the
+	 * default MAC address for us, so we only need to add the
+	 * broadcast address to the switch filter.
+	 */
+	if (!ice_add_mac(ice, vsi->ivsi_id, ice_bcast_mac,
+	    &vsi->ivsi_bcast_rule_idx)) {
+		ice_error(ice, "failed to add brodcast address");
+		goto err;
+	}
+
+	atomic_or_uint(&ice->ice_state, ICE_STARTED);
 
 	return (0);
 err:
@@ -379,15 +471,17 @@ ice_m_multicast(void *arg, boolean_t add, const uint8_t *addr)
 	mac = ice_find_mac(&ice->ice_mc_macs, addr);
 	if (!add) {
 		if (mac == NULL) {
-			mutex_exit(&vsi->ivsi_lock);
-			return (ENOENT);
+			ret = ENOENT;
+			goto done;
 		}
 
-		ret = ice_remove_rule(ice, 1, &mac->ivm_idx);
-		if (ret != 0) {
-			list_remove(&ice->ice_mc_macs, mac);
-			kmem_free(mac, sizeof (*mac));
+		if (!ice_remove_rule(ice, 1, &mac->ivm_idx)) {
+			ret = EIO;
+			goto done;
 		}
+
+		list_remove(&ice->ice_mc_macs, mac);
+		kmem_free(mac, sizeof (*mac));
 	} else {
 		if (mac != NULL) {
 			mutex_exit(&vsi->ivsi_lock);
@@ -405,12 +499,15 @@ ice_m_multicast(void *arg, boolean_t add, const uint8_t *addr)
 		mac = kmem_zalloc(sizeof (*mac), KM_SLEEP);
 		bcopy(addr, mac->ivm_mac, ETHERADDRL);
 
-		ret = ice_add_mac(ice, vsi->ivsi_id, addr, &mac->ivm_idx);
-		if (ret != 0) {
-			list_insert_tail(&ice->ice_mc_macs, mac);
+		if (!ice_add_mac(ice, vsi->ivsi_id, addr, &mac->ivm_idx)) {
+			ret = EIO;
+			goto done;
 		}
+
+		list_insert_tail(&ice->ice_mc_macs, mac);
 	}
 
+done:
 	mutex_exit(&vsi->ivsi_lock);
 	return (ret);
 }
@@ -437,7 +534,7 @@ ice_m_getcapab(void *arg, mac_capab_t capab, void *cap_data)
 		case MAC_RING_TYPE_RX:
 			cap_rings->mr_rnum = ice->ice_num_rxq_per_vsi;
 			cap_rings->mr_rget = ice_fill_rx_ring;
-			cap_rings->mr_gnum = ice->ice_num_vsis;
+			cap_rings->mr_gnum = 1;
 			cap_rings->mr_gget = ice_fill_rx_group;
 			cap_rings->mr_gaddring = NULL;
 			cap_rings->mr_gremring = NULL;
@@ -447,8 +544,27 @@ ice_m_getcapab(void *arg, mac_capab_t capab, void *cap_data)
 		}
 
 		break;
-	case MAC_CAPAB_HCKSUM:
-	case MAC_CAPAB_LSO:
+	case MAC_CAPAB_HCKSUM: {
+		uint32_t *txflags = cap_data;
+
+		*txflags = 0;
+		if (ice->ice_tx_hcksum_enable)
+			*txflags = HCKSUM_INET_PARTIAL | HCKSUM_IPHDRCKSUM;
+
+		break;
+	}
+	case MAC_CAPAB_LSO: {
+		mac_capab_lso_t *cap_lso = cap_data;
+
+		if (!ice->ice_tx_lso_enable)
+			return (B_FALSE);
+
+		cap_lso->lso_flags =
+		    LSO_TX_BASIC_TCP_IPV4 | LSO_TX_BASIC_TCP_IPV6;
+		cap_lso->lso_basic_tcp_ipv4.lso_max = ICE_TX_LSO_MAXLEN;
+		cap_lso->lso_basic_tcp_ipv6.lso_max = ICE_TX_LSO_MAXLEN;
+		break;
+	}
 	case MAC_CAPAB_LED:
 	case MAC_CAPAB_TRANSCEIVER:
 		return (B_FALSE);
@@ -463,7 +579,52 @@ static int
 ice_m_setprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
     uint_t pr_valsize, const void *pr_val)
 {
-	return (ENOTSUP);
+	ice_t		*ice = arg;
+	uint32_t	new_mtu;
+	int		ret = 0;
+
+	switch (pr_num) {
+	/* These are always read only */
+	case MAC_PROP_DUPLEX:
+	case MAC_PROP_SPEED:
+	case MAC_PROP_STATUS:
+	case MAC_PROP_MEDIA:
+		ret = ENOTSUP;
+		break;
+
+	case MAC_PROP_MTU:
+		bcopy(pr_val, &new_mtu, sizeof (new_mtu));
+		if (new_mtu == ice->ice_mtu) {
+			break;
+		}
+
+		if (new_mtu > ice->ice_max_mtu) {
+			ret = EINVAL;
+			break;
+		}
+
+		if (new_mtu < ETHERMIN) {
+			ret = EINVAL;
+			break;
+		}
+
+		if (ice_is_running(ice)) {
+			ret = EBUSY;
+			break;
+		}
+
+		ret = mac_maxsdu_update(ice->ice_mac_hdl, new_mtu);
+		if (ret == 0) {
+			ice_update_mtu(ice, new_mtu);
+		}
+		break;
+
+	default:
+		ret = ENOTSUP;
+		break;
+	}
+
+	return (ret);
 }
 
 static int
@@ -523,8 +684,12 @@ ice_m_getprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 		    sizeof (link_flowctrl_t));
 		break;
 	case MAC_PROP_MTU:
-		ret = ENOTSUP;
-		/* XXX Come back to me */
+		if (pr_valsize < sizeof (uint32_t)) {
+			ret = EOVERFLOW;
+			break;
+		}
+
+		bcopy(&ice->ice_mtu, pr_val, sizeof (uint32_t));
 		break;
 
 	/* TODO MAC_PROP_{ADV,EN}_FEC_CAP */
@@ -574,7 +739,24 @@ static void
 ice_m_propinfo(void *arg, const char *pr_name, mac_prop_id_t pr_num,
     mac_prop_info_handle_t hdl)
 {
+	ice_t *ice = arg;
 
+	switch (pr_num) {
+	case MAC_PROP_DUPLEX:
+	case MAC_PROP_SPEED:
+		mac_prop_info_set_perm(hdl, MAC_PROP_PERM_READ);
+		break;
+	case MAC_PROP_FLOWCTRL:
+		mac_prop_info_set_perm(hdl, MAC_PROP_PERM_READ);
+		mac_prop_info_set_default_link_flowctrl(hdl,
+		    LINK_FLOWCTRL_NONE);
+		break;
+	case MAC_PROP_MTU:
+		mac_prop_info_set_range_uint32(hdl, 0, ice->ice_max_mtu);
+		break;
+	default:
+		break;
+	}
 }
 
 static mac_callbacks_t ice_m_callbacks = {
