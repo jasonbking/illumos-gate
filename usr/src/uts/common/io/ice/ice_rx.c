@@ -30,10 +30,13 @@
  * PAGESIZE and will let the hardware segment an incoming packet across
  * multiple descriptors if it is larger than PAGESIZE. The reason behind this
  * is that allocating thousands of single-segment DMA buffers larger than
- * PAGESIZE can put _severe_ pressure on the VM system as it may have to spend
- * considerable time shuffling around memory to obtain the necessary number of
- * physically contiguous segments of memory. Times in excess of 30 minutes(!)
- * due to this has been observed in the field.
+ * PAGESIZE (with a required cookie count of 1) can put _severe_ pressure
+ * on the VM system. When this happens, the system has to spend enormous
+ * amounts of time (over 30 minutes has been observed in the field) trying to
+ * move data around in physical memory to obtain enough pieces of _physically_
+ * contiguous memory. All while a dladm create-vnic command is blocked in the
+ * kernel unkillable, often causing a pile-up of blocked processing and just
+ * all around awful behavior.
  *
  * When we scan the RX ring (either due to an interrupt or when asked to
  * via ice_rx_poll()), we first 'peek' at the descriptors (looking at their
@@ -466,11 +469,14 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 	ice_rx_desc_t		*desc;
 	mblk_t			*mp_head, *mp_tail;
 	uint_t			total, len;
+	bool			loan_ok;
 	uint16_t		head, seg_count;
 
 	mp_head = NULL;
 	len = total = 0;
 	seg_count = 0;
+
+	loan_ok = ice->ice_rx_maxloan > 0;
 
 	/*
 	 * Determine the size of this packet. Also verify that a complete
@@ -502,10 +508,10 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 		/*
 		 * The datasheet claims that a single packet should never
 		 * exceed ICE_RX_MAX_DESC (5) descriptors. So we stop once
-		 * we've either encountered EOP, reached the hardware's
-		 * segment limit, or exceed our size budget.
+		 * we've either encountered EOP or have reached the hardware
+		 * segment limit.
 		 */
-	} while (!ice_rx_eop(desc) && head != rxr->irxr_head);
+	} while (!ice_rx_eop(desc) && seg_count < ICE_RX_MAX_DESC);
 
 	if (seg_count > ICE_RX_MAX_DESC) {
 		// TODO: improve this error message. FMA degrade?
@@ -574,9 +580,9 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 		}
 
 		/*
-		 * If segment is large enough, try to bind it. If we're
-		 * unable to for any reason, we will fall back to copying
-		 * it.
+		 * If we are allowed to loan up descriptors and the
+		 * size of the segment is large enough, try to bind it.
+		 * If we fail, we fall back to copying.
 		 *
 		 * Note that binding a RX descriptor means swapping out
 		 * it's DMA buffer with a new one on the ring so that
@@ -584,7 +590,7 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 		 * simply reset the entire span of descriptors for this
 		 * packet (see the `discard` label) once we're done.
 		 */
-		if (len >= ice->ice_rx_dma_min)
+		if (loan_ok && len >= ice->ice_rx_dma_min)
 			mp = ice_rx_bind(rxr, head, len);
 		if (mp == NULL)
 			mp = ice_rx_copy(rxr, head, len);
