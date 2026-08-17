@@ -54,6 +54,7 @@
 #include <sys/types.h>
 #include <sys/containerof.h>
 #include "ice.h"
+#include "ice_rx_hwcksum.h"
 
 /*
  * Note that we assume rxr->irxr_index is in PF space. If we add support
@@ -418,11 +419,23 @@ ice_rx_copy(ice_rx_ring_t *rxr, uint16_t idx, uint_t len)
 static void
 ice_rx_hwcksum(ice_rx_ring_t *rxr, const ice_rx_desc_t *desc, mblk_t *mp)
 {
-	int pinfo = 0;
-	uint32_t cksum = 0;
+	const struct ice_rx_ptype_decoded	pinfo = { 0 };
+	uint32_t				ptype;
+	uint32_t				cksum = 0;
 
-	// TODO
-	if (pinfo == 0) {
+	/*
+	 * Note that we only consider ptypes < 256 since we're
+	 * not using flex descriptors. The result (currently) is
+	 * for VRRP, OSPF (IPv4 or IPv6), ATAoE, or ethertype 0x8808
+	 * frames, we'll not pass up any offloading information from
+	 * the NIC and upstack will just verify in software.
+	 */
+
+	ptype = ICE_RXD_PTYPE(desc->irxd_qw1);
+	if (ptype > ARRAY_SIZE(ice_ptype_lkup))
+		return;
+
+	if (!pinfo.known) {
 		rxr->irxr_stats.icrxs_hck_unknown.value.ui64++;
 		return;
 	}
