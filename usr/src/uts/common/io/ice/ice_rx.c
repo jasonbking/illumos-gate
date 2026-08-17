@@ -469,13 +469,16 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 	ice_rx_desc_t		*desc;
 	mblk_t			*mp_head, *mp_tail;
 	uint_t			total, len;
-	bool			loan_ok;
+	uint32_t		dma_min;
+	bool			loan_ok, eop;
 	uint16_t		head, seg_count;
 
 	mp_head = NULL;
 	len = total = 0;
 	seg_count = 0;
 
+	membar_consumer();
+	dma_min = ice->ice_rx_dma_min;
 	loan_ok = ice->ice_rx_maxloan > 0;
 
 	/*
@@ -562,7 +565,10 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 		mblk_t *mp = NULL;
 
 		desc = &rxr->irxr_descs[head];
+
+		ASSERT(ice_rx_desc_done(desc));
 		len = ice_rx_data_len(desc);
+		eop = ice_rx_eop(desc);
 
 		/*
 		 * The datasheet doesn't really call this out, but from
@@ -579,6 +585,9 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 			continue;
 		}
 
+		if (eop && ice->ice_rx_hcksum_enable)
+			ice_rx_hwcksum(rxr, desc, mp_head);
+
 		/*
 		 * If we are allowed to loan up descriptors and the
 		 * size of the segment is large enough, try to bind it.
@@ -589,8 +598,11 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 		 * we can loan it out in the mblk_t. That way we can
 		 * simply reset the entire span of descriptors for this
 		 * packet (see the `discard` label) once we're done.
+		 *
+		 * It also means we should grab any info we need from
+		 * the descriptor by now.
 		 */
-		if (loan_ok && len >= ice->ice_rx_dma_min)
+		if (loan_ok && len >= dma_min)
 			mp = ice_rx_bind(rxr, head, len);
 		if (mp == NULL)
 			mp = ice_rx_copy(rxr, head, len);
@@ -616,10 +628,7 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 
 		total += len;
 		head = ice_rx_next(rxr, head, 1);
-	} while (!ice_rx_eop(desc));
-
-	if (ice->ice_rx_hcksum_enable)
-		ice_rx_hwcksum(rxr, desc, mp_head);
+	} while (!eop);
 
 	ASSERT3U(orig_total, ==, total);
 

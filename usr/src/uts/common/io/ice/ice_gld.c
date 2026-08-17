@@ -21,6 +21,19 @@
 #include <sys/dlpi.h>
 #include "ice.h"
 
+#define	ICE_TX_DMA_THRESH	"_tx_dma_threshold"
+#define	ICE_RX_DMA_THRESH	"_rx_dma_threshold"
+#define	ICE_RX_DMA_MAX_LOAN	"_rx_dma_maxloan"
+#define	ICE_RX_INTR_MAX_PKT	"_rx_intr_maxpkt"
+
+static char *ice_priv_props[] = {
+	ICE_TX_DMA_THRESH,
+	ICE_RX_DMA_THRESH,
+	ICE_RX_DMA_MAX_LOAN,
+	ICE_RX_INTR_MAX_PKT,
+	NULL
+};
+
 /*
  * This table maps the Intel PHY bits to and from the corresponding MAC values
  * as well as tracks the various link speeds that we care about. The Intel PHY
@@ -576,12 +589,82 @@ ice_m_getcapab(void *arg, mac_capab_t capab, void *cap_data)
 }
 
 static int
+ice_m_setprop_private(ice_t *ice, const char *pr_name, uint_t pr_valsize,
+    const void *pr_val)
+{
+	long	val;
+	char	*eptr;
+	int	ret;
+
+	ret = ddi_strtol(pr_val, &eptr, 10, &val);
+	if (ret != 0 || *eptr != '\0') {
+		return (ret);
+	}
+
+	if (strcmp(pr_name, ICE_TX_DMA_THRESH) == 0) {
+		if (val < ICE_TX_DMA_THRESH_MIN ||
+		    val > ICE_TX_DMA_THRESH_MAX) {
+			return (EINVAL);
+		}
+
+		ice->ice_tx_dma_min = val;
+		membar_producer();
+		return (0);
+	}
+
+	if (strcmp(pr_name, ICE_RX_DMA_THRESH) == 0) {
+		if (val < ICE_RX_DMA_THRESH_MIN ||
+		    val > ICE_RX_DMA_THRESH_MAX) {
+			return (EINVAL);
+		}
+
+		ice->ice_rx_dma_min = val;
+		membar_producer();
+		return (0);
+	}
+
+	if (strcmp(pr_name, ICE_RX_DMA_MAX_LOAN) == 0) {
+		if (val < ICE_RX_LOAN_MIN ||
+		    val > ICE_RX_LOAN_MAX) {
+			return (EINVAL);
+		}
+
+		ice->ice_rx_maxloan = val;
+		membar_producer();
+		return (0);
+	}
+
+	if (strcmp(pr_name, ICE_RX_INTR_MAX_PKT) == 0) {
+		if (val < ICE_RX_INTR_MAX_PKT_MIN ||
+		    val > ICE_RX_INTR_MAX_PKT_MAX) {
+			return (EINVAL);
+		}
+
+		ice->ice_rx_limit_per_intr = val;
+		membar_producer();
+		return (0);
+	}
+
+	return (ENOTSUP);
+}
+
+static int
 ice_m_setprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
     uint_t pr_valsize, const void *pr_val)
 {
 	ice_t		*ice = arg;
 	uint32_t	new_mtu;
 	int		ret = 0;
+
+	/*
+	 * The mac framework guarantees this call is single threaded
+	 * (see block comments at the top of usr/src/uts/common/io/mac/mac.c)
+	 *
+	 * For the currently supported properties, the TX and RX code
+	 * can handle inline changes to these (they might just take
+	 * effect on the 'next' packet depending on timing), so we're
+	 * ok to modify these without any additional locking.
+	 */
 
 	switch (pr_num) {
 	/* These are always read only */
@@ -619,12 +702,41 @@ ice_m_setprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 		}
 		break;
 
+	case MAC_PROP_PRIVATE:
+		ret = ice_m_setprop_private(ice, pr_name, pr_valsize, pr_val);
+		break;
+
 	default:
 		ret = ENOTSUP;
 		break;
 	}
 
 	return (ret);
+}
+
+static int
+ice_m_getprop_private(ice_t *ice, const char *pr_name, uint_t pr_valsize,
+    void *pr_val)
+{
+	uint32_t val = 0;
+
+	if (strcmp(pr_name, ICE_TX_DMA_THRESH) == 0) {
+		val = ice->ice_tx_dma_min;
+	} else if (strcmp(pr_name, ICE_RX_DMA_THRESH) == 0) {
+		val = ice->ice_rx_dma_min;
+	} else if (strcmp(pr_name, ICE_RX_DMA_MAX_LOAN) == 0) {
+		val = ice->ice_rx_maxloan;
+	} else if (strcmp(pr_name, ICE_RX_INTR_MAX_PKT) == 0) {
+		val = ice->ice_rx_limit_per_intr;
+	} else {
+		return (ENOTSUP);
+	}
+
+	if (snprintf(pr_val, pr_valsize, "%u", val) >= pr_valsize) {
+		return (ERANGE);
+	}
+
+	return (0);
 }
 
 static int
@@ -726,6 +838,10 @@ ice_m_getprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 	case MAC_PROP_ADV_100GFDX_CAP:
 	case MAC_PROP_EN_100GFDX_CAP:
 
+	case MAC_PROP_PRIVATE:
+		ret = ice_m_getprop_private(ice, pr_name, pr_valsize, pr_val);
+		break;
+
 	default:
 		ret = ENOTSUP;
 	}
@@ -733,6 +849,43 @@ ice_m_getprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 	mutex_exit(&ice->ice_lse_lock);
 
 	return (ret);
+}
+
+static void
+ice_m_propinfo_private(ice_t *ice, const char *pr_name,
+    mac_prop_info_handle_t hdl)
+{
+	char		buf[64];
+	uint32_t	def = 0;
+
+	if (strcmp(pr_name, ICE_TX_DMA_THRESH) == 0) {
+		mac_prop_info_set_perm(hdl, MAC_PROP_PERM_RW);
+		def = ICE_TX_DMA_THRESH_DEF;
+		mac_prop_info_set_range_uint32(hdl,
+		    ICE_TX_DMA_THRESH_MIN,
+		    ICE_TX_DMA_THRESH_MAX);
+	} else if (strcmp(pr_name, ICE_RX_DMA_THRESH) == 0) {
+		mac_prop_info_set_perm(hdl, MAC_PROP_PERM_RW);
+		def = ICE_RX_DMA_THRESH_DEF;
+		mac_prop_info_set_range_uint32(hdl,
+		    ICE_RX_DMA_THRESH_MIN,
+		    ICE_RX_DMA_THRESH_MAX);
+	} else if (strcmp(pr_name, ICE_RX_DMA_MAX_LOAN) == 0) {
+		mac_prop_info_set_perm(hdl, MAC_PROP_PERM_RW);
+		def = ICE_RX_LOAN_DEF;
+		mac_prop_info_set_range_uint32(hdl,
+		    ICE_RX_LOAN_MIN,
+		    ICE_RX_LOAN_MAX);
+	} else if (strcmp(pr_name, ICE_RX_INTR_MAX_PKT) == 0) {
+		mac_prop_info_set_perm(hdl, MAC_PROP_PERM_RW);
+		def = ICE_RX_INTR_MAX_PKT_DEF;
+		mac_prop_info_set_range_uint32(hdl,
+		    ICE_RX_INTR_MAX_PKT_MIN,
+		    ICE_RX_INTR_MAX_PKT_MAX);
+	}
+
+	(void) snprintf(buf, sizeof (buf), "%u", def);
+	mac_prop_info_set_default_str(hdl, buf);
 }
 
 static void
@@ -746,14 +899,21 @@ ice_m_propinfo(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 	case MAC_PROP_SPEED:
 		mac_prop_info_set_perm(hdl, MAC_PROP_PERM_READ);
 		break;
+
 	case MAC_PROP_FLOWCTRL:
 		mac_prop_info_set_perm(hdl, MAC_PROP_PERM_READ);
 		mac_prop_info_set_default_link_flowctrl(hdl,
 		    LINK_FLOWCTRL_NONE);
 		break;
+
 	case MAC_PROP_MTU:
 		mac_prop_info_set_range_uint32(hdl, 0, ice->ice_max_mtu);
 		break;
+
+	case MAC_PROP_PRIVATE:
+		ice_m_propinfo_private(ice, pr_name, hdl);
+		break;
+
 	default:
 		break;
 	}
@@ -809,7 +969,7 @@ ice_mac_register(ice_t *ice)
 	regp->m_max_sdu = ice->ice_max_mtu;
 	regp->m_pdata = NULL;
 	regp->m_pdata_size = 0;
-	regp->m_priv_props = NULL;
+	regp->m_priv_props = ice_priv_props;
 	regp->m_margin = VLAN_TAGSZ;
 	regp->m_v12n = MAC_VIRT_LEVEL1;
 
