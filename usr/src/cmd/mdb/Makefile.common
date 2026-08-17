@@ -25,6 +25,7 @@
 # Copyright 2018 Nexenta Systems, Inc.
 # Copyright 2021 Tintri by DDN, Inc. All rights reserved.
 # Copyright 2022 Garrett D'Amore
+# Copyright 2026 RackTop Systems, Inc.
 #
 
 #
@@ -79,6 +80,7 @@ COMMON_MODULES_KVM = \
 	genunix \
 	hook \
 	neti \
+	ice \
 	idm \
 	ip \
 	ipc \

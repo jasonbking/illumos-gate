@@ -1053,6 +1053,7 @@ typedef struct ice_tx_desc {
 #define	ICE_TX_DESC_DTYPE_FILTER	0x8
 #define	ICE_TX_DESC_DTYPE_DONE		0xf
 
+#define	ICE_TX_DESC_CMD(v)			ice_bitx64(15, 4)
 #define	ICE_TX_DESC_SET_CMD(r, v)		ice_bitset64(r, 15, 4, v)
 #define	ICE_TX_DESC_CMD_EOP			(1ULL << (4 + 0))
 #define	ICE_TX_DESC_CMD_RS			(1Ull << (4 + 1))
@@ -1078,25 +1079,33 @@ typedef struct ice_tx_desc {
 #define	ICE_TX_DESC_CMD_RE			(1ULL << (4 + 10))
 #define	ICE_TX_DESC_CMD_BT_HDR			(1ULL << (4 + 11))
 
+#define	ICE_TX_DESC_OFFSET(v)			ice_bitx64(v, 33, 16)
 #define	ICE_TX_DESC_SET_OFFSET(r, v)		ice_bitset64(r, 33, 16, v)
+#define	ICE_TX_DESC_OFFSET_MACLEN(v)		ice_bitx64(v, 6, 0)
 #define	ICE_TX_DESC_OFFSET_SET_MACLEN(r, v)	ice_bitset64(r, 6, 0, v)
+#define	ICE_TX_DESC_OFFSET_IPLEN(v)		ice_bitx64(v, 13, 7)
 #define	ICE_TX_DESC_OFFSET_SET_IPLEN(r, v)	ice_bitset64(r, 13, 7, v)
 #define	ICE_TX_DESC_OFFSET_L4LEN(v)		ice_bitx64(v, 17, 14)
 #define	ICE_TX_DESC_OFFSET_SET_L4LEN(r, v)	ice_bitset64(r, 17, 14, v)
 
+#define	ICE_TX_DESC_BSIZE(v)			ice_bitx64(v, 47, 34)
 #define	ICE_TX_DESC_SET_BSIZE(r, v)		ice_bitset64(r, 47, 34, v)
 #define	ICE_TX_DESC_L2TAG1(v)			ice_bitx64(v, 63, 48)
 #define	ICE_TX_DESC_SET_L2TAG1(r, v)		ice_bitset64(r, 63, 48, v)
 
 /* CTXD Quad Word 1 */
+#define	ICE_TX_CTXD_CMD(v)			ice_bitx64(v, 10, 4)
 #define	ICE_TX_CTXD_SET_CMD(r, v)		ice_bitset64(r, 10, 4, v)
 #define	ICE_TX_CTXD_CMD_TSO			(1ULL << 0)
 #define	ICE_TX_CTXD_CMD_TSYN			(1ULL << 1)
 #define	ICE_TX_CTXD_CMD_IL2TAG2			(1ULL << 2)
 #define	ICE_TX_CTXD_CMD_IL2TAG2_IL2H		(1ULL << 3)
+#define	ICE_TX_CTXD_SWTCH(v)			ice_bitx64(v, 5, 4)
 #define	ICE_TX_CTXD_CMD_SET_SWTCH(r, v)		ice_bitset64(r, 5, 4, v)
+#define	ICE_TX_CTXD_TLEN(v)			ice_bitx64(v, 47, 30)
 #define	ICE_TX_CTXD_SET_TLEN(r, v)		ice_bitset64(r, 47, 30, v)
 #define	ICE_TX_CTXD_SET_TSYN_REG(r, v)		ice_bitset64(r, 35, 30, v)
+#define	ICE_TX_CTXD_MSS(v)			ice_bitx64(v, 63, 50)
 #define	ICE_TX_CTXD_SET_MSS(r, v)		ice_bitset64(r, 63, 50, v)
 #define	ICE_TX_CTXD_SET_VSI(r, v)		ice_bitset64(r, 63, 50, v)
 
