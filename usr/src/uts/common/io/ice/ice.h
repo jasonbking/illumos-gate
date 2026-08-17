@@ -225,6 +225,33 @@ typedef enum ice_itr_index {
  */
 #define	ICE_TX_SMALL_PKT	512
 
+/* The default minimum size to attempt binding an mblk_t on TX */
+#define	ICE_TX_DMA_THRESH_MIN	0
+#define	ICE_TX_DMA_THRESH_DEF	512
+#define	ICE_TX_DMA_THRESH_MAX	INT32_MAX
+
+#define	ICE_TX_BIND_MINSZ_DEFAULT	512
+
+/* The default number of packets we send at one time */
+#define	ICE_TX_THROTTLE_DEFAULT		256
+
+#define	ICE_RX_DMA_THRESH_MIN	0
+#define	ICE_RX_DMA_THRESH_DEF	512
+#define	ICE_RX_DMA_THRESH_MAX	INT32_MAX
+
+#define	ICE_RX_LOAN_MIN		0
+#define	ICE_RX_LOAN_DEF		1024
+/*
+ * This is a somewhat arbitrary limit to avoid excessive kernel memory
+ * consumption.
+ */
+#define	ICE_RX_LOAN_MAX		(100 * 1024)
+
+/* The default maximum number of packets we process in one interrupt */
+#define	ICE_RX_INTR_MAX_PKT_MIN	1
+#define	ICE_RX_INTR_MAX_PKT_DEF	256
+#define	ICE_RX_INTR_MAX_PKT_MAX	INT32_MAX
+
 /*
  * This represents a single logical DMA allocation. At the moment we only use
  * this for entries that a single cookie.  XXX How should we change this when

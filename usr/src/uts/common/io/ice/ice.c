@@ -245,6 +245,12 @@ ice_properties_init(ice_t *ice)
 	ice->ice_itr_tx = ICE_ITR_TX_DEFAULT;
 	ice->ice_itr_other = ICE_ITR_OTHER_DEFAULT;
 
+	ice->ice_tx_dma_min = ICE_TX_DMA_THRESH_DEF;
+
+	ice->ice_rx_dma_min = ICE_RX_DMA_THRESH_DEF;
+	ice->ice_rx_maxloan = ICE_RX_LOAN_DEF;
+	ice->ice_rx_limit_per_intr = ICE_RX_INTR_MAX_PKT_DEF;
+
 	ice_update_mtu(ice, ICE_MTU_DEFAULT);
 }
 
@@ -1801,9 +1807,6 @@ ice_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	ice->ice_inst = ddi_get_instance(dip);
 
 	ice->ice_rx_rsize = ICE_TX_RING_DEFAULT_SIZE;
-
-	/* XXX: make this a prop */
-	ice->ice_rx_limit_per_intr = 256;
 
 	list_create(&ice->ice_mc_macs, sizeof (ice_vsi_mac_t),
 	    offsetof(ice_vsi_mac_t, ivm_node));

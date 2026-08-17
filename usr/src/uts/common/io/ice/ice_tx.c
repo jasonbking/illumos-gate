@@ -172,6 +172,8 @@ typedef struct ice_tx_pkt {
 	ice_tx_pkt_method_t	itxp_method;
 	uint32_t		itxp_mss;
 
+	uint32_t		itxp_dma_min;
+
 	/* mss frame tracking */
 	uint16_t		itxp_seglen;
 	uint8_t			itxp_segcnt;
@@ -865,6 +867,9 @@ ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 	pkt->itxp_mp = mp;
 	pkt->itxp_segmax = ICE_TX_MAX_COOKIE;
 
+	membar_consumer();
+	pkt->itxp_dma_min = ice->ice_tx_dma_min;
+
 	pkt->itxp_init_mp_seg = mp;
 	pkt->itxp_init_off = 0;
 
@@ -1056,10 +1061,10 @@ ice_tx_pkt_iter_next(ice_tx_pkt_iter_t *iter)
 }
 
 static inline bool
-ice_tx_try_bind(ice_t *ice, ice_tx_pkt_t *pkt, size_t len)
+ice_tx_try_bind(ice_tx_pkt_t *pkt, size_t len)
 {
 	if (pkt->itxp_method == ITPM_NORMAL &&
-	    len >= ice->ice_tx_dma_min) {
+	    len >= pkt->itxp_dma_min) {
 		return (true);
 	}
 
@@ -1216,7 +1221,7 @@ ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	while (mp != NULL) {
 		mlen = MBLKL(mp) - off;
 
-		if (ice_tx_try_bind(ice, pkt, mlen)) {
+		if (ice_tx_try_bind(pkt, mlen)) {
 			ice_tx_ctrl_block_t *btcb;
 
 			btcb = ice_tx_bind_fragment(pkt, mp, off, mlen);
