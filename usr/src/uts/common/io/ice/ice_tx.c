@@ -781,13 +781,15 @@ ice_tx_copy_fragment(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb,
 	void		*dest = tcb->itcb_buf->idb_va + tcb->itcb_len;
 	size_t		to_copy = MIN(ice_tcb_remaining(tcb), len);
 
+	ASSERT3U(tcb->itcb_type, !=, ITCB_BIND);
+	ASSERT3U(tcb->itcb_type, !=, ITCB_LSO_BIND);
 	ASSERT3U(to_copy, >, 0);
 
 	ASSERT3P(src, >=, mp->b_rptr);
 	ASSERT3P(src, <, mp->b_wptr);
-	ASSERT3U(len, <=, MBLKL(mp));
-	ASSERT3U((uintptr_t)src + len, <=, (uintptr_t)mp->b_wptr);
-	ASSERT3U(ice_tcb_remaining(tcb), >=, len);
+	ASSERT3U(to_copy, <=, MBLKL(mp));
+	ASSERT3U((uintptr_t)src + to_copy, <=, (uintptr_t)mp->b_wptr);
+	ASSERT3U(tcb->itcb_len + to_copy, <=, tcb->itcb_buf->idb_len);
 
 	bcopy(src, dest, to_copy);
 	tcb->itcb_len += to_copy;
