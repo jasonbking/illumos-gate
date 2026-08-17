@@ -930,7 +930,7 @@ typedef struct ice_rx_desc {
 #define	ICE_RXD_EXTERR		(1ULL << 5)
 #define	ICE_RXD_OVERSIZE	(1ULL << 6)
 
-#define	ICE_RXD_PTYPE		ice_bitx64(qw1, 30, 37)
+#define	ICE_RXD_PTYPE(qw1)	ice_bitx64(qw1, 30, 37)
 #define	ICE_RXD_LEN(qw1)	ice_bitx64(qw1, 63, 38)
 #define	ICE_RXD_PKTL(qw1)	ice_bitx64(qw1, 13, 0)
 #define	ICE_RXD_HLEN(qw1)	ice_bitx64(qw1, 14, 24)
