@@ -219,6 +219,8 @@ typedef struct ice_tx_pkt_iter {
 
 static kmem_cache_t *ice_tx_pkt_cache;
 
+static void ice_tx_recycle_ring(ice_tx_ring_t *);
+
 static inline uintptr_t
 ice_qtx_index(const ice_tx_ring_t *txr)
 {
@@ -257,6 +259,14 @@ ice_tx_next(const ice_tx_ring_t *txr, uint16_t idx, uint16_t amt)
 
 	ASSERT3U(val, <, txr->itxr_size);
 	return (val);
+}
+
+static inline uint16_t
+ice_tx_prev(const ice_tx_ring_t *txr, uint16_t idx)
+{
+	ASSERT3U(idx, <, txr->itxr_size);
+
+	return ((idx > 0) ? idx - 1 : txr->itxr_size - 1);
 }
 
 static ice_tx_ctrl_block_t *
@@ -748,10 +758,18 @@ ice_tx_pkt_retry_mss_seg(ice_tx_pkt_t *pkt, mblk_t **mpp, size_t *offp)
 		pkt->itxp_tcb_tail->itcb_next = NULL;
 	}
 
+#ifdef	DEBUG
+	uint32_t ndesc = 0;
+#endif
+
 	while (tcb != NULL) {
 		next = tcb->itcb_next;
 
 		tcb->itcb_next = NULL;
+#ifdef	DEBUG
+		ndesc += ddi_dma_ncookies(ice_tcb_dma_handle(tcb));
+#endif
+
 		ice_tcb_free(tcb);
 		tcb = next;
 
@@ -764,6 +782,15 @@ ice_tx_pkt_retry_mss_seg(ice_tx_pkt_t *pkt, mblk_t **mpp, size_t *offp)
 	pkt->itxp_copy_segs = pkt->itxp_prev_copy_segs;
 	pkt->itxp_bind_bytes = pkt->itxp_prev_bind_bytes;
 	pkt->itxp_bind_segs = pkt->itxp_prev_bind_segs;
+
+	/*
+	 * Since we're able to crosscheck this, verify the number of
+	 * DMA cookies (thus the number of descriptors needed) we
+	 * rollback leaves us with what we checkpointed.
+	 */
+	ASSERT3U(pkt->itxp_ndesc, >=, ndesc);
+	ASSERT3U(pkt->itxp_ndesc - ndesc, ==, pkt->itxp_prev_ndesc);
+	pkt->itxp_ndesc = pkt->itxp_prev_ndesc;
 
 	pkt->itxp_seglen = pkt->itxp_prev_seglen;
 	pkt->itxp_segcnt = pkt->itxp_prev_segcnt;
@@ -1093,7 +1120,7 @@ ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	 */
 	if (pkt->itxp_lso ||
 	    (ice_tx_pkt_msglen(pkt) < ICE_TX_SMALL_PKT &&
-	    ice_tx_pkt_msglen(pkt) < ice->ice_tx_dma_min)) {
+	    ice_tx_pkt_msglen(pkt) < pkt->itxp_dma_min)) {
 		size_t remaining;
 
 		remaining = pkt->itxp_lso ?
@@ -1527,13 +1554,13 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 		tail = ice_tx_next(txr, tail, 1);
 		desc_used++;
 	}
+	ASSERT3U(desc_used, ==, desc_needed);
 
 	/*
 	 * desc is now the last descriptor, set the EOP and RS (report
 	 * status) bits.
 	 */
 	desc->itxd_qw1 |= LE_64(ICE_TX_DESC_CMD_EOP|ICE_TX_DESC_CMD_RS);
-	ASSERT3U(desc_used, ==, desc_needed);
 
 	/* Done updating descriptors, so sync the ring to the device */
 	if (!ice_dma_sync(txr->itxr_ice, &txr->itxr_dma, DDI_DMA_SYNC_FORDEV)) {
@@ -1604,7 +1631,6 @@ ice_ring_tx(void *arg, mblk_t *mp)
 	while (mp != NULL) {
 		mblk_t		*mp_next = mp->b_next;
 		int		n;
-		uint16_t	tail;
 		uint16_t	desc_needed;
 
 		mp->b_next = NULL;
@@ -1632,8 +1658,8 @@ ice_ring_tx(void *arg, mblk_t *mp)
 			 * Try to recycle and re-check if we can
 			 * send
 			 */
-			if (!ice_tx_recycle_ring(txr) ||
-			    txr->itxr_avail < desc_needed) {
+			ice_tx_recycle_ring(txr);
+			if (txr->itxr_avail < desc_needed) {
 				txr->itxr_blocked = true;
 				txr->itxr_stats.ictxs_blocked.value.ui64++;
 
@@ -1644,8 +1670,6 @@ ice_ring_tx(void *arg, mblk_t *mp)
 				break;
 			}
 		}
-
-		tail = txr->itxr_tail;
 
 		n = ice_tx_send_pkt(txr, pkt);
 		if (n < 0) {
@@ -1678,9 +1702,14 @@ ice_ring_tx(void *arg, mblk_t *mp)
 		/*
 		 * Move used tcbs in pkt onto the tcb ring. These will get
 		 * freed when we recycle.
+		 *
+		 * Note that we attach the tcb to the index of the last
+		 * descriptor of the packet so that we can use this
+		 * to tell when a full packet is ready to be recycled.
 		 */
 		pkt->itxp_tcbs->itcb_tx_time = gethrtime();
-		txr->itxr_tcbs[tail] = pkt->itxp_tcbs;
+		txr->itxr_tcbs[ice_tx_prev(txr, txr->itxr_tail)] =
+		    pkt->itxp_tcbs;
 		pkt->itxp_tcbs = pkt->itxp_tcb_tail = NULL;
 
 		mutex_exit(&txr->itxr_lock);
@@ -1712,12 +1741,12 @@ ice_tx_desc_done(const ice_tx_desc_t *desc)
 	return (dtype == ICE_TX_DESC_DTYPE_DONE);
 }
 
-bool
+void
 ice_tx_recycle_ring(ice_tx_ring_t *txr)
 {
 	ice_t			*ice = txr->itxr_ice;
 	ice_tx_ctrl_block_t	*tcb, *next;
-	uint32_t		n, head;
+	uint32_t		n, head, tail;
 
 	ASSERT(MUTEX_HELD(&txr->itxr_lock));
 	ASSERT3U(txr->itxr_avail, <=, txr->itxr_size);
@@ -1725,48 +1754,75 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 	if (txr->itxr_avail == txr->itxr_size) {
 		if (txr->itxr_blocked) {
 			txr->itxr_blocked = false;
+
+			mutex_exit(&txr->itxr_lock);
+
 			mac_tx_ring_update(ice->ice_mac_hdl,
 			    txr->itxr_mactxring);
+
+			mutex_enter(&txr->itxr_lock);
 		}
 
-		return (true);
+		return;
 	}
 
 	if (!ice_dma_sync(ice, &txr->itxr_dma, DDI_DMA_SYNC_FORKERNEL)) {
-		return (false);
+		return;
 	}
 
+	/*
+	 * Earlier models had a pre-tx ring register that gave you the
+	 * index of the last descriptor of the most recently processed, packet.
+	 * The ice NICs do not have this (technically it does, but all bits
+	 * in it are marked reserved in the datasheet, though apparently
+	 * Linux's ice driver uses this for watchdog purposes).
+	 *
+	 * We only want to recycle a packet once it has been completely
+	 * transmitted. As such, we use the fact the tcb for the packet
+	 * is saved on the index of the last descriptor of the packet.
+	 * If the corresponding descriptor has completed, we know we
+	 * can recycle that packet.
+	 */
 	n = 0;
-	head = txr->itxr_head;
-
-	for (;;) {
-		if (!ice_tx_desc_done(&txr->itxr_descs[head]))
-			break;
-
-		/* Zero out used descriptors for sanity */
-		txr->itxr_descs[head].itxd_qw0 = 0;
-		txr->itxr_descs[head].itxd_qw1 = 0;
-
+	head = tail = txr->itxr_head;
+	while (head != ice_tx_prev(txr, txr->itxr_head)) {
 		tcb = txr->itxr_tcbs[head];
-		while (tcb != NULL) {
-			next = tcb->itcb_next;
-			tcb->itcb_next = NULL;
-			ice_tcb_free(tcb);
-			tcb = next;
+		if (tcb == NULL) {
+			head = ice_tx_next(txr, head, 1);
+			continue;
+		}
+
+		if (!ice_tx_desc_done(&txr->itxr_descs[head])) {
+			break;
 		}
 
 		txr->itxr_tcbs[head] = NULL;
-
-		n++;
 		head = ice_tx_next(txr, head, 1);
+
+		do {
+			/* Zero out used descriptors for sanity */
+			txr->itxr_descs[tail].itxd_qw0 = 0;
+			txr->itxr_descs[tail].itxd_qw1 = 0;
+
+			while (tcb != NULL) {
+				next = tcb->itcb_next;
+				tcb->itcb_next = NULL;
+				ice_tcb_free(tcb);
+				tcb = next;
+			}
+
+			n++;
+
+			tail = ice_tx_next(txr, tail, 1);
+		} while (tail != head);
 	}
 
-	txr->itxr_head = head;
+	txr->itxr_head = tail;
 	txr->itxr_avail += n;
 
 	// XXX add tx update threshold?
 
-	if (txr->itxr_blocked) {
+	if (txr->itxr_blocked && txr->itxr_avail > 0) {
 		txr->itxr_blocked = false;
 
 		mutex_exit(&txr->itxr_lock);
@@ -1776,8 +1832,6 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 
 		mutex_enter(&txr->itxr_lock);
 	}
-
-	return ((n > 0) ? true : false);
 }
 
 static bool
@@ -1958,14 +2012,18 @@ ice_ring_tx_stop(mac_ring_driver_t mri)
 	ice_tx_ring_t		*txr = (ice_tx_ring_t *)mri;
 	ice_t			*ice = txr->itxr_ice;
 
+	(void) ice_tx_quiesce(txr);
+
 	if (!ice_cmd_disable_queue(ice, txr)) {
 		ice_error(ice, "failed to disable TX queue %u",
 		    txr->itxr_index);
 	}
 
-	(void) ice_tx_quiesce(txr);
+	mutex_enter(&txr->itxr_lock);
 
 	ice_tx_teardown_bufs(txr);
+
+	mutex_exit(&txr->itxr_lock);
 }
 
 int
@@ -2007,7 +2065,7 @@ ice_tx_interrupt(ice_t *ice, ice_intr_handler_t *h)
 
 	mutex_enter(&txr->itxr_lock);
 
-	(void) ice_tx_recycle_ring(txr);
+	ice_tx_recycle_ring(txr);
 	ice_tx_exit_nolock(txr);
 
 	mutex_exit(&txr->itxr_lock);

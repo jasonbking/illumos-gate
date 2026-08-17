@@ -1071,7 +1071,6 @@ extern void ice_mac_unregister(ice_t *);
 extern boolean_t ice_mac_register(ice_t *);
 
 extern mblk_t *ice_ring_tx(void *, mblk_t *);
-extern bool ice_tx_recycle_ring(ice_tx_ring_t *);
 extern int ice_ring_tx_stat(mac_ring_driver_t, uint_t, uint64_t *);
 extern int ice_ring_tx_start(mac_ring_driver_t, uint64_t);
 extern void ice_ring_tx_stop(mac_ring_driver_t);
