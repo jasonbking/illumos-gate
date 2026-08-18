@@ -20,9 +20,9 @@
 #include "ice.h"
 
 /*
- * Transmitting packets works identical to the 700-series (i40e) NICs.
+ * Transmitting packets works largely identical to the 700-series (i40e) NICs.
  * The 800-series (ice) does have some additional features (e.g. completion
- * queues) that aren't currently utilized.  Like any other nic, the mblk_t we're
+ * queues) that aren't currently utilized. Like any other nic, the mblk_t we're
  * transmitting consists of an arbitrary number of fragments of arbitrary size
  * (linked by the b_cont field). Transmitting the packet is a matter of
  * assembling a list of physical address and lengths for all of these fragments
@@ -43,111 +43,131 @@
  * lengths, and other metadata (e.g. hw checksum offload information, etc)
  * onto the TX descriptor ring and tell the hardware to transmit the packet.
  * At the same time, the TCBs consumed by this packet are saved on another
- * ring starting at the same index as the TX descriptor ring. Since the number
- * of tcbs is always <= the number of TX descriptors used, if there is
- * enough free slots for the TX descriptors, we'll always have enough free
- * slots on the tcb ring to hold the corresponding tcbs.
+ * ring at the same index as the last descriptor written on the TX descriptor
+ * ring. Since the number of tcbs is always <= the number of TX descriptors
+ * used, if there is enough free slots for the TX descriptors, we'll always
+ * have enough free slots on the tcb ring to hold the corresponding tcbs.
  *
  * When the NIC has finished sending the NIC, it will generate a completion
  * interrupt, and we use ice_tx_recycle_ring() to go through the TX descriptor
  * and tcb descriptor rings and release the tcbs so they can be reused.
  *
  * Like the i40e NICs, the ice nics have a limit of 8 descriptors per packet.
- * For the non-LSO case, this is generally not an issue -- if the DMA binding
- * requires too many DMA cookies, we copy into one or more pre-mapped DMA
- * buffers. The DMA buffers are always sized so that an MTU sized packet
- * (even when jumbo frames are used) will always fit in 8 or fewer
- * pre-allocated packets (each pre-allocated DMA buffer is created such that
- * each one only requires a single DMA cookie).
+ * More correctly, for every packet sent over the wire, the NIC will do at
+ * most 8 DMA transfers to gather the packet contents from RAM. In the
+ * non-LSO case, this distinction isn't significant -- the number of TX
+ * descriptors written to the ring is equal to the number of DMA transfers
+ * that will occur.
  *
- * For the LSO case, things are unfortunately more complex. As noted in
- * Section 10.5.2, we are still limited to 8 (or fewer) DMA transactions for
- * every packet that is transmitted (i.e. every MSS sized chunk of a packet
- * the hardware is segmenting for us). What is less obvious is that it appears
- * that the packet header is not cached inside the hardware. Instead, it is
- * fetched for every segment that is transmitted and the appropriate fields
- * within the header are adjusted by the hardware as necessary. More
- * importantly, fetching the header counts against the 8 DMA
- * transaction/transmitted packet limit.
+ * For the LSO case however, things get more complex. The description from
+ * the Intel I210 datasheet is helpful here. It is obviously not the same
+ * model as the E810, however, the explanation there is more clarifying than
+ * what is found in the E810 (or 710) datasheets yet (based on painful
+ * experiences) appears to describe the same behavior (examination of the
+ * structures of things like TX/RX descriptors and such also shows a rather
+ * obvious evolution for the various models over time). From the I210
+ * datasheet (Section 6.2.4.8):
  *
- * The programming guide does not directly state this behavior, but it is
- * implied it with the examples in Section 10 of the programming guide. Comments
- * within __ice_chk_linearize() in the Linux ice driver also strongly imply
- * this behavior. This also matches the behavior seen with the i40e driver.
- * Finally, the I211 datasheet (section 7.2.4.2.1) explicitly states this is
- * the case when doing LSO with the I211 chipset. Which is to say, it strongly
- * suggests this has long been the way Intel has implemented LSO in hardware,
- * even while the documentation for the behavior has gotten poorer with
- * every new chipset.
+ * The flow used by the I210-CS/CL to do TCP segmentation is as follows:
  *
- * Based on the
- * examples in Section 10 of the programming guide as well as comments in
- * __ice_chk_linearize() in the Linux ice driver, when doing LSO there is
- * always a limit of 8 DMA transfers per packet written on the wire. That means
- * for LSO, each MSS sized portion of the original (big) packet being segmented
- * by the hardware must still be able to be fetched by the hardware using at
- * most 8 DMA transactions (i.e. 8 descriptors or less).
+ *    1. Get a descriptor with a request for a TSO off-load of a TCP packet.
+ *    2. First Segment processing:
+ *        a. Fetch all the buffers containing the header as calculated by the
+ *           MACLEN, IPLEN and L4LEN fields. Save the addresses and lengths of
+ *           the buffers containing the header (up to 4 buffers). The
+ *           header content is not saved.
+ *        b. Fetch data up to the MSS from subsequent buffers & calculate the
+ *           adequate checksum(s).
+ *        c. Update the Header accordingly and update internal state of the
+ *           packet (next data to fetch and TCP SN).
+ *        d. Send the packet to the network.
+ *        e. If total packet was sent, go to step 4. else continue.
+ *    3. Next segments
+ *        a. Wait for next arbitration of this queue.
+ *        b. Fetch all the buffers containing the header from the saved
+ *           addresses. Subsequent reads of the header might be done with a no
+ *           snoop attribute.
+ *        c. Fetch data up to the MSS or end of packet from subsequent
+ *           buffers & calculate the adequate checksum(s).
+ *        d. Update the Header accordingly and update internal state of the
+ *           packet (next data to fetch and TCP SN).
+ *        e. If total packet was sent, request is done, else restart from step 3.
+ *    4. Release all buffers (update head pointer).
  *
- * Since we never segment the headers (or rather if they are segmented, we
- * copy them into a contiguous buffer so they are no longer segmented), the
- * net result is that every mss (mtu - header) chunk of packet
- * data (excluding the header bytes) must be described by 7 or fewer
- * descriptors. This unfortunately makes the process of DMA binding and/or
- * copying the mblk_t fragments more complicated compared to other hardware.
+ * From the above explanation, two key observations become apparent:
  *
- * To simplify things (a bit), when doing LSO we always copy the header
- * into its own 'small' sized premapped DMA buffer (smaller than an MTU) tracked
- * by its own tcb. As a small optimization (just because it's trivial to do),
- * we also short-circuit very small packets that can fit entirely into a
- * 'small' buffer.
+ *    1. The header is always copied as a separate DMA transfer from the
+ *       data.
+ *    2. The header is re-read for every packet the NIC generates when doing
+ *       LSO.
  *
- * The bulk of the logic to handle the DMA descriptor limits is in
- * ice_tx_pkt_add_tcb(). The general idea is that as we handle each mblk
- * fragment, we keep track of the number of bytes and the number of
- * descriptors that will be used to write out a frame on the wire. If we
- * have handled at least mss bytes of data, we reset the count of segments
- * and data to start tracking a new frame. If we've reached the descriptor
- * limit without handling an mss amount of data and try to add a new tcb
- * (which means at least 1 more descriptor), this fails.
+ * The implications in conjunction with the hard 8 DMA transfer limit is
+ * that the LSO case comes a lot more complicated. For example, if the
+ * first descriptor of a packet contains both the header and data, this
+ * will result in 2 DMA transfers, leaving 6 DMA transfers to 'fill up'
+ * the packet before sending. Likewise, assuming the header is contained
+ * in a single descriptor (the E810 NIC allows up to 3, but as described
+ * below, for us it will always be in 1 descriptor), the 2nd packet will
+ * only have 7 DMA transfers to tranfer enough data to 'fill' the packet
+ * (similarly for any subsequent packets generated from the same original
+ * 'large' LSO packet passed down stack.
  *
- * ice_tx_pkt_add_tcb() fails, then we first attempt to undo/rollback the
- * work we've done for the current frame and switch to copying all of data
- * for this frame into pre-mapped buffers. If copying allows us to handle
- * all of the contents of the current frame without exceeding the descriptor
- * limit, when we cross the mss boundary, aside from resetting the segment
- * and size counters, we'll also revert back to the normal mode of attempting
- * to DMA bind larger mblk fragments. If copying fails, we undo everything
- * (except the header) and copy the entire packet.
+ * This matches _exactly_ the behavior seen (as well as the 710 NICs).
+ * The E810 datasheet implies, but does not explicitly state that it really
+ * wants the headers in their own descriptors from data. This is further
+ * strengthened when looking at how the Linux ice driver handles things
+ * based on the comments in the __ice_chk_linearize() function in it.
  *
- * Since the size of the pre-mapped buffers are the smaller of the MTU or the
- * system's pagesize (e.g. 4k), copying the mblk contents requires at most 3
- * descriptors per frame with the largest possible MTU, so copying a LSO frame
- * should normally succeed. The only potential scenario where this could fail
- * is the spillover from the previous frame consumes more than 4 descriptors
- * (e.g. a bound mblk fragment of 6 cookies where the mss boundary is crossed
- * by the 2nd descriptor, and the remaining 4 cookies spill over into a new
- * partial frame). If this happens, we'll fail again and resort to copying
- * the entire packet (since that should always work).
+ * To tackle this complexity, we attempt to do the following:
  *
- * In reality, we should almost never need to resort to doing a full packet
- * copy when doing LSO. Since the NIC's DMA engine supports 64-bit
- * addressing and can transfer an entire MTU's worth of data in a single DMA
- * operation, when we bind an mblk fragment, the number of DMA cookies returned
- * is almost always going to be the number of pages the used by the mblk
- * fragment's data (i.e. mblk_t->b_datap->db_base) since it can just use the
- * the physical addresses used by each page of the data. This is of course
- * not strictly guaranteed, but should be extremely rare. As a result,
- * we have a kstat counter as well as a dtrace probe for this event to assist
- * with observability as it's so odd that anyone encountering it with a
- * workload might be interested in investigating why it's failing.
+ * - For LSO, we always copy the headers into their own pre-allocated DMA
+ *   buffer and add that to the head of the list of TCBs for this packet.
+ *   Since we have a pool of 'small' (512) byte DMA buffers for small
+ *   packets, we can do this without being too wasteful.
  *
- * To implement all of this unfortunate complexity, ice_tx_pkt_t is used
- * to track the state to build up an array of physical addresses and lengths
- * for a given mblk_t, allowing for the needed rollback and retry as needed
- * to make the packet fit. As MAC thread stacks can get quite deep, we've
- * avoided placing ice_tx_pkt_t() on the stack and opt for using a
- * kmem_cache_t instead (as it's also possible there could be multiple
- * threads trying to TX on the same ring at the same time).
+ * - For each segment (dblk_t) of the packet, we will either attempt to
+ *   DMA bind the buffer or copy the contents into a preallocated DMA
+ *   buffer. We allocate a tcb to track/manage this.
+ *
+ * - When a tcb is added to the list of tcbs for the packet, we iterate
+ *   through the DMA cookies (ddi_dma_cookie_ts) for the data tracked by
+ *   the tcb. We keep a count of the number of descriptors used for the
+ *   current MSS segment (And the total size).
+ *
+ * - If the addition of a tcb will cross an MSS boundary, we reset the
+ *   segment and size counters. Additionally, we checkpoint the state.
+ *
+ * - If the addition of a tcb will cause us to exceed the DMA transfer
+ *   limit, we rollback the state to the last checkpoint (including releasing
+ *   any tcbs that were allocated for the current mss segment). We then
+ *   will retry the current MSS segment by copying all of the data for
+ *   the current MSS segment into preallocated DMA buffers. Since the
+ *   the preallocated DMA buffers are MIN(sdu, pagesize), even in the
+ *   case of jumbo frames, should need at most 3 buffers to hold a whole
+ *   MSS-sized segment of data. Once we cross the next mss boundary, we
+ *   revert back to attempting DMA binding as normal.
+ *
+ * - If for some reason the retry also fails, we take the max power approach,
+ *   release all of the tcbs allocated for the packet, and copy the entire
+ *   packet into preallocated buffers. This should always succeed as long
+ *   as buffers are available (if not, this is no different than the usual
+ *   'out of buffers case).
+ *
+ * For all of this, the ice_tx_pkt_t is used to track the state. It could
+ * probably all be done with local variables, but this is arguably cleaner
+ * and certainly makes observability into the state much easier.
+ *
+ * For eack packet, an ice_tx_pkt_t is allocated (if we have multiple
+ * packets to send in once mc_tx(9E) call, we'll reuse it). We then setup
+ * the initial state using ice_tx_pkt_init().
+ *
+ * ice_tx_{bind, copy{_fragment() are called as appropriate to copy/bind
+ * the packet data to a tcb.
+ *
+ * ice_tx_pkt_add_tcb() is then used to add the tcb and update our
+ * state tracking. If we fail, ice_tx_pkt_retry_mss_seg() is used to
+ * rollback the state to retry the MSS segment by copying.
+ *
  */
 
 /* Note these are defined in the order we attempt each method */
@@ -157,58 +177,54 @@ typedef enum ice_tx_pkt_method {
 	ITPM_COPY_ALL,		/* Copy the entire packet */
 } ice_tx_pkt_method_t;
 
+typedef struct ice_tx_pkt_state {
+	ice_tx_ctrl_block_t	*itps_tail;
+
+	mblk_t			*itps_mp;
+	uint16_t		itps_off;
+
+	uint16_t		itps_ntcbs;
+	uint16_t		itps_ndesc;
+
+	uint32_t		itps_copy_bytes;
+	uint32_t		itps_bind_bytes;
+
+	uint16_t		itps_copy_segs;
+	uint16_t		itps_bind_segs;
+	uint16_t		itps_bind_fails;
+
+	uint16_t		itps_seglen;
+	uint8_t			itps_segcnt;
+} ice_tx_pkt_state_t;
+
+enum {
+	ITXP_INIT = 0,
+	ITXP_PREV = 1,
+	ITXP_CURR = 2,
+};
+
+typedef enum ice_tx_pkt_flags {
+	ITPF_NONE =	0,
+	ITPF_DONE =	(1 << 0),
+	ITPF_LSO =	(1 << 1),
+} ice_tx_pkt_flags_t;
+
 typedef struct ice_tx_pkt {
 	ice_tx_ring_t		*itxp_ring;
 	mblk_t			*itxp_mp;
+	ice_tx_ctrl_block_t	*itxp_head;
 	mac_ether_offload_info_t itxp_meo;
-	size_t			itxp_hdrlen;	/* Size of L2+L3+L4 headers */
 
-	ice_tx_ctrl_block_t	*itxp_tcbs;
-	ice_tx_ctrl_block_t	*itxp_tcb_tail;
-	size_t			itxp_ntcbs;
-	size_t			itxp_ndesc;
+	uint16_t		itxp_dma_min;
+	uint16_t		itxp_mss_retries;
 
-	bool			itxp_done;
-	bool			itxp_lso;
+	uint16_t		itxp_hdrlen;	/* Size of L2+L3+L4 headers */
+	uint16_t		itxp_mss;
+
+	ice_tx_pkt_flags_t	itxp_flags;
 	ice_tx_pkt_method_t	itxp_method;
-	uint32_t		itxp_mss;
 
-	uint32_t		itxp_dma_min;
-
-	/* mss frame tracking */
-	uint16_t		itxp_seglen;
-	uint8_t			itxp_segcnt;
-	uint8_t			itxp_segmax;
-
-	/* Stats for this packet */
-	uint32_t		itxp_bind_fails;
-
-	uint32_t		itxp_mss_retries;
-	uint32_t		itxp_mss_full_copies;
-
-	uint32_t		itxp_copy_bytes;
-	uint32_t		itxp_copy_segs;
-	uint32_t		itxp_bind_bytes;
-	uint32_t		itxp_bind_segs;
-
-	/* rollback state */
-	mblk_t			*itxp_prev_mp_seg;
-	size_t			itxp_prev_off;
-
-	ice_tx_ctrl_block_t	*itxp_prev_tcb_tail;
-	uint16_t		itxp_prev_ndesc;
-	uint16_t		itxp_prev_seglen;
-	uint8_t			itxp_prev_segcnt;
-	uint8_t			itxp_prev_ntcbs;
-
-	uint32_t		itxp_prev_copy_bytes;
-	uint32_t		itxp_prev_copy_segs;
-	uint32_t		itxp_prev_bind_bytes;
-	uint32_t		itxp_prev_bind_segs;
-
-	/* initial state for rolling back to start of packet */
-	mblk_t			*itxp_init_mp_seg;
-	size_t			itxp_init_off;
+	ice_tx_pkt_state_t	itxp_state[3];
 } __aligned(64) ice_tx_pkt_t;
 
 typedef struct ice_tx_pkt_iter {
@@ -225,7 +241,7 @@ static void ice_tx_recycle_ring(ice_tx_ring_t *);
 static inline uintptr_t
 ice_qtx_index(const ice_tx_ring_t *txr)
 {
-	return (txr->itxr_index + txr->itxr_ice->ice_first_txq);
+	return (txr->itxr_index);
 }
 
 static inline uintptr_t
@@ -344,6 +360,42 @@ ice_tcb_free(ice_tx_ctrl_block_t *tcb)
 	txr->itxr_tcb_nfree++;
 
 	mutex_exit(&txr->itxr_tcb_lock);
+}
+
+/* Allocates a tcb + dma buffer */
+static ice_tx_ctrl_block_t *
+ice_tcb_alloc_buf(ice_tx_ring_t *txr, bool small)
+{
+	ice_t			*ice = txr->itxr_ice;
+	ice_tx_ctrl_block_t	*tcb;
+
+	tcb = ice_tcb_alloc(txr);
+	if (tcb == NULL)
+		return (NULL);
+
+	ASSERT3P(tcb->itcb_buf, ==, NULL);
+
+	/*
+	 * If a small buffer is requested, we try, but will fallback
+	 * to a full sized buffer if that fails.
+	 */
+	if (small) {
+		tcb->itcb_buf = ice_buf_pool_alloc(&ice->ice_small_bufs);
+		tcb->itcb_type = ITCB_SMALL_COPY;
+	}
+
+	if (tcb->itcb_buf == NULL) {
+		tcb->itcb_buf = ice_buf_pool_alloc(&ice->ice_bufs);
+		tcb->itcb_type = ITCB_COPY;
+	}
+
+	if (tcb->itcb_buf == NULL) {
+		tcb->itcb_type = ITCB_NOT_USED;
+		ice_tcb_free(tcb);
+		return (NULL);
+	}
+
+	return (tcb);
 }
 
 static inline bool
@@ -471,21 +523,12 @@ ice_tx_quiesce(ice_tx_ring_t *txr)
  * the start of an mss segment.
  */
 static inline void
-ice_tx_pkt_checkpoint(ice_tx_pkt_t *pkt, mblk_t *mp, size_t off)
+ice_tx_pkt_checkpoint(ice_tx_pkt_t *pkt)
 {
-	pkt->itxp_prev_seglen = pkt->itxp_seglen;
-	pkt->itxp_prev_segcnt = pkt->itxp_segcnt;
+	ice_tx_pkt_state_t *cur = &pkt->itxp_state[ITXP_CURR];
+	ice_tx_pkt_state_t *prev = &pkt->itxp_state[ITXP_PREV];
 
-	pkt->itxp_prev_tcb_tail = pkt->itxp_tcb_tail;
-	pkt->itxp_prev_ntcbs = pkt->itxp_ntcbs;
-	pkt->itxp_prev_ndesc = pkt->itxp_ndesc;
-	pkt->itxp_prev_mp_seg = mp;
-	pkt->itxp_prev_off = off;
-
-	pkt->itxp_prev_copy_bytes = pkt->itxp_copy_bytes;
-	pkt->itxp_prev_copy_segs = pkt->itxp_copy_segs;
-	pkt->itxp_prev_bind_bytes = pkt->itxp_bind_bytes;
-	pkt->itxp_prev_bind_segs = pkt->itxp_bind_segs;
+	bcopy(cur, prev, sizeof (*cur));
 }
 
 static inline size_t
@@ -494,16 +537,29 @@ ice_tx_pkt_msglen(const ice_tx_pkt_t *pkt)
 	return (pkt->itxp_meo.meoi_len);
 }
 
+static inline bool
+ice_tx_pkt_lso(const ice_tx_pkt_t *pkt)
+{
+	return (pkt->itxp_flags & ITPF_LSO);
+}
+
+static inline bool
+ice_tx_pkt_done(const ice_tx_pkt_t *pkt)
+{
+	return (pkt->itxp_flags & ITPF_DONE);
+}
+
 static inline uint16_t
 ice_tx_pkt_desc_needed(const ice_tx_pkt_t *pkt)
 {
-	uint16_t n = pkt->itxp_ndesc;
+	const ice_tx_pkt_state_t	*st = &pkt->itxp_state[ITXP_CURR];
+	uint16_t			n = st->itps_ndesc;
 
 	/*
 	 * LSO requires an additional descriptor to hold the TX
 	 * context
 	 */
-	if (pkt->itxp_lso)
+	if (ice_tx_pkt_lso(pkt))
 		n++;
 
 	return (n);
@@ -511,7 +567,7 @@ ice_tx_pkt_desc_needed(const ice_tx_pkt_t *pkt)
 
 
 /*
- * Add a `tcb `to `pkt` . `mp` and `off` reflect the location in the packet
+ * Add a `tcb `to `pkt` .`mp` and `off` reflect the location in the packet
  * data just after the data in `tcb`. If we can add this tcb without
  * violating the hardware's segmentation rules, we return true. Otherwise
  * we return false.
@@ -526,43 +582,67 @@ ice_tx_pkt_desc_needed(const ice_tx_pkt_t *pkt)
  */
 static bool
 ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
-    size_t off)
+    uint16_t off)
 {
 	const ddi_dma_cookie_t	*c;
 	ddi_dma_handle_t	h;
-	size_t			init_ndesc;
-	uint16_t		init_seglen;
-	uint8_t			init_segcnt;
-	bool			need_checkpoint;
+	ice_tx_pkt_state_t	*st = &pkt->itxp_state[ITXP_CURR];
+	uint16_t		ndesc;
+	uint16_t		seglen;
+	uint8_t			segcnt;
+	bool			need_checkpoint = false;
 
 	if (tcb == NULL)
 		return (true);
 
-	ASSERT(!pkt->itxp_done);
+	/* Once done, we should not be asked to add more tcbs */
+	ASSERT(!ice_tx_pkt_done(pkt));
 
 	IMPLY(mp == NULL, off == 0);
 
 	h = ice_tcb_dma_handle(tcb);
 
+	const uint_t n = ice_tcb_ncookies(tcb);
+	ASSERT3U(n, >, 0);
+
 	/*
-	 * For non-LSO, we're limited to ICE_TX_MAX_COOKIE (8) cookies
-	 * total. We fail saving so we can fall back to copying.
+	 * The non-LSO case is simple -- just add the tcb if don't
+	 * exceed the single-packet max cookie.
 	 */
-	if (!pkt->itxp_lso &&
-	    pkt->itxp_segcnt + ice_tcb_ncookies(tcb) > ICE_TX_MAX_COOKIE) {
-		return (false);
+	if (!ice_tx_pkt_lso(pkt)) {
+		if (st->itps_ndesc + n > ICE_TX_MAX_COOKIE)
+			return (false);
+
+		st->itps_ndesc += n;
+		st->itps_segcnt += n;
+		st->itps_seglen += tcb->itcb_len;
+
+		/*
+		 * When pkt was inited, we should have verified the
+		 * packet will fit.
+		 */
+		ASSERT3U(st->itps_seglen, <, pkt->itxp_mss);
+
+		if (ice_tcb_is_copy(tcb)) {
+			st->itps_copy_bytes += tcb->itcb_len;
+			st->itps_copy_segs++;
+		} else {
+			st->itps_bind_bytes += tcb->itcb_len;
+			st->itps_bind_segs += n;
+		}
+
+		goto done;
 	}
 
-	init_ndesc = pkt->itxp_ndesc;
-	init_seglen = pkt->itxp_seglen;
-	init_segcnt = pkt->itxp_segcnt;
-	need_checkpoint = false;
+	ndesc = st->itps_ndesc;
+	seglen = st->itps_seglen;
+	segcnt = st->itps_segcnt;
 
 	/*
 	 * A copy TCB uses a preallocated DMA buffer constructed so that
 	 * it should only ever use 1 cookie.
 	 */
-	IMPLY(ice_tcb_is_copy(tcb), ddi_dma_ncookies(h) == 1);
+	IMPLY(ice_tcb_is_copy(tcb), n == 1);
 
 	/*
 	 * Gather up all of the physical addresses and lengths for this
@@ -575,12 +655,13 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 		/*
 		 * Whenever we accumulate enough bytes to cross an mss
 		 * boundary (pkt->itxp_seglen >= mss), we reset itxp_seglen
-		 * and itxp_segcnt. If we are at the maximum and start
-		 * the loop again, we've failed (and need to resort to
-		 * some amount of copying).
+		 * and itxp_segcnt. If we are at the maximum (it's one less
+		 * than the actual maximum to account for the header)
+		 * and start the loop again, we've failed (and need to resort
+		 * to some amount of copying).
 		 */
-		if (pkt->itxp_segcnt == pkt->itxp_segmax)
-			goto fail;
+		if (segcnt == ICE_TX_MAX_COOKIE - 1)
+			return (false);
 
 		/*
 		 * itcb_len is the total amount of data represented by this
@@ -600,30 +681,21 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 		 * will be needed for this packet. This is equivalent to
 		 * the total number of DMA cookies we use.
 		 */
-		pkt->itxp_ndesc++;
+		ndesc++;
 
 		/* Update our mss frame accounting */
-		pkt->itxp_segcnt++;
-		pkt->itxp_seglen += len;
+		segcnt++;
+		seglen += len;
 
-		if (pkt->itxp_seglen >= pkt->itxp_mss) {
-			/*
-			 * We've cross an mss boundary. If we're not doing
-			 * LSO, that means we've got a packet larger than
-			 * our MTU. If we are doing LSO, we need to reset
-			 * the counters for the current mss segment.
-			 */
-			if (!pkt->itxp_lso)
-				goto fail;
-
+		if (seglen >= pkt->itxp_mss) {
 			/*
 			 * If this descriptor straddles an mss boundary,
 			 * the NIC will DMA the remaining data in the
 			 * descriptor when it starts the next packet, so
 			 * we must reflect that in our accounting
 			 */
-			pkt->itxp_seglen %= pkt->itxp_mss;
-			pkt->itxp_segcnt = (pkt->itxp_seglen == 0) ? 0 : 1;
+			seglen %= pkt->itxp_mss;
+			segcnt = (seglen == 0) ? 0 : 1;
 
 			/*
 			 * But we also need create a new checkpoint once
@@ -633,18 +705,27 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 		}
 	}
 
-	/* Append this tcb onto the end of the list */
-	if (pkt->itxp_tcb_tail != NULL) {
-		pkt->itxp_tcb_tail->itcb_next = tcb;
+	st->itps_ndesc = ndesc;
+	st->itps_seglen = seglen;
+	st->itps_segcnt = segcnt;
+
+done:
+	if (st->itps_tail != NULL) {
+		st->itps_tail->itcb_next = tcb;
+		st->itps_tail = tcb;
 	} else {
-		pkt->itxp_tcbs = tcb;
+		ASSERT3P(pkt->itxp_head, ==, NULL);
+
+		pkt->itxp_head = tcb;
+		st->itps_tail = tcb;
 	}
-	pkt->itxp_tcb_tail = tcb;
-	pkt->itxp_ntcbs++;
+	st->itps_ntcbs++;
+
+	st->itps_mp = mp;
+	st->itps_off = off;
 
 	if (need_checkpoint) {
-		ASSERT(pkt->itxp_lso);
-		ice_tx_pkt_checkpoint(pkt, mp, off);
+		ice_tx_pkt_checkpoint(pkt);
 
 		/*
 		 * Since we've finished with this mss segment, we can
@@ -659,22 +740,15 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 	}
 
 	if (mp == NULL)
-		pkt->itxp_done = true;
+		pkt->itxp_flags |= ITPF_DONE;
 
 	return (true);
-
-fail:
-	pkt->itxp_ndesc = init_ndesc;
-	pkt->itxp_segcnt = init_segcnt;
-	pkt->itxp_seglen = init_seglen;
-
-	return (false);
 }
 
 static bool
 ice_tx_pkt_sync(ice_tx_pkt_t *pkt)
 {
-	ice_tx_ctrl_block_t *tcb = pkt->itxp_tcbs;
+	ice_tx_ctrl_block_t *tcb = pkt->itxp_head;
 
 	while (tcb != NULL) {
 		ddi_dma_handle_t h = ice_tcb_dma_handle(tcb);
@@ -706,170 +780,187 @@ ice_tx_pkt_sync(ice_tx_pkt_t *pkt)
  * and switch to force copy mode.
  */
 static void
-ice_tx_pkt_retry_mss_seg(ice_tx_pkt_t *pkt, mblk_t **mpp, size_t *offp)
+ice_tx_pkt_retry_mss_seg(ice_tx_pkt_t *pkt, mblk_t **mpp, uint16_t *offp)
 {
-	ice_tx_ctrl_block_t *tcb;
-	ice_tx_ctrl_block_t *next;
+	ice_tx_ctrl_block_t	*tcb;
+	ice_tx_ctrl_block_t	*next;
+	ice_tx_pkt_state_t	*to;
+	ice_tx_pkt_state_t	*from = NULL;
 
 	/* We should never retry once we're copying the whole packet */
 	VERIFY3S(pkt->itxp_method, !=, ITPM_COPY_ALL);
 
 	pkt->itxp_mss_retries++;
 
-	if (pkt->itxp_method == ITPM_COPY_MSS) {
-		/*
-		 * We need to rollback to the initial packet state. This
-		 * should only ever happen with LSO packets -- since a non
-		 * LSO packet only ever results in a single frame on the
-		 * wire, the initial rewind of the current mss segment IS
-		 * the start of the packet and there is no possible
-		 * spillover from a previous frame as there is with LSO, so
-		 * we should only ever have to attempt this once.
-		 */
-		VERIFY(pkt->itxp_lso);
-
-		pkt->itxp_prev_mp_seg = pkt->itxp_init_mp_seg;
-		pkt->itxp_prev_off = pkt->itxp_init_off;
-		pkt->itxp_prev_tcb_tail = pkt->itxp_tcbs;
-		pkt->itxp_prev_seglen = 0;
-		pkt->itxp_prev_segcnt = 0;
-		pkt->itxp_prev_ntcbs = 1;
-		pkt->itxp_prev_ndesc = 1;
-		pkt->itxp_mss_full_copies++;
-
-		// XXX dtrace probe?
-	}
-
-	pkt->itxp_tcb_tail = pkt->itxp_prev_tcb_tail;
+	to = &pkt->itxp_state[ITXP_CURR];
 
 	/*
-	 * Release all of the entries _after_ the previous tail so it
-	 * becomes the new tail.
-	 *
-	 * If there is no previous tail, this can only happen for a non-LSO
-	 * packet as we always have the initial tcb for the header (which
-	 * always stays)
+	 * Advance to the next method and determine which state
+	 * we restore from.
 	 */
-	if (pkt->itxp_prev_tcb_tail == NULL) {
-		ASSERT(!pkt->itxp_lso);
+	pkt->itxp_method++;
 
-		tcb = pkt->itxp_tcbs;
-		pkt->itxp_tcbs = NULL;
-	} else {
+	switch (pkt->itxp_method) {
+	case ITPM_NORMAL:
+	default:
+		dev_err(pkt->itxp_ring->itxr_ice->ice_dip, CE_PANIC,
+		    "%s: invalid packet rollback state %d", __func__,
+		    pkt->itxp_method);
+		break;
+
+	case ITPM_COPY_MSS:
+		from = &pkt->itxp_state[ITXP_PREV];
+		break;
+	case ITPM_COPY_ALL:
 		/*
-		 * Release all of the entries _after_ the previous tail so it
-		 * becomes the new tail.
+		 * If we've hit full-on desperation, it should only
+		 * every possibly happen for LSO. All non-LSO packets
+		 * should be able to be handled using ITPM_COPY_MSS
 		 */
-		tcb = pkt->itxp_tcb_tail->itcb_next;
-		pkt->itxp_tcb_tail->itcb_next = NULL;
+		VERIFY(ice_tx_pkt_lso(pkt));
+		from = &pkt->itxp_state[ITXP_INIT];
+		break;
 	}
 
 #ifdef	DEBUG
-	uint32_t ndesc = 0;
+	/*
+	 * Cross check our descriptor and tcb accounting on debug builds.
+	 * After we've freed all of the tcbs to roll back to the checkpoint,
+	 * the number of tcbs and the number of descriptors we've removed
+	 * should match what was saved in the checkpoint.
+	 */
+	uint_t ndesc = to->itps_ndesc;
+	uint_t ntcb = to->itps_ntcbs;
 #endif
+
+	bcopy(from, to, sizeof (*from));
+
+	/*
+	 * If the checkpoint doesn't have a tail, it has to be
+	 * the start of the packet.
+	 */
+	if (to->itps_tail != NULL) {
+		tcb = to->itps_tail->itcb_next;
+	} else {
+		ASSERT(!ice_tx_pkt_lso(pkt));
+		tcb = pkt->itxp_head;
+		pkt->itxp_head = NULL;
+	}
 
 	while (tcb != NULL) {
 		next = tcb->itcb_next;
 
 		tcb->itcb_next = NULL;
 #ifdef	DEBUG
-		ndesc += ddi_dma_ncookies(ice_tcb_dma_handle(tcb));
+		ASSERT(!__builtin_usub_overflow(ndesc, ice_tcb_ncookies(tcb),
+		    &ndesc));
+		ASSERT(!__builtin_usub_overflow(ntcb, 1, &ntcb));
 #endif
 
 		ice_tcb_free(tcb);
 		tcb = next;
-
-		pkt->itxp_ntcbs--;
 	}
-	ASSERT3U(pkt->itxp_ntcbs, ==, pkt->itxp_prev_ntcbs);
+	ASSERT3U(ndesc, ==, from->itps_ndesc);
+	ASSERT3U(ntcb, ==, from->itps_ntcbs);
 
-	/* Adjust our statistics */
-	pkt->itxp_copy_bytes = pkt->itxp_prev_copy_bytes;
-	pkt->itxp_copy_segs = pkt->itxp_prev_copy_segs;
-	pkt->itxp_bind_bytes = pkt->itxp_prev_bind_bytes;
-	pkt->itxp_bind_segs = pkt->itxp_prev_bind_segs;
-
-	/*
-	 * Since we're able to crosscheck this, verify the number of
-	 * DMA cookies (thus the number of descriptors needed) we
-	 * rollback leaves us with what we checkpointed.
-	 */
-	ASSERT3U(pkt->itxp_ndesc, >=, ndesc);
-	ASSERT3U(pkt->itxp_ndesc - ndesc, ==, pkt->itxp_prev_ndesc);
-	pkt->itxp_ndesc = pkt->itxp_prev_ndesc;
-
-	pkt->itxp_seglen = pkt->itxp_prev_seglen;
-	pkt->itxp_segcnt = pkt->itxp_prev_segcnt;
-
-	*mpp = pkt->itxp_prev_mp_seg;
-	*offp = pkt->itxp_prev_off;
-
-	/* Advance to the next method */
-	pkt->itxp_method++;
+	*mpp = to->itps_mp;
+	*offp = to->itps_off;
 }
 
-static uint_t
-ice_tx_copy_fragment(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb,
-    const mblk_t *mp, size_t off, size_t len)
+/*
+ * This copies up to `len` bytes into tcb. `len` may be larger
+ * than the size of this fragment (MBKL(*mpp)) in which case the
+ * remainder of the fragment is copied.
+ *
+ * This advances *mpp and *offp by the amount copied and returns
+ * the number of bytes copied.
+ *
+ * Note that it is legitimate (if not unforunate) we could be called
+ * due to a 0-byte mblk_t span. In such a case we just advance past it.
+ */
+static uint16_t
+ice_tx_copy_fragment(ice_tx_ctrl_block_t *tcb, mblk_t **mpp, uint16_t *offp,
+    uint16_t len)
 {
-	const void	*src = mp->b_rptr + off;
+	const void	*src = (*mpp)->b_rptr + *offp;
 	void		*dest = tcb->itcb_buf->idb_va + tcb->itcb_len;
-	size_t		to_copy = MIN(ice_tcb_remaining(tcb), len);
+	uint16_t	amt;
 
 	ASSERT3U(tcb->itcb_type, !=, ITCB_BIND);
 	ASSERT3U(tcb->itcb_type, !=, ITCB_LSO_BIND);
-	ASSERT3U(to_copy, >, 0);
 
-	ASSERT3P(src, >=, mp->b_rptr);
-	ASSERT3P(src, <, mp->b_wptr);
-	ASSERT3U(to_copy, <=, MBLKL(mp));
-	ASSERT3U((uintptr_t)src + to_copy, <=, (uintptr_t)mp->b_wptr);
-	ASSERT3U(tcb->itcb_len + to_copy, <=, tcb->itcb_buf->idb_len);
+	amt = MIN(len, MBLKL(*mpp) - *offp);
+	amt = MIN(amt, ice_tcb_remaining(tcb));
 
-	bcopy(src, dest, to_copy);
-	tcb->itcb_len += to_copy;
+	ASSERT3P(src, >=, (*mpp)->b_rptr);
+	ASSERT3P(src, <=, (*mpp)->b_wptr);
+	ASSERT3U(amt, <=, MBLKL(*mpp));
+	ASSERT3U((uintptr_t)src + amt, <=, (uintptr_t)((*mpp)->b_wptr));
+	ASSERT3U(tcb->itcb_len + amt, <=, tcb->itcb_buf->idb_len);
 
-	pkt->itxp_copy_bytes += to_copy;
-	pkt->itxp_copy_segs++;
+	bcopy(src, dest, amt);
+	tcb->itcb_len += amt;
 
-	return (to_copy);
+	*offp += amt;
+	if (*offp == MBLKL(*mpp)) {
+		*mpp = (*mpp)->b_cont;
+		*offp = 0;
+	}
+
+	return (amt);
 }
 
-static ice_tx_ctrl_block_t *
-ice_tx_bind_fragment(ice_tx_pkt_t *pkt, const mblk_t *mp, size_t off,
-    size_t len)
+/*
+ * This tries to DMA bind the remainder of the fragment in `*mpp
+ * starting at offset `*offp`. On success *mpp and *offp are advanced to
+ * the next fragment (if any).
+ */
+static bool
+ice_tx_bind_fragment(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t **mpp,
+    uint16_t *offp)
 {
-	ice_tx_ctrl_block_t	*tcb;
+	const void		*src = (*mpp)->b_rptr + *offp;
+	const size_t		amt = MBLKL(*mpp) - *offp;
 	ddi_dma_handle_t	h;
 	int			ret;
 
-	tcb = ice_tcb_alloc(pkt->itxp_ring);
-	if (tcb == NULL)
-		return (NULL);
+	/* We should be handed an empty tcb */
+	ASSERT3S(tcb->itcb_type, ==, ITCB_NOT_USED);
+	ASSERT0(tcb->itcb_len);
+
+	ASSERT3P(src, >=, (*mpp)->b_rptr);
+	ASSERT3P(src, <, (*mpp)->b_wptr);
+	ASSERT3U(amt, <=, MBLKL(*mpp));
+	ASSERT3U((uintptr_t)src + amt, <=, (uintptr_t)((*mpp)->b_wptr));
+	ASSERT3U(amt, <=, UINT16_MAX);
 
 	/*
 	 * We need to set this now so we can obtain the correct DMA
 	 * handle.
 	 */
-	tcb->itcb_type = pkt->itxp_lso ? ITCB_LSO_BIND : ITCB_BIND;
+	tcb->itcb_type = ice_tx_pkt_lso(pkt) ? ITCB_LSO_BIND : ITCB_BIND;
 
 	h = ice_tcb_dma_handle(tcb);
-	ret = ddi_dma_addr_bind_handle(h, NULL, (caddr_t)(mp->b_rptr + off),
-	    MBLKL(mp) - off, DDI_DMA_WRITE | DDI_DMA_STREAMING,
-	    DDI_DMA_DONTWAIT, NULL, NULL, NULL);
+	ret = ddi_dma_addr_bind_handle(h, NULL, (caddr_t)src, amt,
+	    DDI_DMA_WRITE | DDI_DMA_STREAMING, DDI_DMA_DONTWAIT, NULL, NULL,
+	    NULL);
 	if (ret != DDI_DMA_MAPPED) {
 		/* Reset the type so we don't try to unbind in ice_tcb_free() */
 		tcb->itcb_type = ITCB_NOT_USED;
-		ice_tcb_free(tcb);
-		pkt->itxp_bind_fails++;
-		return (NULL);
+		pkt->itxp_state[ITXP_CURR].itps_bind_fails++;
+		return (false);
 	}
 
-	tcb->itcb_len = len;
-	pkt->itxp_bind_bytes += len;
-	pkt->itxp_bind_segs++;
+	tcb->itcb_len = amt;
 
-	return (tcb);
+	/*
+	 * We always bind the remainder of this segment, so we always
+	 * advance to the next segment (if any).
+	 */
+	*mpp = (*mpp)->b_cont;
+	*offp = 0;
+
+	return (true);
 }
 
 /*
@@ -880,9 +971,13 @@ ice_tx_bind_fragment(ice_tx_pkt_t *pkt, const mblk_t *mp, size_t off,
 static bool
 ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 {
-	ice_t		*ice = txr->itxr_ice;
-	uint32_t	lsoflags;
+	ice_t			*ice = txr->itxr_ice;
+	ice_tx_pkt_state_t	*st = &pkt->itxp_state[ITXP_INIT];
+	uint32_t		lsoflags;
+	uint32_t		mss = 0;
+	uint16_t		off = 0;
 
+	/* We do all of this work _before_ we take the TX ring lock. */
 	ASSERT(!MUTEX_HELD(&txr->itxr_lock));
 
 	bzero(pkt, sizeof (*pkt));
@@ -893,78 +988,44 @@ ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 	pkt->itxp_hdrlen = pkt->itxp_meo.meoi_l2hlen +
 	    pkt->itxp_meo.meoi_l3hlen + pkt->itxp_meo.meoi_l4hlen;
 
-	/* XXX probably should log this, maybe even a dtrace probe */
+	/* XXX log this? make it an ASSERT or VERIFY()?, dtrace probe ? */
 	if (pkt->itxp_meo.meoi_len < pkt->itxp_hdrlen)
 		return (false);
 
+	/*
+	 * While the hardware supports doing LSO with packets > 64KiB,
+	 * upstack does not. We assume all of our sizes are <= UINT16_MAX and
+	 * won't receive a packet > UINT16_MAX in size.
+	 */
+	VERIFY3U(pkt->itxp_meo.meoi_len, <=, UINT16_MAX);
+
 	pkt->itxp_mp = mp;
-	pkt->itxp_segmax = ICE_TX_MAX_COOKIE;
 
 	membar_consumer();
 	pkt->itxp_dma_min = ice->ice_tx_dma_min;
 
-	pkt->itxp_init_mp_seg = mp;
-	pkt->itxp_init_off = 0;
+	/*
+	 * This is arguably a bit of abuse of terms, but we start off
+	 * assuming the maximum chunk of data that can be added is
+	 * the frame size since the header isn't treated separately.
+	 * For the LSO case, this will reflect the maximum amount of data that
+	 * can be added per LSO 'chunk' that gets sent over the wire at a
+	 * time (i.e. the real MSS).
+	 */
+	pkt->itxp_mss = txr->itxr_ice->ice_frame_size;
 
-	mac_lso_get(mp, &pkt->itxp_mss, &lsoflags);
-	if ((lsoflags & HW_LSO) != 0) {
-		/*
-		 * Since we're doing LSO, each packet that goes out the
-		 * wire consists of pkt->itxp_hdrlen bytes (the header) +
-		 * up to pkt->itxp_mss bytes of data (the final packet
-		 * that gets sent may have less).
-		 *
-		 * XXX Since this is coming from mac_ether_offload_info(),
-		 * can we rely on sanity and turn this into an ASSERT()?
-		 */
-		if (pkt->itxp_hdrlen + pkt->itxp_mss >
-		    pkt->itxp_meo.meoi_len) {
-			/*
-			 * XXX: If we don't turn this into an assert,
-			 * should we add a stat for this? dtrace probe?
-			 */
-			return (false);
-		}
+	mac_lso_get(mp, &mss, &lsoflags);
+	VERIFY3U(mss, <=, UINT16_MAX);
 
-		/*
-		 * Upstack requested LSO and the packet meets the
-		 * hardware's LSO requirements. If LSO support is turned on
-		 * and the packet meets the minimum size, we will attempt
-		 * to send using LSO.
-		 *
-		 * XXX: Might we want to also skip LSO if the packet size
-		 * is < MTU but larger than the minimum MSS (i.e. we
-		 * can just send as 1 packet over the wire)?
-		 */
-		if (ice->ice_tx_lso_enable &&
-		    pkt->itxp_mss >= ICE_TX_LSO_MIN_MSS) {
-			pkt->itxp_lso = true;
+	/*
+	 * If we're not doing LSO or can't do LSO because it's either
+	 * been disabled in the driver or the packet is too small, we
+	 * proceed as a normal packet.
+	 */
+	if ((lsoflags & HW_LSO) == 0 || !ice->ice_tx_lso_enable ||
+	    pkt->itxp_meo.meoi_len < ICE_TX_LSO_MIN_MSS) {
 
-			/*
-			 * Reserve 1 segment in each over the wire
-			 * segment for the header.
-			 */
-			pkt->itxp_segmax--;
-			return (true);
-		}
-
-		/*
-		 * Packet was too small for the NIC to do LSO. We'll
-		 * fallback and send as a non-LSO packet, but note
-		 * the event.
-		 *
-		 * XXX: Might it be better to turn it into an atomic inc?
-		 */
-		mutex_enter(&txr->itxr_lock);
-		txr->itxr_stats.ictxs_badmss.value.ui64++;
-		mutex_exit(&txr->itxr_lock);
-
-		/* Fall through to non-LSO case */
-	} else {
-		/*
-		 * For a non-LSO packet, it better be small enough for
-		 * us to send.
-		 */
+		/* A non-LSO packet has to respect the packet limits */
 		if (pkt->itxp_meo.meoi_len > ice->ice_frame_size) {
 			mutex_enter(&txr->itxr_lock);
 			txr->itxr_stats.ictxs_toobig.value.ui64++;
@@ -972,23 +1033,85 @@ ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 
 			return (false);
 		}
+
+		/*
+		 * We'll still try to send, but want to note that
+		 * we were given a bad mss value from upstack.
+		 *
+		 * XXX: dtrace probe?
+		 */
+		if ((lsoflags & HW_LSO) != 0 &&
+		    pkt->itxp_meo.meoi_len < ICE_TX_LSO_MIN_MSS) {
+			mutex_enter(&txr->itxr_lock);
+			txr->itxr_stats.ictxs_badmss.value.ui64++;
+			mutex_exit(&txr->itxr_lock);
+		}
+
+		st->itps_mp = mp;
+		st->itps_off = off;
+
+		/* Copy the initial state to the current state */
+		bcopy(st, &pkt->itxp_state[ITXP_CURR], sizeof (*st));
+
+		return (true);
 	}
 
+
 	/*
-	 * For the non-LSO case, we treat the MTU as the MSS.
-	 * This is arguably stretching terminology to potential
-	 * abuse, but itxp_mss is used to determine how much
-	 * data can fit in an OTW packet. For LSO, this is
-	 * after accounting for headers (and is reflected in
-	 * the value set by mac_lso_get() since we're letting the
-	 * NIC take care of the headers for each OTW packet.
-	 *
-	 * For non-LSO though, we supply everything including the
-	 * header, so using the frame size serves as a check against
-	 * receiving an oversized packet from up stack.
+	 * For LSO, we need to copy the header into its own buffer
+	 * and add the resulting tcb. This will serve as the
+	 * ultimate rollback point for the packet (we never need to
+	 * recopy the header in the LSO case).
 	 */
-	pkt->itxp_mss = txr->itxr_ice->ice_frame_size;
-	pkt->itxp_lso = false;
+	ice_tx_ctrl_block_t	*tcb = NULL;
+	uint16_t		remaining = pkt->itxp_hdrlen;
+
+	/* Use a small buffer if possible */
+	tcb = ice_tcb_alloc_buf(txr, (pkt->itxp_hdrlen <= ICE_TX_SMALL_PKT));
+	if (tcb == NULL)
+		return (false);
+
+	/* It's a copy tcb, so there better only be 1 cookie */
+	ASSERT3U(ice_tcb_ncookies(tcb), ==, 1);
+
+	/* There should be enough room in the tcb for the header */
+	ASSERT3U(ice_tcb_remaining(tcb), >=, pkt->itxp_hdrlen);
+
+	while (remaining > 0) {
+		uint16_t n;
+
+		n = ice_tx_copy_fragment(tcb, &mp, &off, remaining);
+		ASSERT3U(n, >, 0);
+
+		remaining -= n;
+	}
+
+	pkt->itxp_head = tcb;
+
+	/*
+	 * Note that itps_seglen and itps_segcnt are left initialized to zero.
+	 * The MSS value already accounts for the size of the header, so
+	 * it's not included in tracking the current segment size. Similarly,
+	 * when adding a tcb, we already account there for the descriptor
+	 * used for the header
+	 */
+	st->itps_mp = mp;
+	st->itps_off = off;
+	st->itps_ndesc = 1;
+	st->itps_copy_bytes = pkt->itxp_hdrlen;
+	st->itps_copy_segs = 1;
+	st->itps_tail = tcb;
+
+	/*
+	 * Since we are beginning, the current state represents both
+	 * the initial rollback point and the 'desperation' rollback
+	 * point. It's also the initial current state, so it's copied
+	 * from ITXP_INIT to both ITXP_PREV and ITXP_CURR.
+	 */
+	bcopy(st, &pkt->itxp_state[ITXP_CURR], sizeof (*st));
+	bcopy(st, &pkt->itxp_state[ITXP_PREV], sizeof (*st));
+
+	pkt->itxp_flags |= ITPF_LSO;
 
 	return (true);
 }
@@ -998,7 +1121,7 @@ ice_tx_pkt_fini(ice_tx_pkt_t *pkt)
 {
 	ice_tx_ctrl_block_t	*tcb, *next;
 
-	tcb = pkt->itxp_tcbs;
+	tcb = pkt->itxp_head;
 	while (tcb != NULL) {
 		next = tcb->itcb_next;
 
@@ -1011,18 +1134,6 @@ ice_tx_pkt_fini(ice_tx_pkt_t *pkt)
 	bzero(pkt, sizeof (*pkt));
 }
 
-/*
- * To simplify writing the descriptors, there are a few helper functions
- * defined that will iterate through all of the ddi_dma_cookie_ts for
- * the packet. Specifically, the intended (simplified) flow is:
- *
- * ice_tx_pkt_init
- * ice_tx_pkt_prepare
- * while ((c = ice_tx_pkt_iter(pkt, iter)) != NULL
- *     <write descriptor using c>
- *     c = ice_tx_pkt_iter_next(iter)
- *
- */
 static inline const ddi_dma_cookie_t *
 ice_tx_pkt_iter_cookie(ice_tx_pkt_iter_t *iter)
 {
@@ -1051,46 +1162,57 @@ ice_tx_pkt_iter_cookie(ice_tx_pkt_iter_t *iter)
 	return (&iter->itpi_cookie);
 }
 
-static inline const ddi_dma_cookie_t *
-ice_tx_pkt_iter_next_tcb(ice_tx_pkt_iter_t *iter, ice_tx_ctrl_block_t *tcb)
+static void
+ice_tx_pkt_iter_init(ice_tx_pkt_t *pkt, ice_tx_pkt_iter_t *iter)
 {
-	if (tcb == NULL)
-		return (NULL);
-
-	iter->itpi_tcb = tcb;
+	iter->itpi_tcb = pkt->itxp_head;
 	iter->itpi_dmah = ice_tcb_dma_handle(iter->itpi_tcb);
-	return (ddi_dma_cookie_iter(iter->itpi_dmah, NULL));
+	iter->itpi_ic = NULL;
 }
 
 static const ddi_dma_cookie_t *
-ice_tx_pkt_iter(ice_tx_pkt_t *pkt, ice_tx_pkt_iter_t *iter)
+ice_tx_pkt_iter(ice_tx_pkt_iter_t *iter)
 {
-	const ddi_dma_cookie_t *c;
-
-	c = ice_tx_pkt_iter_next_tcb(iter, pkt->itxp_tcbs);
-	if (c == NULL) {
-		ASSERT3U(pkt->itxp_ntcbs, ==, 0);
+	if (iter->itpi_tcb == NULL)
 		return (NULL);
+
+	ASSERT3P(iter->itpi_dmah, !=, NULL);
+	ASSERT3U(iter->itpi_tcb->itcb_len, >, 0);
+
+	iter->itpi_ic = ddi_dma_cookie_iter(iter->itpi_dmah, iter->itpi_ic);
+	if (iter->itpi_ic == NULL) {
+		iter->itpi_tcb = iter->itpi_tcb->itcb_next;
+		if (iter->itpi_tcb == NULL)
+			return (NULL);
+
+		iter->itpi_dmah = ice_tcb_dma_handle(iter->itpi_tcb);
+		iter->itpi_ic = ddi_dma_cookie_iter(iter->itpi_dmah, NULL);
+
+		/* If we have a tcb, we should have at least 1 cookie */
+		ASSERT3P(iter->itpi_ic, !=, NULL);
 	}
-	iter->itpi_ic = c;
 
-	return (ice_tx_pkt_iter_cookie(iter));
-}
+	/*
+	 * For a BIND or LSO_BIND tcb, the dma cookies will reflect
+	 * the exact amount of data present. However for a copy or
+	 * small copy tcb, the DMA cookie size (dmac_size) is the
+	 * size of the allocated buffer. This can be larger than the
+	 * amount of valid data in the buffer. For those tcbs, the
+	 * total size of of data managed by the tcb (itcb_size) is
+	 * the amount of data present in the first cookie (all
+	 * copy buffers are explicitly allocated to only have 1
+	 * cookie).
+	 */
+	iter->itpi_cookie = *iter->itpi_ic;
+	if (iter->itpi_ic->dmac_size > iter->itpi_tcb->itcb_len) {
+		ASSERT3S(iter->itpi_tcb->itcb_type, !=, ITCB_BIND);
+		ASSERT3S(iter->itpi_tcb->itcb_type, !=, ITCB_LSO_BIND);
+		ASSERT3U(ddi_dma_ncookies(iter->itpi_dmah), ==, 1);
 
-static const ddi_dma_cookie_t *
-ice_tx_pkt_iter_next(ice_tx_pkt_iter_t *iter)
-{
-	const ddi_dma_cookie_t *c;
+		iter->itpi_cookie.dmac_size = iter->itpi_tcb->itcb_len;
+	}
 
-	if (iter->itpi_ic == NULL)
-		return (NULL);
-
-	c = ddi_dma_cookie_iter(iter->itpi_dmah, iter->itpi_ic);
-	if (c == NULL)
-		c = ice_tx_pkt_iter_next_tcb(iter, iter->itpi_tcb->itcb_next);
-
-	iter->itpi_ic = c;
-	return (ice_tx_pkt_iter_cookie(iter));
+	return (&iter->itpi_cookie);
 }
 
 static inline bool
@@ -1112,232 +1234,165 @@ ice_tx_try_bind(ice_tx_pkt_t *pkt, size_t len)
 static bool
 ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 {
-	ice_t				*ice = txr->itxr_ice;
-	mblk_t				*mp = pkt->itxp_mp;
-	ice_tx_ctrl_block_t		*tcb = NULL;
-	size_t				off = 0;
-	size_t				to_copy;
+	ice_tx_ctrl_block_t		*copy_tcb = NULL;
+	ice_tx_ctrl_block_t		*bind_tcb = NULL;
+	mblk_t				*mp;
+	uint16_t			off;
 	size_t				mlen;
+	bool				copy = false;
 
-	/*
-	 * For LSO, we want a small buffer for the header (if possible)
-	 * For non-LSO packets, we want to copy into a small buffer if
-	 * the packet is sufficiently small.
-	 */
-	if (pkt->itxp_lso ||
-	    (ice_tx_pkt_msglen(pkt) < ICE_TX_SMALL_PKT &&
-	    ice_tx_pkt_msglen(pkt) < pkt->itxp_dma_min)) {
-		size_t remaining;
+	mp = pkt->itxp_state[ITXP_CURR].itps_mp;
+	off = pkt->itxp_state[ITXP_CURR].itps_off;
 
-		remaining = pkt->itxp_lso ?
-		    pkt->itxp_hdrlen : ice_tx_pkt_msglen(pkt);
-		ASSERT3U(remaining, >, 0);
+	if (mp == NULL) {
+		/*
+		 * A bit of an odd case -- we're asked to to LSO on
+		 * a header-only packet (i.e. no TCP data).
+		 * in this case there's nothing to do -- we've already
+		 * copied the header into the initial tcb.
+		 *
+		 * XXX: Stat for this? dtrace probe?
+		 */
+		ASSERT(ice_tx_pkt_lso(pkt));
+		ASSERT3U(pkt->itxp_state[ITXP_CURR].itps_ndesc, ==, 1);
+		ASSERT3U(pkt->itxp_head, !=, NULL);
+		ASSERT3U(pkt->itxp_hdrlen, ==, ice_tx_pkt_msglen(pkt));
 
-		tcb = ice_tcb_alloc(txr);
-		if (tcb == NULL)
+		pkt->itxp_flags |= ITPF_DONE;
+		return (true);
+	}
+
+	if (ice_tx_pkt_msglen(pkt) <= ICE_TX_SMALL_PKT &&
+	    ice_tx_pkt_msglen(pkt) < pkt->itxp_dma_min) {
+		copy_tcb = ice_tcb_alloc_buf(txr, true);
+		if (copy_tcb == NULL)
 			return (false);
 
-		/*
-		 * Try to use a small buf, but fallback to a full sized one
-		 * if none are available.
-		 */
-		tcb->itcb_buf = ice_buf_pool_alloc(&ice->ice_small_bufs);
-		tcb->itcb_type = ITCB_SMALL_COPY;
-		if (tcb->itcb_buf == NULL) {
-			tcb->itcb_buf =
-			    ice_buf_pool_alloc(&ice->ice_bufs);
-			tcb->itcb_type = ITCB_COPY;
-		}
-
-		/* If neither are availble, we fail */
-		if (tcb->itcb_buf == NULL) {
-			ice_tcb_free(tcb);
-			return (false);
-		}
-
-		ASSERT3U(ice_tcb_remaining(tcb), >=, remaining);
-		while (remaining > 0) {
-			uint_t n;
-
-			/*
-			 * remaining is initialized to either the size of the
-			 * L2,L3,L4 headers (when using LSO) or the total size
-			 * of the packet. Either way, we cannot get this
-			 * far unless we can copy remaining bytes from
-			 * the packet, so this should never fail.
-			 */
-			ASSERT3P(mp, !=, NULL);
-
-			mlen = MBLKL(mp);
-			to_copy = MIN(mlen, remaining);
-
-			n = ice_tx_copy_fragment(pkt, tcb, mp, off, to_copy);
-			ASSERT3U(n, ==, to_copy);
-
-			remaining -= n;
-			off += n;
-
-			if (off == mlen) {
-				mp = mp->b_cont;
-				off = 0;
-			} else {
-				/*
-				 * There is trailing bytes in the current
-				 * mblk segment that is not being copied.
-				 * The tcb we're copying into should be
-				 * large enough to contain all of the header
-				 * or the entire packet if it's a 'small'
-				 * packet. Therefore, this should only
-				 * happen when we're copying just the
-				 * header and the trailing bytes are the
-				 * packet data (and thus we should have
-				 * completed copying the header).
-				 */
-				ASSERT(pkt->itxp_lso);
-				ASSERT3U(remaining, ==, 0);
-			}
-		}
-
-		/* If we have a 'small' packet, we should be done */
-		IMPLY(ice_tx_pkt_msglen(pkt) < ICE_TX_SMALL_PKT, mp == NULL);
-
-		/*
-		 * If a small packet, we can go ahead and add the TCB
-		 * (note that mp is used to 'checkpoint' the packet
-		 * state for LSO, so can be NULL in the non-LSO case).
-		 * If this is an LSO packet, we want to save off the
-		 * header in its own TCB to simplify the accounting
-		 * we have to do to comply with the DMA requirements
-		 * of the NIC for each segment it offloads for us.
-		 */
-		VERIFY(ice_tx_pkt_add_tcb(pkt, tcb, mp, off));
-		tcb = NULL;
-
-		if (pkt->itxp_lso) {
-			/*
-			 * Reset the mss segment counters since the header
-			 * doesn't count against the limits.
-			 */
-			pkt->itxp_seglen = 0;
-			pkt->itxp_segcnt = 0;
-
-			/*
-			 * Also set the initial state (if we have to do
-			 * a full copy) to start after the header.
-			 */
-			pkt->itxp_init_mp_seg = mp;
-			pkt->itxp_init_off = off;
-
-			/*
-			 * We never want to rollback past the end of the
-			 * header with LSO, so reset the rollback point to now.
-			 */
-			ice_tx_pkt_checkpoint(pkt, mp, off);
-		}
+		copy = true;
 	}
 
 	/*
-	 * The general idea is bind large fragments, copy small fragments.
-	 * If a bind fails, we want to fall back to try to copy.
-	 * If we have a bunch of consecutive small segments linked together, we
-	 * want to copy them all into one contiguous buffer.
+	 * As we work through the data in the packet, we deal in contiguous
+	 * spans of data in the packet at a time. In other words, the range
+	 * [mp->b_rptr + off, bp->b_wptr). As such, `mp` + `off` track our
+	 * current position in the packet. For each span, we either DMA bind
+	 * or copy the contents to a tcb. In either case, `mp` and `off`
+	 * are advanced past the data associated with the tcb. When we
+	 * add a tcb to the list for this packet, we call
+	 * ice_tx_pkt_add_tcb() with the tcb and the value of mp and off after
+	 * they've been advanced so that potentially be a checkpoint for
+	 * rollback if necessary (see big theory statement at the top).
 	 *
-	 * This latter desire adds a bit of subtlety to the implementation.
-	 * `tcb` holds the last buffer we copied into or NULL if the
-	 * previous tcb was bound (or we're just starting). We cannot
-	 * add `tcb` until we've either successfully bound the next bit
-	 * of data, or we've filled tcb up. At the same time, any time we
-	 * attempt to add a tcb to the packet, we may fail the mss segment
-	 * limitations and have to roll back to the start of the mss-sized
-	 * segment.
+	 * The general approach is to DMA bind larger spans and copy smaller
+	 * spans. If the DMA binding fails, we fall back and attempt to
+	 * copy instead. If there are several consecutive small spans in
+	 * the packet, we also will copy the contents into a single tcb.
 	 */
 	while (mp != NULL) {
 		mlen = MBLKL(mp) - off;
 
-		if (ice_tx_try_bind(pkt, mlen)) {
-			ice_tx_ctrl_block_t *btcb;
+		/*
+		 * As nonsensical as this might seem, it is unfortunately
+		 * completely legitimate to have an arbitrary number of
+		 * 0-byte (MBLKL) mblk_ts linked via b_cont. We just
+		 * skip to the copy case which will advance mp for us
+		 * while preserving the ability to coalesce consecutive
+		 * spans into a single copy buffer.
+		 */
+		if (mlen == 0)
+			goto try_copy;
 
-			btcb = ice_tx_bind_fragment(pkt, mp, off, mlen);
-			if (btcb == NULL)
+		/* Try to bind if we can */
+		if (!copy && pkt->itxp_method == ITPM_NORMAL &&
+		    pkt->itxp_dma_min <= mlen) {
+			/*
+			 * Even if we're out of tcbs, we might be able to
+			 * copy the fragment into the copy tcb.
+			 */
+			bind_tcb = ice_tcb_alloc(txr);
+			if (bind_tcb == NULL)
 				goto try_copy;
 
 			/*
-			 * Note we have to add tcb first. It has the data
+			 * If the previous loop iteration did a copy, we
+			 * want to hold off adding copy_tcb until the
+			 * current span of packet data has been successfully
+			 * bound to bind_tcb. Since copying or binding data
+			 * advances the packet position (mp + off), we need
+			 * to save the mp position of copy_tcb until after
+			 * we've successfully bound.
+			 */
+			mblk_t			*cpy_mp = mp;
+			uint16_t		cpy_off = off;
+
+			if (!ice_tx_bind_fragment(pkt, bind_tcb, &mp, &off)) {
+				ice_tcb_free(bind_tcb);
+				bind_tcb = NULL;
+				goto try_copy;
+			}
+
+			/*
+			 * Note we have to add copy_tcb first. It has the data
 			 * from the previous iteration of the loop. If tcb is
 			 * NULL, ice_tx_pkg_add_tcb() ignores it and
 			 * returns success.
 			 */
-			if (!ice_tx_pkt_add_tcb(pkt, tcb, mp, off)) {
-				ice_tcb_free(tcb);
-				ice_tcb_free(btcb);
+			if (!ice_tx_pkt_add_tcb(pkt, copy_tcb, cpy_mp,
+			    cpy_off)) {
+				ice_tcb_free(copy_tcb);
+				ice_tcb_free(bind_tcb);
+				copy_tcb = NULL;
+				bind_tcb = NULL;
 				ice_tx_pkt_retry_mss_seg(pkt, &mp, &off);
 				continue;
 			}
 			/*
-			 * Now that it's been added, we need to set it
-			 * to NULL so we don't try to add more to it
-			 * and instead allocate a new tcb if we need
-			 * to copy.
+			 * Now that copy_tcb has been added, no further data
+			 * can be appened to it. copy_tcb is set to NULL
+			 * so we're forced to allocate a new tcb for
+			 * any subsequent copying (in a future iteration
+			 * of the loop).
 			 */
-			tcb = NULL;
+			copy_tcb = NULL;
 
-			/*
-			 * If we successfully bound, then we've added
-			 * the remainder of this mp. Update mp and off
-			 * to reflect the start of the next mblk_t segment
-			 * (if any).
-			 */
-			mp = mp->b_cont;
-			off = 0;
-
-			/* And then add the bound tcb */
-			if (!ice_tx_pkt_add_tcb(pkt, btcb, mp, off)) {
-				ice_tcb_free(btcb);
+			/* Now add the bound tcb */
+			if (!ice_tx_pkt_add_tcb(pkt, bind_tcb, mp, off)) {
+				ice_tcb_free(bind_tcb);
 				ice_tx_pkt_retry_mss_seg(pkt, &mp, &off);
 				continue;
 			}
 
+			bind_tcb = NULL;
 			continue;
 		}
 
 try_copy:
-		IMPLY(tcb != NULL, ice_tcb_is_copy(tcb));
+		IMPLY(copy_tcb != NULL, ice_tcb_is_copy(copy_tcb));
 
-		if (tcb == NULL) {
-			tcb = ice_tcb_alloc(txr);
-			if (tcb == NULL)
+		if (copy_tcb == NULL) {
+			copy_tcb = ice_tcb_alloc_buf(txr, false);
+			if (copy_tcb == NULL)
 				return (false);
-
-			tcb->itcb_type = ITCB_COPY;
-			tcb->itcb_buf = ice_buf_pool_alloc(&ice->ice_bufs);
-			if (tcb->itcb_buf == NULL) {
-				ice_tcb_free(tcb);
-				return (false);
-			}
 		}
 
-		off += ice_tx_copy_fragment(pkt, tcb, mp, off, mlen);
-		if (off == mlen) {
-			off = 0;
-			mp = mp->b_cont;
-		}
+		(void) ice_tx_copy_fragment(copy_tcb, &mp, &off, mlen);
 
 		/*
 		 * If the tcb is full or this is the last mblk_t fragment,
 		 * then add it to pkt.
 		 */
-		if (ice_tcb_remaining(tcb) == 0 || mp == NULL) {
+		if (ice_tcb_remaining(copy_tcb) == 0 || mp == NULL) {
 			IMPLY(mp == NULL, off == 0);
 
-			if (!ice_tx_pkt_add_tcb(pkt, tcb, mp, off)) {
-				ice_tcb_free(tcb);
-				tcb = NULL;
+			if (!ice_tx_pkt_add_tcb(pkt, copy_tcb, mp, off)) {
+				ice_tcb_free(copy_tcb);
+				copy_tcb = NULL;
 				ice_tx_pkt_retry_mss_seg(pkt, &mp, &off);
 				continue;
 			}
 
 			/* Need to start a new tcb next time around */
-			tcb = NULL;
+			copy_tcb = NULL;
 		}
 	}
 
@@ -1461,7 +1516,7 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 	 * 10.5.3.1.1 - For TSO (aka LSO), if IPV4, the L4T must be 0b11
 	 * (aka ICE_TX_DESC_CMD_IIPT_IPV4_CKSUM)
 	 */
-	IMPLY(pkt->itxp_lso,
+	IMPLY(ice_tx_pkt_lso(pkt),
 	    (ICE_TX_DESC_CMD_IIPT(cmd) == ICE_TX_DESC_CMD_IIPT_IPV4_CKSUM) ||
 	    (ICE_TX_DESC_CMD_IIPT(cmd) == ICE_TX_DESC_CMD_IIPT_IPV6));
 
@@ -1476,16 +1531,14 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 	IMPLY((*qw1p & ICE_TX_DESC_CMD_IL2TAG1) == 0,
 	    ICE_TX_DESC_L2TAG1(*qw1p) == 0);
 
-	if (!pkt->itxp_lso)
+	if (!ice_tx_pkt_lso(pkt))
 		return (true);
 
 	tx_ctx->itxd_qw0 = 0;
 
-	/* Reuse cmd for the TX Context descriptor CMD field */
-	cmd = ICE_TX_CTXD_SET_CMD(0, ICE_TX_CTXD_CMD_TSO);
-
 	tx_ctx->itxd_qw1 = ICE_TX_DESC_SET_DTYPE(0, ICE_TX_DESC_DTYPE_TCTX);
-	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_CMD(tx_ctx->itxd_qw1, cmd);
+	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_CMD(tx_ctx->itxd_qw1,
+	    ICE_TX_CTXD_CMD_TSO);
 	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_MSS(tx_ctx->itxd_qw1, pkt->itxp_mss);
 	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_TLEN(tx_ctx->itxd_qw1,
 	    ice_tx_pkt_msglen(pkt) - pkt->itxp_hdrlen);
@@ -1503,6 +1556,7 @@ static int
 ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 {
 	ice_t			*ice = txr->itxr_ice;
+	ice_tx_pkt_state_t	*st = &pkt->itxp_state[ITXP_CURR];
 	ice_tx_desc_t		*desc = NULL;
 	ice_tx_desc_t		tx_ctx_desc;
 	uint64_t		init_qw1;
@@ -1514,7 +1568,7 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 
 	ASSERT(MUTEX_HELD(&txr->itxr_lock));
 
-	ASSERT(pkt->itxp_done);
+	ASSERT((pkt->itxp_flags & ITPF_DONE) != 0);
 
 	desc_needed = ice_tx_pkt_desc_needed(pkt);
 
@@ -1526,9 +1580,9 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	tx_ctx_desc.itxd_qw0 = 0;
 	tx_ctx_desc.itxd_qw1 = 0;
 
-	init_qw1 = ICE_TX_DESC_CMD_RESV;
+	init_qw1 = ICE_TX_DESC_SET_CMD(0, ICE_TX_DESC_CMD_RESV);
 
-	if (txr->itxr_ice->ice_tx_hcksum_enable &&
+	if (ice->ice_tx_hcksum_enable &&
 	    !ice_tx_hcksum_init(pkt, &tx_ctx_desc, &init_qw1)) {
 		return (-1);
 	}
@@ -1537,7 +1591,7 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 
 	tail = txr->itxr_tail;
 
-	if (pkt->itxp_lso) {
+	if (ice_tx_pkt_lso(pkt)) {
 		desc = &txr->itxr_descs[tail];
 
 		/* Write out the TX context descriptor to the ring */
@@ -1550,8 +1604,8 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 		desc_used++;
 	}
 
-	for (c = ice_tx_pkt_iter(pkt, &iter); c != NULL;
-	    c = ice_tx_pkt_iter_next(&iter)) {
+	ice_tx_pkt_iter_init(pkt, &iter);
+	while ((c = ice_tx_pkt_iter(&iter)) != NULL) {
 		uint64_t qw1;
 
 		desc = &txr->itxr_descs[tail];
@@ -1569,9 +1623,14 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 
 	/*
 	 * desc is now the last descriptor, set the EOP and RS (report
-	 * status) bits.
+	 * status) bits. Note since the existing value is already
+	 * little endian (from the above loop), we just bitwise-OR
+	 * the flags in instead of converting to native, setting the bits
+	 * and converting back. It's all a nop for x86 and arm, but
+	 * we want to correct.
 	 */
-	desc->itxd_qw1 |= LE_64(ICE_TX_DESC_CMD_EOP|ICE_TX_DESC_CMD_RS);
+	desc->itxd_qw1 |= LE_64(ICE_TX_DESC_SET_CMD(0,
+	    ICE_TX_DESC_CMD_EOP|ICE_TX_DESC_CMD_RS));
 
 	/* Done updating descriptors, so sync the ring to the device */
 	if (!ice_dma_sync(txr->itxr_ice, &txr->itxr_dma, DDI_DMA_SYNC_FORDEV)) {
@@ -1602,18 +1661,23 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	 * tcb so as we recycle the tcbs, we don't free the mblk until
 	 * all of the descriptors for the packet have been processed.
 	 */
-	ASSERT3U(pkt->itxp_ntcbs, >, 0);
-	pkt->itxp_tcb_tail->itcb_mp = pkt->itxp_mp;
+	ASSERT3U(st->itps_ntcbs, >, 0);
+	st->itps_tail->itcb_mp = pkt->itxp_mp;
 
 	pkt->itxp_mp = NULL;
 
-	txr->itxr_stats.ictxs_bind_fails.value.ui64 += pkt->itxp_bind_fails;
-	txr->itxr_stats.ictxs_copy_bytes.value.ui64 += pkt->itxp_copy_bytes;
-	txr->itxr_stats.ictxs_copy_frags.value.ui64 += pkt->itxp_copy_segs;
-	txr->itxr_stats.ictxs_bind_bytes.value.ui64 += pkt->itxp_bind_bytes;
-	txr->itxr_stats.ictxs_bind_frags.value.ui64 += pkt->itxp_bind_segs;
+	txr->itxr_stats.ictxs_bind_fails.value.ui64 += st->itps_bind_fails;
+	txr->itxr_stats.ictxs_copy_bytes.value.ui64 += st->itps_copy_bytes;
+	txr->itxr_stats.ictxs_copy_frags.value.ui64 += st->itps_copy_segs;
+	txr->itxr_stats.ictxs_bind_bytes.value.ui64 += st->itps_bind_bytes;
+	txr->itxr_stats.ictxs_bind_frags.value.ui64 += st->itps_bind_segs;
 
-	if (pkt->itxp_lso) {
+	txr->itxr_stats.ictxs_mss_retries.value.ui64 += pkt->itxp_mss_retries;
+	if (pkt->itxp_method == ITPM_COPY_ALL) {
+		txr->itxr_stats.ictxs_full_copies.value.ui64++;
+	}
+
+	if (ice_tx_pkt_lso(pkt)) {
 		txr->itxr_stats.ictxs_lso_packets.value.ui64++;
 		txr->itxr_stats.ictxs_lso_bytes.value.ui64 +=
 		    ice_tx_pkt_msglen(pkt);
@@ -1714,7 +1778,6 @@ ice_ring_tx(void *arg, mblk_t *mp)
 		ASSERT(MUTEX_HELD(&txr->itxr_lock));
 
 		ASSERT3U(n, ==, desc_needed);
-		ASSERT3U(pkt->itxp_ntcbs, <=, n);
 
 		/*
 		 * Move used tcbs in pkt onto the tcb ring. These will get
@@ -1724,10 +1787,10 @@ ice_ring_tx(void *arg, mblk_t *mp)
 		 * descriptor of the packet so that we can use this
 		 * to tell when a full packet is ready to be recycled.
 		 */
-		pkt->itxp_tcbs->itcb_tx_time = gethrtime();
+		pkt->itxp_head->itcb_tx_time = gethrtime();
 		txr->itxr_tcbs[ice_tx_prev(txr, txr->itxr_tail)] =
-		    pkt->itxp_tcbs;
-		pkt->itxp_tcbs = pkt->itxp_tcb_tail = NULL;
+		    pkt->itxp_head;
+		pkt->itxp_head = NULL;
 
 		mutex_exit(&txr->itxr_lock);
 
@@ -1735,7 +1798,6 @@ ice_ring_tx(void *arg, mblk_t *mp)
 		 * We've moved the TCBs from pkt onto the TX ring, so we
 		 * don't want pkt to access them anymore.
 		 */
-		pkt->itxp_ntcbs = 0;
 		pkt->itxp_mp = NULL;
 
 		ice_tx_pkt_fini(pkt);
@@ -1989,10 +2051,11 @@ ice_ring_tx_start(mac_ring_driver_t mri, uint64_t gen)
 	ASSERT3U(vsi->ivsi_id, <=, ICE_VSI_MAX);
 
 	ctx.ihtc_base = ring_pa >> ICE_HW_TXQ_CTX_BASE_SHIFT;
+	ctx.ihtc_port = ice->ice_port_id;
+	ctx.ihtc_pf = ice->ice_pf_id;
 	ctx.ihtc_vmvf_type = ICE_HW_TXQ_CTX_VMVF_TYPE_PF;
 	ctx.ihtc_vsi_id = vsi->ivsi_id;
 	ctx.ihtc_qlen = txr->itxr_size;
-	ctx.ihtc_port = ice->ice_port_id;
 	ctx.ihtc_legacy = 1;
 	ctx.ihtc_tso = 1;
 	/*
@@ -2114,7 +2177,7 @@ ice_tx_start(ice_t *ice)
 	ddi_dma_attr_t	attr;
 	size_t		n, bufsz;
 
-	bufsz = MIN(ice->ice_mtu, ICE_MAX_PKT_DMA_BUFSZ);
+	bufsz = MIN(ice->ice_frame_size, ICE_MAX_PKT_DMA_BUFSZ);
 	/* Arbitrary for now */
 	n = 20000;
 

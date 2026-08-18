@@ -295,32 +295,6 @@ ice_fill_rx_group(void *arg, mac_ring_type_t rtype, const int index,
 	infop->mgi_count = ice->ice_num_rxq_per_vsi;
 }
 
-static int
-ice_m_stat(void *arg, uint_t stat, uint64_t *valp)
-{
-	ice_t *ice = arg;
-	int ret = 0;
-
-	/*
-	 * XXX This lock doesn't cover all stats nor should it.
-	 * XXX I only have a few stats here to get things going.
-	 */
-	mutex_enter(&ice->ice_lse_lock);
-	switch (stat) {
-	case MAC_STAT_IFSPEED:
-		*valp = ice->ice_link_cur_speed * 1000000ULL;
-		break;
-	case ETHER_STAT_LINK_DUPLEX:
-		*valp = ice->ice_link_cur_duplex;
-		break;
-	default:
-		ret = ENOTSUP;
-	}
-	mutex_exit(&ice->ice_lse_lock);
-
-	return (ret);
-}
-
 static void
 ice_m_stop(void *arg)
 {

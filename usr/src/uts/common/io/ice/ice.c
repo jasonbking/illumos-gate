@@ -79,6 +79,13 @@ ice_reg_write(ice_t *ice, uintptr_t reg, uint32_t val)
 	    reg), val);
 }
 
+uint64_t
+ice_reg_read64(ice_t *ice, uintptr_t reg)
+{
+	return (ddi_get64(ice->ice_reg_hdl, (uint64_t *)(ice->ice_reg_base +
+	    reg)));
+}
+
 static ice_capability_t *
 ice_capability_find(ice_t *ice, boolean_t device, ice_cap_id_t capid,
     uint_t major)
@@ -252,6 +259,9 @@ ice_properties_init(ice_t *ice)
 
 	/* XXX: As does this */
 	ice->ice_tx_hcksum_enable = true;
+
+	/* XXX: And this */
+	ice->ice_rx_hcksum_enable = true;
 
 	ice->ice_rx_dma_min = ICE_RX_DMA_THRESH_DEF;
 	ice->ice_rx_maxloan = ICE_RX_LOAN_DEF;
@@ -858,6 +868,36 @@ static const char *ice_mal_tx_str[] = {
 	"number of packets in quanta mismatch",
 };
 
+/* From 13.2.2.30.15 */
+static const char *ice_mal_tx_pqm_str[] = {
+	"PCI Dummy Completion",
+	"PCI Unsupported Request Completion",
+	"Unknown/Reserved",
+	"Empty queue fetch -- should have been LSO",
+	"Queue empty",
+	"Queue full",
+	"LSO Number of Descriptors is Zero",
+	"LSO Length is Zero",
+	"LSO MSS Below Minimum",
+	"LSO MSS Above Maximum",
+	"LSO Header Size Zero",
+	"LSO on non-LSO TX Queue",
+	"Skip One Quanta Only",
+	"LSO Packet Count Zero",
+	"SSO Length Zero",
+	"SSO Length Exceeded",
+	"SSO Packet Count Zero",
+	"SSO Packet Count Exceeded",
+	"SSO Number of Descriptors Zero",
+	"SSO Number of Descriptors Exceeded",
+	"Tail Greater than Ring Length",
+	"Reserved Doorbell Type",
+	"Illegal Head Drop Doorbell",
+	"LSO Over Comms Queue",
+	"Illegal VF Queue Number",
+	"Queue Tail Greater Than Ring Length",
+};
+
 /*
  * Handle a malicious packet event. The name can be a bit misleaning since
  * it really just means the driver sent something to the NIC that it
@@ -888,14 +928,42 @@ ice_handle_mal(ice_t *ice)
 		    ICE_GL_MDET_VF_NUM(v),
 		    ICE_GL_MDET_QNUM(v));
 
-		/*
-		 * XXX: compare PF num with ours, write 0xffffffff back
-		 * to ICE_GL_MDET_TX_TCLAN if so
-		 */
+		/* Clear the error if it matches our PF */
+		if (ice->ice_pci_func == ICE_GL_MDET_PF_NUM(v)) {
+			ice_reg_write(ice, ICE_GL_MDET_TX_TCLAN, UINT32_MAX);
+		}
 
 		v = ice_reg_read(ice, ICE_PF_MDET_TX_TCLAN);
 		if (ICE_PF_MDET_VALID(v)) {
 			ice_reg_write(ice, ICE_PF_MDET_TX_TCLAN, 0xffff);
+			ice_error(ice, "need reinit");
+			/* XXX need reinit */
+		}
+	}
+
+	v = ice_reg_read(ice, ICE_GL_MDET_TX_PQM);
+	if (ICE_GL_MDET_TX_PQM_VALID(v)) {
+		eventstr = "Unknown";
+
+		event = ICE_GL_MDET_TX_PQM_EVENT(v);
+		if (event < ARRAY_SIZE(ice_mal_tx_pqm_str)) {
+			eventstr = ice_mal_tx_pqm_str[event];
+		}
+
+		ice_error(ice, "malicious TX PQM event '%s' (%u) on "
+		    "PF 0x%x VF 0x%x TX queue %u", eventstr, event,
+		    ICE_GL_MDET_TX_PQM_PF_NUM(v),
+		    ICE_GL_MDET_TX_PQM_VF_NUM(v),
+		    ICE_GL_MDET_TX_PQM_QNUM(v));
+
+		/* Clear the rror if it matches our PF */
+		if (ice->ice_pci_func == ICE_GL_MDET_TX_PQM_PF_NUM(v)) {
+			ice_reg_write(ice, ICE_GL_MDET_TX_PQM, UINT32_MAX);
+		}
+
+		v = ice_reg_read(ice, ICE_PF_MDET_TX_PQM);
+		if (ICE_PF_MDET_TX_PQM_VALID(v)) {
+			ice_reg_write(ice, ICE_PF_MDET_TX_PQM, 0xffff);
 			ice_error(ice, "need reinit");
 			/* XXX need reinit */
 		}
@@ -906,6 +974,10 @@ ice_handle_mal(ice_t *ice)
 		eventstr = "unknown";
 		event = ICE_GL_MDET_EVENT(v);
 
+		/*
+		 * There's only 1 defined malicious RX event, so we
+		 * don't need a lookup table for it.
+		 */
 		if (event == 1) {
 			eventstr = "descriptor fetch failed";
 		}
@@ -916,10 +988,11 @@ ice_handle_mal(ice_t *ice)
 		    ICE_GL_MDET_VF_NUM(v),
 		    ICE_GL_MDET_QNUM(v));
 
-		/*
-		 * Similarly, if PF matches, write 0xffff to
-		 * ICE_GL_MDET_RX
-		 */
+		/* Clear the error if it matches our PF */
+		if (ice->ice_pci_func == ICE_GL_MDET_PF_NUM(v)) {
+			ice_reg_write(ice, ICE_PF_MDET_RX, UINT32_MAX);
+		}
+
 		v = ice_reg_read(ice, ICE_PF_MDET_RX);
 		if (ICE_PF_MDET_VALID(v)) {
 			ice_reg_write(ice, ICE_PF_MDET_RX, 0xffff);
@@ -1254,6 +1327,8 @@ ice_vsi_free(ice_t *ice, ice_vsi_t *vsi)
 		(void) ice_cmd_free_vsi(ice, vsi, B_FALSE);
 	}
 
+	ice_stat_vsi_fini(vsi);
+
 	kmem_free(vsi, sizeof (ice_vsi_t));
 }
 
@@ -1357,6 +1432,11 @@ ice_vsi_alloc(ice_t *ice, uint_t vsi_id, ice_vsi_type_t type)
 	 * XXX What queue initialization should we be doing here?
 	 */
 
+	if (!ice_stat_vsi_init(vsi)) {
+		ice_vsi_free(ice, vsi);
+		return (NULL);
+	}
+
 	list_insert_tail(&ice->ice_vsi, vsi);
 
 	return (vsi);
@@ -1412,14 +1492,17 @@ ice_rx_ring_init(ice_t *ice, ice_rx_ring_t *rxr, uint_t index)
 
 	kstat_named_init(&rqs->icrxs_bytes, "bytes", KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_packets, "packets", KSTAT_DATA_UINT64);
+
 	kstat_named_init(&rqs->icrxs_bind_bytes, "bind_bytes",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_bind_segs, "bind_segments",
 	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&rqs->icrxs_copy_bytes, "copy_bytes",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_copy_segs, "copy_segments",
 	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&rqs->icrxs_desc_error, "desc_error",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_copy_nomem, "copy_nomem",
@@ -1430,6 +1513,7 @@ ice_rx_ring_init(ice_t *ice, ice_rx_ring_t *rxr, uint_t index)
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_bind_no_mp, "bind_no_mp",
 	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&rqs->icrxs_hck_unknown, "hck_unknown",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_hck_nol3l4p, "hck_nol3l4p",
@@ -1446,6 +1530,14 @@ ice_rx_ring_init(ice_t *ice, ice_rx_ring_t *rxr, uint_t index)
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_hck_l4hdrok, "hck_l4hdrok",
 	    KSTAT_DATA_UINT64);
+
+	kstat_named_init(&rqs->icrxs_hck_udperr, "hck_udperr",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_tcperr, "hck_tcperr",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_sctperr, "hck_sctperr",
+	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&rqs->icrxs_hck_set, "hck_set",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_hck_miss, "hck_miss",
@@ -1722,6 +1814,11 @@ ice_cleanup(ice_t *ice)
 		ice->ice_seq &= ~ICE_ATTACH_MAC;
 	}
 
+	if (ice->ice_seq & ICE_ATTACH_STATS) {
+		ice_stats_fini(ice);
+		ice->ice_seq &= ~ICE_ATTACH_STATS;
+	}
+
 	if (ice->ice_seq & ICE_ATTACH_RING) {
 		ice_ring_fini(ice);
 		ice->ice_seq &= ~ICE_ATTACH_RING;
@@ -1975,6 +2072,11 @@ ice_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		goto err;
 	}
 	ice->ice_seq |= ICE_ATTACH_RING;
+
+	if (!ice_stats_init(ice)) {
+		goto err;
+	}
+	ice->ice_seq |= ICE_ATTACH_STATS;
 
 	if (!ice_mac_register(ice)) {
 		goto err;
