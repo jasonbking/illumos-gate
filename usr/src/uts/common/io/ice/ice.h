@@ -399,6 +399,9 @@ typedef struct ice_txq_stat {
 	kstat_named_t		ictxs_copy_bytes;
 	kstat_named_t		ictxs_copy_frags;
 
+	kstat_named_t		ictxs_lso_bytes;
+	kstat_named_t		ictxs_lso_packets;
+
 	kstat_named_t		ictxs_bind_fails;
 	kstat_named_t		ictxs_mss_retries;
 	kstat_named_t		ictxs_full_copies;
