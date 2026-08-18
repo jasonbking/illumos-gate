@@ -168,6 +168,7 @@ typedef struct ice_tx_pkt {
 	size_t			itxp_ntcbs;
 	size_t			itxp_ndesc;
 
+	bool			itxp_done;
 	bool			itxp_lso;
 	ice_tx_pkt_method_t	itxp_method;
 	uint32_t		itxp_mss;
@@ -472,8 +473,6 @@ ice_tx_quiesce(ice_tx_ring_t *txr)
 static inline void
 ice_tx_pkt_checkpoint(ice_tx_pkt_t *pkt, mblk_t *mp, size_t off)
 {
-	ASSERT3P(mp, !=, NULL);
-
 	pkt->itxp_prev_seglen = pkt->itxp_seglen;
 	pkt->itxp_prev_segcnt = pkt->itxp_segcnt;
 
@@ -538,6 +537,10 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 
 	if (tcb == NULL)
 		return (true);
+
+	ASSERT(!pkt->itxp_done);
+
+	IMPLY(mp == NULL, off == 0);
 
 	h = ice_tcb_dma_handle(tcb);
 
@@ -654,6 +657,9 @@ ice_tx_pkt_add_tcb(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t *mp,
 		if (pkt->itxp_method == ITPM_COPY_MSS)
 			pkt->itxp_method = ITPM_NORMAL;
 	}
+
+	if (mp == NULL)
+		pkt->itxp_done = true;
 
 	return (true);
 
@@ -1311,24 +1317,27 @@ try_copy:
 		}
 
 		off += ice_tx_copy_fragment(pkt, tcb, mp, off, mlen);
+		if (off == mlen) {
+			off = 0;
+			mp = mp->b_cont;
+		}
 
 		/*
 		 * If the tcb is full or this is the last mblk_t fragment,
 		 * then add it to pkt.
 		 */
-		if ((ice_tcb_remaining(tcb) == 0) ||
-		    ((off == mlen) && mp->b_cont == NULL)) {
+		if (ice_tcb_remaining(tcb) == 0 || mp == NULL) {
+			IMPLY(mp == NULL, off == 0);
+
 			if (!ice_tx_pkt_add_tcb(pkt, tcb, mp, off)) {
 				ice_tcb_free(tcb);
 				tcb = NULL;
 				ice_tx_pkt_retry_mss_seg(pkt, &mp, &off);
 				continue;
 			}
-		}
 
-		if (off == mlen) {
-			off = 0;
-			mp = mp->b_cont;
+			/* Need to start a new tcb next time around */
+			tcb = NULL;
 		}
 	}
 
@@ -1474,12 +1483,12 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 
 	/* Reuse cmd for the TX Context descriptor CMD field */
 	cmd = ICE_TX_CTXD_SET_CMD(0, ICE_TX_CTXD_CMD_TSO);
-	cmd = ICE_TX_CTXD_SET_TLEN(cmd,
-	    ice_tx_pkt_msglen(pkt) - pkt->itxp_hdrlen);
 
 	tx_ctx->itxd_qw1 = ICE_TX_DESC_SET_DTYPE(0, ICE_TX_DESC_DTYPE_TCTX);
 	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_CMD(tx_ctx->itxd_qw1, cmd);
 	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_MSS(tx_ctx->itxd_qw1, pkt->itxp_mss);
+	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_TLEN(tx_ctx->itxd_qw1,
+	    ice_tx_pkt_msglen(pkt) - pkt->itxp_hdrlen);
 
 	return (true);
 }
@@ -1504,6 +1513,8 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	const ddi_dma_cookie_t	*c;
 
 	ASSERT(MUTEX_HELD(&txr->itxr_lock));
+
+	ASSERT(pkt->itxp_done);
 
 	desc_needed = ice_tx_pkt_desc_needed(pkt);
 
@@ -1601,6 +1612,12 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	txr->itxr_stats.ictxs_copy_frags.value.ui64 += pkt->itxp_copy_segs;
 	txr->itxr_stats.ictxs_bind_bytes.value.ui64 += pkt->itxp_bind_bytes;
 	txr->itxr_stats.ictxs_bind_frags.value.ui64 += pkt->itxp_bind_segs;
+
+	if (pkt->itxp_lso) {
+		txr->itxr_stats.ictxs_lso_packets.value.ui64++;
+		txr->itxr_stats.ictxs_lso_bytes.value.ui64 +=
+		    ice_tx_pkt_msglen(pkt);
+	}
 
 	txr->itxr_stats.ictxs_packets.value.ui64++;
 	txr->itxr_stats.ictxs_bytes.value.ui64 +=

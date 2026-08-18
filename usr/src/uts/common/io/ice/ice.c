@@ -247,6 +247,12 @@ ice_properties_init(ice_t *ice)
 
 	ice->ice_tx_dma_min = ICE_TX_DMA_THRESH_DEF;
 
+	/* XXX: This needs to be linked to a driver property */
+	ice->ice_tx_lso_enable = true;
+
+	/* XXX: As does this */
+	ice->ice_tx_hcksum_enable = true;
+
 	ice->ice_rx_dma_min = ICE_RX_DMA_THRESH_DEF;
 	ice->ice_rx_maxloan = ICE_RX_LOAN_DEF;
 	ice->ice_rx_limit_per_intr = ICE_RX_INTR_MAX_PKT_DEF;
@@ -1493,18 +1499,28 @@ ice_tx_ring_init(ice_t *ice, ice_tx_ring_t *txr, uint_t index)
 
 	kstat_named_init(&tqs->ictxs_bytes, "bytes", KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_packets, "packets", KSTAT_DATA_UINT64);
+
 	kstat_named_init(&tqs->ictxs_bind_bytes, "bind_bytes",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_bind_frags, "bind_frags",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_copy_bytes, "copy_bytes",
 	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_copy_frags, "copy_frags",
+	    KSTAT_DATA_UINT64);
+
+	kstat_named_init(&tqs->ictxs_lso_bytes, "lso_bytes",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_lso_packets, "lso_packets",
+	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&tqs->ictxs_bind_fails, "bind_fails",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_mss_retries, "mss_retries",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_full_copies, "full_copies",
 	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&tqs->ictxs_hck_meoifail, "hck_meoifail",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_hck_nol2info, "hck_nol2info",
@@ -1519,6 +1535,7 @@ ice_tx_ring_init(ice_t *ice, ice_tx_ring_t *txr, uint_t index)
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_lso_nohck, "lso_nohck",
 	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&tqs->ictxs_no_pkt_cache, "no_pkt_cache",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_drops, "drops", KSTAT_DATA_UINT64);
