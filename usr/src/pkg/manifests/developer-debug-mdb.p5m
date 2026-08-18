@@ -127,6 +127,7 @@ file path=usr/lib/mdb/kvm/$(ARCH64)/crypto.so group=sys mode=0555
 file path=usr/lib/mdb/kvm/$(ARCH64)/genunix.so group=sys mode=0555
 file path=usr/lib/mdb/kvm/$(ARCH64)/hook.so group=sys mode=0555
 $(i386_ONLY)file path=usr/lib/mdb/kvm/$(ARCH64)/i40e.so group=sys mode=0555
+file path=usr/lib/mdb/kvm/$(ARCH64)/ice.so group=sys mode=0555
 file path=usr/lib/mdb/kvm/$(ARCH64)/ip.so group=sys mode=0555
 file path=usr/lib/mdb/kvm/$(ARCH64)/ipc.so group=sys mode=0555
 file path=usr/lib/mdb/kvm/$(ARCH64)/ipp.so group=sys mode=0555

@@ -84,35 +84,32 @@ static mdb_bitmask_t ice_state_bits[] = {
 };
 
 static int
-ice_ice_cb(uintptr_t addr, const void *ignored __unused, void *arg)
+ice_ice(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 {
 	mdb_ice_t	ice;
-	uint_t		*flagsp = arg;
+
+	if (addr == 0) {
+		return (mdb_walk_dcmd("ice", "ice", 0, NULL));
+	}
+
+	if (flags & DCMD_PIPE_OUT) {
+		mdb_printf("%#lr\n", addr);
+		return (DCMD_OK);
+	}
+
+	if (DCMD_HDRSPEC(flags)) {
+		mdb_printf("%<u>%-?s %4s %-58s%</u>\n",
+		    "ADDR", "INST", "STATE");
+	}
 
 	if (mdb_ctf_vread(&ice, "ice_t", "mdb_ice_t", addr, 0) != 0) {
 		return (-1);
 	}
 
-	if (*flagsp & DCMD_PIPE_OUT) {
-		mdb_printf("%#lr\n", addr);
-		return (DCMD_OK);
-	}
-
-	mdb_printf("%p %4u 0x%x <%b>\n", addr, ice.ice_inst,
+	mdb_printf("%?p %4u 0x%x<%b>\n", addr, ice.ice_inst,
 	    ice.ice_state, ice.ice_state, ice_state_bits);
 
-	return (0);
-}
-
-static int
-ice_ice(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
-{
-	if (DCMD_HDRSPEC(flags)) {
-		mdb_printf("%<u>%-16s %4s %-58s%</u>\n",
-		    "ADDR", "INST", "STATE");
-	}
-
-	return (mdb_walk("ice", ice_ice_cb, &flags));
+	return (DCMD_OK);
 }
 
 typedef struct ice_walk_q_data {
@@ -239,8 +236,13 @@ ice_txq_cb(uintptr_t addr, const void *ignored __unused, void *arg)
 static int
 ice_txqs(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 {
+	if (flags & DCMD_PIPE_OUT) {
+		mdb_printf("%#lr\n", addr);
+		return (DCMD_OK);
+	}
+
 	if (DCMD_HDRSPEC(flags)) {
-		mdb_printf("%<u>%-16s %4s %5s %5s%</u>\n",
+		mdb_printf("%<u>%-?s %4s %5s %5s%</u>\n",
 		    "ADDR", "IDX", "INUSE", "SIZE");
 	}
 
@@ -395,7 +397,7 @@ ice_tx_desc(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		mdb_printf(" MACLEN=%u", ICE_TX_DESC_OFFSET_MACLEN(offset));
 		mdb_printf(" IPLEN=%u", ICE_TX_DESC_OFFSET_IPLEN(offset));
 		mdb_printf(" L4LEN=%u", ICE_TX_DESC_OFFSET_L4LEN(offset));
-		
+
 		break;
 	}
 
@@ -416,7 +418,7 @@ ice_tx_desc(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 			mdb_printf(" <ZERO>");
 		}
 		mdb_printf("=%#lr", ICE_TX_CTXD_MSS(desc.itxd_qw1));
-		mdb_printf("\n");    
+		mdb_printf("\n");
 		break;
 
 	case ICE_TX_DESC_DTYPE_DONE:
@@ -430,7 +432,7 @@ static mdb_dcmd_t ice_dcmds[] = {
 	// { name, usage, descr, funcp, help, tab_comp }
 	{ "ice", NULL, "print out the attached ice driver instances",
 	    ice_ice, NULL, NULL },
-	{ "ice_txqs", NULL, "print the state of the TX rings of the given ice_t",
+	{ "ice_txqs", NULL, "print the TX ring state of the given ice_t",
 	    ice_txqs, NULL, NULL },
 	{ "ice_txq", NULL, "print the contents of the given TX ring", ice_txq,
 	    NULL, NULL },
