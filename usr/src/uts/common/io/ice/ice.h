@@ -35,6 +35,7 @@
 #include <sys/taskq_impl.h>
 #include <sys/random.h>
 #include <sys/stdbool.h>
+#include <sys/pattr.h>
 
 #include "ice_hw.h"
 #include "ice_controlq.h"
@@ -503,6 +504,11 @@ typedef struct ice_rxq_stat {
 	kstat_named_t		icrxs_hck_v4hdrok;
 	kstat_named_t		icrxs_hck_l4err;
 	kstat_named_t		icrxs_hck_l4hdrok;
+
+	kstat_named_t		icrxs_hck_udperr;
+	kstat_named_t		icrxs_hck_tcperr;
+	kstat_named_t		icrxs_hck_sctperr;
+
 	kstat_named_t		icrxs_hck_set;
 	kstat_named_t		icrxs_hck_miss;
 } ice_rxq_stat_t;

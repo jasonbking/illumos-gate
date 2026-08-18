@@ -253,6 +253,9 @@ ice_properties_init(ice_t *ice)
 	/* XXX: As does this */
 	ice->ice_tx_hcksum_enable = true;
 
+	/* XXX: And this */
+	ice->ice_rx_hcksum_enable = true;
+
 	ice->ice_rx_dma_min = ICE_RX_DMA_THRESH_DEF;
 	ice->ice_rx_maxloan = ICE_RX_LOAN_DEF;
 	ice->ice_rx_limit_per_intr = ICE_RX_INTR_MAX_PKT_DEF;
@@ -1412,14 +1415,17 @@ ice_rx_ring_init(ice_t *ice, ice_rx_ring_t *rxr, uint_t index)
 
 	kstat_named_init(&rqs->icrxs_bytes, "bytes", KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_packets, "packets", KSTAT_DATA_UINT64);
+
 	kstat_named_init(&rqs->icrxs_bind_bytes, "bind_bytes",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_bind_segs, "bind_segments",
 	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&rqs->icrxs_copy_bytes, "copy_bytes",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_copy_segs, "copy_segments",
 	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&rqs->icrxs_desc_error, "desc_error",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_copy_nomem, "copy_nomem",
@@ -1430,6 +1436,7 @@ ice_rx_ring_init(ice_t *ice, ice_rx_ring_t *rxr, uint_t index)
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_bind_no_mp, "bind_no_mp",
 	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&rqs->icrxs_hck_unknown, "hck_unknown",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_hck_nol3l4p, "hck_nol3l4p",
@@ -1446,6 +1453,14 @@ ice_rx_ring_init(ice_t *ice, ice_rx_ring_t *rxr, uint_t index)
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_hck_l4hdrok, "hck_l4hdrok",
 	    KSTAT_DATA_UINT64);
+
+	kstat_named_init(&rqs->icrxs_hck_udperr, "hck_udperr",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_tcperr, "hck_tcperr",
+	    KSTAT_DATA_UINT64);
+	kstat_named_init(&rqs->icrxs_hck_sctperr, "hck_sctperr",
+	    KSTAT_DATA_UINT64);
+
 	kstat_named_init(&rqs->icrxs_hck_set, "hck_set",
 	    KSTAT_DATA_UINT64);
 	kstat_named_init(&rqs->icrxs_hck_miss, "hck_miss",

@@ -108,16 +108,10 @@ ice_rx_eop(const ice_rx_desc_t *desc)
 	return (LE_64(desc->irxd_qw1) & ICE_RXD_EOP);
 }
 
-static inline uint64_t
-ice_rx_errval(const ice_rx_desc_t *desc)
-{
-	return (LE_64(desc->irxd_qw1) >> ICE_RXD_ERR_SHIFT);
-}
-
 static inline bool
 ice_rx_error(const ice_rx_desc_t *desc)
 {
-	return (ice_rx_errval(desc) & ICE_RXD_ERR);
+	return (ICE_RXD_ERROR(LE_64(desc->irxd_qw1)) & ICE_RXD_RXE);
 }
 
 static inline uint32_t
@@ -419,9 +413,14 @@ ice_rx_copy(ice_rx_ring_t *rxr, uint16_t idx, uint_t len)
 static void
 ice_rx_hwcksum(ice_rx_ring_t *rxr, const ice_rx_desc_t *desc, mblk_t *mp)
 {
-	const struct ice_rx_ptype_decoded	pinfo = { 0 };
+	ice_rxq_stat_t				*st = &rxr->irxr_stats;
+	uint64_t				status;
+	uint64_t				error;
+	struct ice_rx_ptype_decoded		pinfo = { 0 };
 	uint32_t				ptype;
 	uint32_t				cksum = 0;
+	bool					ipv4 = false;
+	bool					ipv6 = false;
 
 	/*
 	 * Note that we only consider ptypes < 256 since we're
@@ -431,12 +430,14 @@ ice_rx_hwcksum(ice_rx_ring_t *rxr, const ice_rx_desc_t *desc, mblk_t *mp)
 	 * the NIC and upstack will just verify in software.
 	 */
 
-	ptype = ICE_RXD_PTYPE(desc->irxd_qw1);
-	if (ptype > ARRAY_SIZE(ice_ptype_lkup))
+	ptype = ICE_RXD_PTYPE(LE_64(desc->irxd_qw1));
+	if (ptype >= ARRAY_SIZE(ice_ptype_lkup))
 		return;
 
+	pinfo = ice_ptype_lkup[ptype];
+
 	if (!pinfo.known) {
-		rxr->irxr_stats.icrxs_hck_unknown.value.ui64++;
+		st->icrxs_hck_unknown.value.ui64++;
 		return;
 	}
 
@@ -445,18 +446,97 @@ ice_rx_hwcksum(ice_rx_ring_t *rxr, const ice_rx_desc_t *desc, mblk_t *mp)
 	 * any HW checksum validation.
 	 */
 	if (!ice_rx_l3l4p(desc)) {
-		rxr->irxr_stats.icrxs_hck_nol3l4p.value.ui64++;
+		st->icrxs_hck_nol3l4p.value.ui64++;
 		return;
 	}
 
-	// TODO
+	status = ICE_RXD_STATUS(LE_64(desc->irxd_qw1));
+	error = ICE_RXD_ERROR(LE_64(desc->irxd_qw1));
 
-	if (cksum != 0) {
-		rxr->irxr_stats.icrxs_hck_set.value.ui64++;
-		mac_hcksum_set(mp, 0, 0, 0, 0, cksum);
-	} else {
-		rxr->irxr_stats.icrxs_hck_miss.value.ui64++;
+	/*
+	 * The outer_ip options are 'L2' and 'IP.
+	 * We only can check when it's IP.
+	 */
+	if (pinfo.outer_ip != ICE_RX_PTYPE_OUTER_IP) {
+		st->icrxs_hck_miss.value.ui64++;
+		return;
 	}
+
+	ipv4 = (pinfo.outer_ip_ver == ICE_RX_PTYPE_OUTER_IPV4);
+	ipv6 = (pinfo.outer_ip_ver == ICE_RX_PTYPE_OUTER_IPV6);
+
+	/*
+	 * No errors or untrusted IPv6 destination options/routing headers
+	 * so we can trust the checksum
+	 */
+	if ((error & (ICE_RXD_IPERR|ICE_RXD_EIPERR|ICE_RXD_L4ERR|
+	    ICE_RXD_OVERSIZE)) == 0 &&
+	    (status & ICE_RXD_IPV6EXADD) == 0) {
+		if (ipv4) {
+			st->icrxs_hck_v4hdrok.value.ui64++;
+			cksum |= HCK_IPV4_HDRCKSUM_OK;
+		}
+
+		switch (pinfo.inner_prot) {
+		case ICE_RX_PTYPE_INNER_PROT_UDP:
+		case ICE_RX_PTYPE_INNER_PROT_TCP:
+		case ICE_RX_PTYPE_INNER_PROT_SCTP:
+			ASSERT3U(pinfo.payload_layer, ==,
+			    ICE_RX_PTYPE_PAYLOAD_LAYER_PAY4);
+
+			cksum |= HCK_FULLCKSUM_OK;
+			break;
+
+		default:
+			break;
+		}
+
+		st->icrxs_hck_set.value.ui64++;
+		mac_hcksum_set(mp, 0, 0, 0, 0, cksum);
+		return;
+	}
+
+	/*
+	 * When IPv6 destination options or routing headers are
+	 * present (given by the IPV6EXADD bit), we shouldn't trust
+	 * the checkum, so just skip it.
+	 */
+	if (ipv6 && (status & ICE_RXD_IPV6EXADD) != 0) {
+		st->icrxs_hck_v6skip.value.ui64++;
+		return;
+	}
+
+	/* Update the various error counters based on the type of error */
+
+	if ((status & ICE_RXD_IPERR) != 0)
+		st->icrxs_hck_iperr.value.ui64++;
+
+	if ((status & ICE_RXD_EIPERR) != 0)
+		st->icrxs_hck_eiperr.value.ui64++;
+
+	/*
+	 * XXX: We could break out the layer 4 error using the
+	 * inner_prop field
+	 */
+	if ((status & ICE_RXD_L4ERR) != 0) {
+		switch (pinfo.inner_prot) {
+		case ICE_RX_PTYPE_INNER_PROT_UDP:
+			st->icrxs_hck_udperr.value.ui64++;
+			break;
+		case ICE_RX_PTYPE_INNER_PROT_TCP:
+			st->icrxs_hck_tcperr.value.ui64++;
+			break;
+		case ICE_RX_PTYPE_INNER_PROT_SCTP:
+			st->icrxs_hck_sctperr.value.ui64++;
+			break;
+		default:
+			break;
+		}
+
+		st->icrxs_hck_l4err.value.ui64++;
+	}
+
+	st->icrxs_hck_miss.value.ui64++;
 }
 
 /*
@@ -598,9 +678,6 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 			continue;
 		}
 
-		if (eop && ice->ice_rx_hcksum_enable)
-			ice_rx_hwcksum(rxr, desc, mp_head);
-
 		/*
 		 * If we are allowed to loan up descriptors and the
 		 * size of the segment is large enough, try to bind it.
@@ -642,6 +719,9 @@ ice_ring_rx_frame(ice_rx_ring_t *rxr, uint_t max_size, uint_t *lenp)
 		total += len;
 		head = ice_rx_next(rxr, head, 1);
 	} while (!eop);
+
+	if (ice->ice_rx_hcksum_enable)
+		ice_rx_hwcksum(rxr, desc, mp_head);
 
 	ASSERT3U(orig_total, ==, total);
 

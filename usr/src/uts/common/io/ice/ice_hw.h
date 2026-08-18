@@ -132,7 +132,7 @@ ice_bitset64(uint64_t reg, uint_t high, uint_t low, uint64_t val)
 	ASSERT3U(high, <, 64);
 	ASSERT3U(low, <, 64);
 
-	mask = (1ULL << (high - low + 1)) -1;
+	mask = (1ULL << (high - low + 1)) - 1;
 	ASSERT0(~mask & val);
 
 	reg &= ~(mask << low);
@@ -808,7 +808,7 @@ CTASSERT(sizeof (ice_hw_vsi_context_t) == 128);
 #define	ICE_HW_VSI_FD_SET_DEF_PRIO(reg, val)	ice_bitset16(reg, 14, 12, val)
 #define	ICE_HW_VSI_FD_DEFAULT_DROP	(1 << 15)
 
-#define	ICE_HW_VSI_PASID_SET(reg, val)	ice_bitset32(reg, 19, 0)
+#define	ICE_HW_VSI_PASID_SET(reg, val)	ice_bitset32(reg, 19, 0, val)
 #define	ICE_HW_VSI_PASID_VALID		(1 << 31)
 
 /*
@@ -917,24 +917,40 @@ typedef struct ice_rx_desc {
 } ice_rx_desc_t;
 
 /* RXD qword1 bits */
-#define	ICE_RXD_DONE	(1ULL << 0)
-#define	ICE_RXD_EOP	(1ULL << 1)
-#define	ICE_RXD_L3L4P	(1ULL << 3)
+#define	ICE_RXD_STATUS(v)	ice_bitx64(v, 18, 0)
+#define	ICE_RXD_DONE			(1ULL << 0)
+#define	ICE_RXD_EOP			(1ULL << 1)
+#define	ICE_RXD_L3L4P			(1ULL << 3)
+#define	ICE_RXD_CRCP			(1ULL << 4)
+#define	ICE_RXD_EXT_UDP_0		(1ULL << 8)
+#define	ICE_RXD_UMBCAST(v)		ice_bitx64(v, 10, 9)
+#define	ICE_RXD_UMBCAST_UNICAST			0
+#define	ICE_RXD_UMBCAST_MCAST			1
+#define	ICE_RXD_UMBCAST_BCAST			2
+#define	ICE_RXD_UMBCAST_MIRROR			3
+#define	ICE_RXD_FLM			(1ULL << 11)
+#define	ICE_RXD_FLTSTAT(v)		ice_bitx64(v, 13, 12)
+#define	ICE_RXD_FLTSTAT_NODATA			0
+#define	ICE_RXD_FLTSTAT_FDID			1
+#define	ICE_RXD_FLTSTAT_RSS_HASH		3
+#define	ICE_RXD_LPBK			(1ULL << 14)
+#define	ICE_RXD_IPV6EXADD		(1ULL << 15)
+#define	ICE_RXD_INT_UDP_0		(1ULL << 18)
 
-#define	ICE_RXD_ERR_SHIFT	19
+#define	ICE_RXD_ERROR(v)	ice_bitx64(v, 26, 19)
+#define	ICE_RXD_RXE			(1ULL << 0)
+#define	ICE_RXD_HBO			(1ULL << 2)
+#define	ICE_RXD_IPERR			(1ULL << 3)
+#define	ICE_RXD_L4ERR			(1ULL << 4)
+#define	ICE_RXD_EIPERR			(1ULL << 5)
+#define	ICE_RXD_OVERSIZE		(1ULL << 6)
 
-#define	ICE_RXD_ERR		(1ULL << 0)
-#define	ICE_RXD_HBO		(1ULL << 2)
-#define	ICE_RXD_IPERR		(1ULL << 3)
-#define	ICE_RXD_L3ERR		(1ULL << 4)
-#define	ICE_RXD_EXTERR		(1ULL << 5)
-#define	ICE_RXD_OVERSIZE	(1ULL << 6)
+#define	ICE_RXD_PTYPE(qw1)	ice_bitx64(qw1, 37, 30)
 
-#define	ICE_RXD_PTYPE(qw1)	ice_bitx64(qw1, 30, 37)
 #define	ICE_RXD_LEN(qw1)	ice_bitx64(qw1, 63, 38)
-#define	ICE_RXD_PKTL(qw1)	ice_bitx64(qw1, 13, 0)
-#define	ICE_RXD_HLEN(qw1)	ice_bitx64(qw1, 14, 24)
-#define	ICE_RXD_SPH(qw1)	ice_bitx64(qw1, 25, 25)
+#define	ICE_RXD_PKTL(qw1)		ice_bitx64(qw1, 13, 0)
+#define	ICE_RXD_HLEN(qw1)		ice_bitx64(qw1, 24, 14)
+#define	ICE_RXD_SPH(qw1)		ice_bitx64(qw1, 25, 25)
 
 typedef struct ice_hw_txq_context {
 	uint64_t	ihtc_base;
@@ -1110,7 +1126,7 @@ typedef struct ice_tx_desc {
 #define	ICE_TX_CTXD_SET_VSI(r, v)		ice_bitset64(r, 63, 50, v)
 
 /* CTXD Quad Word 0 */
-#define	ICE_TX_CTXD_SET_TUNNEL_PARAM(r, v)	ice_bitset64(r, 23, 0)
+#define	ICE_TX_CTXD_SET_TUNNEL_PARAM(r, v)	ice_bitset64(r, 23, 0, v)
 #define	ICE_TX_CTXD_SET_EIPT(r, v)		ice_bitset64(r, 1, 0, v)
 #define	ICE_TX_CTXD_EIPT_NONE			0
 #define	ICE_TX_CTXD_EIPT_IPV6			1
