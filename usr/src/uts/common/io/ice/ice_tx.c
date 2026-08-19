@@ -20,9 +20,9 @@
 #include "ice.h"
 
 /*
- * Transmitting packets works identical to the 700-series (i40e) NICs.
+ * Transmitting packets works largely identical to the 700-series (i40e) NICs.
  * The 800-series (ice) does have some additional features (e.g. completion
- * queues) that aren't currently utilized.  Like any other nic, the mblk_t we're
+ * queues) that aren't currently utilized. Like any other nic, the mblk_t we're
  * transmitting consists of an arbitrary number of fragments of arbitrary size
  * (linked by the b_cont field). Transmitting the packet is a matter of
  * assembling a list of physical address and lengths for all of these fragments
@@ -43,111 +43,131 @@
  * lengths, and other metadata (e.g. hw checksum offload information, etc)
  * onto the TX descriptor ring and tell the hardware to transmit the packet.
  * At the same time, the TCBs consumed by this packet are saved on another
- * ring starting at the same index as the TX descriptor ring. Since the number
- * of tcbs is always <= the number of TX descriptors used, if there is
- * enough free slots for the TX descriptors, we'll always have enough free
- * slots on the tcb ring to hold the corresponding tcbs.
+ * ring at the same index as the last descriptor written on the TX descriptor
+ * ring. Since the number of tcbs is always <= the number of TX descriptors
+ * used, if there is enough free slots for the TX descriptors, we'll always
+ * have enough free slots on the tcb ring to hold the corresponding tcbs.
  *
  * When the NIC has finished sending the NIC, it will generate a completion
  * interrupt, and we use ice_tx_recycle_ring() to go through the TX descriptor
  * and tcb descriptor rings and release the tcbs so they can be reused.
  *
  * Like the i40e NICs, the ice nics have a limit of 8 descriptors per packet.
- * For the non-LSO case, this is generally not an issue -- if the DMA binding
- * requires too many DMA cookies, we copy into one or more pre-mapped DMA
- * buffers. The DMA buffers are always sized so that an MTU sized packet
- * (even when jumbo frames are used) will always fit in 8 or fewer
- * pre-allocated packets (each pre-allocated DMA buffer is created such that
- * each one only requires a single DMA cookie).
+ * More correctly, for every packet sent over the wire, the NIC will do at
+ * most 8 DMA transfers to gather the packet contents from RAM. In the
+ * non-LSO case, this distinction isn't significant -- the number of TX
+ * descriptors written to the ring is equal to the number of DMA transfers
+ * that will occur.
  *
- * For the LSO case, things are unfortunately more complex. As noted in
- * Section 10.5.2, we are still limited to 8 (or fewer) DMA transactions for
- * every packet that is transmitted (i.e. every MSS sized chunk of a packet
- * the hardware is segmenting for us). What is less obvious is that it appears
- * that the packet header is not cached inside the hardware. Instead, it is
- * fetched for every segment that is transmitted and the appropriate fields
- * within the header are adjusted by the hardware as necessary. More
- * importantly, fetching the header counts against the 8 DMA
- * transaction/transmitted packet limit.
+ * For the LSO case however, things get more complex. The description from
+ * the Intel I210 datasheet is helpful here. It is obviously not the same
+ * model as the E810, however, the explanation there is more clarifying than
+ * what is found in the E810 (or 710) datasheets yet (based on painful
+ * experiences) appears to describe the same behavior (examination of the
+ * structures of things like TX/RX descriptors and such also shows a rather
+ * obvious evolution for the various models over time). From the I210
+ * datasheet (Section 6.2.4.8):
  *
- * The programming guide does not directly state this behavior, but it is
- * implied it with the examples in Section 10 of the programming guide. Comments
- * within __ice_chk_linearize() in the Linux ice driver also strongly imply
- * this behavior. This also matches the behavior seen with the i40e driver.
- * Finally, the I211 datasheet (section 7.2.4.2.1) explicitly states this is
- * the case when doing LSO with the I211 chipset. Which is to say, it strongly
- * suggests this has long been the way Intel has implemented LSO in hardware,
- * even while the documentation for the behavior has gotten poorer with
- * every new chipset.
+ * The flow used by the I210-CS/CL to do TCP segmentation is as follows:
  *
- * Based on the
- * examples in Section 10 of the programming guide as well as comments in
- * __ice_chk_linearize() in the Linux ice driver, when doing LSO there is
- * always a limit of 8 DMA transfers per packet written on the wire. That means
- * for LSO, each MSS sized portion of the original (big) packet being segmented
- * by the hardware must still be able to be fetched by the hardware using at
- * most 8 DMA transactions (i.e. 8 descriptors or less).
+ *    1. Get a descriptor with a request for a TSO off-load of a TCP packet.
+ *    2. First Segment processing:
+ *        a. Fetch all the buffers containing the header as calculated by the
+ *           MACLEN, IPLEN and L4LEN fields. Save the addresses and lengths of
+ *           the buffers containing the header (up to 4 buffers). The
+ *           header content is not saved.
+ *        b. Fetch data up to the MSS from subsequent buffers & calculate the
+ *           adequate checksum(s).
+ *        c. Update the Header accordingly and update internal state of the
+ *           packet (next data to fetch and TCP SN).
+ *        d. Send the packet to the network.
+ *        e. If total packet was sent, go to step 4. else continue.
+ *    3. Next segments
+ *        a. Wait for next arbitration of this queue.
+ *        b. Fetch all the buffers containing the header from the saved
+ *           addresses. Subsequent reads of the header might be done with a no
+ *           snoop attribute.
+ *        c. Fetch data up to the MSS or end of packet from subsequent
+ *           buffers & calculate the adequate checksum(s).
+ *        d. Update the Header accordingly and update internal state of the
+ *           packet (next data to fetch and TCP SN).
+ *        e. If total packet was sent, request is done, else restart from step 3.
+ *    4. Release all buffers (update head pointer).
  *
- * Since we never segment the headers (or rather if they are segmented, we
- * copy them into a contiguous buffer so they are no longer segmented), the
- * net result is that every mss (mtu - header) chunk of packet
- * data (excluding the header bytes) must be described by 7 or fewer
- * descriptors. This unfortunately makes the process of DMA binding and/or
- * copying the mblk_t fragments more complicated compared to other hardware.
+ * From the above explanation, two key observations become apparent:
  *
- * To simplify things (a bit), when doing LSO we always copy the header
- * into its own 'small' sized premapped DMA buffer (smaller than an MTU) tracked
- * by its own tcb. As a small optimization (just because it's trivial to do),
- * we also short-circuit very small packets that can fit entirely into a
- * 'small' buffer.
+ *    1. The header is always copied as a separate DMA transfer from the
+ *       data.
+ *    2. The header is re-read for every packet the NIC generates when doing
+ *       LSO.
  *
- * The bulk of the logic to handle the DMA descriptor limits is in
- * ice_tx_pkt_add_tcb(). The general idea is that as we handle each mblk
- * fragment, we keep track of the number of bytes and the number of
- * descriptors that will be used to write out a frame on the wire. If we
- * have handled at least mss bytes of data, we reset the count of segments
- * and data to start tracking a new frame. If we've reached the descriptor
- * limit without handling an mss amount of data and try to add a new tcb
- * (which means at least 1 more descriptor), this fails.
+ * The implications in conjunction with the hard 8 DMA transfer limit is
+ * that the LSO case comes a lot more complicated. For example, if the
+ * first descriptor of a packet contains both the header and data, this
+ * will result in 2 DMA transfers, leaving 6 DMA transfers to 'fill up'
+ * the packet before sending. Likewise, assuming the header is contained
+ * in a single descriptor (the E810 NIC allows up to 3, but as described
+ * below, for us it will always be in 1 descriptor), the 2nd packet will
+ * only have 7 DMA transfers to tranfer enough data to 'fill' the packet
+ * (similarly for any subsequent packets generated from the same original
+ * 'large' LSO packet passed down stack.
  *
- * ice_tx_pkt_add_tcb() fails, then we first attempt to undo/rollback the
- * work we've done for the current frame and switch to copying all of data
- * for this frame into pre-mapped buffers. If copying allows us to handle
- * all of the contents of the current frame without exceeding the descriptor
- * limit, when we cross the mss boundary, aside from resetting the segment
- * and size counters, we'll also revert back to the normal mode of attempting
- * to DMA bind larger mblk fragments. If copying fails, we undo everything
- * (except the header) and copy the entire packet.
+ * This matches _exactly_ the behavior seen (as well as the 710 NICs).
+ * The E810 datasheet implies, but does not explicitly state that it really
+ * wants the headers in their own descriptors from data. This is further
+ * strengthened when looking at how the Linux ice driver handles things
+ * based on the comments in the __ice_chk_linearize() function in it.
  *
- * Since the size of the pre-mapped buffers are the smaller of the MTU or the
- * system's pagesize (e.g. 4k), copying the mblk contents requires at most 3
- * descriptors per frame with the largest possible MTU, so copying a LSO frame
- * should normally succeed. The only potential scenario where this could fail
- * is the spillover from the previous frame consumes more than 4 descriptors
- * (e.g. a bound mblk fragment of 6 cookies where the mss boundary is crossed
- * by the 2nd descriptor, and the remaining 4 cookies spill over into a new
- * partial frame). If this happens, we'll fail again and resort to copying
- * the entire packet (since that should always work).
+ * To tackle this complexity, we attempt to do the following:
  *
- * In reality, we should almost never need to resort to doing a full packet
- * copy when doing LSO. Since the NIC's DMA engine supports 64-bit
- * addressing and can transfer an entire MTU's worth of data in a single DMA
- * operation, when we bind an mblk fragment, the number of DMA cookies returned
- * is almost always going to be the number of pages the used by the mblk
- * fragment's data (i.e. mblk_t->b_datap->db_base) since it can just use the
- * the physical addresses used by each page of the data. This is of course
- * not strictly guaranteed, but should be extremely rare. As a result,
- * we have a kstat counter as well as a dtrace probe for this event to assist
- * with observability as it's so odd that anyone encountering it with a
- * workload might be interested in investigating why it's failing.
+ * - For LSO, we always copy the headers into their own pre-allocated DMA
+ *   buffer and add that to the head of the list of TCBs for this packet.
+ *   Since we have a pool of 'small' (512) byte DMA buffers for small
+ *   packets, we can do this without being too wasteful.
  *
- * To implement all of this unfortunate complexity, ice_tx_pkt_t is used
- * to track the state to build up an array of physical addresses and lengths
- * for a given mblk_t, allowing for the needed rollback and retry as needed
- * to make the packet fit. As MAC thread stacks can get quite deep, we've
- * avoided placing ice_tx_pkt_t() on the stack and opt for using a
- * kmem_cache_t instead (as it's also possible there could be multiple
- * threads trying to TX on the same ring at the same time).
+ * - For each segment (dblk_t) of the packet, we will either attempt to
+ *   DMA bind the buffer or copy the contents into a preallocated DMA
+ *   buffer. We allocate a tcb to track/manage this.
+ *
+ * - When a tcb is added to the list of tcbs for the packet, we iterate
+ *   through the DMA cookies (ddi_dma_cookie_ts) for the data tracked by
+ *   the tcb. We keep a count of the number of descriptors used for the
+ *   current MSS segment (And the total size).
+ *
+ * - If the addition of a tcb will cross an MSS boundary, we reset the
+ *   segment and size counters. Additionally, we checkpoint the state.
+ *
+ * - If the addition of a tcb will cause us to exceed the DMA transfer
+ *   limit, we rollback the state to the last checkpoint (including releasing
+ *   any tcbs that were allocated for the current mss segment). We then
+ *   will retry the current MSS segment by copying all of the data for
+ *   the current MSS segment into preallocated DMA buffers. Since the
+ *   the preallocated DMA buffers are MIN(sdu, pagesize), even in the
+ *   case of jumbo frames, should need at most 3 buffers to hold a whole
+ *   MSS-sized segment of data. Once we cross the next mss boundary, we
+ *   revert back to attempting DMA binding as normal.
+ *
+ * - If for some reason the retry also fails, we take the max power approach,
+ *   release all of the tcbs allocated for the packet, and copy the entire
+ *   packet into preallocated buffers. This should always succeed as long
+ *   as buffers are available (if not, this is no different than the usual
+ *   'out of buffers case).
+ *
+ * For all of this, the ice_tx_pkt_t is used to track the state. It could
+ * probably all be done with local variables, but this is arguably cleaner
+ * and certainly makes observability into the state much easier.
+ *
+ * For eack packet, an ice_tx_pkt_t is allocated (if we have multiple
+ * packets to send in once mc_tx(9E) call, we'll reuse it). We then setup
+ * the initial state using ice_tx_pkt_init().
+ *
+ * ice_tx_{bind, copy{_fragment() are called as appropriate to copy/bind
+ * the packet data to a tcb.
+ *
+ * ice_tx_pkt_add_tcb() is then used to add the tcb and update our
+ * state tracking. If we fail, ice_tx_pkt_retry_mss_seg() is used to
+ * rollback the state to retry the MSS segment by copying.
+ *
  */
 
 /* Note these are defined in the order we attempt each method */
@@ -1481,11 +1501,9 @@ ice_tx_hcksum_init(ice_tx_pkt_t *pkt, ice_tx_desc_t *tx_ctx, uint64_t *qw1p)
 
 	tx_ctx->itxd_qw0 = 0;
 
-	/* Reuse cmd for the TX Context descriptor CMD field */
-	cmd = ICE_TX_CTXD_SET_CMD(0, ICE_TX_CTXD_CMD_TSO);
-
 	tx_ctx->itxd_qw1 = ICE_TX_DESC_SET_DTYPE(0, ICE_TX_DESC_DTYPE_TCTX);
-	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_CMD(tx_ctx->itxd_qw1, cmd);
+	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_CMD(tx_ctx->itxd_qw1,
+	    ICE_TX_CTXD_CMD_TSO);
 	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_MSS(tx_ctx->itxd_qw1, pkt->itxp_mss);
 	tx_ctx->itxd_qw1 = ICE_TX_CTXD_SET_TLEN(tx_ctx->itxd_qw1,
 	    ice_tx_pkt_msglen(pkt) - pkt->itxp_hdrlen);
