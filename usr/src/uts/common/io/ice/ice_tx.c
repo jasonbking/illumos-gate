@@ -1544,7 +1544,7 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	tx_ctx_desc.itxd_qw0 = 0;
 	tx_ctx_desc.itxd_qw1 = 0;
 
-	init_qw1 = ICE_TX_DESC_CMD_RESV;
+	init_qw1 = ICE_TX_DESC_SET_CMD(0, ICE_TX_DESC_CMD_RESV);
 
 	if (txr->itxr_ice->ice_tx_hcksum_enable &&
 	    !ice_tx_hcksum_init(pkt, &tx_ctx_desc, &init_qw1)) {
@@ -1587,9 +1587,14 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 
 	/*
 	 * desc is now the last descriptor, set the EOP and RS (report
-	 * status) bits.
+	 * status) bits. Note since the existing value is already
+	 * little endian (from the above loop), we just bitwise-OR
+	 * the flags in instead of converting to native, setting the bits
+	 * and converting back. It's all a nop for x86 and arm, but
+	 * we want to correct.
 	 */
-	desc->itxd_qw1 |= LE_64(ICE_TX_DESC_CMD_EOP|ICE_TX_DESC_CMD_RS);
+	desc->itxd_qw1 |= LE_64(ICE_TX_DESC_SET_CMD(0,
+	    ICE_TX_DESC_CMD_EOP|ICE_TX_DESC_CMD_RS));
 
 	/* Done updating descriptors, so sync the ring to the device */
 	if (!ice_dma_sync(txr->itxr_ice, &txr->itxr_dma, DDI_DMA_SYNC_FORDEV)) {
@@ -2132,7 +2137,7 @@ ice_tx_start(ice_t *ice)
 	ddi_dma_attr_t	attr;
 	size_t		n, bufsz;
 
-	bufsz = MIN(ice->ice_mtu, ICE_MAX_PKT_DMA_BUFSZ);
+	bufsz = MIN(ice->ice_frame_size, ICE_MAX_PKT_DMA_BUFSZ);
 	/* Arbitrary for now */
 	n = 20000;
 

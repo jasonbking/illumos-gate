@@ -1069,31 +1069,31 @@ typedef struct ice_tx_desc {
 #define	ICE_TX_DESC_DTYPE_FILTER	0x8
 #define	ICE_TX_DESC_DTYPE_DONE		0xf
 
-#define	ICE_TX_DESC_CMD(v)			ice_bitx64(15, 4)
-#define	ICE_TX_DESC_SET_CMD(r, v)		ice_bitset64(r, 15, 4, v)
-#define	ICE_TX_DESC_CMD_EOP			(1ULL << (4 + 0))
-#define	ICE_TX_DESC_CMD_RS			(1Ull << (4 + 1))
+#define	ICE_TX_DESC_CMD(v)		ice_bitx64(15, 4)
+#define	ICE_TX_DESC_SET_CMD(r, v)	ice_bitset64(r, 15, 4, v)
+#define	ICE_TX_DESC_CMD_EOP			(1ULL << 0)
+#define	ICE_TX_DESC_CMD_RS			(1Ull << 1)
 /*
  * On the 700-series chips, this was the ICRC flag, on the 800-series
  * chips it's marked as 'Reserved must be 1b' (10.5.3.1.1)
  */
-#define	ICE_TX_DESC_CMD_RESV			(1ULL << (4 + 2))
-#define	ICE_TX_DESC_CMD_IL2TAG1			(1ULL << (4 + 3))
-#define	ICE_TX_DESC_CMD_DUMMY			(1ULL << (4 + 4))
+#define	ICE_TX_DESC_CMD_RESV			(1ULL << 2)
+#define	ICE_TX_DESC_CMD_IL2TAG1			(1ULL << 3)
+#define	ICE_TX_DESC_CMD_DUMMY			(1ULL << 4)
 #define	ICE_TX_DESC_CMD_IIPT(v)			ice_bitx64(v, 6, 5)
 #define	ICE_TX_DESC_CMD_SET_IIPT(r, v)		ice_bitset64(r, 6, 5, v)
-#define	ICE_TX_DESC_CMD_IIPT_NONIP		0
-#define	ICE_TX_DESC_CMD_IIPT_IPV6		1
-#define	ICE_TX_DESC_CMD_IIPT_IPV4_NOCKSUM	2
-#define	ICE_TX_DESC_CMD_IIPT_IPV4_CKSUM		3
+#define	ICE_TX_DESC_CMD_IIPT_NONIP			0
+#define	ICE_TX_DESC_CMD_IIPT_IPV6			1
+#define	ICE_TX_DESC_CMD_IIPT_IPV4_NOCKSUM		2
+#define	ICE_TX_DESC_CMD_IIPT_IPV4_CKSUM			3
 #define	ICE_TX_DESC_CMD_L4T(v)			ice_bitx64(v, 9, 8)
 #define	ICE_TX_DESC_CMD_SET_L4T(r, v)		ice_bitset64(r, 9, 8, v)
-#define	ICE_TX_DESC_CMD_L4T_UNKNOWN		0
-#define	ICE_TX_DESC_CMD_L4T_TCP			1
-#define	ICE_TX_DESC_CMD_L4T_SCTP		2
-#define	ICE_TX_DESC_CMD_L4T_UDP			3
-#define	ICE_TX_DESC_CMD_RE			(1ULL << (4 + 10))
-#define	ICE_TX_DESC_CMD_BT_HDR			(1ULL << (4 + 11))
+#define	ICE_TX_DESC_CMD_L4T_UNKNOWN			0
+#define	ICE_TX_DESC_CMD_L4T_TCP				1
+#define	ICE_TX_DESC_CMD_L4T_SCTP			2
+#define	ICE_TX_DESC_CMD_L4T_UDP				3
+#define	ICE_TX_DESC_CMD_RE			(1ULL << 10)
+#define	ICE_TX_DESC_CMD_BT_HDR			(1ULL << 11)
 
 #define	ICE_TX_DESC_OFFSET(v)			ice_bitx64(v, 33, 16)
 #define	ICE_TX_DESC_SET_OFFSET(r, v)		ice_bitset64(r, 33, 16, v)
