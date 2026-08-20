@@ -861,6 +861,36 @@ static const char *ice_mal_tx_str[] = {
 	"number of packets in quanta mismatch",
 };
 
+/* From 13.2.2.30.15 */
+static const char *ice_mal_tx_pqm_str[] = {
+	"PCI Dummy Completion",
+	"PCI Unsupported Request Completion",
+	"Unknown/Reserved",
+	"Empty queue fetch -- should have been LSO",
+	"Queue empty",
+	"Queue full",
+	"LSO Number of Descriptors is Zero",
+	"LSO Length is Zero",
+	"LSO MSS Below Minimum",
+	"LSO MSS Avoce Maximum",
+	"LSO Header Size Zero",
+	"LSO on non-LSO TX Queue",
+	"Skip One Quanta Only",
+	"LSO Packet Count Zero",
+	"SSO Length Zero",
+	"SSO Length Exceeded",
+	"SSO Packet Count Zero",
+	"SSO Packet Count Exceeded",
+	"SSO Number of Descriptors Zero",
+	"SSO Number of Descriptors Exceeded",
+	"Tail Greater than Ring Length",
+	"Reserved Doorbell Type",
+	"Illegal Head Drop Doorbell",
+	"LSO Over Comms Queue",
+	"Illegal VF Queue Number",
+	"Queue Tail Greater Than Ring Length",
+};
+
 /*
  * Handle a malicious packet event. The name can be a bit misleaning since
  * it really just means the driver sent something to the NIC that it
@@ -904,11 +934,43 @@ ice_handle_mal(ice_t *ice)
 		}
 	}
 
+	v = ice_reg_read(ice, ICE_GL_MDET_TX_PQM);
+	if (ICE_GL_MDET_TX_PQM_VALID(v)) {
+		eventstr = "Unknown";
+
+		event = ICE_GL_MDET_TX_PQM_EVENT(v);
+		if (event < ARRAY_SIZE(ice_mal_tx_pqm_str)) {
+			eventstr = ice_mal_tx_pqm_str[event];
+		}
+
+		ice_error(ice, "malicious TX PQM event '%s' (%u) on "
+		    "PF 0x%x VF 0x%x TX queue %u", eventstr, event,
+		    ICE_GL_MDET_TX_PQM_PF_NUM(v),
+		    ICE_GL_MDET_TX_PQM_VF_NUM(v),
+		    ICE_GL_MDET_TX_PQM_QNUM(v));
+
+		/* Clear the rror if it matches our PF */
+		if (ice->ice_pci_func == ICE_GL_MDET_TX_PQM_PF_NUM(v)) {
+			ice_reg_write(ice, ICE_GL_MDET_TX_PQM, UINT32_MAX);
+		}
+
+		v = ice_reg_read(ice, ICE_PF_MDET_TX_PQM);
+		if (ICE_PF_MDET_TX_PQM_VALID(v)) {
+			ice_reg_write(ice, ICE_PF_MDET_TX_PQM, 0xffff);
+			ice_error(ice, "need reinit");
+			/* XXX need reinit */
+		}
+	}
+
 	v = ice_reg_read(ice, ICE_GL_MDET_RX);
 	if (ICE_GL_MDET_VALID(v)) {
 		eventstr = "unknown";
 		event = ICE_GL_MDET_EVENT(v);
 
+		/*
+		 * There's only 1 defined malicious RX event, so we
+		 * don't need a lookup table for it.
+		 */
 		if (event == 1) {
 			eventstr = "descriptor fetch failed";
 		}

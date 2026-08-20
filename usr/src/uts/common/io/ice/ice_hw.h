@@ -1380,7 +1380,7 @@ typedef struct ice_hw_tx_branch {
  * The malicious driver detected uses the same format for TX/RX
  * One note is that the RX_TCLAN_EVENT field is actually marked reserved
  * while the RX one explicitly defines the event. However the FreeBSD
- * driver uses this filed on TX as well, so this could just be a misprint
+ * driver uses this field on TX as well, so this could just be a misprint
  * in the datasheet.
  */
 #define	ICE_PF_MDET_TX_TCLAN		0x00FC000
@@ -1392,6 +1392,20 @@ typedef struct ice_hw_tx_branch {
 #define	ICE_GL_MDET_PF_NUM(x)		ice_bitx32(x, 25, 23)
 #define	ICE_GL_MDET_EVENT(x)		ice_bitx32(x, 30, 26)
 #define	ICE_GL_MDET_VALID(x)		ice_bitx32(x, 31, 31)
+
+#define	ICE_GL_MDET_TX_PQM		0x002D2E00
+#define	ICE_GL_MDET_TX_PQM_PF_NUM(x)	ice_bitx32(x, 2, 0)
+#define	ICE_GL_MDET_TX_PQM_VF_NUM(x)	ice_bitx32(x, 11, 4)
+#define	ICE_GL_MDET_TX_PQM_QNUM(x)	ice_bitx32(x, 25, 12)
+/*
+ * Similarly, the datasheet marks this field as reserved, but the FreeBSD
+ * driver uses it for the PQM event value.
+ */
+#define	ICE_GL_MDET_TX_PQM_EVENT(x)	ice_bitx32(x, 30, 26)
+#define	ICE_GL_MDET_TX_PQM_VALID(x)	ice_bitx32(x, 31, 31)
+
+#define	ICE_PF_MDET_TX_PQM		0x002D2C80
+#define	ICE_PF_MDET_TX_PQM_VALID(x)	ice_bitx32(x, 31, 31)
 
 #define	ICE_PF_MDET_RX			0x00294280
 #define	ICE_GL_MDET_RX			0x00294C00
