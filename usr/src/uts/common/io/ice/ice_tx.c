@@ -2046,10 +2046,11 @@ ice_ring_tx_start(mac_ring_driver_t mri, uint64_t gen)
 	ASSERT3U(vsi->ivsi_id, <=, ICE_VSI_MAX);
 
 	ctx.ihtc_base = ring_pa >> ICE_HW_TXQ_CTX_BASE_SHIFT;
+	ctx.ihtc_port = ice->ice_port_id;
+	ctx.ihtc_pf = ice->ice_pf_id;
 	ctx.ihtc_vmvf_type = ICE_HW_TXQ_CTX_VMVF_TYPE_PF;
 	ctx.ihtc_vsi_id = vsi->ivsi_id;
 	ctx.ihtc_qlen = txr->itxr_size;
-	ctx.ihtc_port = ice->ice_port_id;
 	ctx.ihtc_legacy = 1;
 	ctx.ihtc_tso = 1;
 	/*
