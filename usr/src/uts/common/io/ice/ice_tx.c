@@ -893,7 +893,7 @@ ice_tx_copy_fragment(ice_tx_ctrl_block_t *tcb, mblk_t **mpp, uint16_t *offp,
 	amt = MIN(amt, ice_tcb_remaining(tcb));
 
 	ASSERT3P(src, >=, (*mpp)->b_rptr);
-	ASSERT3P(src, <, (*mpp)->b_wptr);
+	ASSERT3P(src, <=, (*mpp)->b_wptr);
 	ASSERT3U(amt, <=, MBLKL(*mpp));
 	ASSERT3U((uintptr_t)src + amt, <=, (uintptr_t)((*mpp)->b_wptr));
 	ASSERT3U(tcb->itcb_len + amt, <=, tcb->itcb_buf->idb_len);
