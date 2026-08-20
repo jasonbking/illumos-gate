@@ -872,7 +872,7 @@ static const char *ice_mal_tx_pqm_str[] = {
 	"LSO Number of Descriptors is Zero",
 	"LSO Length is Zero",
 	"LSO MSS Below Minimum",
-	"LSO MSS Avoce Maximum",
+	"LSO MSS Above Maximum",
 	"LSO Header Size Zero",
 	"LSO on non-LSO TX Queue",
 	"Skip One Quanta Only",
