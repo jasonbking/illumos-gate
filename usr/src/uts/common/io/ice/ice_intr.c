@@ -119,6 +119,16 @@ ice_intr_hw_fini(ice_t *ice)
 	ice_intr_cause_disable(ice, ICE_REG_PFINT_FW_CTL);
 }
 
+static uintptr_t
+ice_glint_vect2func(ice_t *ice, uint_t n)
+{
+	uintptr_t reg = ICE_REG_GLINT_VECT2FUNC_BASE;
+
+	ASSERT3U(n, <, ice->ice_max_msix);
+
+	return (reg + (ice->ice_first_msix + n) * 4);
+}
+
 /*
  * Program hardware to enable interrupts for the things that we care about.
  */
@@ -133,7 +143,7 @@ ice_intr_hw_init(ice_t *ice)
 	 * make sure it's in a reasonable state.
 	 */
 	for (i = 0; i < ice->ice_nintrs; i++) {
-		uintptr_t reg = ICE_REG_GLINT_VECT2FUNC_BASE + i * 4;
+		uintptr_t reg = ice_glint_vect2func(ice, i);
 		uint32_t val = 0;
 
 		val = ICE_REG_GLINT_VECT2FUNC_PF_NUM_SET(val, ice->ice_pf_id);
