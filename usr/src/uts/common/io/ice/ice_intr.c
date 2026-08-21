@@ -21,20 +21,42 @@
 #include "ice.h"
 
 static uintptr_t
-ice_intr_itr_reg(ice_t *ice, ice_itr_index_t type, int intr)
+ice_intr_itr_reg(ice_t *ice, ice_itr_index_t type, uint_t intr)
 {
 	uintptr_t out = ICE_REG_GLINT_ITR_BASE;
 
-	ASSERT3U(type, <, ICE_ITR_INDEX_NONE);
-	ASSERT3U(intr, <=, ice->ice_nintrs);
+	ASSERT3S(type, <, ICE_ITR_INDEX_NONE);
+	ASSERT3U(intr, <, ice->ice_nintrs);
 
 	return (out + 0x2000 * type + 4 * intr);
+}
+
+static uintptr_t
+ice_glint_vect2func(ice_t *ice, uint_t n)
+{
+	uintptr_t reg = ICE_REG_GLINT_VECT2FUNC_BASE;
+
+	ASSERT3U(n, <, ice->ice_max_msix);
+	ASSERT3U(ice->ice_first_msix + n, <=, 2047);
+
+	return (reg + (ice->ice_first_msix + n) * 4);
+}
+
+static uintptr_t
+ice_glint_dyn_ctl(ice_t *ice, int vector)
+{
+	uintptr_t reg = ICE_REG_GLINT_DYN_CTL_BASE;
+
+	ASSERT3S(vector, >=, 0);
+	ASSERT3S(vector, <, ice->ice_nintrs);
+
+	return (reg + vector * 4);
 }
 
 static void
 ice_intr_itr_set(ice_t *ice, ice_itr_index_t type, uint_t val)
 {
-	int i;
+	uint_t i;
 
 	for (i = 0; i < ice->ice_nintrs; i++) {
 		ice_reg_write(ice, ice_intr_itr_reg(ice, type, i), val);
@@ -73,13 +95,9 @@ ice_intr_cause_enable(ice_t *ice, uintptr_t reg)
 static void
 ice_intr_msix_enable(ice_t *ice, int vector)
 {
-	uintptr_t reg;
+	uintptr_t reg = ice_glint_dyn_ctl(ice, vector);
 	uint32_t val = 0;
 
-	ASSERT3S(vector, >=, 0);
-	ASSERT3S(vector, <, ice->ice_nintrs);
-
-	reg = vector * 4 + ICE_REG_GLINT_DYN_CTL_BASE;
 	val = ICE_REG_GLINT_DYN_CTL_INTENA_SET(val);
 	val = ICE_REG_GLINT_DYN_CTL_CLEARPBA_SET(val);
 	val = ICE_REG_GLINT_DYN_CTL_ITR_INDX_SET(val, ICE_ITR_INDEX_NONE);
@@ -90,13 +108,8 @@ ice_intr_msix_enable(ice_t *ice, int vector)
 static void
 ice_intr_msix_disable(ice_t *ice, int vector)
 {
-	uintptr_t reg;
+	uintptr_t reg = ice_glint_dyn_ctl(ice, vector);
 	uint32_t val = 0;
-
-	ASSERT3S(vector, >=, 0);
-	ASSERT3S(vector, <, ice->ice_nintrs);
-
-	reg = vector * 4 + ICE_REG_GLINT_DYN_CTL_BASE;
 
 	val = ICE_REG_GLINT_DYN_CTL_ITR_INDX_SET(val, ICE_ITR_INDEX_NONE);
 	ice_reg_write(ice, reg, val);
@@ -117,16 +130,6 @@ ice_intr_hw_fini(ice_t *ice)
 	 */
 	ice_reg_write(ice, ICE_REG_PFINT_OICR_ENA, 0);
 	ice_intr_cause_disable(ice, ICE_REG_PFINT_FW_CTL);
-}
-
-static uintptr_t
-ice_glint_vect2func(ice_t *ice, uint_t n)
-{
-	uintptr_t reg = ICE_REG_GLINT_VECT2FUNC_BASE;
-
-	ASSERT3U(n, <, ice->ice_max_msix);
-
-	return (reg + (ice->ice_first_msix + n) * 4);
 }
 
 /*

@@ -65,7 +65,7 @@
 static inline uintptr_t
 ice_qrx_index(const ice_rx_ring_t *rxr)
 {
-	return (rxr->irxr_index + rxr->irxr_ice->ice_first_rxq);
+	return (rxr->irxr_index);
 }
 
 static inline uintptr_t

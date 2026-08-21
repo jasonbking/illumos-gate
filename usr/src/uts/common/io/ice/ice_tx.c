@@ -241,7 +241,7 @@ static void ice_tx_recycle_ring(ice_tx_ring_t *);
 static inline uintptr_t
 ice_qtx_index(const ice_tx_ring_t *txr)
 {
-	return (txr->itxr_index + txr->itxr_ice->ice_first_txq);
+	return (txr->itxr_index);
 }
 
 static inline uintptr_t
