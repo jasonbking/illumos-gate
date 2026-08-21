@@ -1672,6 +1672,11 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	txr->itxr_stats.ictxs_bind_bytes.value.ui64 += st->itps_bind_bytes;
 	txr->itxr_stats.ictxs_bind_frags.value.ui64 += st->itps_bind_segs;
 
+	txr->itxr_stats.ictxs_mss_retries.value.ui64 += pkt->itxp_mss_retries;
+	if (pkt->itxp_method == ITPM_COPY_ALL) {
+		txr->itxr_stats.ictxs_full_copies.value.ui64++;
+	}
+
 	if (ice_tx_pkt_lso(pkt)) {
 		txr->itxr_stats.ictxs_lso_packets.value.ui64++;
 		txr->itxr_stats.ictxs_lso_bytes.value.ui64 +=
