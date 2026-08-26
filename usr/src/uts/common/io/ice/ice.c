@@ -79,6 +79,13 @@ ice_reg_write(ice_t *ice, uintptr_t reg, uint32_t val)
 	    reg), val);
 }
 
+uint64_t
+ice_reg_read64(ice_t *ice, uintptr_t reg)
+{
+	return (ddi_get64(ice->ice_reg_hdl, (uint64_t *)(ice->ice_reg_base +
+	    reg)));
+}
+
 static ice_capability_t *
 ice_capability_find(ice_t *ice, boolean_t device, ice_cap_id_t capid,
     uint_t major)
@@ -1320,6 +1327,8 @@ ice_vsi_free(ice_t *ice, ice_vsi_t *vsi)
 		(void) ice_cmd_free_vsi(ice, vsi, B_FALSE);
 	}
 
+	ice_stat_vsi_fini(vsi);
+
 	kmem_free(vsi, sizeof (ice_vsi_t));
 }
 
@@ -1422,6 +1431,11 @@ ice_vsi_alloc(ice_t *ice, uint_t vsi_id, ice_vsi_type_t type)
 	/*
 	 * XXX What queue initialization should we be doing here?
 	 */
+
+	if (!ice_stat_vsi_init(vsi)) {
+		ice_vsi_free(ice, vsi);
+		return (NULL);
+	}
 
 	list_insert_tail(&ice->ice_vsi, vsi);
 
@@ -1800,6 +1814,11 @@ ice_cleanup(ice_t *ice)
 		ice->ice_seq &= ~ICE_ATTACH_MAC;
 	}
 
+	if (ice->ice_seq & ICE_ATTACH_STATS) {
+		ice_stats_fini(ice);
+		ice->ice_seq &= ~ICE_ATTACH_STATS;
+	}
+
 	if (ice->ice_seq & ICE_ATTACH_RING) {
 		ice_ring_fini(ice);
 		ice->ice_seq &= ~ICE_ATTACH_RING;
@@ -2053,6 +2072,11 @@ ice_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		goto err;
 	}
 	ice->ice_seq |= ICE_ATTACH_RING;
+
+	if (!ice_stats_init(ice)) {
+		goto err;
+	}
+	ice->ice_seq |= ICE_ATTACH_STATS;
 
 	if (!ice_mac_register(ice)) {
 		goto err;

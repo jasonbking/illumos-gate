@@ -294,6 +294,32 @@ typedef struct ice_vsi_mac {
 	uint8_t			ivm_mac[ETHERADDRL];
 } ice_vsi_mac_t;
 
+typedef struct ice_vsi_stats {
+	uint64_t	ivs_rx_bytes;			/* gorc */
+	uint64_t	ivs_rx_unicast;			/* uprc */
+	uint64_t	ivs_rx_multicast;		/* mprc */
+	uint64_t	ivs_rx_broadcast;		/* bprc */
+	uint64_t	ivs_rx_discards;		/* rdpc */
+	uint64_t	ivs_tx_bytes;			/* gotc */
+	uint64_t	ivs_tx_unicast;			/* utpc */
+	uint64_t	ivs_tx_multicast;		/* mptc */
+	uint64_t	ivs_tx_broadcast;		/* bptc */
+	uint64_t	ivs_tx_errors;			/* tepc */
+} ice_vsi_stats_t;
+
+typedef struct ice_vsi_kstats {
+	kstat_named_t	ivk_rx_bytes;
+	kstat_named_t	ivk_rx_unicast;
+	kstat_named_t	ivk_rx_multicast;
+	kstat_named_t	ivk_rx_broadcast;
+	kstat_named_t	ivk_rx_discards;
+	kstat_named_t	ivk_tx_bytes;
+	kstat_named_t	ivk_tx_unicast;
+	kstat_named_t	ivk_tx_multicast;
+	kstat_named_t	ivk_tx_broadcast;
+	kstat_named_t	ivk_tx_errors;
+} ice_vsi_kstats_t;
+
 /*
  * If we support multiple VSIs or RDMA, we'll want to have queue id
  * maps in each VSI that'll translate a [0..#queues) value into a
@@ -317,6 +343,8 @@ typedef struct ice_vsi {
 	uint16_t		*ivsi_vlan;
 	list_t			ivsi_macs;
 	uint16_t		ivsi_bcast_rule_idx;
+	ice_vsi_stats_t		ivsi_stats;
+	kstat_t			*ivsi_kstats;
 } ice_vsi_t;
 #define	ICE_VSI_MAX	767
 
@@ -539,6 +567,102 @@ typedef struct ice_rx_ring {
 	ice_rxq_stat_t		irxr_stats;
 } __aligned(64) ice_rx_ring_t;
 
+typedef struct ice_pf_stats {
+	uint64_t	ips_rx_bytes;
+	uint64_t	ips_rx_unicast;
+	uint64_t	ips_rx_multicast;
+	uint64_t	ips_rx_broadcast;
+	uint64_t	ips_tx_bytes;
+	uint64_t	ips_tx_unicast;
+	uint64_t	ips_tx_multicast;
+	uint64_t	ips_tx_broadcast;
+
+	uint64_t	ips_rx_size_64;
+	uint64_t	ips_rx_size_127;
+	uint64_t	ips_rx_size_255;
+	uint64_t	ips_rx_size_511;
+	uint64_t	ips_rx_size_1023;
+	uint64_t	ips_rx_size_1522;
+	uint64_t	ips_rx_size_9522;
+
+	uint64_t	ips_tx_size_64;
+	uint64_t	ips_tx_size_127;
+	uint64_t	ips_tx_size_255;
+	uint64_t	ips_tx_size_511;
+	uint64_t	ips_tx_size_1023;
+	uint64_t	ips_tx_size_1522;
+	uint64_t	ips_tx_size_9522;
+
+	uint64_t	ips_link_xon_rx;
+	uint64_t	ips_link_xoff_rx;
+	uint64_t	ips_link_xon_tx;
+	uint64_t	ips_link_xoff_tx;
+	uint64_t	ips_priority_xon_rx[8];
+	uint64_t	ips_priority_xoff_rx[8];
+	uint64_t	ips_priority_xon_tx[8];
+	uint64_t	ips_priority_xoff_tx[8];
+	uint64_t	ips_priority_xon_2_xoff[8];
+
+	uint64_t	ips_crc_errors;
+	uint64_t	ips_illegal_bytes;
+	uint64_t	ips_mac_local_faults;
+	uint64_t	ips_mac_remote_faults;
+	uint64_t	ips_rx_length_errors;
+	uint64_t	ips_rx_undersize;
+	uint64_t	ips_rx_fragments;
+	uint64_t	ips_rx_oversize;
+	uint64_t	ips_rx_jabber;
+	uint64_t	ips_tx_dropped_link_down;
+} ice_pf_stats_t;
+
+typedef struct ice_pf_kstats_t {
+	kstat_named_t	ipk_rx_bytes;
+	kstat_named_t	ipk_rx_unicast;
+	kstat_named_t	ipk_rx_multicast;
+	kstat_named_t	ipk_rx_broadcast;
+	kstat_named_t	ipk_tx_bytes;
+	kstat_named_t	ipk_tx_unicast;
+	kstat_named_t	ipk_tx_multicast;
+	kstat_named_t	ipk_tx_broadcast;
+
+	kstat_named_t	ipk_rx_size_64;
+	kstat_named_t	ipk_rx_size_127;
+	kstat_named_t	ipk_rx_size_255;
+	kstat_named_t	ipk_rx_size_511;
+	kstat_named_t	ipk_rx_size_1023;
+	kstat_named_t	ipk_rx_size_1522;
+	kstat_named_t	ipk_rx_size_9522;
+
+	kstat_named_t	ipk_tx_size_64;
+	kstat_named_t	ipk_tx_size_127;
+	kstat_named_t	ipk_tx_size_255;
+	kstat_named_t	ipk_tx_size_511;
+	kstat_named_t	ipk_tx_size_1023;
+	kstat_named_t	ipk_tx_size_1522;
+	kstat_named_t	ipk_tx_size_9522;
+
+	kstat_named_t	ipk_link_xon_rx;
+	kstat_named_t	ipk_link_xoff_rx;
+	kstat_named_t	ipk_link_xon_tx;
+	kstat_named_t	ipk_link_xoff_tx;
+	kstat_named_t	ipk_priority_xon_rx[8];
+	kstat_named_t	ipk_priority_xoff_rx[8];
+	kstat_named_t	ipk_priority_xon_tx[8];
+	kstat_named_t	ipk_priority_xoff_tx[8];
+	kstat_named_t	ipk_priority_xon_2_xoff[8];
+
+	kstat_named_t	ipk_crc_errors;
+	kstat_named_t	ipk_illegal_bytes;
+	kstat_named_t	ipk_mac_local_faults;
+	kstat_named_t	ipk_mac_remote_faults;
+	kstat_named_t	ipk_rx_length_errors;
+	kstat_named_t	ipk_rx_undersize;
+	kstat_named_t	ipk_rx_fragments;
+	kstat_named_t	ipk_rx_oversize;
+	kstat_named_t	ipk_rx_jabber;
+	kstat_named_t	ipk_tx_dropped_link_down;
+} ice_pf_kstats_t;
+
 /*
  * Consolidated information about firmware all in one structure.
  */
@@ -643,8 +767,9 @@ typedef enum ice_attach_seq {
 	ICE_ATTACH_TASK		= 0x1 << 10,
 	ICE_ATTACH_VSI		= 0x1 << 11,
 	ICE_ATTACH_RING		= 0x1 << 12,
-	ICE_ATTACH_MAC		= 0x1 << 13,
-	ICE_ATTACH_INTR_ENABLE	= 0x1 << 14,
+	ICE_ATTACH_STATS	= 0x1 << 13,
+	ICE_ATTACH_MAC		= 0x1 << 14,
+	ICE_ATTACH_INTR_ENABLE	= 0x1 << 15,
 } ice_attach_seq_t;
 
 typedef enum ice_state {
@@ -873,6 +998,11 @@ typedef struct ice {
 				/* Max siblings per level */
 	uint16_t		ice_tx_sched_max_sibs[ICE_SCHED_NODE_MAX_DEPTH];
 
+	kmutex_t		ice_stats_lock;
+	kstat_t			*ice_pf_ks;
+	ice_pf_stats_t		ice_pf_stats;
+	ice_pf_kstats_t		ice_pf_kstats;
+	
 	/* protects ice_rxbuf_onloan */
 	kmutex_t		ice_rxbuf_lock;
 	kcondvar_t		ice_rxbuf_cv;
@@ -905,6 +1035,7 @@ extern void ice_set_mac(ice_t *);
  * General functions
  */
 extern uint32_t ice_reg_read(ice_t *, uintptr_t);
+extern uint64_t ice_reg_read64(ice_t *, uintptr_t);
 extern void ice_reg_write(ice_t *, uintptr_t, uint32_t);
 extern int ice_regs_check(ice_t *);
 extern void ice_error(ice_t *, const char *, ...);
@@ -1098,6 +1229,14 @@ extern void ice_rx_interrupt(ice_t *, ice_intr_handler_t *);
 extern bool ice_rxq_context_write(ice_t *, ice_hw_rxq_context_t *, uint_t);
 extern bool ice_txq_context_write(ice_t *, ice_hw_txq_context_t *, uint8_t *,
     size_t);
+
+/*
+ * stats routines
+ */
+extern bool ice_stats_init(ice_t *);
+extern void ice_stats_fini(ice_t *);
+extern bool ice_stat_vsi_init(ice_vsi_t *);
+extern void ice_stat_vsi_fini(ice_vsi_t *);
 
 #ifdef __cplusplus
 }

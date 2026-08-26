@@ -1410,6 +1410,73 @@ typedef struct ice_hw_tx_branch {
 #define	ICE_PF_MDET_RX			0x00294280
 #define	ICE_GL_MDET_RX			0x00294C00
 
+/* Stats registers */
+
+/* VSI stats */
+#define	ICE_GLV_RDPC(id)		(0x00294C04 + 4 * (id))
+
+#define	ICE_GLV_GOTCL(id)		(0x00300000 + 8 * (id))
+#define	ICE_GLV_UPTCL(id)		(0x0030A000 + 8 * (id))
+#define	ICE_GLV_MPTCL(id)		(0x0030C000 + 8 * (id))
+#define	ICE_GLV_BPTCL(id)		(0x0030E000 + 8 * (id))
+
+#define	ICE_GLV_TEPC(id)		(0x00312000 + 4 * (id))
+
+#define	ICE_GLV_GORCL(id)		(0x003B0000 + 8 * (id))
+#define	ICE_GLV_UPRCL(id)		(0x003B2000 + 8 * (id))
+#define	ICE_GLV_MPRCL(id)		(0x003B4000 + 8 * (id))
+#define	ICE_GLV_BPRCL(id)		(0x003B6000 + 8 * (id))
+
+/* PF / Port Stats */
+#define	ICE_GLPRT_GORCL(port)		(0x00380000 + 8 * (port))
+#define	ICE_GLPRT_UPRCL(port)		(0x00381300 + 8 * (port))
+#define	ICE_GLPRT_MPRCL(port)		(0x00381340 + 8 * (port))
+#define	ICE_GLPRT_BPRCL(port)		(0x00381380 + 8 * (port))
+#define	ICE_GLPRT_GOTCL(port)		(0x00380B40 + 8 * (port))
+#define	ICE_GLPRT_UPTCL(port)		(0x003811C0 + 8 * (port))
+#define	ICE_GLPRT_MPTCL(port)		(0x00381200 + 8 * (port))
+#define	ICE_GLPRT_BPTCL(port)		(0x00381240 + 8 * (port))
+
+#define	ICE_GLPRT_PRC64L(port)		(0x00380900 + 8 * (port))
+#define	ICE_GLPRT_PRC127L(port)		(0x00380940 + 8 * (port))
+#define	ICE_GLPRT_PRC255L(port)		(0x00380980 + 8 * (port))
+#define	ICE_GLPRT_PRC511L(port)		(0x003809C0 + 8 * (port))
+#define	ICE_GLPRT_PRC1023L(port)	(0x00380A00 + 8 * (port))
+#define	ICE_GLPRT_PRC1522L(port)	(0x00380A40 + 8 * (port))
+#define	ICE_GLPRT_PRC9522L(port)	(0x00380A80 + 8 * (port))
+
+#define	ICE_GLPRT_PTC64L(port)		(0x00380B80 + 8 * (port))
+#define	ICE_GLPRT_PTC127L(port)		(0x00380BC0 + 8 * (port))
+#define	ICE_GLPRT_PTC255L(port)		(0x00380C00 + 8 * (port))
+#define	ICE_GLPRT_PTC511L(port)		(0x00380C40 + 8 * (port))
+#define	ICE_GLPRT_PTC1023L(port)	(0x00380C80 + 8 * (port))
+#define	ICE_GLPRT_PTC1522L(port)	(0x00380CC0 + 8 * (port))
+#define	ICE_GLPRT_PTC9522L(port)	(0x00380D00 + 8 * (port))
+
+#define	ICE_GLPRT_LXONRXC(port)		(0x00380280 + 8 * (port))
+#define	ICE_GLPRT_LXOFFRXC(port)	(0x003802C0 + 8 * (port))
+#define	ICE_GLPRT_LXONTXC(port)		(0x00381140 + 8 * (port))
+#define	ICE_GLPRT_LXOFFTXC(port)	(0x00381180 + 8 * (port))
+
+#define	ICE_GLPRT_PXONRXC(port, pri)	(0x00380300 + 8 * (port) + 0x40 * (pri))
+#define	ICE_GLPRT_PXOFFRXC(port, pri)	(0x00380500 + 8 * (port) + 0x40 * (pri))
+#define	ICE_GLPRT_PXONTXC(port, pri)	(0x00380D40 + 8 * (port) + 0x40 * (pri))
+#define	ICE_GLPRT_PXOFFTXC(port, pri)	(0x00380F40 + 8 * (port) + 0x40 * (pri))
+
+#define	ICE_GLPRT_RXON2OFFCNT(port, pri) \
+	(0x00380700 + 8 * (port) + 0x40 * (pri))
+
+#define	ICE_GLPRT_CRCERRS(port)		(0x00380100 + 8 * (port))
+#define	ICE_GLPRT_ILLERR(port)		(0x003801C0 + 8 * (port))
+#define	ICE_GLPRT_MLFC(port)		(0x00380040 + 8 * (port))
+#define	ICE_GLPRT_MRFC(port)		(0x00380080 + 8 * (port))
+#define	ICE_GLPRT_RLEC(port)		(0x00380140 + 8 * (port))
+#define	ICE_GLPRT_RUC(port)		(0x00380200 + 8 * (port))
+#define	ICE_GLPRT_RFC(port)		(0x00380AC0 + 8 * (port))
+#define	ICE_GLPRT_ROC(port)		(0x00380240 + 8 * (port))
+#define	ICE_GLPRT_RJC(port)		(0x00380B00 + 8 * (port))
+#define	ICE_GLPRT_TDOLD(port)		(0x00381280 + 8 * (port))
+
 #ifdef __cplusplus
 }
 #endif
