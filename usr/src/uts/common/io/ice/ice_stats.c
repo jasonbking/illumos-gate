@@ -129,14 +129,12 @@ ice_stat_vsi_update(ice_vsi_t *vsi, bool init)
 static int
 ice_stat_vsi_kstat_update(kstat_t *ksp, int rw)
 {
-	ice_t		*ice;
 	ice_vsi_t	*vsi;
 
 	if (rw == KSTAT_WRITE)
 		return (EACCES);
 
 	vsi = ksp->ks_private;
-	ice = vsi->ivsi_ice;
 
 	ice_stat_vsi_update(vsi, false);
 
@@ -209,7 +207,7 @@ static void
 ice_stat_pf_update(ice_t *ice, bool init)
 {
 	ice_pf_stats_t *ps = &ice->ice_pf_stats;
-	ice_pf_kstats_t *ks = &ice->ice_pf_kstats;
+	ice_pf_kstats_t *ks = ice->ice_pf_ks->ks_data;
 	uint_t		port = ice->ice_port_id;
 
 	ASSERT(MUTEX_HELD(&ice->ice_stats_lock));
@@ -339,11 +337,11 @@ bool
 ice_stats_init(ice_t *ice)
 {
 	ice_pf_stats_t	*pf = &ice->ice_pf_stats;
-	ice_pf_kstats_t	*ks = &ice->ice_pf_kstats;
+	ice_pf_kstats_t	*ks;
 	kstat_t		*ksp;
 
 	ksp = kstat_create(ICE_MODULE_NAME, ice->ice_inst, "pfstats", "net",
-	    KSTAT_TYPE_NAMED, sizeof (ks) / sizeof (kstat_named_t), 0);
+	    KSTAT_TYPE_NAMED, sizeof (*ks) / sizeof (kstat_named_t), 0);
 	if (ksp == NULL) {
 		ice_error(ice, "Could not create kernel pf statistics");
 		return (false);
@@ -452,7 +450,11 @@ ice_stats_init(ice_t *ice)
 	    DDI_INTR_PRI(ice->ice_intr_pri));
 
 	bzero(pf, sizeof (*pf));
+
+	mutex_enter(&ice->ice_stats_lock);
 	ice_stat_pf_update(ice, true);
+	mutex_exit(&ice->ice_stats_lock);
+
 	kstat_install(ice->ice_pf_ks);
 
 	return (true);
@@ -468,3 +470,77 @@ ice_stats_fini(ice_t *ice)
 
 	mutex_destroy(&ice->ice_stats_lock);
 }
+
+int
+ice_m_stat(void *arg, uint_t stat, uint64_t *valp)
+{
+	ice_t		*ice = arg;
+	ice_pf_stats_t	*ips = &ice->ice_pf_stats;
+	ice_pf_kstats_t	*ipk = ice->ice_pf_ks->ks_data;
+	uint_t		port = ice->ice_port_id;
+	int		ret = 0;
+
+	switch (stat) {
+	case MAC_STAT_IFSPEED:
+		mutex_enter(&ice->ice_lse_lock);
+		*valp = ice->ice_link_cur_speed * 1000000ULL;
+		mutex_exit(&ice->ice_lse_lock);
+		return (0);
+
+	case ETHER_STAT_LINK_DUPLEX:
+		mutex_enter(&ice->ice_lse_lock);
+		*valp = ice->ice_link_cur_duplex;
+		mutex_exit(&ice->ice_lse_lock);
+		return (0);
+
+	default:
+		break;
+	}
+
+	mutex_enter(&ice->ice_stats_lock);
+
+	switch (stat) {
+	case MAC_STAT_MULTIRCV:
+		ice_stat_get_uint48(ice, ICE_GLPRT_MPRCL(port),
+		    &ipk->ipk_rx_multicast, &ips->ips_rx_multicast, false);
+		*valp = ipk->ipk_rx_broadcast.value.ui64;
+		break;
+
+	case MAC_STAT_BRDCSTRCV:
+		ice_stat_get_uint48(ice, ICE_GLPRT_BPRCL(port),
+		    &ipk->ipk_rx_broadcast, &ips->ips_rx_broadcast, false);
+		*valp = ipk->ipk_rx_broadcast.value.ui64;
+		break;
+
+	case MAC_STAT_MULTIXMT:
+		ice_stat_get_uint48(ice, ICE_GLPRT_MPTCL(port),
+		    &ipk->ipk_tx_multicast, &ips->ips_tx_multicast, false);
+		*valp = ipk->ipk_tx_multicast.value.ui64;
+		break;
+
+	case MAC_STAT_BRDCSTXMT:
+		ice_stat_get_uint48(ice, ICE_GLPRT_BPTCL(port),
+		    &ipk->ipk_tx_broadcast, &ips->ips_tx_broadcast, false);
+		*valp = ipk->ipk_tx_broadcast.value.ui64;
+		break;
+
+	case MAC_STAT_RBYTES:
+		ice_stat_get_uint48(ice, ICE_GLPRT_GORCL(port),
+		    &ipk->ipk_rx_bytes, &ips->ips_rx_bytes, false);
+		*valp = ipk->ipk_rx_bytes.value.ui64;
+		break;
+
+	default:
+		ret = ENOTSUP;
+		break;
+	}
+
+	mutex_exit(&ice->ice_stats_lock);
+
+	if (ice_regs_check(ice) != DDI_FM_OK) {
+		ddi_fm_service_impact(ice->ice_dip, DDI_SERVICE_UNAFFECTED);
+	}
+
+	return (ret);
+}
+

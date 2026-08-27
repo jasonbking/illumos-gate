@@ -1001,7 +1001,6 @@ typedef struct ice {
 	kmutex_t		ice_stats_lock;
 	kstat_t			*ice_pf_ks;
 	ice_pf_stats_t		ice_pf_stats;
-	ice_pf_kstats_t		ice_pf_kstats;
 	
 	/* protects ice_rxbuf_onloan */
 	kmutex_t		ice_rxbuf_lock;
@@ -1237,6 +1236,7 @@ extern bool ice_stats_init(ice_t *);
 extern void ice_stats_fini(ice_t *);
 extern bool ice_stat_vsi_init(ice_vsi_t *);
 extern void ice_stat_vsi_fini(ice_vsi_t *);
+extern int ice_m_stat(void *, uint_t, uint64_t *);
 
 #ifdef __cplusplus
 }
