@@ -503,7 +503,7 @@ ice_m_stat(void *arg, uint_t stat, uint64_t *valp)
 	case MAC_STAT_MULTIRCV:
 		ice_stat_get_uint48(ice, ICE_GLPRT_MPRCL(port),
 		    &ipk->ipk_rx_multicast, &ips->ips_rx_multicast, false);
-		*valp = ipk->ipk_rx_broadcast.value.ui64;
+		*valp = ipk->ipk_rx_multicast.value.ui64;
 		break;
 
 	case MAC_STAT_BRDCSTRCV:
@@ -528,6 +528,95 @@ ice_m_stat(void *arg, uint_t stat, uint64_t *valp)
 		ice_stat_get_uint48(ice, ICE_GLPRT_GORCL(port),
 		    &ipk->ipk_rx_bytes, &ips->ips_rx_bytes, false);
 		*valp = ipk->ipk_rx_bytes.value.ui64;
+		break;
+
+	case MAC_STAT_IPACKETS:
+		ice_stat_get_uint48(ice, ICE_GLPRT_UPRCL(port),
+		    &ipk->ipk_rx_unicast, &ips->ips_rx_unicast, false);
+		ice_stat_get_uint48(ice, ICE_GLPRT_MPRCL(port),
+		    &ipk->ipk_rx_multicast, &ips->ips_rx_multicast, false);
+		ice_stat_get_uint48(ice, ICE_GLPRT_BPRCL(port),
+		    &ipk->ipk_rx_broadcast, &ips->ips_rx_broadcast, false);
+		*valp = ipk->ipk_rx_unicast.value.ui64 +
+		    ipk->ipk_rx_multicast.value.ui64 +
+		    ipk->ipk_rx_broadcast.value.ui64;
+		break;
+
+	case MAC_STAT_OBYTES:
+		ice_stat_get_uint48(ice, ICE_GLPRT_GOTCL(port),
+		    &ipk->ipk_tx_bytes, &ips->ips_tx_bytes, false);
+		*valp = ipk->ipk_tx_bytes.value.ui64;
+		break;
+
+	case MAC_STAT_OPACKETS:
+		ice_stat_get_uint48(ice, ICE_GLPRT_UPTCL(port),
+		    &ipk->ipk_tx_unicast, &ips->ips_tx_unicast, false);
+		ice_stat_get_uint48(ice, ICE_GLPRT_MPTCL(port),
+		    &ipk->ipk_tx_multicast, &ips->ips_tx_multicast, false);
+		ice_stat_get_uint48(ice, ICE_GLPRT_BPTCL(port),
+		    &ipk->ipk_tx_broadcast, &ips->ips_tx_broadcast, false);
+		*valp = ipk->ipk_tx_unicast.value.ui64 +
+		    ipk->ipk_tx_multicast.value.ui64 +
+		    ipk->ipk_tx_broadcast.value.ui64;
+		break;
+
+	case MAC_STAT_UNDERFLOWS:
+		ice_stat_get_uint32(ice, ICE_GLPRT_RUC(port),
+		    &ipk->ipk_rx_undersize, &ips->ips_rx_undersize, false);
+		ice_stat_get_uint32(ice, ICE_GLPRT_RFC(port),
+		    &ipk->ipk_rx_fragments, &ips->ips_rx_fragments, false);
+		*valp = ipk->ipk_rx_undersize.value.ui64 +
+		    ipk->ipk_rx_fragments.value.ui64;
+		break;
+
+	case MAC_STAT_OVERFLOWS:
+		ice_stat_get_uint32(ice, ICE_GLPRT_ROC(port),
+		    &ipk->ipk_rx_oversize, &ips->ips_rx_oversize, false);
+		ice_stat_get_uint32(ice, ICE_GLPRT_RJC(port),
+		    &ipk->ipk_rx_jabber, &ips->ips_rx_jabber, false);
+		*valp = ipk->ipk_rx_oversize.value.ui64 +
+		    ipk->ipk_rx_fragments.value.ui64;
+		break;
+
+	case ETHER_STAT_FCS_ERRORS:
+		ice_stat_get_uint32(ice, ICE_GLPRT_CRCERRS(port),
+		    &ipk->ipk_crc_errors, &ips->ips_crc_errors, false);
+		*valp = ipk->ipk_crc_errors.value.ui64;
+		break;
+
+	case ETHER_STAT_TOOLONG_ERRORS:
+		ice_stat_get_uint32(ice, ICE_GLPRT_ROC(port),
+		    &ipk->ipk_rx_oversize, &ips->ips_rx_oversize, false);
+		*valp = ipk->ipk_rx_oversize.value.ui64;
+		break;
+
+	case ETHER_STAT_MACRCV_ERRORS:
+		ice_stat_get_uint32(ice, ICE_GLPRT_ILLERR(port),
+		   &ipk->ipk_illegal_bytes, &ips->ips_illegal_bytes, false);
+		ice_stat_get_uint32(ice, ICE_GLPRT_RLEC(port),
+		   &ipk->ipk_rx_length_errors, &ips->ips_rx_length_errors,
+		   false);
+		ice_stat_get_uint32(ice, ICE_GLPRT_RFC(port),
+		   &ipk->ipk_rx_fragments, &ips->ips_rx_fragments, false);
+		*valp = ipk->ipk_illegal_bytes.value.ui64 +
+		   ipk->ipk_rx_length_errors.value.ui64 +
+		   ipk->ipk_rx_fragments.value.ui64;
+		break;
+
+	case ETHER_STAT_XCVR_ADDR:
+		*valp = port;
+		break;
+
+	case ETHER_STAT_TOOSHORT_ERRORS:
+		ice_stat_get_uint32(ice, ICE_GLPRT_RUC(port),
+		    &ipk->ipk_rx_undersize, &ips->ips_rx_undersize, false);
+		*valp = ipk->ipk_rx_undersize.value.ui64;
+		break;
+
+	case ETHER_STAT_JABBER_ERRORS:
+		ice_stat_get_uint32(ice, ICE_GLPRT_RJC(port),
+		    &ipk->ipk_rx_jabber, &ips->ips_rx_jabber, false);
+		*valp = ipk->ipk_rx_jabber.value.ui64;
 		break;
 
 	default:
