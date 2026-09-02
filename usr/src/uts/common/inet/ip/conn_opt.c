@@ -1226,24 +1226,8 @@ conn_opt_set_ip(conn_opt_arg_t *coa, t_scalar_t name, uint_t inlen,
 	ip_stack_t	*ipst = connp->conn_netstack->netstack_ip;
 	int		error;
 
-	if (connp->conn_family == AF_INET6 &&
-	    connp->conn_ipversion == IPV4_VERSION) {
-		/*
-		 * Allow certain IPv4 options to be set on an AF_INET6 socket
-		 * if the connection is still IPv4.
-		 */
-		switch (name) {
-		case IP_TOS:
-		case T_IP_TOS:
-		case IP_TTL:
-		case IP_DONTFRAG:
-			break;
-		default:
-			return (EINVAL);
-		}
-	} else if (connp->conn_family != AF_INET) {
+	if (connp->conn_family != AF_INET)
 		return (EINVAL);
-	}
 
 	ifindex = UINT_MAX;
 	switch (name) {

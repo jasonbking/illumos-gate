@@ -1150,6 +1150,10 @@ tcp_opt_set(conn_t *connp, uint_t optset_context, int level, int name,
 		}
 		break;
 	case IPPROTO_IP:
+		if (connp->conn_family != AF_INET) {
+			*outlenp = 0;
+			return (EINVAL);
+		}
 		switch (name) {
 		case IP_SEC_OPT:
 			/*
