@@ -125,7 +125,7 @@ ice_controlq_errmsg(ice_cq_errno_t cq_err)
 	case ICE_CQ_EACCESS:
 		return ("Permission denied");
 	case ICE_CQ_EFAULT:
-		return ("Bad address");
+	return ("Bad address");
 	case ICE_CQ_EBUSY:
 		return ("Device or resource busy");
 	case ICE_CQ_EEXIST:
@@ -2085,17 +2085,95 @@ ice_cmd_download_pkg(ice_t *ice, const void *pkg, size_t len, bool last)
 	}
 
 	if (!ice_cmd_result(&desc, &err, &hw)) {
+		const char *errmsg;
+		uint32_t offset;
+		uint32_t info;
+
+		offset =LE_32(desc.icqd_command.icc_generic.iccg_param0);
+		info = LE_32(desc.icqd_command.icc_generic.iccg_param1);
+
+		errmsg = ice_controlq_errmsg(err);
+		/*
+		 * The command defines some more specific meaning for
+		 * certain error values, so use those instead of the
+		 * generic ones.
+		 */
+		switch (err) {
+		case ICE_CQ_EFAULT:
+			errmsg = "data address field was 0";
+			break;
+		case ICE_CQ_EINVAL:
+			errmsg = "An element within the package data was "
+			    "invalid";
+			break;
+		case ICE_CQ_EACCESS:
+			errmsg = "Attempt to overwrite the default package";
+			break;
+		case ICE_CQ_EBUSY:
+			errmsg = "NVM is busy";
+			break;
+		default:
+			break;
+		}
+			
+		ice_error(ice, "failed to download package to device: "
+		    "%s (%s - %u) (fw private: %x, offset 0x%x info 0x%x)",
+		    errmsg, ice_controlq_errstr(err), err,
+		    hw, offset, info);
+
+		return (false);
+	}
+
+	return (true);
+}
+
+bool
+ice_cmd_update_pkg(ice_t *ice, const void *pkg, size_t len, bool last)
+{
+	ice_cq_cmd_download_pkg_t	*pkgp;
+	ice_cq_desc_t			desc;
+	ice_cq_errno_t			err;
+	uint8_t				hw;
+
+	ice_cmd_indirect_init(&desc, ICE_CQ_OP_UPDATE_PKG, len, true);
+	pkgp = &desc.icqd_command.icc_download_pkg;
+
+	if (last) {
+		pkgp->iccdp_flags = 0x01;
+	}
+
+	if (!ice_cmd_submit(ice, &ice->ice_asq, &desc, (void *)pkg,
+	    ICE_CMD_COPY_TO_DEV)) {
+		return (false);
+	}
+
+	if (!ice_cmd_result(&desc, &err, &hw)) {
+		const char *errmsg;
 		uint32_t offset;
 		uint32_t info;
 
 		offset = LE_32(desc.icqd_command.icc_generic.iccg_param0);
 		info = LE_32(desc.icqd_command.icc_generic.iccg_param1);
 
-		/* TODO should grab the error info and offset to display */
-		ice_error(ice, "failed to download package to device: "
-		    "%s - %s (0x%x) (fw private: %x, offset 0x%x info 0x%x)",
-		    ice_controlq_errstr(err), ice_controlq_errmsg(err), err,
-		    hw, offset, info);
+		errmsg = ice_controlq_errmsg(err);
+		switch (err) {
+		case ICE_CQ_EFAULT:
+			errmsg = "data ddress field was 0";
+			break;
+		case ICE_CQ_EINVAL:
+			errmsg = "Unrecognized section number";
+			break;
+		case ICE_CQ_ERANGE:
+			errmsg = "Invalid section offset";
+			break;
+		default:
+			break;
+		}
+
+		ice_error(ice, "failed to update package: %s (%s - %u) "
+		    "(fw private: %x, offset 0x%x info 0x%x)",
+		    errmsg, ice_controlq_errstr(err), err, hw, offset, info);
+
 		return (false);
 	}
 

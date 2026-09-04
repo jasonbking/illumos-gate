@@ -122,6 +122,7 @@ typedef enum ice_cq_opcode {
 	 * Package Commands
 	 */
 	ICE_CQ_OP_DOWNLOAD_PKG = 0xC40,
+	ICE_CQ_OP_UPDATE_PKG = 0xC42,
 	ICE_CQ_OP_GET_PKG_INFO = 0xC43,
 
 } ice_cq_opcode_t;

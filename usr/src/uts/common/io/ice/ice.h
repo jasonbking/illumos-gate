@@ -1158,6 +1158,7 @@ extern bool ice_cmd_disable_queue(ice_t *, ice_tx_ring_t *);
 extern bool ice_cmd_switch_rules(ice_t *, ice_cq_opcode_t, uint16_t,
     void *, size_t);
 extern bool ice_cmd_download_pkg(ice_t *, const void *, size_t, bool);
+extern bool ice_cmd_update_pkg(ice_t *, const void *, size_t, bool);
 
 extern bool ice_promisc_on(ice_t *);
 extern bool ice_promisc_off(ice_t *);
