@@ -4059,6 +4059,29 @@ ahci_initialize_port(ahci_ctl_t *ahci_ctlp, ahci_port_t *ahci_portp,
 		    ahci_portp, port);
 	}
 
+	/*
+	 * Ensure any cold presence detect ports with inserted devices
+	 * are powered on. The previous step ensures that PxCMD.ST is
+	 * set to 0, so we can now modify PxCMD.POD.
+	 */
+	if ((port_cmd_status & (AHCI_CMD_STATUS_CPD|AHCI_CMD_STATUS_CPS)) ==
+	    (AHCI_CMD_STATUS_CPD|AHCI_CMD_STATUS_CPS)) {
+		ddi_put32(ahci_ctlp->ahcictl_ahci_acc_handle,
+		    (uint32_t *)AHCI_PORT_PxCMD(ahci_ctlp, port),
+		    port_cmd_status | AHCI_CMD_STATUS_POD);
+
+		AHCIDBG(AHCIDBG_ERRS, ahci_ctlp, "%s: powered on port %d",
+		    __func__, port);
+
+		uint32_t sstatus;
+
+		sstatus = ddi_get32(ahci_ctlp->ahcictl_ahci_acc_handle,
+		    (uint32_t *)AHCI_PORT_PxSSTS(ahci_ctlp, port));
+
+		AHCIDBG(AHCIDBG_ERRS, ahci_ctlp, "%s: port %d PxSSTS = 0x%x",
+		    __func__, port, sstatus);
+	}
+
 	/* Make sure the drive is spun-up */
 	ahci_staggered_spin_up(ahci_ctlp, port);
 
@@ -6628,7 +6651,8 @@ ahci_port_intr(ahci_ctl_t *ahci_ctlp, ahci_port_t *ahci_portp, uint8_t port)
 		    AHCI_INTR_STATUS_IFS |
 		    AHCI_INTR_STATUS_HBDS |
 		    AHCI_INTR_STATUS_HBFS |
-		    AHCI_INTR_STATUS_TFES);
+		    AHCI_INTR_STATUS_TFES |
+		    AHCI_INTR_STATUS_CPDS);
 	} else {
 		/*
 		 * port_intr_enable indicates that the corresponding interrrupt
@@ -6649,6 +6673,10 @@ ahci_port_intr(ahci_ctl_t *ahci_ctlp, ahci_port_t *ahci_portp, uint8_t port)
 	 */
 	port_intr_status = ddi_get32(ahci_ctlp->ahcictl_ahci_acc_handle,
 	    (uint32_t *)AHCI_PORT_PxIS(ahci_ctlp, port));
+
+	DTRACE_PROBE4(ahci__port__interrupt, ahci_ctl_t *, ahci_ctlp,
+	    ahci_port_t *, ahci_portp, uint32_t, port_intr_status,
+	    uint32_t, port_intr_enable);
 
 	AHCIDBG(AHCIDBG_INTR, ahci_ctlp,
 	    "ahci_port_intr: port %d, port_intr_status = 0x%x, "
@@ -6803,6 +6831,9 @@ ahci_intr(caddr_t arg1, caddr_t arg2)
 		    DDI_FME_VERSION);
 		return (DDI_INTR_UNCLAIMED);
 	}
+
+	DTRACE_PROBE2(ahci__interrupt, ahci_ctl_t *, ahci_ctlp,
+	    uint32_t, global_intr_status);
 
 	/* Loop for all the ports */
 	for (port = 0; port < ahci_ctlp->ahcictl_num_ports; port++) {
@@ -8042,9 +8073,19 @@ ahci_intr_cold_port_detect(ahci_ctl_t *ahci_ctlp,
 	sdevice.satadev_addr.cport = ahci_ctlp->ahcictl_port_to_cport[port];
 	sdevice.satadev_addr.qual = SATA_ADDR_CPORT;
 	sdevice.satadev_addr.pmport = 0;
-	sdevice.satadev_state = SATA_PSTATE_PWRON;
 
 	if (port_cmd_status & AHCI_CMD_STATUS_CPS) {
+		/*
+		 * For CPD, we must explicitly power on the
+		 * port after insertion.
+		 */
+		port_cmd_status |= AHCI_CMD_STATUS_POD;
+		ddi_put32(ahci_ctlp->ahcictl_ahci_acc_handle,
+		    (uint32_t *)AHCI_PORT_PxCMD(ahci_ctlp, port),
+		    port_cmd_status);
+
+		sdevice.satadev_state = SATA_PSTATE_PWRON;
+
 		AHCIDBG(AHCIDBG_INTR, ahci_ctlp,
 		    "port %d: a device is hot plugged", port);
 		mutex_exit(&ahci_portp->ahciport_mutex);
@@ -8055,6 +8096,8 @@ ahci_intr_cold_port_detect(ahci_ctl_t *ahci_ctlp,
 		mutex_enter(&ahci_portp->ahciport_mutex);
 
 	} else {
+		sdevice.satadev_state = SATA_PSTATE_PWROFF;
+
 		AHCIDBG(AHCIDBG_INTR, ahci_ctlp,
 		    "port %d: a device is hot unplugged", port);
 		mutex_exit(&ahci_portp->ahciport_mutex);
@@ -8108,6 +8151,7 @@ ahci_enable_port_intrs(ahci_ctl_t *ahci_ctlp, uint8_t port)
 	 *	Host Bus Data Error Status (HBDS)
 	 *	Host Bus Fatal Error Status (HBFS)
 	 *	Task File Error Status (TFES)
+	 *	Cold Presence Detect (CPDE)
 	 */
 	ddi_put32(ahci_ctlp->ahcictl_ahci_acc_handle,
 	    (uint32_t *)AHCI_PORT_PxIE(ahci_ctlp, port),
@@ -8115,7 +8159,6 @@ ahci_enable_port_intrs(ahci_ctl_t *ahci_ctlp, uint8_t port)
 	    AHCI_INTR_STATUS_PSS |
 	    AHCI_INTR_STATUS_SDBS |
 	    AHCI_INTR_STATUS_UFS |
-	    AHCI_INTR_STATUS_DPS |
 	    AHCI_INTR_STATUS_PCS |
 	    AHCI_INTR_STATUS_PRCS |
 	    AHCI_INTR_STATUS_OFS |
@@ -8123,7 +8166,8 @@ ahci_enable_port_intrs(ahci_ctl_t *ahci_ctlp, uint8_t port)
 	    AHCI_INTR_STATUS_IFS |
 	    AHCI_INTR_STATUS_HBDS |
 	    AHCI_INTR_STATUS_HBFS |
-	    AHCI_INTR_STATUS_TFES));
+	    AHCI_INTR_STATUS_TFES |
+	    AHCI_INTR_STATUS_CPDS));
 }
 
 /*
