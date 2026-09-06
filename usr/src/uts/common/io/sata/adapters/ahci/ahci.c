@@ -3999,6 +3999,7 @@ ahci_initialize_port(ahci_ctl_t *ahci_ctlp, ahci_port_t *ahci_portp,
 	uint32_t port_sstatus, port_task_file, port_cmd_status;
 	uint8_t port = addrp->aa_port;
 	boolean_t resuming = B_TRUE;	/*  processing DDI_RESUME */
+	boolean_t cpd = B_FALSE;
 	int ret;
 
 	ASSERT(MUTEX_HELD(&ahci_portp->ahciport_mutex));
@@ -4047,6 +4048,16 @@ ahci_initialize_port(ahci_ctl_t *ahci_ctlp, ahci_port_t *ahci_portp,
 	    "ahci_initialize_port: port %d ", port);
 
 	/*
+	 * If cold presence detect is supported and indicates an inserted
+	 * device, we will need to power on the port after it is in the
+	 * NotRunning state.
+	 */
+	if ((port_cmd_status & (AHCI_CMD_STATUS_CPD|AHCI_CMD_STATUS_CPS)) ==
+	    (AHCI_CMD_STATUS_CPD|AHCI_CMD_STATUS_CPS)) {
+		cpd = B_TRUE;
+	}
+
+	/*
 	 * Check whether the port is in NotRunning state, if not,
 	 * put the port in NotRunning state
 	 */
@@ -4057,6 +4068,10 @@ ahci_initialize_port(ahci_ctl_t *ahci_ctlp, ahci_port_t *ahci_portp,
 	    AHCI_CMD_STATUS_FR)) {
 		(void) ahci_put_port_into_notrunning_state(ahci_ctlp,
 		    ahci_portp, port);
+
+		/* Refresh status once in not running state */
+		port_cmd_status = ddi_get32(ahci_ctlp->ahcictl_ahci_acc_handle,
+		    (uint32_t *)AHCI_PORT_PxCMD(ahci_ctlp, port));
 	}
 
 	/*
@@ -4064,8 +4079,9 @@ ahci_initialize_port(ahci_ctl_t *ahci_ctlp, ahci_port_t *ahci_portp,
 	 * are powered on. The previous step ensures that PxCMD.ST is
 	 * set to 0, so we can now modify PxCMD.POD.
 	 */
-	if ((port_cmd_status & (AHCI_CMD_STATUS_CPD|AHCI_CMD_STATUS_CPS)) ==
-	    (AHCI_CMD_STATUS_CPD|AHCI_CMD_STATUS_CPS)) {
+	if (cpd) {
+		ASSERT0(port_cmd_status & AHCI_CMD_STATUS_ST);
+
 		ddi_put32(ahci_ctlp->ahcictl_ahci_acc_handle,
 		    (uint32_t *)AHCI_PORT_PxCMD(ahci_ctlp, port),
 		    port_cmd_status | AHCI_CMD_STATUS_POD);
@@ -8040,9 +8056,6 @@ out0:
  * receiving a device, or a connected port having its device removed.
  * This bit is only valid if the port supports cold presence detect as
  * indicated by PxCMD.CPD set to '1'.
- *
- * At the moment, this interrupt is not needed and disabled and we just
- * log the debug message.
  */
 static int
 ahci_intr_cold_port_detect(ahci_ctl_t *ahci_ctlp,
@@ -8096,6 +8109,11 @@ ahci_intr_cold_port_detect(ahci_ctl_t *ahci_ctlp,
 		mutex_enter(&ahci_portp->ahciport_mutex);
 
 	} else {
+		port_cmd_status &= ~AHCI_CMD_STATUS_POD;
+		ddi_put32(ahci_ctlp->ahcictl_ahci_acc_handle,
+		    (uint32_t *)AHCI_PORT_PxCMD(ahci_ctlp, port),
+		    port_cmd_status);
+
 		sdevice.satadev_state = SATA_PSTATE_PWROFF;
 
 		AHCIDBG(AHCIDBG_INTR, ahci_ctlp,
