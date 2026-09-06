@@ -145,7 +145,7 @@ tsc_calibrate_hpet(uint64_t *freqp)
  */
 static tsc_calibrate_t tsc_calibration_hpet = {
 	.tscc_source = "HPET",
-	.tscc_preference = 1,
+	.tscc_preference = 50,
 	.tscc_calibrate = tsc_calibrate_hpet,
 };
 TSC_CALIBRATION_SOURCE(tsc_calibration_hpet);
