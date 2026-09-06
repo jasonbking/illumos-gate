@@ -34,6 +34,7 @@
  * Copyright 2018 Nexenta Systems, Inc.
  * Copyright 2025 Oxide Computer Company
  * Copyright 2024 MNX Cloud, Inc.
+ * Copyright 2026 Jason King
  */
 
 #ifndef _SYS_X86_ARCHEXT_H
@@ -783,6 +784,9 @@ extern "C" {
 #define	IA32_PKG_THERM_INTTERUPT_TR2_VAL(x)	(((x) >> 16) & 0x7f)
 #define	IA32_PKG_THERM_INTERRUPT_TR2_IE		0x00800000
 #define	IA32_PKG_THERM_INTERRUPT_PL_NE		0x01000000
+
+#define	MSR_IA32_PLATFORM_INFO			0x0ce
+#define	IA32_PLAT_INFO_MAX_NONTURBO_RATIO(x)	(((x) >> 8) & 0xff)
 
 /*
  * AMD Performance counters
@@ -1596,6 +1600,9 @@ typedef enum x86_uarchrev {
 #define	INTC_MODEL_BROADWELL_XEON	0x4f
 #define	INTC_MODEL_BROADWELL_XEON_D	0x56
 
+#define	INTC_MODEL_KNIGHTS_MILL		0x85
+#define	INTC_MODEL_KNIGHTS_LANDING	0x57
+
 #define	INTC_MODEL_SKYLAKE_MOBILE	0x4e
 /*
  * Note, this model is shared with Cascade Lake and Cooper Lake.
@@ -1633,6 +1640,8 @@ typedef enum x86_uarchrev {
 #define	INTC_MODEL_METEOR_LAKE		0xaa
 
 #define	INTC_MODEL_EMERALD_RAPIDS	0xcf
+
+#define	INTC_MODEL_SIERRA_FOREST	0xaf
 
 /*
  * Atom Processors

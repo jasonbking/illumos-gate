@@ -26,7 +26,7 @@
 # Copyright 2019 OmniOS Community Edition (OmniOSce) Association.
 # Copyright 2020 Joyent, Inc.
 # Copyright 2026 Oxide Computer Company
-# Copyright 2021 Jason King
+# Copyright 2026 Jason King
 #
 #	This Makefile defines file modules in the directory uts/i86pc
 #	and its children. These are the source files which are i86pc
@@ -123,6 +123,7 @@ CORE_OBJS +=			\
 	timestamp.o		\
 	todpc_subr.o		\
 	tscc_hpet.o		\
+	tscc_msr.o		\
 	tscc_pit.o		\
 	tscc_vmware.o		\
 	trap.o			\
