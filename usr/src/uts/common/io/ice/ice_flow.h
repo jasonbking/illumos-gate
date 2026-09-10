@@ -168,10 +168,13 @@ typedef struct ice_flow_fld_loc {
 #define ICE_FLOW_FV_EXTRACT_SZ		2
 
 typedef struct ice_flow_seg_xtrct {
-	uint8_t		ifsx_prot_id;	/* Protocol ID of extracted header field */
-	uint16_t	ifsx_off;	/* Starting offset of the field in header in bytes */
-	uint8_t		ifs_idx;	/* Index of FV entry used */
-	uint8_t		ifsx_disp;	/* Displacement of field in bits fr. FV entry's start */
+	/* Protocol ID of extacted header field */
+	uint8_t		ifsx_prot_id;
+	/* Starting offset of the field in header in bytes */
+	uint16_t	ifsx_off;
+	uint8_t		ifsx_idx;	/* Index of FV entry used */
+	/* Displacement of field in bits from FV entry's start */
+	uint8_t		ifsx_disp;
 } ice_flow_seg_xtrct_t;
 
 typedef struct ice_flow_fld_info {
@@ -185,8 +188,68 @@ typedef struct ice_flow_seg_info {
 	uint32_t		ifsi_headers;
 	uint64_t		ifsi_match;
 	uint64_t		ifsi_range;
-	icE_flow_fld_info_t	ifsi_fields[ICE_FLOW_FIELD_IDX_MAX];
+	ice_flow_fld_info_t	ifsi_fields[ICE_FLOW_FIELD_IDX_MAX];
 } ice_flow_seg_info_t;
+
+typedef struct ice_flow_prof {
+	uint64_t		ifp_id;
+	ice_flow_dir_t		ifp_dir;
+	uint8_t			ifp_segs_cnt;
+	ice_flow_seg_info_t	ifp_segs[ICE_FLOW_SEG_MAX];
+	ulong_t			ifp_vsis[ICE_MAX_VSI / sizeof (ulong_t) / NBBY];
+	bool			ifp_symm;
+} ice_flow_prof_t;
+
+/* Decoders for ice_prot_id:
+ * - F: First
+ * - I: Inner
+ * - L: Last
+ * - O: Outer
+ * - S: Single
+ */
+typedef enum ice_prot_id {
+	ICE_PROT_ID_INVAL       = 0,
+	ICE_PROT_MAC_OF_OR_S    = 1,
+	ICE_PROT_MAC_O2         = 2,
+	ICE_PROT_MAC_IL         = 4,
+	ICE_PROT_MAC_IN_MAC     = 7,
+	ICE_PROT_ETYPE_OL       = 9,
+	ICE_PROT_ETYPE_IL       = 10,
+	ICE_PROT_PAY            = 15,
+	ICE_PROT_EVLAN_O        = 16,
+	ICE_PROT_VLAN_O         = 17,
+	ICE_PROT_VLAN_IF        = 18,
+	ICE_PROT_MPLS_OL_MINUS_1 = 27,
+	ICE_PROT_MPLS_OL_OR_OS  = 28,
+	ICE_PROT_MPLS_IL        = 29,
+	ICE_PROT_IPV4_OF_OR_S   = 32,
+	ICE_PROT_IPV4_IL        = 33,
+	ICE_PROT_IPV4_IL_IL     = 34,
+	ICE_PROT_IPV6_OF_OR_S   = 40,
+	ICE_PROT_IPV6_IL        = 41,
+	ICE_PROT_IPV6_IL_IL     = 42,
+	ICE_PROT_IPV6_NEXT_PROTO = 43,
+	ICE_PROT_IPV6_FRAG      = 47,
+	ICE_PROT_TCP_IL         = 49,
+	ICE_PROT_UDP_OF         = 52,
+	ICE_PROT_UDP_IL_OR_S    = 53,
+	ICE_PROT_GRE_OF         = 64,
+	ICE_PROT_NSH_F          = 84,
+	ICE_PROT_ESP_F          = 88,
+	ICE_PROT_ESP_2          = 89,
+	ICE_PROT_SCTP_IL        = 96,
+	ICE_PROT_ICMP_IL        = 98,
+	ICE_PROT_ICMPV6_IL      = 100,
+	ICE_PROT_VRRP_F         = 101,
+	ICE_PROT_OSPF           = 102,
+	ICE_PROT_ATAOE_OF       = 114,
+	ICE_PROT_CTRL_OF        = 116,
+	ICE_PROT_LLDP_OF        = 117,
+	ICE_PROT_ARP_OF         = 118,
+	ICE_PROT_EAPOL_OF       = 120,
+	ICE_PROT_META_ID        = 255, /* when offset == metadata */
+	ICE_PROT_INVALID        = 255  /* when offset == ICE_FV_OFFSET_INVAL */
+} ice_prot_id_t;
 
 #ifdef __cplusplus
 }

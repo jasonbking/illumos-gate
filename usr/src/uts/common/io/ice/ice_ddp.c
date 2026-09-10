@@ -46,6 +46,8 @@ static bool ice_ddp_download_pkgs(ice_t *, const void *, uint32_t, uint32_t,
     bool);
 static void ice_ddp_free_data(ice_pkg_data_t *);
 
+static bool ice_init_hw_tbls(ice_t *, uint8_t *, uint32_t);
+
 /*
  * NOTES on what needs to be done:
  *
@@ -466,6 +468,11 @@ ice_ddp_download_cfg(ice_t *ice, ice_pkg_data_t *dp)
 		goto done;
 	}
 
+	if (!ice_init_hw_tbls(ice, p, nbuf)) {
+		ice_error(ice, "failed to process initial DDP package buffers");
+		goto done;
+	}
+
 	ret = true;
 
 done:
@@ -680,4 +687,65 @@ ice_ddp_free_data(ice_pkg_data_t *dp)
 		dp->ipd_sign = NULL;
 		dp->ipd_signlen = 0;
 	}
+}
+
+void
+ice_pkg_iter_section(ice_t *ice, uint8_t *pkgbuf, uint32_t nbuf, uint32_t sid,
+    bool (*cb)(ice_t *, uint8_t *, uint16_t, void *), void *arg)
+{
+	uint32_t i, j;
+
+	for (i = 0; i < nbuf; i++) {
+		uint8_t			*p = pkgbuf;
+		ice_pkg_buf_hdr_t	phdr;
+
+		phdr.ipbh_size = BE_IN16(p);
+		p += sizeof (uint16_t);
+
+		phdr.ipbh.data_end = BE_IN16(p);
+		p += sizeof (uint16_t);
+
+		for (j = 0; j < phdr.ipbh_size; j++) {
+			ice_pkg_sect_t	shdr;
+
+			shdr.ips_type = BE_IN32(p);
+			p += sizeof (uint32_t);
+
+			shdr.ips_offset = BE_IN16(p);
+			p += sizeof (uint16_t);
+
+			shdr.ips_size = BE_IN16(p);
+			p += sizeof (uint16_t);
+
+			if (shdr.ips_offset < 12 || shdr.ips_offset > 4095) {
+				ice_error(ice,
+				    "section %u offset %u is invalid", j,
+				    shdr.ips_offset);
+				return (false);
+			}
+
+			if (shdr.ips_size < 1 || shdr.ips_size > 4084) {
+				ice_error(ice, "section %u size %u is invalid",
+				    j, shdir.ips_size);
+				return (false);
+			}
+
+			if (shdr.ips_type != sid)
+				continue;
+
+			if (!cb(ice, pkgbuf + phdr.ips_offset,
+			    shdr.ips_size, arg)) {
+				return (false);
+			}
+		}
+
+		pkgbuf += ICE_PKG_BUF_LEN;
+	}
+}
+
+static bool
+ice_init_hw_tbls(ice_t *ice, uint8_t *buf, uint32_t nbuf)
+{
+	// TODO
+	return (true);
 }

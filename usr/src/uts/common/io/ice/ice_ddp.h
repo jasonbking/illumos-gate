@@ -125,6 +125,28 @@ typedef struct ice_pkg_sect {
 CTASSERT(sizeof (ice_pkg_sect_t) == 8);
 #define	ICE_PKG_SECT_METADATA	0x80000000
 
+typedef enum ice_block {
+	ICE_BLK_SW = 0,
+	ICE_BLK_ACL,
+	ICE_BLK_FD,
+	ICE_BLK_RSS,
+	ICE_BLK_PE,
+	ICE_BLK_COUNT
+} ice_block_t;
+
+typedef enum ice_sect {
+	ICE_XLT0 = 0,
+	ICE_XLT_KB,
+	ICE_XLT1,
+	ICE_XLT2,
+	ICE_PROF_TCAM,
+	ICE_PROF_REDIR,
+	ICE_VEC_TBL,
+	ICE_CDID_KB,
+	ICE_CDID_REDIR,
+	ICE_SECT_COUNT
+} ice_sect_t;
+
 #ifdef __cplusplus
 }
 #endif
