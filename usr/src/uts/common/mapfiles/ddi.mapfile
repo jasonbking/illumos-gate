@@ -230,6 +230,8 @@ SYMBOL_SCOPE {
 	nodev				{ FLAGS = EXTERN };
 	nulldev				{ FLAGS = EXTERN };
 	nvlist_add_string		{ FLAGS = EXTERN };
+	nvlist_add_uint16		{ FLAGS = EXTERN };
+	nvlist_add_uint32		{ FLAGS = EXTERN };
 	nvlist_alloc			{ FLAGS = EXTERN };
 	nvlist_free			{ FLAGS = EXTERN };
 	panic				{ FLAGS = EXTERN };
@@ -329,6 +331,7 @@ SYMBOL_SCOPE {
 	strcpy				{ FLAGS = EXTERN };
 	strlcpy				{ FLAGS = EXTERN };
 	strlen				{ FLAGS = EXTERN };
+	strnlen				{ FLAGS = EXTERN };
 	timeout				{ FLAGS = EXTERN };
 	untimeout			{ FLAGS = EXTERN };
 	vcmn_err			{ FLAGS = EXTERN };
