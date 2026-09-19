@@ -5297,6 +5297,8 @@ bge_chip_factotum(caddr_t arg)
 		}
 
 		error = bge_factotum_stall_check(bgep);
+		dma_state = bge_check_dma_handle(bgep,
+		    bgep->status_block.dma_hdl);
 		if (dma_state != DDI_FM_OK) {
 			bgep->bge_dma_error = B_TRUE;
 			error = B_TRUE;
