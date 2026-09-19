@@ -56,20 +56,6 @@ INSTALL_TARGET	= $(BINARY) $(ROOTMODULE) $(ROOT_CONFFILE)
 #
 #	Overrides
 #
-#
-# For now, disable these warnings; maintainers should endeavor
-# to investigate and remove these for maximum coverage.
-# Please do not carry these forward to new Makefiles.
-#
-
-CERRWARN	+= $(CNOWARN_UNINIT)
-CERRWARN	+= -_gcc=-Wno-switch
-CERRWARN	+= -_gcc=-Wno-parentheses
-CERRWARN       += -_gcc=-Wno-unused-variable
-CERRWARN       += -_gcc=-Wno-unused-function
-
-# 3rd party source
-SMOFF += all_func_returns
 
 #
 # Driver depends on MAC

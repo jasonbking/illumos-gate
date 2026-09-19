@@ -362,7 +362,7 @@ bge_send_serial(bge_t *bgep, send_ring_t *srp)
 	uint64_t txfill_next;
 	uint32_t count;
 	uint32_t tx_next;
-	sw_sbd_t *ssbdp;
+	sw_sbd_t *ssbdp = NULL;
 	bge_status_t *bsp;
 	bge_sbd_t *hw_sbd_p;
 	bge_queue_item_t *txbuf_item;

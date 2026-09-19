@@ -2425,7 +2425,7 @@ bge_ape_driver_state_change(bge_t *bgep, int mode)
 
 	event |= APE_EVENT_STATUS_DRIVER_EVNT | APE_EVENT_STATUS_STATE_CHNGE;
 
-	bge_ape_send_event(bgep, event);
+	(void) bge_ape_send_event(bgep, event);
 }
 
 #undef	BGE_DBG
@@ -2456,15 +2456,8 @@ bge_init_recv_rule(bge_t *bgep)
 int
 bge_chip_id_init(bge_t *bgep)
 {
-	char buf[MAXPATHLEN];		/* any risk of stack overflow?	*/
 	boolean_t dev_ok;
 	chip_id_t *cidp;
-	uint32_t subid;
-	char *devname;
-	char *sysname;
-	int *ids;
-	int err;
-	uint_t i;
 
 	dev_ok = B_FALSE;
 	cidp = &bgep->chipid;
@@ -3441,12 +3434,14 @@ bge_sync_mac_modes(bge_t *bgep)
 	 * For BCM5785, we need to configure the link status in the MI Status
 	 * register with a write command when auto-polling is disabled.
 	 */
-	if (bgep->chipid.device == DEVICE_ID_5785)
-		if (bgep->param_link_speed == 10)
+	if (bgep->chipid.device == DEVICE_ID_5785) {
+		if (bgep->param_link_speed == 10) {
 			bge_reg_put32(bgep, MI_STATUS_REG, MI_STATUS_LINK
 			    | MI_STATUS_10MBPS);
-		else
+		} else {
 			bge_reg_put32(bgep, MI_STATUS_REG, MI_STATUS_LINK);
+		}
+	}
 }
 
 /*
@@ -3639,8 +3634,6 @@ bge_chip_stop_nonblocking(bge_t *bgep)
 void
 bge_chip_stop(bge_t *bgep, boolean_t fault)
 {
-	bge_regno_t regno;
-	bge_regno_t *rbp;
 	boolean_t ok = B_TRUE;
 
 	BGE_TRACE(("bge_chip_stop($%p)",
@@ -3736,7 +3729,7 @@ bge_poll_firmware(bge_t *bgep)
 {
 	uint64_t magic;
 	uint64_t mac;
-	uint32_t gen, val;
+	uint32_t gen = 0, val;
 	uint32_t i;
 
 	/*
@@ -3920,7 +3913,9 @@ bge_chip_reset(bge_t *bgep, boolean_t enable_dma)
 		BGE_DEBUG(("%s: fail to acquire nvram lock",
 			bgep->ifname));
 
-	bge_ape_lock(bgep, BGE_APE_LOCK_GRC);
+	if (bge_ape_lock(bgep, BGE_APE_LOCK_GRC) != 0) {
+		BGE_DEBUG(("%s: failed to acquire grc lock", bgep->ifname));
+	}
 
 #ifdef BGE_IPMI_ASF
 	if (!bgep->asf_enabled) {
@@ -4211,7 +4206,6 @@ bge_chip_start(bge_t *bgep, boolean_t reset_phys)
 	uint64_t ring;
 	uint32_t reg;
 	uint32_t regval;
-	uint32_t mhcr;
 	int retval = DDI_SUCCESS;
 	int i;
 
@@ -4797,7 +4791,7 @@ bge_chip_start(bge_t *bgep, boolean_t reset_phys)
 		if (bge_phys_update(bgep) == DDI_FAILURE)
 			retval = DDI_FAILURE;
 		/* forcing a mac link update here */
-		bge_phys_check(bgep);
+		(void) bge_phys_check(bgep);
 		bgep->link_state = (bgep->param_link_up) ? LINK_STATE_UP :
 		                                           LINK_STATE_DOWN;
 		bge_sync_mac_modes(bgep);
@@ -5505,6 +5499,10 @@ bge_chip_peek_cfg(bge_t *bgep, bge_peekpoke_t *ppd)
 	case 8:
 		regval = pci_config_get64(bgep->cfg_handle, regno);
 		break;
+
+	default:
+		regval = 0;
+		break;
 	}
 
 	ppd->pp_acc_data = regval;
@@ -5567,6 +5565,10 @@ bge_chip_peek_reg(bge_t *bgep, bge_peekpoke_t *ppd)
 
 	case 8:
 		regval = ddi_get64(bgep->io_handle, regaddr);
+		break;
+
+	default:
+		regval = 0;
 		break;
 	}
 
@@ -5636,6 +5638,10 @@ bge_chip_peek_nic(bge_t *bgep, bge_peekpoke_t *ppd)
 
 	case 8:
 		regval = ddi_get64(bgep->io_handle, regaddr);
+		break;
+
+	default:
+		regval = 0;
 		break;
 	}
 
@@ -5781,6 +5787,10 @@ bge_chip_peek_mem(bge_t *bgep, bge_peekpoke_t *ppd)
 	case 8:
 		regval = *(uint64_t *)vaddr;
 		break;
+
+	default:
+		regval = 0;
+		break;
 	}
 
 	BGE_DEBUG(("bge_chip_peek_mem($%p, $%p) peeked 0x%llx from $%p",
@@ -5828,7 +5838,7 @@ bge_pp_ioctl(bge_t *bgep, int cmd, mblk_t *mp, struct iocblk *iocp)
 {
 	void (*ppfn)(bge_t *bgep, bge_peekpoke_t *ppd);
 	bge_peekpoke_t *ppd;
-	dma_area_t *areap;
+	dma_area_t *areap = NULL;
 	uint64_t sizemask;
 	uint64_t mem_va;
 	uint64_t maxoff;
