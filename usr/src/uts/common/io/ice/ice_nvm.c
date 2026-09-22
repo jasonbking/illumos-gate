@@ -318,7 +318,9 @@ typedef struct ice_orom_civd {
 	uint8_t		icv_name_len;
 	uint16_t	icv_name[32];
 } __packed ice_orom_civd_t;
+#ifndef __CHECKER__
 CTASSERT(sizeof (ice_orom_civd_t) == 74);
+#endif
 
 #define	ICE_OROM_CIVD_SCAN_STEP	512
 

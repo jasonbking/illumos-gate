@@ -1708,9 +1708,13 @@ ice_cmd_get_link_status(ice_t *ice, ice_link_status_t *linkp, ice_lse_t lse)
 	ice_cq_cmd_get_link_status_t	*status;
 	const char			*lsestr = "";
 	uint16_t			flags;
+	uint16_t			len = ICE_LINK_STATUS_LEN_V1;
 
-	ice_cmd_indirect_init(&desc, ICE_CQ_OP_GET_LINK_STATUS, sizeof (*linkp),
-	    false);
+	if (ice->ice_mac_type == ICE_MAC_E830) {
+		len = ICE_LINK_STATUS_LEN_V2;
+	}
+
+	ice_cmd_indirect_init(&desc, ICE_CQ_OP_GET_LINK_STATUS, len, false);
 	status = &desc.icqd_command.icc_get_link_status;
 	switch (lse) {
 	case ICE_LSE_NO_CHANGE:
