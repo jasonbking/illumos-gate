@@ -364,7 +364,6 @@ ice_get_bool_prop(ice_t *ice, char *prop, bool def)
 static void
 ice_properties_init(ice_t *ice)
 {
-	/* XXX Come here and handle things like mtu, etc. */
 	ice->ice_itr_rx = ICE_ITR_RX_DEFAULT;
 	ice->ice_itr_tx = ICE_ITR_TX_DEFAULT;
 	ice->ice_itr_other = ICE_ITR_OTHER_DEFAULT;
@@ -430,8 +429,6 @@ ice_firmware_check(ice_t *ice, bool owner)
 	    ice->ice_device->id_fwinfo.ifi_fw_major,
 	    ice->ice_device->id_fwinfo.ifi_fw_minor,
 	    ice->ice_device->id_fwinfo.ifi_fw_patch);
-
-	/* XXX Check if both are version 1? */
 
 	return (B_TRUE);
 }
@@ -907,8 +904,9 @@ ice_link_state_set(ice_t *ice, link_state_t state)
 		return;
 
 	ice->ice_link_cur_state = state;
+
 	/*
-	 * XXX This can fire while coming up in attach before we've actually
+	 * This can fire while coming up in attach before we've actually
 	 * registered with MAC.
 	 */
 	if (ice->ice_mac_hdl != NULL) {
