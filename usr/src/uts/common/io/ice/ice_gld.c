@@ -1297,7 +1297,7 @@ ice_mac_register(ice_t *ice)
 	regp->m_dst_addr = NULL;
 	regp->m_callbacks = &ice_m_callbacks;
 	regp->m_min_sdu = 0;
-	regp->m_max_sdu = ice->ice_max_mtu;
+	regp->m_max_sdu = ice->ice_mtu;
 	regp->m_pdata = NULL;
 	regp->m_pdata_size = 0;
 	regp->m_priv_props = ice_priv_props;
