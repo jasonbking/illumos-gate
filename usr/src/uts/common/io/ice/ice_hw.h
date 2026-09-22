@@ -615,7 +615,14 @@ CTASSERT(sizeof (ice_phy_abilities_t) == 560);
 
 /*
  * Link Status data structures
+ *
+ * The E830 (according to the FreeBSD driver) has addtitional
+ * fields not present on the E810 or E825 NICs (and not present on the E810
+ * datasheet). On the non-E830 NICs we just ignore those fields (as they won't
+ * be populated by the NIC).
  */
+#define	ICE_LINK_STATUS_LEN_V1	32
+#define	ICE_LINK_STATUS_LEN_V2	56
 typedef struct ice_link_status {
 	uint8_t		ils_media;
 	uint8_t		ils_rsvd;
@@ -627,9 +634,20 @@ typedef struct ice_link_status {
 	uint8_t		ils_fec;
 	uint8_t		ils_extpower;
 	uint16_t	ils_curspeed;
-	uint32_t	ils_rsvd1;
+	uint16_t	ils_rsvd1;
+	uint8_t		ils_ext_fec_status;
+	uint8_t		ils_rsvd2;
 	uint8_t		ils_phy[16];
-} ice_link_status_t;
+
+	/* E830 fields */
+	uint8_t		ils_lp_phy[16];
+	uint8_t		ils_lp_fec_adv;
+	uint8_t		ils_lp_fec_req;
+	uint8_t		ils_lp_flowcontrol;
+	uint8_t		ils_rsvd3[5];
+} __packed ice_link_status_t;
+CTASSERT(offsetof(ice_link_status_t, ils_lp_phy) == ICE_LINK_STATUS_LEN_V1);
+CTASSERT(sizeof (ice_link_status_t) == ICE_LINK_STATUS_LEN_V2);
 
 #define	ICE_LINK_STATUS_LINK_UP			0x01
 #define	ICE_LINK_STATUS_LINK_PHY_FAULT		0x02
@@ -674,6 +692,9 @@ typedef struct ice_link_status {
 #define	ICE_LINK_SPEED_50GB		0x0200
 #define	ICE_LINK_SPEED_100GB		0x0400
 #define	ICE_LINK_SPEED_200GB		0x0800
+#define	ICE_LINK_SPEED_UNKNOWN		0xf000
+
+#define	ICE_LINK_RS_272_FEC_EN		0x01
 
 /*
  * PHY types
