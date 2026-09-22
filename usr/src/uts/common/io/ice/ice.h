@@ -1141,6 +1141,8 @@ typedef struct ice {
 	ice_controlq_t	ice_asq;
 	ice_controlq_t	ice_arq;
 
+	uint32_t	ice_ctlq_recovering;
+
 	/*
 	 * Switch Information
 	 */

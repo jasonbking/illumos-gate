@@ -54,6 +54,14 @@ CTASSERT(ICE_REG_PC_FW_ATQLEN_ATQENABLE == ICE_REG_PC_FW_ARQLEN_ATQENABLE);
 clock_t icq_controlq_delay = 10000;	/* 10ms in us */
 uint_t icq_controlq_count = 100;
 
+/*
+ * How many times to retry and delay between retries when the controlq
+ * encounters a critical error. From section 9.5.10.1, the queue is
+ * stopped when this happens, and we can try to reset the queue.
+ */
+uint_t icq_controlq_reinit_retries = 10;
+clock_t icq_controlq_reinit_delay = 100000;	/* 100ms in us */
+
 typedef struct ice_cq_errmap {
 	ice_cq_errno_t	ier_errno;
 	const char	*ier_msg;
@@ -429,6 +437,72 @@ ice_controlq_rq_desc_reset(ice_controlq_t *cqp, uint_t ent)
 	    LE_32(dmap->idb_cookie.dmac_laddress & UINT32_MAX);
 }
 
+/*
+ * Stop and reprogram both control queues using the DMA memory that is
+ * already allocated for them, then confirm that firmware is responsive
+ * again by issuing a get-version command over the (freshly reprogrammed)
+ * admin send queue.
+ *
+ * Must be called with neither control queue's icq_lock held.
+ */
+static bool
+ice_controlq_reinit(ice_t *ice)
+{
+	uint_t i;
+	ice_fw_info_t ifi;
+
+	mutex_enter(&ice->ice_asq.icq_lock);
+	ice_controlq_stop(ice, &ice->ice_asq);
+	ice_controlq_program(ice, &ice->ice_asq, 0);
+	ice->ice_asq.icq_flags &= ~ICE_CONTROLQ_F_DEAD;
+	cv_broadcast(&ice->ice_asq.icq_cv);
+	mutex_exit(&ice->ice_asq.icq_lock);
+
+	mutex_enter(&ice->ice_arq.icq_lock);
+	ice_controlq_stop(ice, &ice->ice_arq);
+	for (i = 0; i < ice->ice_arq.icq_nents; i++) {
+		ice_controlq_rq_desc_reset(&ice->ice_arq, i);
+	}
+	ICE_DMA_SYNC(&ice->ice_arq.icq_dma, DDI_DMA_SYNC_FORDEV);
+	ice_controlq_program(ice, &ice->ice_arq, ice->ice_arq.icq_nents - 1);
+	ice->ice_arq.icq_flags &= ~ICE_CONTROLQ_F_DEAD;
+	cv_broadcast(&ice->ice_arq.icq_cv);
+	mutex_exit(&ice->ice_arq.icq_lock);
+
+	return (ice_cmd_get_version(ice, &ifi));
+}
+
+/*
+ * Recover the control queues after a critical firmware error. Per the
+ * datasheet, firmware requires that "software reads and reports the error,
+ * and then resets the queue". A single reset attempt may race with
+ * firmware still recovering from whatever condition caused the critical
+ * error, so retry with delays before giving up.
+ */
+static bool
+ice_controlq_recover(ice_t *ice)
+{
+	uint_t i;
+
+	ice_error(ice, "critical control queue error detected, attempting "
+	    "to recover");
+
+	for (i = 0; i < icq_controlq_reinit_retries; i++) {
+		if (ice_controlq_reinit(ice)) {
+			ice_error(ice, "!recovered control queue after "
+			    "critical firmware error (%u attempt%s)", i + 1,
+			    i == 0 ? "" : "s");
+			return (true);
+		}
+
+		delay(drv_usectohz(icq_controlq_reinit_delay));
+	}
+
+	ice_error(ice, "failed to recover control queue after critical "
+	    "firmware error after %u attempts", icq_controlq_reinit_retries);
+	return (false);
+}
+
 void
 ice_controlq_fini(ice_t *ice)
 {
@@ -756,7 +830,22 @@ ice_controlq_rq_process(ice_t *ice)
 
 	if ((len & ICE_REG_PC_FW_ARQLEN_ATQCRIT) != 0) {
 		ice_error(ice, "admin rq critical error");
-		/* XXX How to handle */
+		mutex_exit(&cqp->icq_lock);
+
+		/*
+		 * Per the E810 datasheet (9.5.10.1, "Critical Error
+		 * Indication"), firmware has already stopped this queue;
+		 * recovery requires the driver to reset it. The receive
+		 * queue is fully reprogrammed as part of that recovery, so
+		 * there is nothing left in it for us to walk afterwards.
+		 * See the comment in ice_cmd_submit() on ice_ctlq_recovering.
+		 */
+		if (atomic_cas_32(&ice->ice_ctlq_recovering, 0, 1) == 0) {
+			(void) ice_controlq_recover(ice);
+			atomic_and_32(&ice->ice_ctlq_recovering, 0);
+		}
+
+		return (ret);
 	}
 
 	head = ice_reg_read(ice, cqp->icq_reg_head);
@@ -930,11 +1019,34 @@ ice_cmd_submit(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc, void *buf,
 	cqp->icq_flags &= ~ICE_CONTROLQ_F_BUSY;
 
 	if (cqp->icq_head != cqp->icq_tail) {
-		ice_error(ice, "Command 0x%x timed out! Marking "
-		    "adminq dead", LE_16(desc->icqd_opcode));
+		bool critical;
+		uint32_t len;
+
+		len = ice_reg_read(ice, cqp->icq_reg_len);
+		critical = (len & ICE_REG_PC_FW_ATQLEN_ATQCRIT) != 0;
+
+		ice_error(ice, "Command 0x%x timed out%s! Marking adminq dead",
+		    LE_16(desc->icqd_opcode),
+		    critical ? " due to a critical firmware error" : "");
 		cqp->icq_flags |= ICE_CONTROLQ_F_DEAD;
 		cv_signal(&cqp->icq_cv);
 		mutex_exit(&cqp->icq_lock);
+
+		/*
+		 * If firmware reported a critical error, attempt to recover
+		 * the control queues per the E810 datasheet (9.5.10.1).
+		 * ice_ctlq_recovering is used to claim the right to recover
+		 * so that the get-version liveness check that
+		 * ice_controlq_recover() issues (which comes back through
+		 * here on the admin send queue) cannot recursively trigger
+		 * another recovery attempt if it also times out.
+		 */
+		if (critical &&
+		    atomic_cas_32(&ice->ice_ctlq_recovering, 0, 1) == 0) {
+			(void) ice_controlq_recover(ice);
+			atomic_and_32(&ice->ice_ctlq_recovering, 0);
+		}
+
 		return (false);
 	}
 
