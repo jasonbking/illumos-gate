@@ -765,8 +765,13 @@ ice_controlq_health_status_event(ice_t *ice, ice_controlq_t *cqp, uint_t ent)
 			    "data2", DATA_TYPE_UINT32, data2,
 			    NULL);
 
+			/*
+			 * For now, these are treated as informational only.
+			 * With more experience, we may wish to have
+			 * some events mark the device degraded.
+			 */
 			ddi_fm_service_impact(ice->ice_dip,
-			    DDI_SERVICE_DEGRADED);
+			    DDI_SERVICE_UNAFFECTED);
 		}
 	}
 }
