@@ -763,11 +763,116 @@ ice_m_setprop_private(ice_t *ice, const char *pr_name, uint_t pr_valsize,
 }
 
 static int
+ice_update_fec(ice_t *ice, link_fec_t fec)
+{
+	ice_phy_abilities_t abilities;
+	ice_phy_config_t cfg;
+	link_fec_t fec_requested;
+	uint8_t link_fec;
+	boolean_t none_fec = B_FALSE;
+
+	ASSERT(MUTEX_HELD(&ice->ice_lse_lock));
+
+	if (fec == ice->ice_fec_requested)
+		return (0);
+
+	fec_requested = fec;
+
+	if (!ice_cmd_get_phy_abilities(ice, &abilities, false))
+		return (EIO);
+
+	/*
+	 * Start from the FEC options the PHY reports it is capable of (see
+	 * 3.2.4.1.4), and narrow that down to the ability/request bits
+	 * appropriate for the requested mode
+	 */
+	link_fec = abilities.ipa_link_fec;
+
+	if ((fec & LINK_FEC_AUTO) != 0) {
+		fec &= ~LINK_FEC_AUTO;
+	} else if ((fec & LINK_FEC_NONE) != 0) {
+		link_fec &= ~ICE_PHY_FEC_MASK;
+		none_fec = B_TRUE;
+		fec &= ~LINK_FEC_NONE;
+	} else {
+		uint8_t mask = 0;
+		uint8_t req = 0;
+
+		if ((fec & LINK_FEC_BASE_R) != 0) {
+			mask |= ICE_PHY_FEC_10G_KR_40G_KR4_EN |
+			    ICE_PHY_FEC_25G_KR_CLAUSE74_EN;
+			req |= ICE_PHY_FEC_10G_KR_40G_KR4_REQ |
+			    ICE_PHY_FEC_25G_KR_REQ;
+			fec &= ~LINK_FEC_BASE_R;
+		}
+
+		if ((fec & LINK_FEC_RS) != 0) {
+			mask |= ICE_PHY_FEC_25G_RS_CLAUSE91_EN;
+			req |= ICE_PHY_FEC_25G_RS_528_REQ |
+			    ICE_PHY_FEC_25G_RS_544_REQ;
+			fec &= ~LINK_FEC_RS;
+		}
+
+		if (mask == 0)
+			return (EINVAL);
+
+		link_fec = (link_fec & mask) | req;
+	}
+
+	/*
+	 * If fec is not zero now, then the caller specified an invalid FEC
+	 * mode or combination of modes.
+	 */
+	if (fec != 0)
+		return (EINVAL);
+
+	bzero(&cfg, sizeof (cfg));
+	bcopy(abilities.ipa_type, cfg.ipc_type, sizeof (cfg.ipc_type));
+	cfg.ipc_caps = abilities.ipa_caps;
+	cfg.ipc_lpc = abilities.ipa_lpc;
+	cfg.ipc_eee = abilities.ipa_eee;
+	cfg.ipc_eeer = abilities.ipa_eeer;
+	cfg.ipc_link_fec = link_fec;
+	cfg.ipc_cmte = abilities.ipa_cmte;
+
+	if (none_fec) {
+		cfg.ipc_caps &= ~ICE_PHY_CAP_AUTO_FEC_ENABLED;
+	}
+
+	/*
+	 * Ask firmware to bring the link back up with the new PHY
+	 * configuration applied and require that it actually be enabled.
+	 */
+	cfg.ipc_caps |= ICE_PHY_CAP_LINK_ENABLED | ICE_PHY_CFG_AUTO_LINK_UPDATE;
+
+	if (!ice_cmd_set_phy_config(ice, &cfg))
+		return (EIO);
+
+	ice->ice_fec_requested = fec_requested;
+
+	return (0);
+}
+
+static link_fec_t
+ice_fec_to_linkfec(const ice_link_status_t *link)
+{
+	if ((link->ils_fec &
+	    (ICE_LINK_FEC_RS_528_ENA | ICE_LINK_FEC_RS_544_ENA)) != 0)
+		return (LINK_FEC_RS);
+
+	if ((link->ils_fec & ICE_LINK_FEC_KR_ENA) != 0)
+		return (LINK_FEC_BASE_R);
+
+	return (LINK_FEC_NONE);
+}
+
+static int
 ice_m_setprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
     uint_t pr_valsize, const void *pr_val)
 {
 	ice_t		*ice = arg;
 	uint32_t	new_mtu;
+	link_fec_t	fec;
 	int		ret = 0;
 
 	/*
@@ -814,6 +919,14 @@ ice_m_setprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 		if (ret == 0) {
 			ice_update_mtu(ice, new_mtu);
 		}
+		break;
+
+	case MAC_PROP_EN_FEC_CAP:
+		bcopy(pr_val, &fec, sizeof (fec));
+
+		mutex_enter(&ice->ice_lse_lock);
+		ret = ice_update_fec(ice, fec);
+		mutex_exit(&ice->ice_lse_lock);
 		break;
 
 	case MAC_PROP_PRIVATE:
@@ -918,7 +1031,23 @@ ice_m_getprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 		bcopy(&ice->ice_mtu, pr_val, sizeof (uint32_t));
 		break;
 
-	/* TODO MAC_PROP_{ADV,EN}_FEC_CAP */
+	case MAC_PROP_ADV_FEC_CAP:
+		if (pr_valsize < sizeof (link_fec_t)) {
+			ret = EOVERFLOW;
+			break;
+		}
+
+		*(link_fec_t *)pr_val = ice_fec_to_linkfec(&ice->ice_link);
+		break;
+
+	case MAC_PROP_EN_FEC_CAP:
+		if (pr_valsize < sizeof (link_fec_t)) {
+			ret = EOVERFLOW;
+			break;
+		}
+
+		*(link_fec_t *)pr_val = ice->ice_fec_requested;
+		break;
 
 	/*
 	 * There doesn't appear to be a way to manage or manipulate
@@ -1022,6 +1151,16 @@ ice_m_propinfo(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 
 	case MAC_PROP_MTU:
 		mac_prop_info_set_range_uint32(hdl, 0, ice->ice_max_mtu);
+		break;
+
+	case MAC_PROP_ADV_FEC_CAP:
+		mac_prop_info_set_perm(hdl, MAC_PROP_PERM_READ);
+		mac_prop_info_set_default_fec(hdl, LINK_FEC_AUTO);
+		break;
+
+	case MAC_PROP_EN_FEC_CAP:
+		mac_prop_info_set_perm(hdl, MAC_PROP_PERM_RW);
+		mac_prop_info_set_default_fec(hdl, LINK_FEC_AUTO);
 		break;
 
 	case MAC_PROP_PRIVATE:

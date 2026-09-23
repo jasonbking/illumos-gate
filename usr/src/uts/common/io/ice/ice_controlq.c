@@ -1818,6 +1818,34 @@ ice_cmd_get_phy_abilities(ice_t *ice, ice_phy_abilities_t *datap,
 	return (true);
 }
 
+/*
+ * Per the E810 datasheet (3.2.4.1.1), this only takes effect on the link
+ * once the caller either issues a Setup Link and Restart
+ * Auto-Negotiation command (ice_cmd_setup_link()) or sets
+ * ICE_PHY_CFG_AUTO_LINK_UPDATE in cfgp->ipc_caps to have firmware issue it
+ * automatically.
+ */
+bool
+ice_cmd_set_phy_config(ice_t *ice, const ice_phy_config_t *cfgp)
+{
+	ice_cq_desc_t		desc;
+	ice_phy_config_t	data;
+
+	bcopy(cfgp, &data, sizeof (data));
+	data.ipc_eee = LE_16(data.ipc_eee);
+	data.ipc_eeer = LE_16(data.ipc_eeer);
+
+	ice_cmd_indirect_init(&desc, ICE_CQ_OP_SET_PHY_CONFIG, sizeof (data),
+	    true);
+
+	if (!ice_cmd_submit(ice, &ice->ice_asq, &desc, &data,
+	    ICE_CMD_COPY_TO_DEV)) {
+		return (false);
+	}
+
+	return (ice_cmd_ckerr(ice, &desc, NULL, "set PHY config"));
+}
+
 bool
 ice_cmd_get_link_status(ice_t *ice, ice_link_status_t *linkp, ice_lse_t lse)
 {

@@ -1134,6 +1134,8 @@ typedef struct ice {
 	uint64_t		ice_link_cur_speed;
 	link_duplex_t		ice_link_cur_duplex;
 	link_flowctrl_t		ice_link_cur_fctl;
+	link_fec_t		ice_link_cur_fec;	/* negotiated FEC */
+	link_fec_t		ice_fec_requested;	/* user requested FEC */
 
 	/*
 	 * Control Queue
@@ -1328,6 +1330,7 @@ extern bool ice_cmd_release_change_lock(ice_t *);
 extern bool ice_cmd_get_caps(ice_t *, bool, uint_t *, ice_capability_t **);
 extern bool ice_cmd_mac_read(ice_t *, uint8_t *);
 extern bool ice_cmd_get_phy_abilities(ice_t *, ice_phy_abilities_t *, bool);
+extern bool ice_cmd_set_phy_config(ice_t *, const ice_phy_config_t *);
 extern bool ice_cmd_set_max_mtu(ice_t *, uint16_t);
 
 typedef enum {

@@ -602,6 +602,51 @@ CTASSERT(sizeof (ice_phy_abilities_t) == 560);
 #define	ICE_PHY_CAP_LESM_ENABLED	0x40
 #define	ICE_PHY_CAP_AUTO_FEC_ENABLED	0x80
 
+/*
+ * FEC option bits, as reported by ice_phy_abilities_t's ipa_link_fec (Get
+ * PHY Abilities, byte 21) and as accepted by ice_phy_config_t's ipc_link_fec
+ * (Set PHY Config, byte 22). Both fields share the same bit layout (see the
+ * sections 3.2.4.1.1 and 3.2.4.1.4).
+ */
+#define	ICE_PHY_FEC_10G_KR_40G_KR4_EN	0x01
+#define	ICE_PHY_FEC_10G_KR_40G_KR4_REQ	0x02
+#define	ICE_PHY_FEC_25G_RS_528_REQ	0x04
+#define	ICE_PHY_FEC_25G_KR_REQ		0x08
+#define	ICE_PHY_FEC_25G_RS_544_REQ	0x10
+#define	ICE_PHY_FEC_DIS			0x20
+#define	ICE_PHY_FEC_25G_RS_CLAUSE91_EN	0x40
+#define	ICE_PHY_FEC_25G_KR_CLAUSE74_EN	0x80
+#define	ICE_PHY_FEC_MASK		0xdf
+
+/*
+ * Set PHY Config (0x0601) command data structure (Table 3-28)/
+ * This mirrors ice_phy_abilities_t (the Get PHY
+ * Abilities response), but is only 24 bytes: it lacks the module/PHY
+ * identification fields that follow ipa_link_fec in ice_phy_abilities_t.
+ * Most of ipc_caps' bits share both the value and meaning of the
+ * corresponding ICE_PHY_CAP_* bits in ipa_caps; the exception is bit 0x20,
+ * which is documented separately below.
+ */
+typedef struct ice_phy_config {
+	uint8_t		ipc_type[16];
+	uint8_t		ipc_caps;
+	uint8_t		ipc_lpc;
+	uint16_t	ipc_eee;
+	uint16_t	ipc_eeer;
+	uint8_t		ipc_link_fec;
+	uint8_t		ipc_cmte;
+} ice_phy_config_t;
+CTASSERT(sizeof (ice_phy_config_t) == 24);
+
+/*
+ * Unlike the other ipc_caps bits, bit 0x20 does not carry over the meaning
+ * of ICE_PHY_CAP_MOD_QUAL_ENABLED from ice_phy_abilities_t's ipa_caps. On
+ * Set PHY Config it instead requests that firmware automatically issue the
+ * Setup Link and Restart Auto-Negotiation command after applying this
+ * configuration.
+ */
+#define	ICE_PHY_CFG_AUTO_LINK_UPDATE	0x20
+
 #define	ICE_PHY_EEE_100BASE_TX		0x0001
 #define	ICE_PHY_EEE_1000BASE_T		0x0002
 #define	ICE_PHY_EEE_10GBASE_T		0x0004
@@ -666,6 +711,14 @@ CTASSERT(sizeof (ice_link_status_t) == ICE_LINK_STATUS_LEN_V2);
 #define	ICE_LINK_AUTONEG_PAUSE_TX	0x20
 #define	ICE_LINK_AUTONEG_PAUSE_RX	0x40
 #define	ICE_LINK_AUTONEG_MOD_QUALIFIED	0x80
+
+/*
+ * Negotiated FEC mode bits for ice_link_status_t's ils_fec (Get Link Status,
+ * byte 8; section 3.2.4.1.5).
+ */
+#define	ICE_LINK_FEC_KR_ENA		0x01
+#define	ICE_LINK_FEC_RS_528_ENA		0x02
+#define	ICE_LINK_FEC_RS_544_ENA		0x04
 
 #define	ICE_LINK_PHY_TEMP_ALARM		0x01
 #define	ICE_LINK_EXCESSIVE_LINK		0x02
