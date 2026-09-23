@@ -930,6 +930,7 @@ ice_link_prop_update(ice_t *ice)
 		ice->ice_link_cur_duplex = LINK_DUPLEX_UNKNOWN;
 		ice->ice_link_cur_speed = 0;
 		ice->ice_link_cur_fctl = LINK_FLOWCTRL_NONE;
+		ice->ice_link_cur_fec = LINK_FEC_NONE;
 		return;
 	}
 
@@ -987,6 +988,19 @@ ice_link_prop_update(ice_t *ice)
 		ice->ice_link_cur_fctl = LINK_FLOWCTRL_RX;
 	} else {
 		ice->ice_link_cur_fctl = LINK_FLOWCTRL_NONE;
+	}
+
+	/*
+	 * Report the FEC mode that was actually negotiated on the link (see
+	 * 3.2.4.1.5, Get Link Status byte 8), for MAC_PROP_ADV_FEC_CAP.
+	 */
+	if ((link->ils_fec &
+	    (ICE_LINK_FEC_RS_528_ENA | ICE_LINK_FEC_RS_544_ENA)) != 0) {
+		ice->ice_link_cur_fec = LINK_FEC_RS;
+	} else if ((link->ils_fec & ICE_LINK_FEC_KR_ENA) != 0) {
+		ice->ice_link_cur_fec = LINK_FEC_BASE_R;
+	} else {
+		ice->ice_link_cur_fec = LINK_FEC_NONE;
 	}
 }
 
