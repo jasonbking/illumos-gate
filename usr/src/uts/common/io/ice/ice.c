@@ -202,9 +202,9 @@ ice_regs_map(ice_t *ice)
 	}
 
 	bzero(&ice->ice_reg_attr, sizeof (ddi_device_acc_attr_t));
-	ice->ice_reg_attr.devacc_attr_version = DDI_DEVICE_ATTR_V0;
+	ice->ice_reg_attr.devacc_attr_version = DDI_DEVICE_ATTR_V1;
 	ice->ice_reg_attr.devacc_attr_endian_flags = DDI_STRUCTURE_LE_ACC;
-	ice->ice_reg_attr.devacc_attr_version = DDI_STRICTORDER_ACC;
+	ice->ice_reg_attr.devacc_attr_dataorder = DDI_STRICTORDER_ACC;
 	if (DDI_FM_ACC_ERR_CAP(ice->ice_fm_caps)) {
 		ice->ice_reg_attr.devacc_attr_access = DDI_FLAGERR_ACC;
 	} else {
@@ -2106,14 +2106,22 @@ ice_ring_init(ice_t *ice)
 	return (true);
 
 fail_tx:
-	while (i-- > 0)
-		ice_tx_ring_fini(&ice->ice_txr[i - 1]);
+	while (i > 0) {
+		i--;
+		ice_tx_ring_fini(&ice->ice_txr[i]);
+	}
+	kmem_free(ice->ice_txr, ice->ice_num_txq * sizeof (ice_tx_ring_t));
+	ice->ice_txr = NULL;
 
 	i = ice->ice_num_rxq_per_vsi;
 
 fail_rx:
-	while (i-- > 0)
-		ice_rx_ring_fini(&ice->ice_rxr[i - 1]);
+	while (i > 0) {
+		i--;
+		ice_rx_ring_fini(&ice->ice_rxr[i]);
+	}
+	kmem_free(ice->ice_rxr, nrxq * sizeof (ice_rx_ring_t));
+	ice->ice_rxr = NULL;
 
 	return (false);
 }

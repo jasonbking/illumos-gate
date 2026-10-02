@@ -27,7 +27,7 @@
 void
 ice_dma_acc_attr(ice_t *ice, ddi_device_acc_attr_t *accp)
 {
-	accp->devacc_attr_version = DDI_DEVICE_ATTR_V0;
+	accp->devacc_attr_version = DDI_DEVICE_ATTR_V1;
 	accp->devacc_attr_endian_flags = DDI_NEVERSWAP_ACC;
 	accp->devacc_attr_dataorder = DDI_STRICTORDER_ACC;
 
