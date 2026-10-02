@@ -942,6 +942,15 @@ ice_cmd_submit(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc, void *buf,
 	uint_t i;
 	ice_cq_desc_t *hwd;
 	ice_dma_buffer_t *extra = NULL;
+	uint16_t req_len = 0;
+
+	/*
+	 * Save the caller-suppled buffer length to check against the
+	 * length retured by the NIC.
+	 */
+	if (buf != NULL) {
+		req_len = LE_16(desc->icqd_data_len);
+	}
 
 #ifdef	DEBUG
 	if (buf == NULL) {
@@ -978,6 +987,15 @@ ice_cmd_submit(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc, void *buf,
 	cqp->icq_flags |= ICE_CONTROLQ_F_BUSY;
 	mutex_exit(&cqp->icq_lock);
 
+	if (buf != NULL) {
+		/*
+		 * We should never be called with a size that exceeds
+		 * our DMA buffer length.
+		 */
+		extra = &cqp->icq_data_dma[cqp->icq_tail];
+		VERIFY3U(req_len, <=, extra->idb_len);
+	}
+
 	hwd = &cqp->icq_desc[cqp->icq_tail];
 	bcopy(desc, hwd, sizeof (ice_cq_desc_t));
 
@@ -987,20 +1005,16 @@ ice_cmd_submit(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc, void *buf,
 	if (buf != NULL) {
 		ice_cq_cmd_generic_t *gen;
 
-		extra = &cqp->icq_data_dma[cqp->icq_tail];
 		gen = &hwd->icqd_command.icc_generic;
 		gen->iccg_data_high = LE_32(extra->idb_cookie.dmac_laddress >>
 		    32);
 		gen->iccg_data_low = LE_32(extra->idb_cookie.dmac_laddress &
 		    UINT32_MAX);
 
-		/*
-		 * XXX Come back to this, if hw returns a bad value, we'll
-		 * overwrite our buffers, but this gets us off the ground
-		 */
 		bzero(extra->idb_va, extra->idb_len);
 		if ((copy & ICE_CMD_COPY_TO_DEV) != 0) {
-			bcopy(buf, extra->idb_va, LE_16(hwd->icqd_data_len));
+			bcopy(buf, extra->idb_va,
+			    MIN(req_len, LE_16(hwd->icqd_data_len)));
 		}
 		ICE_DMA_SYNC(extra, DDI_DMA_SYNC_FORDEV);
 	}
@@ -1070,11 +1084,31 @@ ice_cmd_submit(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc, void *buf,
 		return (false);
 	}
 
-	bcopy(hwd, desc, sizeof (ice_cq_desc_t));
 	if ((copy & ICE_CMD_COPY_FROM_DEV) != 0) {
+		uint16_t fw_len = LE_16(hwd->icqd_data_len);
+
+		/*
+		 * Firmware reports how many bytes it wrote into the DMA
+		 * buffer via icqd_data_len, check to make sure it's a
+		 * valid value (and won't overrun our buffer).
+		 */
+		if (fw_len > req_len || fw_len > extra->idb_len) {
+			ice_error(ice, "command 0x%x firmware response "
+			    "length %u exceeds request length %u (DMA "
+			    "buffer %lu); marking admin queue dead",
+			    LE_16(hwd->icqd_opcode), fw_len, req_len,
+			    extra->idb_len);
+			cqp->icq_flags |= ICE_CONTROLQ_F_DEAD;
+			cv_signal(&cqp->icq_cv);
+			mutex_exit(&cqp->icq_lock);
+			return (false);
+		}
+
 		ICE_DMA_SYNC(extra, DDI_DMA_SYNC_FORKERNEL);
-		bcopy(extra->idb_va, buf, LE_16(hwd->icqd_data_len));
+		bcopy(extra->idb_va, buf, fw_len);
 	}
+
+	bcopy(hwd, desc, sizeof (ice_cq_desc_t));
 
 	cv_signal(&cqp->icq_cv);
 	mutex_exit(&cqp->icq_lock);

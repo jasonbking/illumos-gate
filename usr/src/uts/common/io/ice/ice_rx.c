@@ -1293,6 +1293,14 @@ fail:
 		ice_dma_free(&rcb->ircb_dma);
 	}
 
+	sz = n_rcbs * sizeof (ice_rx_ctrl_block_t *);
+	kmem_free(ice->ice_free_rcbs, sz);
+	ice->ice_free_rcbs = NULL;
+
+	sz = n_rcbs * sizeof (ice_rx_ctrl_block_t);
+	kmem_free(ice->ice_rcbs, sz);
+	ice->ice_rcbs = NULL;
+
 	mutex_exit(&ice->ice_rxbuf_lock);
 
 	return (false);
@@ -1315,6 +1323,7 @@ ice_rx_stop(ice_t *ice)
 		ice_rx_ctrl_block_t *rcb = &ice->ice_rcbs[i];
 
 		VERIFY3S(rcb->ircb_state, ==, IRXB_FREE);
+		freemsg(rcb->ircb_mp);
 		ice_dma_free(&ice->ice_rcbs[i].ircb_dma);
 	}
 

@@ -349,8 +349,8 @@ ice_m_start(void *arg)
 	ice_tx_start(ice);
 
 	if (!ice_intr_hw_init(ice)) {
-		mutex_exit(&ice->ice_reset_lock);
-		return (EIO);
+		ice_error(ice, "failed to initialize interrupt hardware");
+		goto err;
 	}
 
 	/*
@@ -407,6 +407,10 @@ ice_m_start(void *arg)
 	return (0);
 err:
 	ice_intr_hw_fini(ice);
+	ice_tx_stop(ice);
+	ice_rx_stop(ice);
+	ice->ice_shutdown = true;
+	membar_producer();
 	mutex_exit(&ice->ice_reset_lock);
 	return (EIO);
 }
