@@ -170,18 +170,27 @@ typedef enum ice_vsi_type {
 
 /*
  * Wrappers around ddi_dma_sync(). We should never trigger the failure
- * conditions that are documented because we always sync the whole region. We
- * VERIFY this on debug builds and assert it on non-debug.
+ * conditions that are documented because off and len always describe a
+ * sub-range that is contained within the mapping (or (0, 0) for the whole
+ * mapping). We VERIFY this on debug builds and assert it on non-debug.
  */
 #ifdef	DEBUG
-#define	ICE_DMA_SYNC(dma, flag)	VERIFY0(ddi_dma_sync( \
-					    (dma)->idb_dma_handle, 0, 0, \
-					    (flag)))
+#define	ICE_DMA_SYNC_RANGE(dma, off, len, flag)	VERIFY0(ddi_dma_sync( \
+					    (dma)->idb_dma_handle, (off), \
+					    (len), (flag)))
 #else
-#define	ICE_DMA_SYNC(dma, flag)	((void) ddi_dma_sync( \
-					    (dma)->idb_dma_handle, 0, 0, \
-					    (flag)))
+#define	ICE_DMA_SYNC_RANGE(dma, off, len, flag)	((void) ddi_dma_sync( \
+					    (dma)->idb_dma_handle, (off), \
+					    (len), (flag)))
 #endif
+
+/*
+ * Sync the entire DMA mapping. Prefer ice_dma_sync_range()/
+ * ICE_DMA_SYNC_RANGE() for hot paths that only touch a portion of a
+ * ring, so that we don't pay the cost of syncing descriptors that were
+ * never written or read.
+ */
+#define	ICE_DMA_SYNC(dma, flag)	ICE_DMA_SYNC_RANGE(dma, 0, 0, flag)
 
 /*
  * Expected major version of the capabilities that we look for.
@@ -1274,6 +1283,59 @@ ice_dma_sync(ice_t *ice, ice_dma_buffer_t *dma, uint_t flags)
 	}
 
 	return (true);
+}
+
+/*
+ * Like ice_dma_sync(), but only syncs the sub-range [off, off + len) of
+ * the mapping. This is intended for ring buffers where a given call only
+ * reads or writes a subset of the overall ring, so we avoid paying the
+ * cost of syncing descriptors that were not touched.
+ */
+static inline bool
+ice_dma_sync_range(ice_t *ice, ice_dma_buffer_t *dma, uint_t off, uint_t len,
+    uint_t flags)
+{
+	ICE_DMA_SYNC_RANGE(dma, off, len, flags);
+	if (ice_check_dma_handle(dma->idb_dma_handle) != DDI_FM_OK) {
+		ddi_fm_service_impact(ice->ice_dip, DDI_SERVICE_DEGRADED);
+		atomic_or_32(&ice->ice_state, ICE_ERROR);
+		return (false);
+	}
+
+	return (true);
+}
+
+/*
+ * Like ice_dma_sync_range(), but for a ring of `nentries` fixed-size
+ * entries (`entry_size` bytes each). Syncs `count` entries starting at
+ * ring index `start`, wrapping around the end of the ring if needed.
+ */
+static inline bool
+ice_dma_sync_ring(ice_t *ice, ice_dma_buffer_t *dma, uint_t start,
+    uint_t count, size_t entry_size, uint_t nentries, uint_t flags)
+{
+	uint_t first;
+
+	if (count == 0)
+		return (true);
+
+	ASSERT3U(count, <=, nentries);
+	ASSERT3U(start, <, nentries);
+
+	if (start + count <= nentries) {
+		return (ice_dma_sync_range(ice, dma, start * entry_size,
+		    count * entry_size, flags));
+	}
+
+	/* The range wraps around the end of the ring; sync both pieces. */
+	first = nentries - start;
+	if (!ice_dma_sync_range(ice, dma, start * entry_size,
+	    first * entry_size, flags)) {
+		return (false);
+	}
+
+	return (ice_dma_sync_range(ice, dma, 0, (count - first) * entry_size,
+	    flags));
 }
 
 extern bool ice_load_ddp(ice_t *);
