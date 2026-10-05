@@ -317,6 +317,7 @@ ice_rx_recycle(caddr_t arg)
 
 	ASSERT3U(ice->ice_rxbuf_onloan, >, 0);
 	ice->ice_rxbuf_onloan--;
+	cv_signal(&ice->ice_rxbuf_cv);
 
 	ASSERT3U(ice->ice_used_rcbs_cnt, >, 0);
 	ice->ice_free_rcbs[--ice->ice_used_rcbs_cnt] = rcb;
