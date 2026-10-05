@@ -2077,6 +2077,41 @@ ice_cmd_get_switch_config(ice_t *ice, void *buf, size_t bufsize, uint16_t first,
 }
 
 /*
+ * Reads back the current Link Flow Control (LFC) pause quanta and
+ * refresh-threshold timer values from hardware, so they can be echoed
+ * back into a Set MAC Config (0x0603) command. We never change these
+ * values, but need to write them back when issuing the Set MAC Config
+ * command.
+ */
+static void
+ice_mac_cfg_fill_fc(ice_t *ice, ice_cq_cmd_set_mac_cfg_t *mac)
+{
+	uint32_t val;
+	uint16_t tx_tval, fc_thres;
+
+	if (ice->ice_mac_type == ICE_MAC_E830) {
+		val = ice_reg_read(ice, ICE_REG_E830_PRTMAC_CL01_PAUSE_QUANTA);
+		tx_tval = ICE_REG_PRTMAC_PAUSE_QUANTA(val);
+
+		val = ice_reg_read(ice, ICE_REG_E830_PRTMAC_CL01_QUANTA_THRESH);
+		fc_thres = ICE_REG_PRTMAC_PAUSE_THRESH(val);
+	} else {
+		val = ice_reg_read(ice,
+		    ICE_REG_E800_PRTMAC_HSEC_CTL_TX_PAUSE_QUANTA(
+		    ICE_REG_E800_PRTMAC_HSEC_LFC_INDEX));
+		tx_tval = ICE_REG_PRTMAC_PAUSE_QUANTA(val);
+
+		val = ice_reg_read(ice,
+		    ICE_REG_E800_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER(
+		    ICE_REG_E800_PRTMAC_HSEC_LFC_INDEX));
+		fc_thres = ICE_REG_PRTMAC_PAUSE_THRESH(val);
+	}
+
+	mac->iccsmc_tx_tval = LE_16(tx_tval);
+	mac->iccsmc_fc_thres = LE_16(fc_thres);
+}
+
+/*
  * This sets the MTU on the physical port of the NIC, which can be
  * different (though for sanity >=) the MTU of a VSI. More technically, it
  * appears TX rings are capped at this value, while RX rings can have
@@ -2099,6 +2134,9 @@ ice_cmd_set_max_mtu(ice_t *ice, uint16_t mtu)
 	mac = &desc.icqd_command.icc_set_mac_cfg;
 	mac->iccsmc_mtu = LE_16(mtu);
 
+	/* Preserve the current LFC pause quanta/threshold */
+	ice_mac_cfg_fill_fc(ice, mac);
+
 	if (!ice_cmd_submit(ice, &ice->ice_asq, &desc, NULL,
 	    ICE_CMD_COPY_NONE)) {
 		return (false);
@@ -2106,6 +2144,7 @@ ice_cmd_set_max_mtu(ice_t *ice, uint16_t mtu)
 
 	return (ice_cmd_ckerr(ice, &desc, NULL, "set mac config"));
 }
+
 
 bool
 ice_cmd_free_vsi(ice_t *ice, ice_vsi_t *vsi, bool keep)
