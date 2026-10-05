@@ -1657,7 +1657,12 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	txr->itxr_tail = tail;
 	txr->itxr_avail -= desc_used;
 
-	ice_reg_write(ice, ice_qtx_tail(txr), txr->itxr_tail);
+	/*
+	 * Note: we intentionally do not ring the tail doorbell here. The
+	 * caller (ice_ring_tx()) processes an entire chain of packets per
+	 * call and rings the doorbell once after the whole chain has been
+	 * posted, rather than once per packet.
+	 */
 
 	/*
 	 * Save mp in the last tcb we used so we can free it when we
@@ -1700,6 +1705,7 @@ ice_ring_tx(void *arg, mblk_t *mp)
 	ice_tx_ring_t	*txr = arg;
 	ice_t		*ice = txr->itxr_ice;
 	ice_tx_pkt_t	*pkt;
+	bool		posted = false;
 
 	if (!ice_is_running(txr->itxr_ice) || !ice_tx_enter(txr)) {
 		freemsgchain(mp);
@@ -1783,6 +1789,8 @@ ice_ring_tx(void *arg, mblk_t *mp)
 
 		ASSERT3U(n, ==, desc_needed);
 
+		posted = true;
+
 		/*
 		 * Move used tcbs in pkt onto the tcb ring. These will get
 		 * freed when we recycle.
@@ -1811,6 +1819,15 @@ ice_ring_tx(void *arg, mblk_t *mp)
 
 	ice_tx_pkt_fini(pkt);
 	kmem_cache_free(ice_tx_pkt_cache, pkt);
+
+	/*
+	 * Ring the doorbell once for the whole chain of packets we just
+	 * posted, rather than once per packet. itxr_tail is only ever
+	 * written from this (single-threaded per ring) send path, so it's
+	 * safe to read without itxr_lock here.
+	 */
+	if (posted)
+		ice_reg_write(ice, ice_qtx_tail(txr), txr->itxr_tail);
 
 	ice_tx_exit(txr);
 
