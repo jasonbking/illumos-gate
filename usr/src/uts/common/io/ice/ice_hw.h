@@ -506,6 +506,32 @@ ice_bitset64(uint64_t reg, uint_t high, uint_t low, uint64_t val)
 #define	ICE_REG_MNG_FWSM_DEBUG_RECOVERY		3
 
 /*
+ * HSEC Control transmit PAUSE quanta/refresh-timer registers (datasheet
+ * sections 13.2.2.4.11/13.2.2.4.12). There are nine indexed instances of
+ * each register: indices 0-7 are the 8 priority-based (PFC) pause classes,
+ * and index 8 (the "MAX_INDEX", below) is used for global/Link Flow
+ * Control (LFC) pause.
+ */
+#define	ICE_REG_E800_PRTMAC_HSEC_CTL_TX_PAUSE_QUANTA_BASE	0x001E36E0
+#define	ICE_REG_E800_PRTMAC_HSEC_CTL_TX_PAUSE_QUANTA(i) \
+	(ICE_REG_E800_PRTMAC_HSEC_CTL_TX_PAUSE_QUANTA_BASE + ((i) * 0x20))
+#define	ICE_REG_E800_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER_BASE 0x001E3800
+#define	ICE_REG_E800_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER(i) \
+	(ICE_REG_E800_PRTMAC_HSEC_CTL_TX_PAUSE_REFRESH_TIMER_BASE + \
+	((i) * 0x20))
+#define	ICE_REG_E800_PRTMAC_HSEC_LFC_INDEX	8
+
+#define	ICE_REG_E830_PRTMAC_CL01_PAUSE_QUANTA	0x001E32A0
+#define	ICE_REG_E830_PRTMAC_CL01_QUANTA_THRESH	0x001E3320
+
+/*
+ * Both the quanta and the refresh timer/threshold values occupy the low
+ * 16 bits of their respective registers.
+ */
+#define	ICE_REG_PRTMAC_PAUSE_QUANTA(x)		ice_bitx32(x, 15, 0)
+#define	ICE_REG_PRTMAC_PAUSE_THRESH(x)		ice_bitx32(x, 15, 0)
+
+/*
  * Capability structure defined by hardware and the various capability IDs.
  */
 typedef struct ice_capability {
