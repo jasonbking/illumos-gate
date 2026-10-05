@@ -1562,6 +1562,7 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	ice_tx_desc_t		tx_ctx_desc;
 	uint64_t		init_qw1;
 	uint16_t		tail;
+	uint16_t		start_tail;
 	uint16_t		desc_needed;
 	uint16_t		desc_used;
 	ice_tx_pkt_iter_t	iter;
@@ -1591,6 +1592,7 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	desc_used = 0;
 
 	tail = txr->itxr_tail;
+	start_tail = tail;
 
 	if (ice_tx_pkt_lso(pkt)) {
 		desc = &txr->itxr_descs[tail];
@@ -1634,7 +1636,8 @@ ice_tx_send_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 	    ICE_TX_DESC_CMD_EOP|ICE_TX_DESC_CMD_RS));
 
 	/* Done updating descriptors, so sync the ring to the device */
-	if (!ice_dma_sync(txr->itxr_ice, &txr->itxr_dma, DDI_DMA_SYNC_FORDEV)) {
+	if (!ice_dma_sync_ring(ice, &txr->itxr_dma, start_tail, desc_used,
+	    sizeof (ice_tx_desc_t), txr->itxr_size, DDI_DMA_SYNC_FORDEV)) {
 		uint64_t start = txr->itxr_tail;
 
 		/*
@@ -1846,7 +1849,9 @@ ice_tx_recycle_ring(ice_tx_ring_t *txr)
 		return;
 	}
 
-	if (!ice_dma_sync(ice, &txr->itxr_dma, DDI_DMA_SYNC_FORKERNEL)) {
+	if (!ice_dma_sync_ring(ice, &txr->itxr_dma, txr->itxr_head,
+	    txr->itxr_size - txr->itxr_avail, sizeof (ice_tx_desc_t),
+	    txr->itxr_size, DDI_DMA_SYNC_FORKERNEL)) {
 		return;
 	}
 

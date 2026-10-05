@@ -762,6 +762,8 @@ ice_ring_rx(ice_rx_ring_t *rxr, int poll_bytes)
 	mblk_t *mp_head, *mp_tail;
 	uint_t bytes, npkts;
 	uint16_t new_tail;
+	uint16_t start_head;
+	uint_t posted;
 
 	ASSERT(MUTEX_HELD(&rxr->irxr_lock));
 
@@ -772,7 +774,20 @@ ice_ring_rx(ice_rx_ring_t *rxr, int poll_bytes)
 	bytes = 0;
 	npkts = 0;
 
-	if (!ice_dma_sync(ice, &rxr->irxr_desc_dma, DDI_DMA_SYNC_FORKERNEL))
+	start_head = rxr->irxr_head;
+
+	/*
+	 * Only the descriptors we've posted to the hardware (the span from
+	 * our current read position through the last tail we wrote) can
+	 * possibly have been completed, so that bounds how much of the ring
+	 * we need to sync for the CPU to observe.
+	 */
+	posted = (rxr->irxr_tail >= start_head) ?
+	    (rxr->irxr_tail - start_head + 1) :
+	    (rxr->irxr_size - start_head + rxr->irxr_tail + 1);
+
+	if (!ice_dma_sync_ring(ice, &rxr->irxr_desc_dma, start_head, posted,
+	    sizeof (ice_rx_desc_t), rxr->irxr_size, DDI_DMA_SYNC_FORKERNEL))
 		return (NULL);
 
 	for (;;) {
@@ -829,13 +844,18 @@ ice_ring_rx(ice_rx_ring_t *rxr, int poll_bytes)
 
 	/*
 	 * We've modified the ring, and now need to sync it so the hardware
-	 * sees the changes.
+	 * sees the changes. Only the descriptors between start_head and our
+	 * new head position were reset, so that's all we need to sync.
 	 *
 	 * If this fails, we don't have any recovery at this point, just
 	 * let ice_dma_sync do the FMA updates and finish whatever we
 	 * managed to get.
 	 */
-	(void) ice_dma_sync(ice, &rxr->irxr_desc_dma, DDI_DMA_SYNC_FORDEV);
+	(void) ice_dma_sync_ring(ice, &rxr->irxr_desc_dma, start_head,
+	    (rxr->irxr_head >= start_head) ?
+	    (rxr->irxr_head - start_head) :
+	    (rxr->irxr_size - start_head + rxr->irxr_head),
+	    sizeof (ice_rx_desc_t), rxr->irxr_size, DDI_DMA_SYNC_FORDEV);
 
 	EQUIV(bytes == 0, npkts == 0);
 
