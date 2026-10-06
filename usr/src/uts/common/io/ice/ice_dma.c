@@ -15,7 +15,9 @@
  */
 
 /*
- * Describe the purpose of this file.
+ * This handles allocating and freeing DMA buffers as well as
+ * various versions of DMA attributes needed for different situations
+ * (LSO vs. non-LSO, etc).
  */
 
 #include "ice.h"
