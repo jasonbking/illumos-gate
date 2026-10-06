@@ -157,8 +157,7 @@ typedef enum ice_vsi_type {
  * enough events for the receive queue that we'll likely never end up in an
  * overflow situation. In terms of the number of entries, right now Intel
  * defaults to having 64 for both queues in their implementations. We opt to use
- * that for the time being for the receive side. For the send side, we only
- * bother with having a quarter of that.
+ * that for the time being for the receive side.
  *
  * Each entry on the queue may need an associated indirect buffer and all
  * receive queue entries must have one. We always allcoate the contorl queue's

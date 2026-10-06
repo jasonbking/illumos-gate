@@ -48,7 +48,7 @@
  * used, if there is enough free slots for the TX descriptors, we'll always
  * have enough free slots on the tcb ring to hold the corresponding tcbs.
  *
- * When the NIC has finished sending the NIC, it will generate a completion
+ * When the NIC has finished sending the packet, it will generate a completion
  * interrupt, and we use ice_tx_recycle_ring() to go through the TX descriptor
  * and tcb descriptor rings and release the tcbs so they can be reused.
  *
@@ -102,8 +102,8 @@
  *    2. The header is re-read for every packet the NIC generates when doing
  *       LSO.
  *
- * The implications in conjunction with the hard 8 DMA transfer limit is
- * that the LSO case comes a lot more complicated. For example, if the
+ * These implications in conjunction with the hard 8 DMA transfer limit is
+ * that the LSO case becomes a lot more complicated. For example, if the
  * first descriptor of a packet contains both the header and data, this
  * will result in 2 DMA transfers, leaving 6 DMA transfers to 'fill up'
  * the packet before sending. Likewise, assuming the header is contained
