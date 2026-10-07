@@ -1406,19 +1406,18 @@ static mac_callbacks_t ice_m_callbacks = {
 	.mc_ioctl = ice_m_ioctl,
 };
 
-void
+boolean_t
 ice_mac_unregister(ice_t *ice)
 {
 	int ret;
 
-	/*
-	 * We're going away, there's not much else we can do at this point if
-	 * this fails.
-	 */
 	ret = mac_unregister(ice->ice_mac_hdl);
 	if (ret != 0) {
 		ice_error(ice, "failed to unregister from MAC: %d", ret);
+		return (B_FALSE);
 	}
+
+	return (B_TRUE);
 }
 
 boolean_t

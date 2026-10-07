@@ -374,6 +374,7 @@ typedef struct ice_vsi {
  * hardware.
  */
 typedef struct ice_controlq {
+	bool			icq_inited;	/* icq_lock/icq_cv are live */
 	kmutex_t		icq_lock;
 	kcondvar_t		icq_cv;
 	ice_controlq_flags_t	icq_flags;
@@ -1150,6 +1151,19 @@ typedef struct ice {
 	 */
 	ice_controlq_t	ice_asq;
 	ice_controlq_t	ice_arq;
+	bool		ice_controlq_ready;	/* ice_{asq,arq} need fini */
+
+	/*
+	 * Gate ice_cmd_submit() callers (MAC, property, group, LED,
+	 * transceiver, UFM, FW-log, ioctl, etc.) against reset teardown.
+	 * Submitters hold this as a reader; ice_prepare_for_reset() takes
+	 * it as a writer before tearing down the control queues, to
+	 * blocks new submitters and wait for in-flight ones to finish.
+	 * ice_cmdq_dead is set if a rebuild never completes, so callers
+	 * fail fast instead of waiting on a control queue that is gone.
+	 */
+	krwlock_t	ice_cmdq_lock;
+	bool		ice_cmdq_dead;
 
 	uint32_t	ice_ctlq_recovering;
 
@@ -1362,6 +1376,8 @@ extern void ice_tx_fini(void);
  */
 extern bool ice_controlq_init(ice_t *);
 extern void ice_controlq_fini(ice_t *);
+extern void ice_cmdq_quiesce(ice_t *);
+extern void ice_cmdq_resume(ice_t *, bool);
 
 extern const char *ice_controlq_errmsg(ice_cq_errno_t);
 extern const char *ice_controlq_errstr(ice_cq_errno_t);
@@ -1495,7 +1511,7 @@ extern void ice_intr_remove_handler(ice_t *, uint_t, ice_intr_handler_t *);
 /*
  * GLDv3 routines
  */
-extern void ice_mac_unregister(ice_t *);
+extern boolean_t ice_mac_unregister(ice_t *);
 extern boolean_t ice_mac_register(ice_t *);
 
 extern mblk_t *ice_ring_tx(void *, mblk_t *);

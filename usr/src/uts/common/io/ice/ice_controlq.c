@@ -256,6 +256,10 @@ ice_controlq_incr(ice_controlq_t *cqp, uint_t val)
 static void
 ice_controlq_free(ice_controlq_t *cqp)
 {
+	if (!cqp->icq_inited) {
+		return;
+	}
+
 	if (cqp->icq_data_dma != NULL) {
 		uint_t i;
 		ASSERT3U(cqp->icq_nents, !=, 0);
@@ -265,10 +269,19 @@ ice_controlq_free(ice_controlq_t *cqp)
 		}
 		kmem_free(cqp->icq_data_dma, sizeof (ice_dma_buffer_t) *
 		    cqp->icq_nents);
+		cqp->icq_data_dma = NULL;
 	}
 	ice_dma_free(&cqp->icq_dma);
 	cv_destroy(&cqp->icq_cv);
 	mutex_destroy(&cqp->icq_lock);
+
+	cqp->icq_desc = NULL;
+	cqp->icq_head = 0;
+	cqp->icq_tail = 0;
+	cqp->icq_flags = 0;
+	cqp->icq_nents = 0;
+	cqp->icq_bufsize = 0;
+	cqp->icq_inited = false;
 }
 
 static bool
@@ -279,11 +292,13 @@ ice_controlq_alloc(ice_t *ice, ice_controlq_t *cqp)
 	ddi_dma_attr_t attr;
 	ddi_device_acc_attr_t acc;
 
+	ASSERT0(cqp->icq_inited);
 	ASSERT3U(cqp->icq_nents, !=, 0);
 	ASSERT3U(cqp->icq_bufsize, !=, 0);
 
 	mutex_init(&cqp->icq_lock, NULL, MUTEX_DRIVER, NULL);
 	cv_init(&cqp->icq_cv, NULL, CV_DRIVER, NULL);
+	cqp->icq_inited = true;
 
 	len = cqp->icq_nents * sizeof (ice_cq_desc_t);
 	ice_dma_acc_attr(ice, &acc);
@@ -506,6 +521,10 @@ ice_controlq_recover(ice_t *ice)
 void
 ice_controlq_fini(ice_t *ice)
 {
+	if (!ice->ice_controlq_ready) {
+		return;
+	}
+
 	/*
 	 * Attempt to shutdown the queue. If we can't, drive on.
 	 */
@@ -518,6 +537,8 @@ ice_controlq_fini(ice_t *ice)
 	ice_controlq_free(&ice->ice_arq);
 	ice_controlq_free(&ice->ice_asq);
 	mutex_destroy(&ice->ice_fwlog_lock);
+
+	ice->ice_controlq_ready = false;
 }
 
 bool
@@ -525,6 +546,8 @@ ice_controlq_init(ice_t *ice)
 {
 	uint_t i;
 	int ret;
+
+	ASSERT0(ice->ice_controlq_ready);
 
 	mutex_init(&ice->ice_fwlog_lock, NULL, MUTEX_DRIVER, NULL);
 	for (i = 0; i < ICE_CQ_FW_LOG_ID_MAX; i++) {
@@ -548,6 +571,13 @@ ice_controlq_init(ice_t *ice)
 		mutex_destroy(&ice->ice_fwlog_lock);
 		return (false);
 	}
+
+	/*
+	 * Both queues are now allocated, so from this point on teardown must
+	 * go through ice_controlq_fini() -- mark that before doing anything
+	 * that might fail below.
+	 */
+	ice->ice_controlq_ready = true;
 
 	ice_controlq_pf_sq_regs(&ice->ice_asq);
 	ice_controlq_program(ice, &ice->ice_asq, 0);
@@ -695,14 +725,23 @@ ice_controlq_health_status_event(ice_t *ice, ice_controlq_t *cqp, uint_t ent)
 	ice_dma_buffer_t *dmap = &cqp->icq_data_dma[ent];
 	ice_cq_health_status_elem_t *elem;
 	uint16_t count, i, max;
+	uint16_t data_len = LE_16(desc->icqd_data_len);
 	const char *source;
+
+	/* Guard against bad values from the NIC */
+	if (data_len > dmap->idb_len) {
+		ice_error(ice, "received a health status event with an "
+		    "invalid data length: %u, clamping to %lu", data_len,
+		    dmap->idb_len);
+		data_len = dmap->idb_len;
+	}
 
 	ICE_DMA_SYNC(dmap, DDI_DMA_SYNC_FORKERNEL);
 
 	count = LE_16(desc->icqd_command.icc_get_health_status.
 	    icchs_status_count);
 
-	max = LE_16(desc->icqd_data_len) / sizeof (ice_cq_health_status_elem_t);
+	max = data_len / sizeof (ice_cq_health_status_elem_t);
 	if (count > max) {
 		ice_error(ice, "received a health status event with an "
 		    "invalid count: %u, truncating to %u", count, max);
@@ -795,6 +834,13 @@ ice_controlq_fwlog_event(ice_t *ice, ice_controlq_t *cqp, uint_t ent)
 
 	if (len == 0) {
 		return;
+	}
+
+	/* Guard against bad values from the NIC */
+	if (len > dmap->idb_len) {
+		ice_error(ice, "received a FW log event with an invalid "
+		    "data length: %u, clamping to %lu", len, dmap->idb_len);
+		len = dmap->idb_len;
 	}
 
 	ICE_DMA_SYNC(dmap, DDI_DMA_SYNC_FORKERNEL);
@@ -931,13 +977,51 @@ typedef enum {
 	ICE_CMD_COPY_BOTH	= 3
 } ice_cmd_copy_t;
 
+static bool
+ice_cmdq_enter(ice_t *ice)
+{
+	rw_enter(&ice->ice_cmdq_lock, RW_READER);
+	if (ice->ice_cmdq_dead) {
+		rw_exit(&ice->ice_cmdq_lock);
+		return (false);
+	}
+	return (true);
+}
+
+static void
+ice_cmdq_exit(ice_t *ice)
+{
+	rw_exit(&ice->ice_cmdq_lock);
+}
+
+void
+ice_cmdq_quiesce(ice_t *ice)
+{
+	rw_enter(&ice->ice_cmdq_lock, RW_WRITER);
+}
+
+/*
+ * Reopen the command-submission gate after ice_rebuild() has reprogrammed
+ * the control queues. If "failed" is set (ice_controlq_init() never
+ * succeeded), mark the control queue dead instead so that anyone blocked
+ * in, or entering, ice_cmdq_enter() fails fast rather than waiting forever
+ * on a control queue that isn't coming back. A later, successful rebuild
+ * clears ice_cmdq_dead again.
+ */
+void
+ice_cmdq_resume(ice_t *ice, bool failed)
+{
+	ice->ice_cmdq_dead = failed;
+	rw_exit(&ice->ice_cmdq_lock);
+}
+
 /*
  * Submit a command to the send queue, bump the register that indicates that we
  * own it,
  */
 static bool
-ice_cmd_submit(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc, void *buf,
-    ice_cmd_copy_t copy)
+ice_cmd_submit_impl(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc,
+    void *buf, ice_cmd_copy_t copy)
 {
 	uint_t i;
 	ice_cq_desc_t *hwd;
@@ -1113,6 +1197,27 @@ ice_cmd_submit(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc, void *buf,
 	cv_signal(&cqp->icq_cv);
 	mutex_exit(&cqp->icq_lock);
 	return (true);
+}
+
+/*
+ * Thin wrapper around ice_cmd_submit_impl() that gates every submission
+ * against reset teardown. See ice_cmdq_enter()/ice_cmdq_quiesce() above.
+ */
+static bool
+ice_cmd_submit(ice_t *ice, ice_controlq_t *cqp, ice_cq_desc_t *desc, void *buf,
+    ice_cmd_copy_t copy)
+{
+	bool ret;
+
+	if (!ice_cmdq_enter(ice)) {
+		return (false);
+	}
+
+	ret = ice_cmd_submit_impl(ice, cqp, desc, buf, copy);
+
+	ice_cmdq_exit(ice);
+
+	return (ret);
 }
 
 static bool

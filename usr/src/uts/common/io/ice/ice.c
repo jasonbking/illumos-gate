@@ -872,6 +872,7 @@ ice_task_fini(ice_t *ice)
 
 	mutex_destroy(&task->itk_lock);
 	taskq_destroy(task->itk_tq);
+	rw_destroy(&ice->ice_cmdq_lock);
 	mutex_destroy(&ice->ice_reset_lock);
 }
 
@@ -883,10 +884,14 @@ ice_task_init(ice_t *ice)
 	mutex_init(&ice->ice_reset_lock, NULL, MUTEX_DRIVER,
 	    DDI_INTR_PRI(ice->ice_intr_pri));
 
+	rw_init(&ice->ice_cmdq_lock, NULL, RW_DRIVER,
+	    DDI_INTR_PRI(ice->ice_intr_pri));
+
 	task->itk_tq = taskq_create_instance("ice_task", ice->ice_inst, 1,
 	    minclsyspri, 0, 0, 0);
 	if (task->itk_tq == NULL) {
 		ice_error(ice, "failed to create ice taskq");
+		rw_destroy(&ice->ice_cmdq_lock);
 		mutex_destroy(&ice->ice_reset_lock);
 		return (B_FALSE);
 	}
@@ -2213,7 +2218,9 @@ ice_prepare_for_reset(ice_t *ice)
 		ice_rx_stop(ice);
 	}
 
+	ice_cmdq_quiesce(ice);
 	ice_controlq_fini(ice);
+	ice->ice_seq &= ~ICE_ATTACH_CONTROLQ;
 
 	ice->ice_reset_prepared = true;
 	mutex_exit(&ice->ice_reset_lock);
@@ -2260,9 +2267,24 @@ ice_rebuild(ice_t *ice, bool global)
 	if (!ice_controlq_init(ice)) {
 		ice_error(ice, "failed to reinitialize control queue after "
 		    "reset");
+		/*
+		 * The control queue isn't coming back; mark the
+		 * command-submission gate dead so anything already blocked
+		 * in, or that later calls ice_cmdq_enter() fails fast
+		 * instead of waiting forever.
+		 */
+		ice_cmdq_resume(ice, true);
 		mutex_exit(&ice->ice_reset_lock);
 		return (false);
 	}
+	ice->ice_seq |= ICE_ATTACH_CONTROLQ;
+
+	/*
+	 * The control queues are back up, so it's now safe to let blocked
+	 * and new ice_cmd_submit() callers back in; everything below here
+	 * depends on being able to submit commands again.
+	 */
+	ice_cmdq_resume(ice, false);
 
 	if (!ice_firmware_check(ice, true)) {
 		ice_error(ice, "failed to query firmware version after "
@@ -2916,11 +2938,11 @@ ice_device_fw_exit(ice_device_t *idp, bool success)
 	mutex_exit(&idp->id_lock);
 }
 
-static void
+static boolean_t
 ice_cleanup(ice_t *ice)
 {
 	if (ice == NULL) {
-		return;
+		return (B_TRUE);
 	}
 
 	if (ice->ice_seq & ICE_ATTACH_UFM) {
@@ -2934,7 +2956,12 @@ ice_cleanup(ice_t *ice)
 	}
 
 	if (ice->ice_seq & ICE_ATTACH_MAC) {
-		ice_mac_unregister(ice);
+		if (!ice_mac_unregister(ice)) {
+			if (ice_intr_ddi_enable(ice)) {
+				ice->ice_seq |= ICE_ATTACH_INTR_ENABLE;
+			}
+			return (B_FALSE);
+		}
 		ice->ice_seq &= ~ICE_ATTACH_MAC;
 	}
 
@@ -3032,6 +3059,8 @@ ice_cleanup(ice_t *ice)
 	ice_fini_hw_tbls(ice);
 
 	kmem_free(ice, sizeof (ice_t));
+
+	return (B_TRUE);
 }
 
 static int
@@ -3259,7 +3288,16 @@ ice_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	return (DDI_SUCCESS);
 
 err:
-	ice_cleanup(ice);
+	/*
+	 * We're unwinding a failed attach() before ddi_set_driver_private()
+	 * has ever been called, so there's no way for a later detach() to
+	 * retry this. If ice_cleanup() can't unregister the MAC provider
+	 * here, there's nothing left to do but note the leak.
+	 */
+	if (!ice_cleanup(ice)) {
+		ice_error(ice, "failed to unregister MAC provider while "
+		    "unwinding failed attach; leaking ice_t");
+	}
 	return (DDI_FAILURE);
 }
 
@@ -3278,8 +3316,17 @@ ice_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 		return (DDI_FAILURE);
 	}
 
+	if (!ice_cleanup(ice)) {
+		/*
+		 * The MAC provider still has open clients. Leave
+		 * ddi_get_driver_private() and the registered provider in
+		 * place (ice_cleanup() has already restored any interrupts it
+		 * disabled) so detach can be retried once clients close.
+		 */
+		return (DDI_FAILURE);
+	}
+
 	ddi_set_driver_private(dip, NULL);
-	ice_cleanup(ice);
 
 	return (DDI_SUCCESS);
 }

@@ -33,13 +33,6 @@ dir  path=usr/share/man
 dir  path=usr/share/man/man4d
 file path=usr/share/man/man4d/ice.4d
 driver name=ice perms="* 0666 root sys" clone_perms="ice 0666 root sys" \
-    alias=pciex8086,000e \
-    alias=pciex8086,000f \
-    alias=pciex8086,0010 \
-    alias=pciex8086,0011 \
-    alias=pciex8086,0012 \
-    alias=pciex8086,02e9 \
-    alias=pciex8086,02ea \
     alias=pciex8086,1248 \
     alias=pciex8086,1249 \
     alias=pciex8086,124a \
@@ -89,3 +82,5 @@ driver name=ice perms="* 0666 root sys" clone_perms="ice 0666 root sys" \
     alias=pciex8086,579e \
     alias=pciex8086,579f
 license lic_CDDL license=lic_CDDL
+license usr/src/uts/common/io/ice/ddp.LICENSE \
+    license=usr/src/uts/common/io/ice/ddp.LICENSE
