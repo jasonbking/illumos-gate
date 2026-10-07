@@ -509,17 +509,17 @@ ice_rx_hwcksum(ice_rx_ring_t *rxr, const ice_rx_desc_t *desc, mblk_t *mp)
 
 	/* Update the various error counters based on the type of error */
 
-	if ((status & ICE_RXD_IPERR) != 0)
+	if ((error & ICE_RXD_IPERR) != 0)
 		st->icrxs_hck_iperr.value.ui64++;
 
-	if ((status & ICE_RXD_EIPERR) != 0)
+	if ((error & ICE_RXD_EIPERR) != 0)
 		st->icrxs_hck_eiperr.value.ui64++;
 
 	/*
 	 * XXX: We could break out the layer 4 error using the
 	 * inner_prop field
 	 */
-	if ((status & ICE_RXD_L4ERR) != 0) {
+	if ((error & ICE_RXD_L4ERR) != 0) {
 		switch (pinfo.inner_prot) {
 		case ICE_RX_PTYPE_INNER_PROT_UDP:
 			st->icrxs_hck_udperr.value.ui64++;

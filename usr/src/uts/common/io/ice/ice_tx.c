@@ -1051,8 +1051,9 @@ ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 		st->itps_mp = mp;
 		st->itps_off = off;
 
-		/* Copy the initial state to the current state */
+		/* Retry descriptor overflow from the start of the packet. */
 		bcopy(st, &pkt->itxp_state[ITXP_CURR], sizeof (*st));
+		bcopy(st, &pkt->itxp_state[ITXP_PREV], sizeof (*st));
 
 		return (true);
 	}
@@ -1263,14 +1264,8 @@ ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 		return (true);
 	}
 
-	if (ice_tx_pkt_msglen(pkt) <= ICE_TX_SMALL_PKT &&
-	    ice_tx_pkt_msglen(pkt) < pkt->itxp_dma_min) {
-		copy_tcb = ice_tcb_alloc_buf(txr, true);
-		if (copy_tcb == NULL)
-			return (false);
-
-		copy = true;
-	}
+	copy = ice_tx_pkt_msglen(pkt) <= ICE_TX_SMALL_PKT &&
+	    ice_tx_pkt_msglen(pkt) < pkt->itxp_dma_min;
 
 	/*
 	 * As we work through the data in the packet, we deal in contiguous
@@ -1293,15 +1288,18 @@ ice_tx_prepare_pkt(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt)
 		mlen = MBLKL(mp) - off;
 
 		/*
-		 * As nonsensical as this might seem, it is unfortunately
-		 * completely legitimate to have an arbitrary number of
-		 * 0-byte (MBLKL) mblk_ts linked via b_cont. We just
-		 * skip to the copy case which will advance mp for us
-		 * while preserving the ability to coalesce consecutive
-		 * spans into a single copy buffer.
+		 * Empty mblks are legal, but must not create empty TCBs.
+		 * If a copy buffer is pending, let the copy path advance
+		 * past the empty fragment and flush it at the end.
 		 */
-		if (mlen == 0)
+		if (mlen == 0) {
+			if (copy_tcb == NULL) {
+				mp = mp->b_cont;
+				off = 0;
+				continue;
+			}
 			goto try_copy;
+		}
 
 		/* Try to bind if we can */
 		if (!copy && pkt->itxp_method == ITPM_NORMAL &&
@@ -1371,7 +1369,7 @@ try_copy:
 		IMPLY(copy_tcb != NULL, ice_tcb_is_copy(copy_tcb));
 
 		if (copy_tcb == NULL) {
-			copy_tcb = ice_tcb_alloc_buf(txr, false);
+			copy_tcb = ice_tcb_alloc_buf(txr, copy);
 			if (copy_tcb == NULL)
 				return (false);
 		}
@@ -1396,6 +1394,11 @@ try_copy:
 			copy_tcb = NULL;
 		}
 	}
+
+	/* Trailing empty fragments may follow the last added TCB. */
+	pkt->itxp_state[ITXP_CURR].itps_mp = NULL;
+	pkt->itxp_state[ITXP_CURR].itps_off = 0;
+	pkt->itxp_flags |= ITPF_DONE;
 
 	return (true);
 }
