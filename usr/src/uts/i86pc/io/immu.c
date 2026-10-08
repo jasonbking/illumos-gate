@@ -797,15 +797,15 @@ immu_alloc_name(const char *str, int instance)
  * not a correctness issue.
  */
 static void *
-immu_state_alloc(int seg, void *dmar_unit)
+immu_state_alloc(void *dmar_unit)
 {
 	immu_t *immu;
 	char *nodename, *hcachename, *pcachename;
 	int instance;
 
-	dmar_unit = immu_dmar_walk_units(seg, dmar_unit);
+	dmar_unit = immu_dmar_walk_units(dmar_unit);
 	if (dmar_unit == NULL) {
-		/* No more IOMMUs in this segment */
+		/* No more IOMMUs */
 		return (NULL);
 	}
 
@@ -893,7 +893,6 @@ immu_state_alloc(int seg, void *dmar_unit)
 static void
 immu_subsystems_setup(void)
 {
-	int seg;
 	void *unit_hdl;
 
 	ddi_err(DER_VERB, NULL,
@@ -905,10 +904,8 @@ immu_subsystems_setup(void)
 	mutex_enter(&immu_lock);
 
 	unit_hdl = NULL;
-	for (seg = 0; seg < IMMU_MAXSEG; seg++) {
-		while (unit_hdl = immu_state_alloc(seg, unit_hdl)) {
-			;
-		}
+	while (unit_hdl = immu_state_alloc(unit_hdl)) {
+		;
 	}
 
 	immu_regs_setup(&immu_list);	/* subsequent code needs this first */

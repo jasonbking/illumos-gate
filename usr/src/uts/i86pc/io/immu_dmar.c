@@ -286,11 +286,37 @@ ioapic_drhd_destroy(void)
  * parse_drhd()
  *   parse the drhd uints in dmar table
  */
+static dmar_seg_t *
+dmar_seg_find(dmar_table_t *tbl, uint16_t seg, boolean_t create)
+{
+	dmar_seg_t *dseg;
+
+	for (dseg = list_head(&tbl->tbl_seg_list); dseg != NULL;
+	    dseg = list_next(&tbl->tbl_seg_list, dseg)) {
+		if (dseg->dms_seg == seg)
+			return (dseg);
+	}
+
+	if (!create)
+		return (NULL);
+
+	dseg = kmem_zalloc(sizeof (dmar_seg_t), KM_SLEEP);
+	dseg->dms_seg = seg;
+	list_create(&dseg->dms_drhd_list, sizeof (drhd_t),
+	    offsetof(drhd_t, dr_node));
+	list_create(&dseg->dms_rmrr_list, sizeof (rmrr_t),
+	    offsetof(rmrr_t, rm_node));
+	list_insert_tail(&tbl->tbl_seg_list, dseg);
+
+	return (dseg);
+}
+
 static int
 parse_drhd(char *uhead, dmar_table_t *tbl)
 {
+	dmar_seg_t *dseg;
 	drhd_t *drhd;
-	int seg;
+	uint16_t seg;
 	int len;
 	char *shead;
 	scope_t *scope;
@@ -300,11 +326,7 @@ parse_drhd(char *uhead, dmar_table_t *tbl)
 	ASSERT(get_uint16(&uhead[0]) == DMAR_DRHD);
 
 	seg = get_uint16(&uhead[6]);
-	if (seg < 0 || seg >= IMMU_MAXSEG) {
-		ddi_err(DER_WARN, NULL, "invalid segment# <%d>"
-		    "in DRHD unit in ACPI DMAR table", seg);
-		return (DDI_FAILURE);
-	}
+	dseg = dmar_seg_find(tbl, seg, B_TRUE);
 
 	drhd = kmem_zalloc(sizeof (drhd_t), KM_SLEEP);
 	mutex_init(&(drhd->dr_lock), NULL, MUTEX_DEFAULT, NULL);
@@ -335,7 +357,7 @@ parse_drhd(char *uhead, dmar_table_t *tbl)
 		shead += get_uint8(&shead[1]);
 	}
 
-	list_insert_tail(&(tbl->tbl_drhd_list[drhd->dr_seg]), drhd);
+	list_insert_tail(&dseg->dms_drhd_list, drhd);
 
 	return (DDI_SUCCESS);
 }
@@ -347,8 +369,9 @@ parse_drhd(char *uhead, dmar_table_t *tbl)
 static int
 parse_rmrr(char *uhead, dmar_table_t *tbl)
 {
+	dmar_seg_t *dseg;
 	rmrr_t *rmrr;
-	int seg;
+	uint16_t seg;
 	int len;
 	char *shead;
 	scope_t *scope;
@@ -358,11 +381,7 @@ parse_rmrr(char *uhead, dmar_table_t *tbl)
 	ASSERT(get_uint16(&uhead[0]) == DMAR_RMRR);
 
 	seg = get_uint16(&uhead[6]);
-	if (seg < 0 || seg >= IMMU_MAXSEG) {
-		ddi_err(DER_WARN, NULL, "invalid segment# <%d>"
-		    "in RMRR unit in ACPI DMAR table", seg);
-		return (DDI_FAILURE);
-	}
+	dseg = dmar_seg_find(tbl, seg, B_TRUE);
 
 	rmrr = kmem_zalloc(sizeof (rmrr_t), KM_SLEEP);
 	mutex_init(&(rmrr->rm_lock), NULL, MUTEX_DEFAULT, NULL);
@@ -398,7 +417,7 @@ parse_rmrr(char *uhead, dmar_table_t *tbl)
 		shead += get_uint8(&shead[1]);
 	}
 
-	list_insert_tail(&(tbl->tbl_rmrr_list[rmrr->rm_seg]), rmrr);
+	list_insert_tail(&dseg->dms_rmrr_list, rmrr);
 
 	return (DDI_SUCCESS);
 }
@@ -415,7 +434,6 @@ dmar_parse(dmar_table_t **tblpp, char *raw)
 {
 	char *uhead;
 	dmar_table_t *tbl;
-	int i;
 	char *unmstr;
 
 	ASSERT(raw);
@@ -439,6 +457,8 @@ dmar_parse(dmar_table_t **tblpp, char *raw)
 	 */
 	tbl = kmem_zalloc(sizeof (dmar_table_t), KM_SLEEP);
 	mutex_init(&(tbl->tbl_lock), NULL, MUTEX_DEFAULT, NULL);
+	list_create(&tbl->tbl_seg_list, sizeof (dmar_seg_t),
+	    offsetof(dmar_seg_t, dms_node));
 
 	tbl->tbl_raw = raw;
 
@@ -454,14 +474,6 @@ dmar_parse(dmar_table_t **tblpp, char *raw)
 	tbl->tbl_haw = get_uint8(&raw[36]) + 1;
 	tbl->tbl_intrmap = (get_uint8(&raw[37]) & DMAR_INTRMAP_SUPPORT)
 	    ? B_TRUE : B_FALSE;
-
-	/* create lists for DRHD and RMRR */
-	for (i = 0; i < IMMU_MAXSEG; i++) {
-		list_create(&(tbl->tbl_drhd_list[i]), sizeof (drhd_t),
-		    offsetof(drhd_t, dr_node));
-		list_create(&(tbl->tbl_rmrr_list[i]), sizeof (rmrr_t),
-		    offsetof(rmrr_t, rm_node));
-	}
 
 	ioapic_drhd_setup();
 
@@ -624,7 +636,7 @@ print_rmrr_list(list_t *rmrr_list)
 static void
 dmar_table_print(dmar_table_t *tbl)
 {
-	int i;
+	dmar_seg_t *dseg;
 
 	if (immu_dmar_print == B_FALSE) {
 		return;
@@ -636,15 +648,10 @@ dmar_table_print(dmar_table_t *tbl)
 	ddi_err(DER_CONT, NULL, "\tintr_remap = %s\n",
 	    tbl->tbl_intrmap == B_TRUE ? "<true>" : "<false>");
 
-	/* print drhd list */
-	for (i = 0; i < IMMU_MAXSEG; i++) {
-		print_drhd_list(&(tbl->tbl_drhd_list[i]));
-	}
-
-
-	/* print rmrr list */
-	for (i = 0; i < IMMU_MAXSEG; i++) {
-		print_rmrr_list(&(tbl->tbl_rmrr_list[i]));
+	for (dseg = list_head(&tbl->tbl_seg_list); dseg != NULL;
+	    dseg = list_next(&tbl->tbl_seg_list, dseg)) {
+		print_drhd_list(&dseg->dms_drhd_list);
+		print_rmrr_list(&dseg->dms_rmrr_list);
 	}
 
 	ddi_err(DER_CONT, NULL, "#### END of dmar_table ####\n");
@@ -712,19 +719,20 @@ drhd_devi_create(drhd_t *drhd, int unit)
 static void
 dmar_devinfos_create(dmar_table_t *tbl)
 {
+	dmar_seg_t *dseg;
 	list_t *drhd_list;
 	drhd_t *drhd;
-	int i, unit;
+	int unit = 0;
 
-	for (i = 0; i < IMMU_MAXSEG; i++) {
-
-		drhd_list = &(tbl->tbl_drhd_list[i]);
+	for (dseg = list_head(&tbl->tbl_seg_list); dseg != NULL;
+	    dseg = list_next(&tbl->tbl_seg_list, dseg)) {
+		drhd_list = &dseg->dms_drhd_list;
 
 		if (list_is_empty(drhd_list))
 			continue;
 
 		drhd = list_head(drhd_list);
-		for (unit = 0; drhd;
+		for (; drhd;
 		    drhd = list_next(drhd_list, drhd), unit++) {
 			drhd_devi_create(drhd, unit);
 		}
@@ -755,12 +763,13 @@ drhd_devi_destroy(drhd_t *drhd)
 static void
 dmar_devi_destroy(dmar_table_t *tbl)
 {
+	dmar_seg_t *dseg;
 	drhd_t *drhd;
 	list_t *drhd_list;
-	int i;
 
-	for (i = 0; i < IMMU_MAXSEG; i++) {
-		drhd_list = &(tbl->tbl_drhd_list[i]);
+	for (dseg = list_head(&tbl->tbl_seg_list); dseg != NULL;
+	    dseg = list_next(&tbl->tbl_seg_list, dseg)) {
+		drhd_list = &dseg->dms_drhd_list;
 		if (list_is_empty(drhd_list))
 			continue;
 
@@ -804,15 +813,17 @@ match_bdf(dev_info_t *ddip, void *arg)
 static void
 dmar_table_destroy(dmar_table_t *tbl)
 {
-	int i;
+	dmar_seg_t *dseg;
 
 	ASSERT(tbl);
 
 	/* destroy lists for DRHD and RMRR */
-	for (i = 0; i < IMMU_MAXSEG; i++) {
-		rmrr_list_destroy(&(tbl->tbl_rmrr_list[i]));
-		drhd_list_destroy(&(tbl->tbl_drhd_list[i]));
+	while ((dseg = list_remove_head(&tbl->tbl_seg_list)) != NULL) {
+		rmrr_list_destroy(&dseg->dms_rmrr_list);
+		drhd_list_destroy(&dseg->dms_drhd_list);
+		kmem_free(dseg, sizeof (dmar_seg_t));
 	}
+	list_destroy(&tbl->tbl_seg_list);
 
 	/* free strings */
 	kmem_free(tbl->tbl_oem_tblid, TBL_OEM_TBLID_SZ + 1);
@@ -953,7 +964,7 @@ immu_dmar_blacklisted(char **strptr, uint_t nstrs)
 void
 immu_dmar_rmrr_map(void)
 {
-	int seg;
+	dmar_seg_t *dseg;
 	dev_info_t *rdip;
 	scope_t *scope;
 	rmrr_t *rmrr;
@@ -968,9 +979,10 @@ immu_dmar_rmrr_map(void)
 	/*
 	 * for each segment, walk the rmrr list looking for an exact match
 	 */
-	for (seg = 0; seg < IMMU_MAXSEG; seg++) {
-		rmrr = list_head(&(tbl->tbl_rmrr_list)[seg]);
-		for (; rmrr; rmrr = list_next(&(tbl->tbl_rmrr_list)[seg],
+	for (dseg = list_head(&tbl->tbl_seg_list); dseg != NULL;
+	    dseg = list_next(&tbl->tbl_seg_list, dseg)) {
+		rmrr = list_head(&dseg->dms_rmrr_list);
+		for (; rmrr; rmrr = list_next(&dseg->dms_rmrr_list,
 		    rmrr)) {
 
 			/*
@@ -986,7 +998,7 @@ immu_dmar_rmrr_map(void)
 				if (scope->scp_type != DMAR_ENDPOINT)
 					continue;
 
-				imarg.ima_seg = seg;
+				imarg.ima_seg = dseg->dms_seg;
 				imarg.ima_bus = scope->scp_bus;
 				imarg.ima_devfunc =
 				    IMMU_PCI_DEVFUNC(scope->scp_dev,
@@ -1060,6 +1072,9 @@ immu_dmar_rmrr_map(void)
 immu_t *
 immu_dmar_get_immu(dev_info_t *rdip)
 {
+	dmar_seg_t *dseg;
+	immu_devi_t *immu_devi;
+	list_t *drhd_list;
 	int seg;
 	int tlevel;
 	int level;
@@ -1074,55 +1089,62 @@ immu_dmar_get_immu(dev_info_t *rdip)
 
 	mutex_enter(&(tbl->tbl_lock));
 
-	/*
-	 * for each segment, walk the drhd list looking for an exact match
-	 */
-	for (seg = 0; seg < IMMU_MAXSEG; seg++) {
-		drhd = list_head(&(tbl->tbl_drhd_list)[seg]);
-		for (; drhd; drhd = list_next(&(tbl->tbl_drhd_list)[seg],
-		    drhd)) {
+	immu_devi = IMMU_DEVI(rdip);
+	ASSERT3P(immu_devi, !=, NULL);
+	seg = immu_devi->imd_seg;
+	dseg = dmar_seg_find(tbl, seg, B_FALSE);
+	if (dseg == NULL) {
+		drhd = NULL;
+		goto found;
+	}
+	drhd_list = &dseg->dms_drhd_list;
 
-			/*
-			 * we are currently searching for exact matches so
-			 * skip "include all" (catchall) and subtree matches
-			 */
-			if (drhd->dr_include_all == B_TRUE)
+	/*
+	 * Walk the segment's drhd list looking for an exact match.
+	 */
+	for (drhd = list_head(drhd_list); drhd != NULL;
+	    drhd = list_next(drhd_list, drhd)) {
+
+		/*
+		 * we are currently searching for exact matches so
+		 * skip "include all" (catchall) and subtree matches
+		 */
+		if (drhd->dr_include_all == B_TRUE)
+			continue;
+
+		/*
+		 * try to match BDF *exactly* to a device scope.
+		 */
+		scope = list_head(&(drhd->dr_scope_list));
+		for (; scope;
+		    scope = list_next(&(drhd->dr_scope_list), scope)) {
+			immu_arg_t imarg = {0};
+
+			/* PCI endpoint devices only */
+			if (scope->scp_type != DMAR_ENDPOINT)
 				continue;
 
-			/*
-			 * try to match BDF *exactly* to a device scope.
-			 */
-			scope = list_head(&(drhd->dr_scope_list));
-			for (; scope;
-			    scope = list_next(&(drhd->dr_scope_list), scope)) {
-				immu_arg_t imarg = {0};
+			imarg.ima_seg = seg;
+			imarg.ima_bus = scope->scp_bus;
+			imarg.ima_devfunc =
+			    IMMU_PCI_DEVFUNC(scope->scp_dev,
+			    scope->scp_func);
+			imarg.ima_ddip = NULL;
+			imarg.ima_rdip = rdip;
+			level = 0;
+			if (immu_walk_ancestor(rdip, NULL, match_bdf,
+			    &imarg, &level, IMMU_FLAGS_DONTPASS)
+			    != DDI_SUCCESS) {
+				/* skip - nothing else we can do */
+				continue;
+			}
 
-				/* PCI endpoint devices only */
-				if (scope->scp_type != DMAR_ENDPOINT)
-					continue;
+			/* Should have walked only 1 level i.e. rdip */
+			ASSERT(level == 1);
 
-				imarg.ima_seg = seg;
-				imarg.ima_bus = scope->scp_bus;
-				imarg.ima_devfunc =
-				    IMMU_PCI_DEVFUNC(scope->scp_dev,
-				    scope->scp_func);
-				imarg.ima_ddip = NULL;
-				imarg.ima_rdip = rdip;
-				level = 0;
-				if (immu_walk_ancestor(rdip, NULL, match_bdf,
-				    &imarg, &level, IMMU_FLAGS_DONTPASS)
-				    != DDI_SUCCESS) {
-					/* skip - nothing else we can do */
-					continue;
-				}
-
-				/* Should have walked only 1 level i.e. rdip */
-				ASSERT(level == 1);
-
-				if (imarg.ima_ddip) {
-					ASSERT(imarg.ima_ddip == rdip);
-					goto found;
-				}
+			if (imarg.ima_ddip) {
+				ASSERT(imarg.ima_ddip == rdip);
+				goto found;
 			}
 		}
 	}
@@ -1134,51 +1156,48 @@ immu_dmar_get_immu(dev_info_t *rdip)
 	 */
 	tdrhd = NULL;
 	tlevel = 0;
-	for (seg = 0; seg < IMMU_MAXSEG; seg++) {
-		drhd = list_head(&(tbl->tbl_drhd_list)[seg]);
-		for (; drhd; drhd = list_next(&(tbl->tbl_drhd_list)[seg],
-		    drhd)) {
+	for (drhd = list_head(drhd_list); drhd != NULL;
+	    drhd = list_next(drhd_list, drhd)) {
 
-			/* looking for subtree match */
-			if (drhd->dr_include_all == B_TRUE)
+		/* looking for subtree match */
+		if (drhd->dr_include_all == B_TRUE)
+			continue;
+
+		/*
+		 * try to match the device scope
+		 */
+		scope = list_head(&(drhd->dr_scope_list));
+		for (; scope;
+		    scope = list_next(&(drhd->dr_scope_list), scope)) {
+			immu_arg_t imarg = {0};
+
+			/* PCI subtree only */
+			if (scope->scp_type != DMAR_SUBTREE)
 				continue;
 
-			/*
-			 * try to match the device scope
-			 */
-			scope = list_head(&(drhd->dr_scope_list));
-			for (; scope;
-			    scope = list_next(&(drhd->dr_scope_list), scope)) {
-				immu_arg_t imarg = {0};
+			imarg.ima_seg = seg;
+			imarg.ima_bus = scope->scp_bus;
+			imarg.ima_devfunc =
+			    IMMU_PCI_DEVFUNC(scope->scp_dev,
+			    scope->scp_func);
 
-				/* PCI subtree only */
-				if (scope->scp_type != DMAR_SUBTREE)
-					continue;
+			imarg.ima_ddip = NULL;
+			imarg.ima_rdip = rdip;
+			level = 0;
+			if (immu_walk_ancestor(rdip, NULL, match_bdf,
+			    &imarg, &level, 0) != DDI_SUCCESS) {
+				/* skip - nothing else we can do */
+				continue;
+			}
 
-				imarg.ima_seg = seg;
-				imarg.ima_bus = scope->scp_bus;
-				imarg.ima_devfunc =
-				    IMMU_PCI_DEVFUNC(scope->scp_dev,
-				    scope->scp_func);
+			/* should have walked 1 level i.e. rdip */
+			ASSERT(level > 0);
 
-				imarg.ima_ddip = NULL;
-				imarg.ima_rdip = rdip;
-				level = 0;
-				if (immu_walk_ancestor(rdip, NULL, match_bdf,
-				    &imarg, &level, 0) != DDI_SUCCESS) {
-					/* skip - nothing else we can do */
-					continue;
-				}
-
-				/* should have walked 1 level i.e. rdip */
-				ASSERT(level > 0);
-
-				/* look for lowest ancestor matching drhd */
-				if (imarg.ima_ddip && (tdrhd == NULL ||
-				    level < tlevel)) {
-					tdrhd = drhd;
-					tlevel = level;
-				}
+			/* look for lowest ancestor matching drhd */
+			if (imarg.ima_ddip && (tdrhd == NULL ||
+			    level < tlevel)) {
+				tdrhd = drhd;
+				tlevel = level;
 			}
 		}
 	}
@@ -1187,15 +1206,11 @@ immu_dmar_get_immu(dev_info_t *rdip)
 		goto found;
 	}
 
-	for (seg = 0; seg < IMMU_MAXSEG; seg++) {
-		drhd = list_head(&(tbl->tbl_drhd_list[seg]));
-		for (; drhd; drhd = list_next(&(tbl->tbl_drhd_list)[seg],
-		    drhd)) {
-			/* Look for include all */
-			if (drhd->dr_include_all == B_TRUE) {
-				break;
-			}
-		}
+	for (drhd = list_head(drhd_list); drhd != NULL;
+	    drhd = list_next(drhd_list, drhd)) {
+		/* Look for include all */
+		if (drhd->dr_include_all == B_TRUE)
+			break;
 	}
 
 	/*FALLTHRU*/
@@ -1226,18 +1241,32 @@ immu_dmar_unit_dip(void *dmar_unit)
 }
 
 void *
-immu_dmar_walk_units(int seg, void *dmar_unit)
+immu_dmar_walk_units(void *dmar_unit)
 {
+	dmar_seg_t *dseg;
 	list_t *drhd_list;
 	drhd_t *drhd = (drhd_t *)dmar_unit;
 
-	drhd_list = &(dmar_table->tbl_drhd_list[seg]);
-
-	if (drhd == NULL) {
-		return ((void *)list_head(drhd_list));
+	if (drhd != NULL) {
+		dseg = dmar_seg_find(dmar_table, drhd->dr_seg, B_FALSE);
+		ASSERT3P(dseg, !=, NULL);
+		drhd_list = &dseg->dms_drhd_list;
+		drhd = list_next(drhd_list, drhd);
+		if (drhd != NULL)
+			return (drhd);
+		dseg = list_next(&dmar_table->tbl_seg_list, dseg);
 	} else {
-		return ((void *)list_next(drhd_list, drhd));
+		dseg = list_head(&dmar_table->tbl_seg_list);
 	}
+
+	for (; dseg != NULL;
+	    dseg = list_next(&dmar_table->tbl_seg_list, dseg)) {
+		drhd = list_head(&dseg->dms_drhd_list);
+		if (drhd != NULL)
+			return (drhd);
+	}
+
+	return (NULL);
 }
 
 void

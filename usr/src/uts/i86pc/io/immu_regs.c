@@ -441,18 +441,15 @@ setup_regs(immu_t *immu)
 void
 immu_regs_setup(list_t *listp)
 {
-	int i;
 	immu_t *immu;
 
-	for (i = 0; i < IMMU_MAXSEG; i++) {
-		immu = list_head(listp);
-		for (; immu; immu = list_next(listp, immu)) {
-			/* do your best, continue on error */
-			if (setup_regs(immu) != DDI_SUCCESS) {
-				immu->immu_regs_setup = B_FALSE;
-			} else {
-				immu->immu_regs_setup = B_TRUE;
-			}
+	immu = list_head(listp);
+	for (; immu; immu = list_next(listp, immu)) {
+		/* do your best, continue on error */
+		if (setup_regs(immu) != DDI_SUCCESS) {
+			immu->immu_regs_setup = B_FALSE;
+		} else {
+			immu->immu_regs_setup = B_TRUE;
 		}
 	}
 }

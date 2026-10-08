@@ -59,7 +59,6 @@ extern "C" {
 typedef uint64_t hw_pdte_t;
 
 #define	IMMU_MAXNAMELEN (64)
-#define	IMMU_MAXSEG	(1)
 #define	IMMU_REGSZ	(1UL << 12)
 #define	IMMU_PAGESIZE   (4096)
 #define	IMMU_PAGESHIFT	(12)
@@ -121,14 +120,20 @@ typedef struct dmar_table {
 	kmutex_t	tbl_lock;
 	uint8_t		tbl_haw;
 	boolean_t	tbl_intrmap;
-	list_t		tbl_drhd_list[IMMU_MAXSEG];
-	list_t		tbl_rmrr_list[IMMU_MAXSEG];
+	list_t		tbl_seg_list;
 	char		*tbl_oem_id;
 	char		*tbl_oem_tblid;
 	uint32_t	tbl_oem_rev;
 	caddr_t		tbl_raw;
 	int		tbl_rawlen;
 } dmar_table_t;
+
+typedef struct dmar_seg {
+	list_node_t	dms_node;
+	uint16_t	dms_seg;
+	list_t		dms_drhd_list;
+	list_t		dms_rmrr_list;
+} dmar_seg_t;
 
 typedef struct drhd {
 	kmutex_t	dr_lock;   /* protects the dmar field */
@@ -867,7 +872,7 @@ boolean_t immu_dmar_blacklisted(char **strings_array, uint_t nstrings);
 immu_t *immu_dmar_get_immu(dev_info_t *rdip);
 dev_info_t *immu_dmar_unit_dip(void *dmar_unit);
 void immu_dmar_set_immu(void *dmar_unit, immu_t *immu);
-void *immu_dmar_walk_units(int seg, void *dmar_unit);
+void *immu_dmar_walk_units(void *dmar_unit);
 boolean_t immu_dmar_intrmap_supported(void);
 uint16_t immu_dmar_ioapic_sid(int ioapicid);
 immu_t *immu_dmar_ioapic_immu(int ioapicid);
