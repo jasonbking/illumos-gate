@@ -470,7 +470,7 @@ pci_cfgacc_mmio_remap(void)
 	 * more permanent memory for these
 	 */
 	len = do_bsys_getproplen(bootops, MCFG_PROPNAME);
-	if (len <= 0 || len % (4 * sizeof (uint64_t) != 0))
+	if (len <= 0 || len % (4 * sizeof (uint64_t)) != 0)
 		return;
 
 	/* Make len represent the # of uint64_t entries in ecfg */

@@ -661,7 +661,8 @@ pci_bus_unitaddr(int index)
 static void
 pci_unitaddr_cache_create(void)
 {
-	int		i, index;
+	uint_t		i, min_bus, max_bus;
+	int		index;
 	pua_node_t	*node;
 	list_t		*listp;
 
@@ -669,7 +670,9 @@ pci_unitaddr_cache_create(void)
 
 	index = 0;
 	listp = nvf_list(puafd_handle);
-	for (i = 0; i <= pci_boot_maxbus; i++) {
+	min_bus = pci_prd_min_bus(0);
+	max_bus = pci_prd_max_bus(0);
+	for (i = min_bus; i <= max_bus; i++) {
 		struct pci_bus_resource *r = get_bus_res(0, i);
 
 		/* skip non-root (peer) PCI busses */
@@ -710,14 +713,20 @@ pci_init_scan_cb(uint16_t seg, uint32_t busno, void *arg __unused)
 void
 pci_init(void)
 {
+	struct pci_bus_resource *r;
+	uint32_t min_bus;
+
 	alloc_res_array();
 
 	/*
 	 * create_root_bus_dip() requires root_addr[bus] is assigned,
 	 * so we do that now
 	 */
-	pci_bus_res[0][0].root_addr = 0;
-	create_root_bus_dip(0, 0);
+	min_bus = pci_prd_min_bus(0);
+	ASSERT3U(min_bus, !=, UINT32_MAX);
+	r = get_bus_res(0, min_bus);
+	r->root_addr = 0;
+	create_root_bus_dip(0, min_bus);
 
 	/*
 	 * Create the root complex dips for all of the additional PCI
@@ -732,15 +741,22 @@ pci_init(void)
 void
 pci_setup_tree(void)
 {
+	struct pci_bus_resource *r;
 	/* We assigned addr 0 in pci_init(), so start with 1 */
 	uint_t i, seg, min_bus, max_bus, root_bus_addr = 1;
 
-	(void) enumerate_bus_devs(0, 0, (intptr_t)CONFIG_INFO);
+	min_bus = pci_prd_min_bus(0);
+	max_bus = pci_prd_max_bus(0);
+	ASSERT3U(min_bus, !=, UINT32_MAX);
+	ASSERT3U(max_bus, !=, UINT32_MAX);
+
+	(void) enumerate_bus_devs(0, min_bus, (intptr_t)CONFIG_INFO);
 
 	/*
 	 * Now enumerate peer busses
 	 *
-	 * We loop till pci_boot_maxbus. On most systems, there is
+	 * We loop through the segment's reported bus range. On most systems,
+	 * there is
 	 * one more bus at the high end, which implements the ISA
 	 * compatibility bus. We don't care about that.
 	 *
@@ -751,12 +767,10 @@ pci_setup_tree(void)
 	 *	However, we stop enumerating phantom peers with no
 	 *	device below.
 	 */
-	max_bus = pci_prd_max_bus(0);
-	ASSERT3U(max_bus, !=, UINT32_MAX);
-
-	for (i = 1; i <= max_bus; i++) {
-		if (pci_bus_res[0][i].dip == NULL) {
-			pci_bus_res[0][i].root_addr = root_bus_addr++;
+	for (i = min_bus + 1; i <= max_bus; i++) {
+		r = get_bus_res(0, i);
+		if (r->dip == NULL) {
+			r->root_addr = root_bus_addr++;
 		}
 		(void) enumerate_bus_devs(0, i, (intptr_t)CONFIG_INFO);
 	}
@@ -1839,17 +1853,17 @@ pci_fix_unit_address(void)
 	int	pci_regs[] = {0, 0, 0};
 	int	new_addr;
 	int	index = 0;
-	uint_t	bus, max_bus;
+	uint_t	bus, min_bus, max_bus;
 
 	if (!pci_unitaddr_cache_valid()) {
 		pci_unitaddr_cache_create();
 		return;
 	}
 
+	min_bus = pci_prd_min_bus(0);
 	max_bus = pci_prd_max_bus(0);
 
-	/* For segment 0, we always assume buses start at 0 */
-	for (bus = 0; bus <= max_bus; bus++) {
+	for (bus = min_bus; bus <= max_bus; bus++) {
 		r = get_bus_res(0, bus);
 
 		/* skip non-root (peer) PCI busses */
@@ -1872,8 +1886,11 @@ pci_reprogram(void)
 {
 	char *onoff;
 	struct pci_bus_resource *r;
-	int i, pci_reconfig = 1;
-	int bus;
+	int pci_reconfig = 1;
+	uint_t i, bus, min_bus, max_bus;
+
+	min_bus = pci_prd_min_bus(0);
+	max_bus = pci_prd_max_bus(0);
 
 	/*
 	 * Ask platform code for all of the root complexes it knows about in
@@ -1883,7 +1900,7 @@ pci_reprogram(void)
 	 * ask the platform if it wants to change the name of the slot.
 	 */
 	pci_prd_root_complex_iter(pci_rc_scan_cb, NULL);
-	for (bus = 0; bus <= pci_boot_maxbus; bus++) {
+	for (bus = min_bus; bus <= max_bus; bus++) {
 		r = get_bus_res(0, bus);
 		pci_prd_slot_name(0, bus, r->dip);
 	}
@@ -1894,7 +1911,7 @@ pci_reprogram(void)
 	/*
 	 * Do root-bus resource discovery
 	 */
-	for (bus = 0; bus <= pci_boot_maxbus; bus++) {
+	for (bus = min_bus; bus <= max_bus; bus++) {
 		r = get_bus_res(0, bus);
 
 		/* skip non-root (peer) PCI busses */
@@ -1978,7 +1995,7 @@ pci_reprogram(void)
 	memlist_rsrc_free(&isa_res.mem_used);
 
 	/* add bus-range property for root/peer bus nodes */
-	for (i = 0; i <= pci_boot_maxbus; i++) {
+	for (i = min_bus; i <= max_bus; i++) {
 		r = get_bus_res(0, i);
 
 		/* create bus-range property on root/peer buses */
@@ -2045,9 +2062,9 @@ populate_bus_res(uint16_t seg, uchar_t bus)
 		}
 	}
 
-	if (bus == 0) {
+	if (seg == 0 && bus == pci_prd_min_bus(0)) {
 		/*
-		 * Special treatment of bus 0:
+		 * Special treatment of the first bus in segment 0:
 		 * If no IO/MEM resource from ACPI/MPSPEC/HRT, copy
 		 * pcimem from boot and make I/O space the entire range
 		 * starting at 0x100.
