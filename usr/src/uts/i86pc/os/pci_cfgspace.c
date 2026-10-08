@@ -354,6 +354,7 @@ pci_init_mmio(void)
 	uint64_t *ecfg;
 	size_t len;
 	int ecfglen;
+	uint_t i, idx, nentries;
 
 	ecfglen = do_bsys_getproplen(bootops, MCFG_PROPNAME);
 	if (ecfglen <= 0)
@@ -377,7 +378,7 @@ pci_init_mmio(void)
 	if (do_bsys_getprop(bootops, MCFG_PROPNAME, ecfg) < 0)
 		return;
 
-	mcfg_n_segments = ecfglen / (4 * sizeof (uint64_t));
+	nentries = ecfglen / (4 * sizeof (uint64_t));
 
 	/*
 	 * Since the early boot alloactor isn't very sophisticated, we
@@ -395,27 +396,39 @@ pci_init_mmio(void)
 	 * altogether and directly reference the ACPI_MCFG_ALLOCATION entries
 	 * when needed instead of making what is in effect a copy of it.
 	 */
-	len = mcfg_n_segments * (sizeof (uint64_t) + sizeof (uint16_t) +
+	len = nentries * (sizeof (uint64_t) + sizeof (uint16_t) +
 	    sizeof (uint8_t) + sizeof (uint8_t));
 	mcfg_mem_base = (uint64_t *)BOP_ALLOC(bootops, (caddr_t)MISC_VA_BASE,
 	    len, sizeof (uint64_t) /* alignment */);
-	mcfg_segments = (uint16_t *)(mcfg_mem_base + mcfg_n_segments);
-	mcfg_bus_start = (uint8_t *)(mcfg_segments + mcfg_n_segments);
-	mcfg_bus_end = (uint8_t *)(mcfg_bus_start + mcfg_n_segments);
+	mcfg_segments = (uint16_t *)(mcfg_mem_base + nentries);
+	mcfg_bus_start = (uint8_t *)(mcfg_segments + nentries);
+	mcfg_bus_end = (uint8_t *)(mcfg_bus_start + nentries);
 
-	for (uint_t i = 0; i < mcfg_n_segments; i++) {
-		mcfg_mem_base[i] = ecfg[i * 4];
-		mcfg_segments[i] = (uint16_t)ecfg[(i * 4) + 1];
-		mcfg_bus_start[i] = (uint8_t)ecfg[(i * 4) + 2];
-		mcfg_bus_end[i] = (uint8_t)ecfg[(i * 4) + 3];
+	for (i = idx = 0; i < nentries; i++) {
+		uint8_t bus_start = (uint8_t)ecfg[(i * 4) + 2];
+		uint8_t bus_end = (uint8_t)ecfg[(i * 4) + 3];
+
+		if (bus_start > bus_end) {
+			cmn_err(CE_WARN, "ignoring MCFG entry %u for segment %u "
+			    "with invalid bus range %u-%u", i,
+			    (uint16_t)ecfg[(i * 4) + 1], bus_start, bus_end);
+			continue;
+		}
+
+		mcfg_mem_base[idx] = ecfg[i * 4];
+		mcfg_segments[idx] = (uint16_t)ecfg[(i * 4) + 1];
+		mcfg_bus_start[idx] = bus_start;
+		mcfg_bus_end[idx] = bus_end;
 #ifdef DEBUG
 		bop_printf(NULL, "MCFG [%u]:\taddr = 0x%p\n", i,
-		    (void *)mcfg_mem_base[i]);
-		bop_printf(NULL, "\t\tsegment = %u\n", mcfg_segments[i]);
+		    (void *)mcfg_mem_base[idx]);
+		bop_printf(NULL, "\t\tsegment = %u\n", mcfg_segments[idx]);
 		bop_printf(NULL, "\t\tbus range = 0x%x - 0x%x\n",
-		    mcfg_bus_start[i], mcfg_bus_end[i]);
+		    mcfg_bus_start[idx], mcfg_bus_end[idx]);
 #endif
+		idx++;
 	}
+	mcfg_n_segments = idx;
 
 	/*
 	 * We leave the pci_{get,put}{b,w,l}_func pointers using the legacy

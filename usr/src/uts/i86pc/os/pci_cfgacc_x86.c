@@ -410,7 +410,7 @@ pci_cfgacc_mmio_init(void)
 	size_t cfgspace_size;
 	uint_t i;
 
-	if (mcfg_mem_base == NULL)
+	if (mcfg_mem_base == NULL || mcfg_n_segments == 0)
 		return;
 
 	pci_cfgacc_virt_base = (caddr_t *)BOP_ALLOC(bootops,
@@ -455,7 +455,7 @@ pci_cfgacc_mmio_remap(void)
 	void *new_va;
 	pfn_t pfn;
 	size_t cfgspace_size;
-	uint_t i, idx;
+	uint_t i, idx, nentries;
 	int len;
 
 	/*
@@ -469,6 +469,7 @@ pci_cfgacc_mmio_remap(void)
 
 	/* Make len represent the # of uint64_t entries in ecfg */
 	len /= sizeof (uint64_t);
+	nentries = len / 4;
 
 	ecfg = kmem_zalloc(len * sizeof (uint64_t), KM_SLEEP);
 
@@ -477,19 +478,25 @@ pci_cfgacc_mmio_remap(void)
 		return;
 	}
 
-	pci_cfgacc_virt_base = kmem_zalloc(sizeof (caddr_t) * (len / 4),
+	pci_cfgacc_virt_base = kmem_zalloc(sizeof (caddr_t) * nentries,
 	    KM_SLEEP);
 
-	mcfg_mem_base = kmem_zalloc((len / 4) *
+	mcfg_mem_base = kmem_zalloc(nentries *
 	    (sizeof (uint64_t) + sizeof (uint16_t) + sizeof (uint8_t) +
 	    sizeof (uint8_t)), KM_SLEEP);
-	mcfg_segments = (uint16_t *)(mcfg_mem_base + mcfg_n_segments);
-	mcfg_bus_start = (uint8_t *)(mcfg_segments + mcfg_n_segments);
-	mcfg_bus_end = (uint8_t *)(mcfg_bus_start + mcfg_n_segments);
+	mcfg_segments = (uint16_t *)(mcfg_mem_base + nentries);
+	mcfg_bus_start = (uint8_t *)(mcfg_segments + nentries);
+	mcfg_bus_end = (uint8_t *)(mcfg_bus_start + nentries);
 
-	for (i = idx = 0; i < len; i += 4, idx++) {
-		cfgspace_size = ((size_t)(uint8_t)ecfg[i + 3] -
-		    (uint8_t)ecfg[i + 2] + 1) * PCIE_CFG_SPACE_BUS_SIZE;
+	for (i = idx = 0; i < len; i += 4) {
+		uint8_t bus_start = (uint8_t)ecfg[i + 2];
+		uint8_t bus_end = (uint8_t)ecfg[i + 3];
+
+		if (bus_start > bus_end)
+			continue;
+
+		cfgspace_size = ((size_t)bus_end - bus_start + 1) *
+		    PCIE_CFG_SPACE_BUS_SIZE;
 		new_va = vmem_alloc(heap_arena, cfgspace_size, VM_SLEEP);
 		pfn = mmu_btop(ecfg[i]);
 
@@ -500,8 +507,8 @@ pci_cfgacc_mmio_remap(void)
 
 		mcfg_mem_base[idx] = ecfg[i];
 		mcfg_segments[idx] = (uint16_t)ecfg[i + 1];
-		mcfg_bus_start[idx] = (uint8_t)ecfg[i + 2];
-		mcfg_bus_end[idx] = (uint8_t)ecfg[i + 3];
+		mcfg_bus_start[idx] = bus_start;
+		mcfg_bus_end[idx] = bus_end;
 
 #ifdef DEBUG
 		cmn_err(CE_CONT, "%s: mapping PCI segment %lu cfgspace 0x%p to "
@@ -509,7 +516,9 @@ pci_cfgacc_mmio_remap(void)
 		    (void *)ecfg[i], pci_cfgacc_virt_base[idx],
 		    pci_cfgacc_virt_base[idx] + cfgspace_size - 1);
 #endif
+		idx++;
 	}
+	mcfg_n_segments = idx;
 
 	kmem_free(ecfg, len * sizeof (uint64_t));
 }
