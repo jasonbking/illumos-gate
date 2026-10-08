@@ -104,22 +104,28 @@ extern uint32_t pci_prd_first_segment(void);
 extern uint32_t pci_prd_next_segment(uint16_t);
 
 /*
- * Return the minimum PCI bus on the given segment that should be searched.
- * Normally this is 0, but non-zero PCI segments may only support a reduced
- * range of buses.
+ * Return the lowest PCI bus on the given segment. Normally this is 0, but
+ * non-zero PCI segments may only support a reduced range of buses. Individual
+ * buses in the returned min/max span may be unavailable; use
+ * pci_prd_bus_valid() before accessing them.
  *
  * If the segment doesn't exist, -1 (UINT32_MAX) is returned.
  */
 extern uint32_t pci_prd_min_bus(uint16_t);
 
 /*
- * Return the maximum PCI bus on this platform that should be searched. This
- * number is the last bus number that should be scanned. e.g. a value of 0x10
- * indicates that we will search buses [0, 0x10]. In general, it is expected
- * that platforms will just return 0xff (PCI_MAX_BUS_NUM - 1) unless for some
- * reason it has other knowledge here.
+ * Return the highest PCI bus on this platform. Individual buses in the
+ * returned min/max span may be unavailable; use pci_prd_bus_valid() before
+ * accessing them.
  */
 extern uint32_t pci_prd_max_bus(uint16_t);
+
+/*
+ * Return whether a bus is accessible on the given PCI segment. Nonzero
+ * segments require an MCFG entry that covers the bus; segment 0 may fall
+ * back to legacy configuration I/O.
+ */
+extern boolean_t pci_prd_bus_valid(uint16_t, uint32_t);
 
 /*
  * Look up a set of resources that should be assigned to the PCI bus on the

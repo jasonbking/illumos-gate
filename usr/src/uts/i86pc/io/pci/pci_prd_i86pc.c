@@ -824,6 +824,35 @@ pci_prd_max_bus(uint16_t segment)
 	return (max);
 }
 
+boolean_t
+pci_prd_bus_valid(uint16_t segment, uint32_t bus)
+{
+	uint32_t min_bus, max_bus;
+
+	min_bus = pci_prd_min_bus(segment);
+	max_bus = pci_prd_max_bus(segment);
+	if (min_bus == UINT32_MAX || max_bus == UINT32_MAX ||
+	    bus < min_bus || bus > max_bus) {
+		return (B_FALSE);
+	}
+
+	/*
+	 * The segment 0 legacy configuration mechanism can access buses
+	 * outside its MCFG windows.
+	 */
+	if (segment == 0)
+		return (B_TRUE);
+
+	for (uint_t i = 0; i < mcfg_n_segments; i++) {
+		if (mcfg_segments[i] == segment &&
+		    bus >= mcfg_bus_start[i] && bus <= mcfg_bus_end[i]) {
+			return (B_TRUE);
+		}
+	}
+
+	return (B_FALSE);
+}
+
 struct memlist *
 pci_prd_find_resource(uint16_t segment, uint32_t bus, pci_prd_rsrc_t rsrc)
 {
@@ -834,7 +863,7 @@ pci_prd_find_resource(uint16_t segment, uint32_t bus, pci_prd_rsrc_t rsrc)
 	max_bus = pci_prd_max_bus(segment);
 
 	if (min_bus == UINT32_MAX || min_bus > bus || max_bus == UINT32_MAX ||
-	    bus > max_bus) {
+	    bus > max_bus || !pci_prd_bus_valid(segment, bus)) {
 		return (NULL);
 	}
 

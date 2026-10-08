@@ -441,6 +441,9 @@ iter_buses(boolean_t (*cb)(uint16_t, uint8_t, void *), void *arg)
 		ASSERT3U(max_bus, !=, UINT32_MAX);
 
 		for (bus = min_bus; bus <= max_bus; bus++) {
+			if (!pci_prd_bus_valid(seg, bus))
+				continue;
+
 			if (!cb(seg, bus, arg))
 				return;
 		}
@@ -493,7 +496,8 @@ pci_rc_scan_cb(uint16_t seg, uint32_t busno, void *arg)
 	uint32_t max_bus = pci_prd_max_bus(seg);
 
 	if (busno == UINT32_MAX || min_bus == UINT32_MAX ||
-	    max_bus == UINT32_MAX || busno < min_bus || busno > max_bus) {
+	    max_bus == UINT32_MAX || busno < min_bus || busno > max_bus ||
+	    !pci_prd_bus_valid(seg, busno)) {
 		dcmn_err(CE_NOTE, "platform root complex scan returned bus "
 		    "with invalid bus id: 0x%x on segment %u", busno, seg);
 		return (B_TRUE);
@@ -786,6 +790,9 @@ pci_setup_tree(void)
 		 * enumerating phantom peers with no device below.
 		 */
 		for (i = min_bus + 1; i <= max_bus; i++) {
+			if (!pci_prd_bus_valid(0, i))
+				continue;
+
 			r = get_bus_res(0, i);
 			if (r->dip == NULL)
 				r->root_addr = root_bus_addr++;
@@ -808,6 +815,9 @@ pci_setup_tree(void)
 		max_bus = pci_prd_max_bus(seg);
 
 		for (i = min_bus; i <= max_bus; i++) {
+			if (!pci_prd_bus_valid(seg, i))
+				continue;
+
 			(void) enumerate_bus_devs(seg, i,
 			    (intptr_t)CONFIG_INFO);
 		}
