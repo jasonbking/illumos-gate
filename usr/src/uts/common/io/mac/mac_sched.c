@@ -3484,9 +3484,9 @@ mac_rx_srs_subflow_process(void *arg, mac_resource_handle_t srs,
  * path between MAC clients.
  */
 /* ARGSUSED */
-void
-mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
-    boolean_t loopback)
+static void
+mac_rx_srs_process_impl(void *arg, mac_resource_handle_t srs,
+    mblk_t *mp_chain, boolean_t loopback, boolean_t delayed)
 {
 	mac_soft_ring_set_t	*mac_srs = (mac_soft_ring_set_t *)srs;
 	mblk_t			*mp, *tail;
@@ -3494,6 +3494,10 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 	size_t			sz = 0;
 	mac_bw_ctl_t		*mac_bw = mac_srs->srs_bw;
 	mac_srs_rx_t		*srs_rx = &mac_srs->srs_rx;
+
+	if (!delayed && mac_srs->srs_delay != 0 &&
+	    mac_srs_delay_rx(mac_srs, arg, mp_chain, loopback))
+		return;
 
 	/*
 	 * Set the tail, count and sz. We set the sz irrespective
@@ -3519,17 +3523,14 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 		SRS_RX_STAT_UPDATE(mac_srs, intrcnt, count);
 	}
 
-	if (mac_srs->srs_delay > 0 || mac_srs->srs_corrupt > 0 ||
-	    mac_srs->srs_drop > 0) {
+	if (mac_srs->srs_corrupt > 0 || mac_srs->srs_drop > 0) {
 		size_t drop_bytes = 0;
 		int drop_cnt = 0;
-		int delay_cnt = 0;
 		int corrupt_cnt = 0;
 
 		mac_srs_disturb(mac_srs, &mp_chain, &drop_cnt, &drop_bytes,
-		    &delay_cnt, &corrupt_cnt);
+		    &corrupt_cnt);
 		SRS_RX_STAT_UPDATE(mac_srs, admdrops, drop_cnt);
-		SRS_RX_STAT_UPDATE(mac_srs, admdelays, delay_cnt);
 		SRS_RX_STAT_UPDATE(mac_srs, admcorrupts, corrupt_cnt);
 		count -= drop_cnt;
 		sz -= drop_bytes;
@@ -3672,6 +3673,20 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 		}
 	}
 	mutex_exit(&mac_srs->srs_lock);
+}
+
+void
+mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
+    boolean_t loopback)
+{
+	mac_rx_srs_process_impl(arg, srs, mp_chain, loopback, B_FALSE);
+}
+
+void
+mac_rx_srs_process_delayed(void *arg, mac_resource_handle_t srs,
+    mblk_t *mp_chain, boolean_t loopback)
+{
+	mac_rx_srs_process_impl(arg, srs, mp_chain, loopback, B_TRUE);
 }
 
 /* TX SIDE ROUTINES (RUNTIME) */

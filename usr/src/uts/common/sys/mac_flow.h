@@ -222,7 +222,7 @@ typedef struct mac_protect_s {
  */
 #define	MRP_MAXBW_MINVAL		1200000
 
-#define	MRP_MAX_DELAY			10000 /* 10ms in us */
+#define	MRP_MAX_DELAY			100000 /* 100ms in us */
 #define	MRP_MAX_CORRUPT			100 /* Percent */
 #define	MRP_MAX_DROP			100 /* Percent */
 

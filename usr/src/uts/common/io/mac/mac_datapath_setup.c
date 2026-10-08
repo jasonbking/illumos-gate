@@ -2233,6 +2233,7 @@ mac_srs_create(mac_client_impl_t *mcip, flow_entry_t *flent,
 
 	mac_srs = kmem_cache_alloc(mac_srs_cache, KM_SLEEP);
 	bzero(mac_srs, sizeof (mac_soft_ring_set_t));
+	mac_srs_delay_init(mac_srs);
 	srs_rx = &mac_srs->srs_rx;
 	srs_tx = &mac_srs->srs_tx;
 
@@ -3645,6 +3646,7 @@ mac_srs_free(mac_soft_ring_set_t *mac_srs)
 
 	mac_srs->srs_bw = NULL;
 	mac_srs_stat_delete(mac_srs);
+	mac_srs_delay_fini(mac_srs);
 	kmem_cache_free(mac_srs_cache, mac_srs);
 }
 
