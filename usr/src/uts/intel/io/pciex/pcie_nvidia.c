@@ -199,8 +199,8 @@ create_pcie_root_bus(uchar_t bus, dev_info_t *dip)
  * NOTE: For now, this function is only used for Nvidia's CrushK 8-04 chipsets.
  */
 void
-add_nvidia_isa_bridge_props(dev_info_t *dip, uchar_t bus, uchar_t dev,
-    uchar_t func)
+add_nvidia_isa_bridge_props(dev_info_t *dip, dev_info_t *rcdip, uchar_t bus,
+    uchar_t dev, uchar_t func)
 {
 	uint_t devloc, base;
 	pci_regspec_t regs[2] = {{0}};
@@ -210,7 +210,7 @@ add_nvidia_isa_bridge_props(dev_info_t *dip, uchar_t bus, uchar_t dev,
 	regs[0].pci_phys_hi = devloc;
 
 	/* System Control BAR i/o space */
-	base = (*pci_getl_func)(bus, dev, func,
+	base = pci_cfgacc_get32(rcdip, PCI_GETBDF(bus, dev, func),
 	    NVIDIA_CK804_ISA_SYSCTRL_BAR_OFF);
 	regs[0].pci_size_low = assigned[0].pci_size_low = PCI_CONF_HDR_SIZE;
 	assigned[0].pci_phys_hi = regs[0].pci_phys_hi = (PCI_RELOCAT_B |
@@ -219,7 +219,7 @@ add_nvidia_isa_bridge_props(dev_info_t *dip, uchar_t bus, uchar_t dev,
 	    base & PCI_BASE_IO_ADDR_M;
 
 	/* Analog BAR i/o space */
-	base = (*pci_getl_func)(bus, dev, func,
+	base = pci_cfgacc_get32(rcdip, PCI_GETBDF(bus, dev, func),
 	    NVIDIA_CK804_ISA_ANALOG_BAR_OFF);
 	regs[1].pci_size_low = assigned[1].pci_size_low = PCI_CONF_HDR_SIZE;
 	assigned[1].pci_phys_hi = regs[1].pci_phys_hi = (PCI_RELOCAT_B |

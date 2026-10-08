@@ -37,8 +37,8 @@ boolean_t	look_for_any_pciex_device(dev_info_t *, uchar_t);
 boolean_t	check_if_device_is_pciex(dev_info_t *, uchar_t, uchar_t,
 		    uchar_t, boolean_t *, ushort_t *, ushort_t *);
 boolean_t	create_pcie_root_bus(uchar_t, dev_info_t *);
-void		add_nvidia_isa_bridge_props(dev_info_t *, uchar_t, uchar_t,
-		    uchar_t);
+void		add_nvidia_isa_bridge_props(dev_info_t *, dev_info_t *, uchar_t,
+		    uchar_t, uchar_t);
 
 /* Generic Nvidia chipset IDs and defines */
 #define	NVIDIA_VENDOR_ID			0x10de	/* Nvidia Vendor Id */

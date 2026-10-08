@@ -297,8 +297,8 @@ static boolean_t add_bus_available_prop(uint16_t, uint8_t, void *);
 static int get_pci_cap(dev_info_t *dip, pcie_req_id_t bdf, uint8_t cap_id);
 static boolean_t fix_ppb_res(uint16_t, uint8_t, void *);
 static void alloc_res_array(void);
-static void create_ioapic_node(int bus, int dev, int fn, ushort_t vendorid,
-    ushort_t deviceid);
+static void create_ioapic_node(dev_info_t *, int, int, int, ushort_t,
+    ushort_t);
 static void populate_bus_res(uint16_t seg, uchar_t bus);
 static void ck804_fix_aer_ptr(dev_info_t *, pcie_req_id_t);
 
@@ -2683,14 +2683,14 @@ process_devfunc(dev_info_t *rcdip, uchar_t bus, uchar_t dev, uchar_t func,
 	}
 
 	if (pci_prop_class_is_ioapic(&prop_data)) {
-		create_ioapic_node(bus, dev, func, prop_data.ppd_vendid,
+		create_ioapic_node(rcdip, bus, dev, func, prop_data.ppd_vendid,
 		    prop_data.ppd_devid);
 	}
 
 	/* check for NVIDIA CK8-04/MCP55 based LPC bridge */
 	if (NVIDIA_IS_LPC_BRIDGE(prop_data.ppd_vendid, prop_data.ppd_devid) &&
 	    dev == 1 && func == 0) {
-		add_nvidia_isa_bridge_props(dip, bus, dev, func);
+		add_nvidia_isa_bridge_props(dip, rcdip, bus, dev, func);
 		/* each LPC bridge has an integrated IOAPIC */
 		apic_nvidia_io_max++;
 	}
@@ -3898,8 +3898,8 @@ alloc_res_array(void)
 }
 
 static void
-create_ioapic_node(int bus, int dev, int fn, ushort_t vendorid,
-    ushort_t deviceid)
+create_ioapic_node(dev_info_t *rcdip, int bus, int dev, int fn,
+    ushort_t vendorid, ushort_t deviceid)
 {
 	static dev_info_t *ioapicsnode = NULL;
 	static int numioapics = 0;
@@ -3908,14 +3908,16 @@ create_ioapic_node(int bus, int dev, int fn, ushort_t vendorid,
 	uint32_t lobase, hibase = 0;
 
 	/* BAR 0 contains the IOAPIC's memory-mapped I/O address */
-	lobase = (*pci_getl_func)(bus, dev, fn, PCI_CONF_BASE0);
+	lobase = pci_cfgacc_get32(rcdip, PCI_GETBDF(bus, dev, fn),
+	    PCI_CONF_BASE0);
 
 	/* We (and the rest of the world) only support memory-mapped IOAPICs */
 	if ((lobase & PCI_BASE_SPACE_M) != PCI_BASE_SPACE_MEM)
 		return;
 
 	if ((lobase & PCI_BASE_TYPE_M) == PCI_BASE_TYPE_ALL)
-		hibase = (*pci_getl_func)(bus, dev, fn, PCI_CONF_BASE0 + 4);
+		hibase = pci_cfgacc_get32(rcdip, PCI_GETBDF(bus, dev, fn),
+		    PCI_CONF_BASE0 + 4);
 
 	lobase &= PCI_BASE_M_ADDR_M;
 
