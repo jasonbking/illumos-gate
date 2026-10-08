@@ -747,7 +747,7 @@ extern void pcie_dbg(char *fmt, ...);
 #endif	/* DEBUG */
 
 /* PCIe IOV functions */
-extern dev_info_t *pcie_find_dip_by_bdf(dev_info_t *rootp, pcie_req_id_t bdf);
+extern dev_info_t *pcie_find_dip_by_bdf(dev_info_t *rootp, pcie_sbdf_t);
 
 extern boolean_t pf_in_bus_range(pcie_bus_t *, pcie_req_id_t);
 extern boolean_t pf_in_assigned_addr(pcie_bus_t *, uint64_t);

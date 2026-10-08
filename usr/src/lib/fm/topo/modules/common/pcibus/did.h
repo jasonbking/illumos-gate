@@ -62,7 +62,7 @@ extern void did_slot_label_set(did_t *, char *);
 extern int did_excap(did_t *);
 extern void did_excap_set(did_t *, int);
 
-extern int did_bdf(did_t *);
+extern uint32_t did_bdf(did_t *);
 extern did_t *did_link_get(did_t *);
 extern did_t *did_chain_get(did_t *);
 extern void did_destroy(did_t *);

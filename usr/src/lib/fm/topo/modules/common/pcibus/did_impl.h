@@ -80,7 +80,7 @@ struct did {
 	int dp_bus;		/* PCI bus number */
 	int dp_dev;		/* PCI device number on the above bus */
 	int dp_fn;		/* PCI function number of the above device */
-	int dp_bdf;		/* PCI "real" bdf */
+	uint32_t dp_bdf;	/* PCI segment and "real" bdf */
 	int dp_nslots;		/* PCI number of slots described */
 	slotnm_t *dp_slotnames; /* PCI slot names list */
 	tnode_t *dp_tnode; 	/* the parent tnode */

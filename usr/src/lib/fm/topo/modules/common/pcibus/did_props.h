@@ -66,6 +66,7 @@ typedef struct txprop {
 #define	DI_DEVIDPROP		"device-id"
 #define	DI_CLASSPROP		"class-code"
 #define	DI_REGPROP		"reg"
+#define	DI_SEGPROP		"pci-segment"
 #define	DI_CCPROP		"class-code"
 #define	DI_PHYSPROP		"physical-slot#"
 #define	DI_SLOTPROP		"slot-names"

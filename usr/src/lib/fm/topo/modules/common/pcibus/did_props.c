@@ -952,14 +952,14 @@ static int
 BDF_set(tnode_t *tn, did_t *pd, const char *dpnm, const char *tpgrp,
     const char *tpnm)
 {
-	int bdf;
+	uint32_t bdf;
 	char str[23]; /* '0x' + sizeof (UINT64_MAX) + '\0' */
 	int e;
 
-	if ((bdf = did_bdf(pd)) <= 0)
+	if ((bdf = did_bdf(pd)) == 0)
 		return (0);
 
-	(void) snprintf(str, 23, "0x%x", bdf);
+	(void) snprintf(str, sizeof (str), "0x%x", bdf);
 	if (topo_prop_set_string(tn,
 	    tpgrp, tpnm, TOPO_PROP_IMMUTABLE, str, &e) < 0)
 		return (topo_mod_seterrno(did_mod(pd), e));

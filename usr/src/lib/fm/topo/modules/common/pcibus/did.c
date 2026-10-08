@@ -105,7 +105,7 @@ di_devtype_get(topo_mod_t *mp, di_node_t src, char **devtype)
 
 typedef struct smbios_slot_cb {
 	int		cb_slotnum;
-	int		cb_bdf;
+	uint32_t	cb_bdf;
 	const char	*cb_label;
 } smbios_slot_cb_t;
 
@@ -115,8 +115,10 @@ di_smbios_find_slot_by_bdf(smbios_hdl_t *shp, const smbios_struct_t *strp,
 {
 	smbios_slot_cb_t *cbp = data;
 	smbios_slot_t slot;
+	uint16_t seg;
 	int bus, df;
 
+	seg = cbp->cb_bdf >> 16;
 	bus = (cbp->cb_bdf & 0xFF00) >> 8;
 	df = cbp->cb_bdf & 0xFF;
 
@@ -124,7 +126,8 @@ di_smbios_find_slot_by_bdf(smbios_hdl_t *shp, const smbios_struct_t *strp,
 	    smbios_info_slot(shp, strp->smbstr_id, &slot) != 0)
 		return (0);
 
-	if (slot.smbl_bus == bus && slot.smbl_df == df) {
+	if ((slot.smbl_sg == seg || slot.smbl_sg == UINT16_MAX) &&
+	    slot.smbl_bus == bus && slot.smbl_df == df) {
 		cbp->cb_label = slot.smbl_name;
 		cbp->cb_slotnum = slot.smbl_id;
 		return (1);
@@ -153,7 +156,7 @@ di_smbios_find_slot_by_id(smbios_hdl_t *shp, const smbios_struct_t *strp,
 }
 
 static int
-di_physlotinfo_get(topo_mod_t *mp, di_node_t src, int bdf, int *slotnum,
+di_physlotinfo_get(topo_mod_t *mp, di_node_t src, uint32_t bdf, int *slotnum,
     char **slotname)
 {
 	char *slotbuf = NULL;
@@ -328,6 +331,20 @@ did_physlot_exists(did_t *did)
 	return ((did->dp_physlot >= 0) || (did->dp_nslots > 0));
 }
 
+static uint16_t
+di_segment_get(topo_mod_t *mp, di_node_t src)
+{
+	uint_t seg;
+
+	for (; src != DI_NODE_NIL; src = di_parent_node(src)) {
+		if (di_uintprop_get(mp, src, DI_SEGPROP, &seg) == 0 &&
+		    seg <= UINT16_MAX)
+			return ((uint16_t)seg);
+	}
+
+	return (0);
+}
+
 did_t *
 did_create(topo_mod_t *mp, di_node_t src,
     int ibrd, int ibrdge, int irc, int ibus)
@@ -367,8 +384,9 @@ did_create(topo_mod_t *mp, di_node_t src,
 		np->dp_bus = ibus;
 	np->dp_dev = PCI_REG_DEV_G(reg);
 	np->dp_fn = PCI_REG_FUNC_G(reg);
-	np->dp_bdf = (PCI_REG_BUS_G(reg) << 8) | (PCI_REG_DEV_G(reg) << 3) |
-	    PCI_REG_FUNC_G(reg);
+	np->dp_bdf = (uint32_t)di_segment_get(mp, src) << 16;
+	np->dp_bdf |= (PCI_REG_BUS_G(reg) << 8) |
+	    (PCI_REG_DEV_G(reg) << 3) | PCI_REG_FUNC_G(reg);
 	/*
 	 * There *may* be a class code we can capture.  If there wasn't
 	 * one, capture that fact by setting the class value to -1.
@@ -561,11 +579,11 @@ did_excap_set(did_t *dp, int type)
 	dp->dp_excap = type;
 }
 
-int
+uint32_t
 did_bdf(did_t *dp)
 {
 	assert(dp != NULL);
-	return ((int)dp->dp_bdf);
+	return (dp->dp_bdf);
 }
 
 const char *

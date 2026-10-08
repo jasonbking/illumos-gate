@@ -70,14 +70,14 @@ typedef struct pcie_domains {
 	struct pcie_domains *faulty_next; /* Next on faulty dom id list */
 } pcie_domains_t;
 
-typedef struct pcie_req_id_list {
-	pcie_req_id_t		bdf;
-	struct pcie_req_id_list	*next;
-} pcie_req_id_list_t;
+typedef struct pcie_sbdf_list {
+	pcie_sbdf_t		bdf;
+	struct pcie_sbdf_list	*next;
+} pcie_sbdf_list_t;
 
 typedef struct pcie_child_domains {
 	pcie_domains_t *ids;
-	pcie_req_id_list_t *bdfs;
+	pcie_sbdf_list_t *bdfs;
 } pcie_child_domains_t;
 
 /*
@@ -179,7 +179,7 @@ extern void pcie_fini_dom(dev_info_t *);
 		PCIE_BUS2DOM(bus_p)->domain.ids.ids)
 
 #define	PCIE_BDF_LIST_GET(bus_p) \
-	((pcie_req_id_list_t *)(PCIE_IS_BDG(bus_p) ? \
+	((pcie_sbdf_list_t *)(PCIE_IS_BDG(bus_p) ? \
 	    PCIE_BUS2DOM(bus_p)->domain.ids.bdfs : NULL))
 #define	PCIE_BDF_LIST_ADD(bus_p, bdf) \
 	if (PCIE_IS_BDG(bus_p)) \

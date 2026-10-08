@@ -893,6 +893,17 @@ extern "C" {
 #define	PCIE_TLP_MSI64		(PCIE_TLP_FMT_4DW_DATA | PCIE_TLP_TYPE_MSI)
 
 typedef uint16_t pcie_req_id_t;
+typedef uint32_t pcie_sbdf_t;
+
+#define	PCIE_SBDF_SEG_SHIFT	16
+#define	PCIE_SBDF_SEG_MASK	0xFFFF0000U
+#define	PCIE_SBDF_BDF_MASK	0x0000FFFFU
+#define	PCIE_SBDF(seg, bdf)	\
+	((((pcie_sbdf_t)(seg) << PCIE_SBDF_SEG_SHIFT) & \
+	PCIE_SBDF_SEG_MASK) | ((pcie_sbdf_t)(bdf) & PCIE_SBDF_BDF_MASK))
+#define	PCIE_SBDF_SEG(sbdf)	\
+	(((sbdf) & PCIE_SBDF_SEG_MASK) >> PCIE_SBDF_SEG_SHIFT)
+#define	PCIE_SBDF_BDF(sbdf)	((sbdf) & PCIE_SBDF_BDF_MASK)
 
 #define	PCIE_REQ_ID_BUS_SHIFT	8
 #define	PCIE_REQ_ID_BUS_MASK	0xFF00

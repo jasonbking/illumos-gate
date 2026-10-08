@@ -976,7 +976,7 @@ px_guest_panic(px_t *px_p)
 	pf_data_t *root_pfd_p = PCIE_DIP2PFD(px_p->px_dip);
 	pf_data_t *pfd_p;
 	pcie_bus_t *bus_p, *root_bus_p;
-	pcie_req_id_list_t *rl;
+	pcie_sbdf_list_t *rl;
 
 	/*
 	 * check if all devices under the root device are unassigned.
@@ -996,7 +996,8 @@ px_guest_panic(px_t *px_p)
 		if (PCIE_IS_BDG(bus_p)) {
 			rl = PCIE_BDF_LIST_GET(bus_p);
 			while (rl) {
-				px_panic_domain(px_p, rl->bdf);
+				px_panic_domain(px_p,
+				    (pcie_req_id_t)PCIE_SBDF_BDF(rl->bdf));
 				rl = rl->next;
 			}
 		} else {

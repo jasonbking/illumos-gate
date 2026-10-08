@@ -46,10 +46,10 @@ static pcie_domains_t *pcie_faulty_domains = NULL;
 static boolean_t pcie_faulty_all = B_FALSE;
 
 static void pcie_domain_list_destroy(pcie_domains_t *domain_ids);
-static void pcie_bdf_list_add(pcie_req_id_t bdf,
-    pcie_req_id_list_t **rlist_p);
-static void pcie_bdf_list_remove(pcie_req_id_t bdf,
-    pcie_req_id_list_t **rlist_p);
+static void pcie_bdf_list_add(pcie_sbdf_t bdf,
+    pcie_sbdf_list_t **rlist_p);
+static void pcie_bdf_list_remove(pcie_sbdf_t bdf,
+    pcie_sbdf_list_t **rlist_p);
 static void pcie_cache_domain_info(pcie_bus_t *bus_p);
 static void pcie_uncache_domain_info(pcie_bus_t *bus_p);
 
@@ -57,8 +57,30 @@ static void pcie_faulty_list_clear();
 static void pcie_faulty_list_update(pcie_domains_t *pd,
     pcie_domains_t **headp);
 
-dev_info_t *
-pcie_find_dip_by_bdf(dev_info_t *rootp, pcie_req_id_t bdf)
+static uint16_t
+pcie_dip_segment(dev_info_t *dip)
+{
+	int seg;
+
+	for (; dip != NULL; dip = ddi_get_parent(dip)) {
+		seg = ddi_prop_get_int(DDI_DEV_T_ANY, dip, DDI_PROP_DONTPASS,
+		    "pci-segment", -1);
+		if (seg >= 0 && seg <= UINT16_MAX)
+			return ((uint16_t)seg);
+	}
+
+	return (0);
+}
+
+static pcie_sbdf_t
+pcie_bus_sbdf(pcie_bus_t *bus_p)
+{
+	return (PCIE_SBDF(pcie_dip_segment(PCIE_BUS2DIP(bus_p)),
+	    bus_p->bus_bdf));
+}
+
+static dev_info_t *
+pcie_find_dip_by_rid(dev_info_t *rootp, pcie_req_id_t bdf)
 {
 	dev_info_t *dip;
 	pcie_bus_t *bus_p;
@@ -74,20 +96,30 @@ pcie_find_dip_by_bdf(dev_info_t *rootp, pcie_req_id_t bdf)
 			if ((bus_num >= bus_p->bus_bus_range.lo &&
 			    bus_num <= bus_p->bus_bus_range.hi) ||
 			    bus_p->bus_bus_range.hi == 0)
-				return (pcie_find_dip_by_bdf(dip, bdf));
+				return (pcie_find_dip_by_rid(dip, bdf));
 		}
 		dip = ddi_get_next_sibling(dip);
 	}
 	return (NULL);
 }
 
+dev_info_t *
+pcie_find_dip_by_bdf(dev_info_t *rootp, pcie_sbdf_t sbdf)
+{
+	if (pcie_dip_segment(rootp) != PCIE_SBDF_SEG(sbdf))
+		return (NULL);
+
+	return (pcie_find_dip_by_rid(rootp,
+	    (pcie_req_id_t)PCIE_SBDF_BDF(sbdf)));
+}
+
 /*
  * Add a device bdf to the bdf list.
  */
 static void
-pcie_bdf_list_add(pcie_req_id_t bdf, pcie_req_id_list_t **rlist_p)
+pcie_bdf_list_add(pcie_sbdf_t bdf, pcie_sbdf_list_t **rlist_p)
 {
-	pcie_req_id_list_t *rl = PCIE_ZALLOC(pcie_req_id_list_t);
+	pcie_sbdf_list_t *rl = PCIE_ZALLOC(pcie_sbdf_list_t);
 
 	rl->bdf = bdf;
 	rl->next = *rlist_p;
@@ -98,14 +130,14 @@ pcie_bdf_list_add(pcie_req_id_t bdf, pcie_req_id_list_t **rlist_p)
  * Remove a bdf from the bdf list.
  */
 static void
-pcie_bdf_list_remove(pcie_req_id_t bdf, pcie_req_id_list_t **rlist_p)
+pcie_bdf_list_remove(pcie_sbdf_t bdf, pcie_sbdf_list_t **rlist_p)
 {
-	pcie_req_id_list_t *rl_pre, *rl_next;
+	pcie_sbdf_list_t *rl_pre, *rl_next;
 
 	rl_pre = *rlist_p;
 	if (rl_pre->bdf == bdf) {
 		*rlist_p = rl_pre->next;
-		kmem_free(rl_pre, sizeof (pcie_req_id_list_t));
+		kmem_free(rl_pre, sizeof (pcie_sbdf_list_t));
 		return;
 	}
 
@@ -113,7 +145,7 @@ pcie_bdf_list_remove(pcie_req_id_t bdf, pcie_req_id_list_t **rlist_p)
 		rl_next = rl_pre->next;
 		if (rl_next->bdf == bdf) {
 			rl_pre->next = rl_next->next;
-			kmem_free(rl_next, sizeof (pcie_req_id_list_t));
+			kmem_free(rl_next, sizeof (pcie_sbdf_list_t));
 			break;
 		} else
 			rl_pre = rl_next;
@@ -131,7 +163,7 @@ pcie_cache_domain_info(pcie_bus_t *bus_p)
 	boolean_t	assigned = PCIE_IS_ASSIGNED(bus_p);
 	boolean_t	fma_dom = PCIE_ASSIGNED_TO_FMA_DOM(bus_p);
 	uint_t		domain_id = PCIE_DOMAIN_ID_GET(bus_p);
-	pcie_req_id_t	bdf = bus_p->bus_bdf;
+	pcie_sbdf_t	sbdf = pcie_bus_sbdf(bus_p);
 	dev_info_t	*pdip;
 	pcie_bus_t	*pbus_p;
 	pcie_domain_t	*pdom_p;
@@ -150,7 +182,7 @@ pcie_cache_domain_info(pcie_bus_t *bus_p)
 			if (fma_dom)
 				pdom_p->fmadom_count++;
 			else {
-				PCIE_BDF_LIST_ADD(pbus_p, bdf);
+				PCIE_BDF_LIST_ADD(pbus_p, sbdf);
 				pdom_p->nfmadom_count++;
 			}
 		} else
@@ -201,7 +233,8 @@ pcie_uncache_domain_info(pcie_bus_t *bus_p)
 				pdom_p->fmadom_count--;
 			else {
 				pdom_p->nfmadom_count--;
-				PCIE_BDF_LIST_REMOVE(pbus_p, bus_p->bus_bdf);
+				PCIE_BDF_LIST_REMOVE(pbus_p,
+				    pcie_bus_sbdf(bus_p));
 			}
 		} else
 			pdom_p->rootdom_count--;

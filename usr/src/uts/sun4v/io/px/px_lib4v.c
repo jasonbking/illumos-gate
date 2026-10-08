@@ -1306,7 +1306,8 @@ px_pci_config_get(ddi_acc_impl_t *handle, uint32_t *addr, int size)
 		/* XXX update error kstats */
 		return (0xffffffff);
 
-	if (cdip = pcie_find_dip_by_bdf(px_pvt->dip, pci_dev_addr >> 8))
+	if (cdip = pcie_find_dip_by_bdf(px_pvt->dip,
+	    PCIE_SBDF(0, pci_dev_addr >> 8)))
 		busp = PCIE_DIP2BUS(cdip);
 	/*
 	 * This can be called early, before busp or busp->bus_dom has
