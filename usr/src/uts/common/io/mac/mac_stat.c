@@ -54,6 +54,7 @@ enum mac_stat {
 	MAC_STAT_RXSDROPS,
 	MAC_STAT_RXADMDROPS,
 	MAC_STAT_RXADMDELAYS,
+	MAC_STAT_RXDELAYDROPS,
 	MAC_STAT_RXADMCORRUPTS,
 	MAC_STAT_CHU10,
 	MAC_STAT_CH10T50,
@@ -62,6 +63,7 @@ enum mac_stat {
 	MAC_STAT_UNBLOCK,
 	MAC_STAT_TXSDROPS,
 	MAC_STAT_TXADMDELAYS,
+	MAC_STAT_TXDELAYDROPS,
 	MAC_STAT_TXADMCORRUPTS,
 	MAC_STAT_TX_ERRORS,
 	MAC_STAT_MACSPOOFED,
@@ -147,6 +149,7 @@ static mac_stat_info_t  i_mac_tx_swlane_si[] = {
 	{ MAC_STAT_UNBLOCK,	"unblockcnt",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_TXSDROPS,	"txsdrops",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_TXADMDELAYS,	"txadmdelays",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_TXDELAYDROPS, "txdelaydrops", KSTAT_DATA_UINT64, 0},
 	{ MAC_STAT_TXADMCORRUPTS, "txadmcorrupts", KSTAT_DATA_UINT64, 0}
 };
 #define	MAC_TX_SWLANE_NKSTAT \
@@ -165,6 +168,7 @@ static mac_stat_info_t  i_mac_rx_swlane_si[] = {
 	{ MAC_STAT_RXSDROPS,	"rxsdrops",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_RXADMDROPS,	"rxadmdrops",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_RXADMDELAYS,	"rxadmdelays",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXDELAYDROPS, "rxdelaydrops", KSTAT_DATA_UINT64, 0},
 	{ MAC_STAT_RXADMCORRUPTS, "rxadmcorrupts", KSTAT_DATA_UINT64, 0}
 };
 #define	MAC_RX_SWLANE_NKSTAT \
@@ -183,6 +187,7 @@ static mac_stat_info_t  i_mac_rx_hwlane_si[] = {
 	{ MAC_STAT_RXSDROPS,	"rxsdrops",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_RXADMDROPS,	"rxadmdrops",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_RXADMDELAYS,	"rxadmdelays",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXDELAYDROPS, "rxdelaydrops", KSTAT_DATA_UINT64, 0},
 	{ MAC_STAT_RXADMCORRUPTS, "rxadmcorrupts", KSTAT_DATA_UINT64, 0},
 	{ MAC_STAT_CHU10,	"chainunder10",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_CH10T50,	"chain10to50",	KSTAT_DATA_UINT64,	0},
@@ -220,6 +225,7 @@ static mac_stat_info_t  i_mac_misc_si[] = {
 	{ MAC_STAT_RXSDROPS,	"rxsdrops",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_RXADMDROPS,	"rxadmdrops",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_RXADMDELAYS,	"rxadmdelays",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_RXDELAYDROPS, "rxdelaydrops", KSTAT_DATA_UINT64, 0},
 	{ MAC_STAT_RXADMCORRUPTS, "rxadmcorrupts", KSTAT_DATA_UINT64, 0},
 	{ MAC_STAT_CHU10,	"chainunder10",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_CH10T50,	"chain10to50",	KSTAT_DATA_UINT64,	0},
@@ -231,6 +237,7 @@ static mac_stat_info_t  i_mac_misc_si[] = {
 	{ MAC_STAT_UNBLOCK,	"unblockcnt",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_TXSDROPS,	"txsdrops",	KSTAT_DATA_UINT64,	0},
 	{ MAC_STAT_TXADMDELAYS,	"txadmdelays",	KSTAT_DATA_UINT64,	0},
+	{ MAC_STAT_TXDELAYDROPS, "txdelaydrops", KSTAT_DATA_UINT64, 0},
 	{ MAC_STAT_TXADMCORRUPTS, "txadmcorrupts", KSTAT_DATA_UINT64, 0}
 };
 #define	MAC_SUMMARY_NKSTAT \
@@ -279,6 +286,7 @@ static stat_info_t rx_srs_stats_list[] = {
 	{RX_SRS_STAT_OFF(mrs_sdrops)},
 	{RX_SRS_STAT_OFF(mrs_admdrops)},
 	{RX_SRS_STAT_OFF(mrs_admdelays)},
+	{RX_SRS_STAT_OFF(mrs_delaydrops)},
 	{RX_SRS_STAT_OFF(mrs_admcorrupts)},
 	{RX_SRS_STAT_OFF(mrs_chaincntundr10)},
 	{RX_SRS_STAT_OFF(mrs_chaincnt10to50)},
@@ -297,6 +305,7 @@ static stat_info_t tx_softring_stats_list[] = {
 	{TX_SOFTRING_STAT_OFF(mts_unblockcnt)},
 	{TX_SOFTRING_STAT_OFF(mts_sdrops)},
 	{TX_SOFTRING_STAT_OFF(mts_admdelays)},
+	{TX_SOFTRING_STAT_OFF(mts_delaydrops)},
 	{TX_SOFTRING_STAT_OFF(mts_admcorrupts)},
 };
 #define	TX_SOFTRING_STAT_SIZE		\
@@ -545,6 +554,9 @@ i_mac_tx_swlane_stat_get(void *handle, uint_t stat)
 	case MAC_STAT_TXADMDELAYS:
 		return (mac_tx_stat->mts_admdelays);
 
+	case MAC_STAT_TXDELAYDROPS:
+		return (mac_tx_stat->mts_delaydrops);
+
 	case MAC_STAT_TXADMCORRUPTS:
 		return (mac_tx_stat->mts_admcorrupts);
 
@@ -611,6 +623,9 @@ i_mac_rx_swlane_stat_get(void *handle, uint_t stat)
 
 	case MAC_STAT_RXADMDELAYS:
 		return (mac_rx_stat->mrs_admdelays);
+
+	case MAC_STAT_RXDELAYDROPS:
+		return (mac_rx_stat->mrs_delaydrops);
 
 	case MAC_STAT_RXADMCORRUPTS:
 		return (mac_rx_stat->mrs_admcorrupts);
@@ -679,6 +694,9 @@ i_mac_rx_hwlane_stat_get(void *handle, uint_t stat)
 
 	case MAC_STAT_RXADMDELAYS:
 		return (mac_rx_stat->mrs_admdelays);
+
+	case MAC_STAT_RXDELAYDROPS:
+		return (mac_rx_stat->mrs_delaydrops);
 
 	case MAC_STAT_RXADMCORRUPTS:
 		return (mac_rx_stat->mrs_admcorrupts);
@@ -815,6 +833,9 @@ i_mac_misc_stat_get(void *handle, uint_t stat)
 	case MAC_STAT_RXADMDELAYS:
 		return (mac_rx_stat->mrs_admdelays);
 
+	case MAC_STAT_RXDELAYDROPS:
+		return (mac_rx_stat->mrs_delaydrops);
+
 	case MAC_STAT_RXADMCORRUPTS:
 		return (mac_rx_stat->mrs_admcorrupts);
 
@@ -847,6 +868,9 @@ i_mac_misc_stat_get(void *handle, uint_t stat)
 
 	case MAC_STAT_TXADMDELAYS:
 		return (mac_tx_stat->mts_admdelays);
+
+	case MAC_STAT_TXDELAYDROPS:
+		return (mac_tx_stat->mts_delaydrops);
 
 	case MAC_STAT_TXADMCORRUPTS:
 		return (mac_tx_stat->mts_admcorrupts);

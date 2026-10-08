@@ -77,10 +77,11 @@
 
 #include <sys/types.h>
 #include <sys/callb.h>
-#include <sys/disp.h>
+#include <sys/callo.h>
 #include <sys/sdt.h>
 #include <sys/strsubr.h>
 #include <sys/strsun.h>
+#include <sys/taskq.h>
 #include <sys/vlan.h>
 #include <inet/ipsec_impl.h>
 #include <inet/ip_impl.h>
@@ -102,7 +103,435 @@ static void mac_tx_soft_ring_drain(mac_soft_ring_t *);
 uint32_t mac_tx_soft_ring_max_q_cnt = 100000;
 uint32_t mac_tx_soft_ring_hiwat = 1000;
 
+/*
+ * Allow one bandwidth-delay product plus a fixed burst, subject to hard
+ * packet and byte limits.
+ */
+uint32_t mac_srs_delay_max_q_cnt = 100000;
+size_t mac_srs_delay_burst_bytes = 1024 * 1024;
+size_t mac_srs_delay_max_q_bytes = 256 * 1024 * 1024;
+
 extern kmem_cache_t *mac_soft_ring_cache;
+
+typedef enum {
+	MAC_SRS_DELAY_RX,
+	MAC_SRS_DELAY_TX
+} mac_srs_delay_type_t;
+
+typedef struct mac_srs_delay_s {
+	list_node_t		msd_node;
+	mac_srs_delay_type_t	msd_type;
+	mac_soft_ring_set_t	*msd_srs;
+	flow_entry_t		*msd_flent;
+	mblk_t			*msd_chain;
+	uint32_t		msd_count;
+	size_t			msd_size;
+	hrtime_t		msd_process_time;
+	union {
+		struct {
+			void		*msd_arg;
+			boolean_t	msd_loopback;
+		} rx;
+		struct {
+			mac_client_handle_t msd_mch;
+			uintptr_t	msd_hint;
+			uint16_t	msd_flag;
+		} tx;
+	} msd_u;
+} mac_srs_delay_t;
+
+extern void mac_rx_srs_process_delayed(void *, mac_resource_handle_t, mblk_t *,
+    boolean_t);
+extern void mac_tx_delayed(mac_client_handle_t, mblk_t *, uintptr_t, uint16_t);
+static void mac_srs_delay_start(mac_soft_ring_set_t *, mac_srs_delay_t *);
+
+void
+mac_srs_delay_init(mac_soft_ring_set_t *srs)
+{
+	list_create(&srs->srs_delay_list, sizeof (mac_srs_delay_t),
+	    offsetof(mac_srs_delay_t, msd_node));
+	cv_init(&srs->srs_delay_cv, NULL, CV_DEFAULT, NULL);
+}
+
+void
+mac_srs_delay_fini(mac_soft_ring_set_t *srs)
+{
+	callout_id_t tid;
+	mac_srs_delay_t *delay;
+
+	mutex_enter(&srs->srs_lock);
+	srs->srs_delay_quiescing = B_TRUE;
+	tid = srs->srs_delay_tid;
+	srs->srs_delay_tid = 0;
+	srs->srs_delay_timer = B_FALSE;
+	mutex_exit(&srs->srs_lock);
+
+	if (tid != 0)
+		(void) untimeout_generic(tid, 0);
+
+	mutex_enter(&srs->srs_lock);
+	while (srs->srs_delay_running)
+		cv_wait(&srs->srs_delay_cv, &srs->srs_lock);
+
+	while ((delay = list_remove_head(&srs->srs_delay_list)) != NULL) {
+		ASSERT3U(srs->srs_delay_count, >=, delay->msd_count);
+		ASSERT3U(srs->srs_delay_size, >=, delay->msd_size);
+		srs->srs_delay_count -= delay->msd_count;
+		srs->srs_delay_size -= delay->msd_size;
+		if (delay->msd_type == MAC_SRS_DELAY_RX)
+			MAC_UPDATE_SRS_COUNT_LOCKED(srs, delay->msd_count);
+		mutex_exit(&srs->srs_lock);
+		freemsgchain(delay->msd_chain);
+		FLOW_REFRELE(delay->msd_flent);
+		kmem_free(delay, sizeof (*delay));
+		mutex_enter(&srs->srs_lock);
+	}
+	mutex_exit(&srs->srs_lock);
+
+	list_destroy(&srs->srs_delay_list);
+	cv_destroy(&srs->srs_delay_cv);
+}
+
+static void
+mac_srs_delay_run(void *arg)
+{
+	mac_soft_ring_set_t *srs = arg;
+	flow_entry_t *worker_flent = srs->srs_flent;
+
+	FLOW_REFHOLD(worker_flent);
+
+	for (;;) {
+		mac_srs_delay_t *delay;
+		flow_entry_t *flent;
+
+		mutex_enter(&srs->srs_lock);
+		delay = list_head(&srs->srs_delay_list);
+		if (srs->srs_delay_quiescing || delay == NULL) {
+			srs->srs_delay_running = B_FALSE;
+			cv_broadcast(&srs->srs_delay_cv);
+			mutex_exit(&srs->srs_lock);
+			FLOW_REFRELE(worker_flent);
+			return;
+		}
+
+		if (delay->msd_process_time > gethrtime()) {
+			srs->srs_delay_running = B_FALSE;
+			if (!srs->srs_delay_timer) {
+				srs->srs_delay_timer = B_TRUE;
+				mac_srs_delay_start(srs, delay);
+			}
+			cv_broadcast(&srs->srs_delay_cv);
+			mutex_exit(&srs->srs_lock);
+			FLOW_REFRELE(worker_flent);
+			return;
+		}
+
+		list_remove(&srs->srs_delay_list, delay);
+		ASSERT3U(srs->srs_delay_count, >=, delay->msd_count);
+		ASSERT3U(srs->srs_delay_size, >=, delay->msd_size);
+		srs->srs_delay_count -= delay->msd_count;
+		srs->srs_delay_size -= delay->msd_size;
+		mutex_exit(&srs->srs_lock);
+
+		flent = delay->msd_flent;
+		switch (delay->msd_type) {
+		case MAC_SRS_DELAY_RX:
+			mac_rx_srs_process_delayed(delay->msd_u.rx.msd_arg,
+			    (mac_resource_handle_t)srs, delay->msd_chain,
+			    delay->msd_u.rx.msd_loopback);
+			break;
+		case MAC_SRS_DELAY_TX:
+			mac_tx_delayed(delay->msd_u.tx.msd_mch,
+			    delay->msd_chain, delay->msd_u.tx.msd_hint,
+			    delay->msd_u.tx.msd_flag);
+			break;
+		default:
+			panic("invalid MAC SRS delay type %d",
+			    delay->msd_type);
+		}
+
+		kmem_free(delay, sizeof (*delay));
+		FLOW_REFRELE(flent);
+	}
+}
+
+static void
+mac_srs_delay_fire(void *arg)
+{
+	mac_srs_delay_t *delay = arg;
+	mac_soft_ring_set_t *srs = delay->msd_srs;
+	boolean_t dispatch = B_FALSE;
+
+	mutex_enter(&srs->srs_lock);
+	srs->srs_delay_timer = B_FALSE;
+	srs->srs_delay_tid = 0;
+	if (!srs->srs_delay_quiescing &&
+	    list_head(&srs->srs_delay_list) != NULL &&
+	    !srs->srs_delay_running) {
+		srs->srs_delay_running = B_TRUE;
+		dispatch = B_TRUE;
+	}
+	mutex_exit(&srs->srs_lock);
+
+	if (dispatch) {
+		if (taskq_dispatch(system_taskq, mac_srs_delay_run, srs,
+		    TQ_NOSLEEP) != TASKQID_INVALID)
+			return;
+
+		mutex_enter(&srs->srs_lock);
+		srs->srs_delay_running = B_FALSE;
+		if (!srs->srs_delay_quiescing &&
+		    !srs->srs_delay_timer &&
+		    list_head(&srs->srs_delay_list) != NULL) {
+			srs->srs_delay_timer = B_TRUE;
+			delay = list_head(&srs->srs_delay_list);
+			delay->msd_process_time = gethrtime() +
+			    NANOSEC / MILLISEC;
+			mac_srs_delay_start(srs, delay);
+		}
+		cv_broadcast(&srs->srs_delay_cv);
+		mutex_exit(&srs->srs_lock);
+	}
+}
+
+static void
+mac_srs_delay_start(mac_soft_ring_set_t *srs, mac_srs_delay_t *delay)
+{
+	ASSERT(MUTEX_HELD(&srs->srs_lock));
+
+	DTRACE_PROBE1(disturb__delay, mac_soft_ring_set_t *, srs);
+
+	srs->srs_delay_tid = timeout_generic(CALLOUT_NORMAL,
+	    mac_srs_delay_fire, delay, delay->msd_process_time,
+	    NANOSEC / MICROSEC,
+	    CALLOUT_FLAG_ABSOLUTE | CALLOUT_FLAG_ROUNDUP);
+}
+
+static void
+mac_srs_delay_count(mblk_t *mp_chain, uint32_t *countp, size_t *sizep)
+{
+	uint32_t count = 0;
+	size_t size = 0;
+
+	for (mblk_t *mp = mp_chain; mp != NULL; mp = mp->b_next) {
+		count++;
+		size += msgdsize(mp);
+	}
+
+	*countp = count;
+	*sizep = size;
+}
+
+static size_t
+mac_srs_delay_byte_limit(mac_soft_ring_set_t *srs, uint32_t delay_usec)
+{
+	const uint64_t divisor = 8 * MICROSEC;
+	const size_t burst_bytes = mac_srs_delay_burst_bytes;
+	const size_t max_bytes = mac_srs_delay_max_q_bytes;
+	uint64_t link_speed = srs->srs_mcip->mci_flent->fe_nic_speed;
+	uint64_t delay_bytes, whole, remainder, remainder_bytes;
+
+	if (delay_usec == 0 || link_speed == 0) {
+		delay_bytes = 0;
+	} else {
+		whole = link_speed / divisor;
+		remainder = link_speed % divisor;
+		remainder_bytes = (remainder * delay_usec + divisor - 1) /
+		    divisor;
+
+		if (whole > max_bytes / delay_usec ||
+		    whole * delay_usec >
+		    max_bytes - MIN(remainder_bytes, max_bytes)) {
+			delay_bytes = max_bytes;
+		} else {
+			delay_bytes = whole * delay_usec + remainder_bytes;
+		}
+	}
+
+	if (delay_bytes >= max_bytes ||
+	    burst_bytes >= max_bytes - delay_bytes) {
+		return (max_bytes);
+	}
+
+	return (delay_bytes + burst_bytes);
+}
+
+static boolean_t
+mac_srs_delay_over_limit(mac_soft_ring_set_t *srs, uint32_t count,
+    size_t size, uint32_t delay_usec)
+{
+	const size_t byte_limit = mac_srs_delay_byte_limit(srs, delay_usec);
+	const uint32_t packet_limit = mac_srs_delay_max_q_cnt;
+
+	if ((uint64_t)srs->srs_delay_count + count > packet_limit) {
+		return (B_TRUE);
+	}
+
+	return (size > byte_limit || srs->srs_delay_size > byte_limit - size);
+}
+
+boolean_t
+mac_srs_delay_rx(mac_soft_ring_set_t *srs, void *arg, mblk_t *mp_chain,
+    boolean_t loopback)
+{
+	mac_srs_delay_t *delay;
+	uint32_t count, delay_usec;
+	size_t size;
+	boolean_t drop = B_FALSE;
+	boolean_t start = B_FALSE;
+
+	mac_srs_delay_count(mp_chain, &count, &size);
+	delay = kmem_zalloc(sizeof (*delay), KM_NOSLEEP);
+	if (delay == NULL) {
+		mutex_enter(&srs->srs_lock);
+		if (srs->srs_delay == 0) {
+			mutex_exit(&srs->srs_lock);
+			return (B_FALSE);
+		}
+		srs->srs_rx.sr_stat.mrs_sdrops += count;
+		srs->srs_rx.sr_stat.mrs_delaydrops += count;
+		mutex_exit(&srs->srs_lock);
+		freemsgchain(mp_chain);
+		return (B_TRUE);
+	}
+
+	delay->msd_type = MAC_SRS_DELAY_RX;
+	delay->msd_srs = srs;
+	delay->msd_flent = srs->srs_flent;
+	delay->msd_chain = mp_chain;
+	delay->msd_count = count;
+	delay->msd_size = size;
+	delay->msd_u.rx.msd_arg = arg;
+	delay->msd_u.rx.msd_loopback = loopback;
+
+	FLOW_REFHOLD(srs->srs_flent);
+	mutex_enter(&srs->srs_lock);
+	if (srs->srs_delay_quiescing) {
+		mutex_exit(&srs->srs_lock);
+		FLOW_REFRELE(srs->srs_flent);
+		kmem_free(delay, sizeof (*delay));
+		freemsgchain(mp_chain);
+		return (B_TRUE);
+	}
+	delay_usec = srs->srs_delay;
+	if (delay_usec == 0) {
+		mutex_exit(&srs->srs_lock);
+		FLOW_REFRELE(srs->srs_flent);
+		kmem_free(delay, sizeof (*delay));
+		return (B_FALSE);
+	}
+
+	if (mac_srs_delay_over_limit(srs, count, size, delay_usec) ||
+	    count > srs->srs_rx.sr_hiwat ||
+	    srs->srs_rx.sr_poll_pkt_cnt >
+	    srs->srs_rx.sr_hiwat - count) {
+		srs->srs_rx.sr_stat.mrs_sdrops += count;
+		srs->srs_rx.sr_stat.mrs_delaydrops += count;
+		drop = B_TRUE;
+	} else {
+		delay->msd_process_time = gethrtime() +
+		    (hrtime_t)delay_usec * (NANOSEC / MICROSEC);
+		srs->srs_delay_count += count;
+		srs->srs_delay_size += size;
+		srs->srs_rx.sr_poll_pkt_cnt += count;
+		ASSERT(srs->srs_rx.sr_poll_pkt_cnt > 0);
+		srs->srs_rx.sr_stat.mrs_admdelays += count;
+		if (list_is_empty(&srs->srs_delay_list) &&
+		    !srs->srs_delay_timer) {
+			srs->srs_delay_timer = B_TRUE;
+			start = B_TRUE;
+		}
+		list_insert_tail(&srs->srs_delay_list, delay);
+		if (start)
+			mac_srs_delay_start(srs, delay);
+	}
+	mutex_exit(&srs->srs_lock);
+
+	if (drop) {
+		FLOW_REFRELE(srs->srs_flent);
+		kmem_free(delay, sizeof (*delay));
+		freemsgchain(mp_chain);
+		return (B_TRUE);
+	}
+
+	return (B_TRUE);
+}
+
+boolean_t
+mac_srs_delay_tx(mac_soft_ring_set_t *srs, mac_client_handle_t mch,
+    mblk_t *mp_chain, uintptr_t hint, uint16_t flag, mblk_t **ret_mp,
+    mac_tx_cookie_t *cookiep)
+{
+	mac_srs_delay_t *delay;
+	uint32_t count, delay_usec;
+	size_t size;
+	boolean_t reject = B_FALSE;
+	boolean_t start = B_FALSE;
+
+	mac_srs_delay_count(mp_chain, &count, &size);
+	delay = kmem_zalloc(sizeof (*delay), KM_NOSLEEP);
+	if (delay != NULL) {
+		delay->msd_type = MAC_SRS_DELAY_TX;
+		delay->msd_srs = srs;
+		delay->msd_flent = srs->srs_flent;
+		delay->msd_chain = mp_chain;
+		delay->msd_count = count;
+		delay->msd_size = size;
+		delay->msd_u.tx.msd_mch = mch;
+		delay->msd_u.tx.msd_hint = hint;
+		delay->msd_u.tx.msd_flag = flag;
+	}
+
+	FLOW_REFHOLD(srs->srs_flent);
+	mutex_enter(&srs->srs_lock);
+	delay_usec = srs->srs_delay;
+	if (delay_usec == 0) {
+		mutex_exit(&srs->srs_lock);
+		FLOW_REFRELE(srs->srs_flent);
+		if (delay != NULL)
+			kmem_free(delay, sizeof (*delay));
+		return (B_FALSE);
+	}
+
+	if (srs->srs_delay_quiescing || delay == NULL ||
+	    mac_srs_delay_over_limit(srs, count, size, delay_usec)) {
+		reject = B_TRUE;
+	} else {
+		delay->msd_process_time = gethrtime() +
+		    (hrtime_t)delay_usec * (NANOSEC / MICROSEC);
+		srs->srs_delay_count += count;
+		srs->srs_delay_size += size;
+		srs->srs_tx.st_stat.mts_admdelays += count;
+		if (list_is_empty(&srs->srs_delay_list) &&
+		    !srs->srs_delay_timer) {
+			srs->srs_delay_timer = B_TRUE;
+			start = B_TRUE;
+		}
+		list_insert_tail(&srs->srs_delay_list, delay);
+		if (start)
+			mac_srs_delay_start(srs, delay);
+	}
+	mutex_exit(&srs->srs_lock);
+
+	if (reject) {
+		FLOW_REFRELE(srs->srs_flent);
+		if (delay != NULL)
+			kmem_free(delay, sizeof (*delay));
+		*cookiep = (mac_tx_cookie_t)srs;
+		if (flag & MAC_TX_NO_ENQUEUE) {
+			*ret_mp = mp_chain;
+		} else {
+			mutex_enter(&srs->srs_lock);
+			srs->srs_tx.st_stat.mts_sdrops += count;
+			srs->srs_tx.st_stat.mts_delaydrops += count;
+			mutex_exit(&srs->srs_lock);
+			freemsgchain(mp_chain);
+		}
+		return (B_TRUE);
+	}
+
+	return (B_TRUE);
+}
 
 #define	ADD_SOFTRING_TO_SET(mac_srs, softring) {			\
 	if (mac_srs->srs_soft_ring_head == NULL) {			\
@@ -930,7 +1359,7 @@ mac_srs_disturb_pkt(mac_soft_ring_set_t *srs, mblk_t **mpp,
  */
 void
 mac_srs_disturb(mac_soft_ring_set_t *srs, mblk_t **mp_chainp, int *drop_cntp,
-    size_t *drop_bytesp, int *delay_cntp, int *corrupt_cntp)
+    size_t *drop_bytesp, int *corrupt_cntp)
 {
 	mblk_t *drop_chain;
 	mblk_t *mp, *mp_prev, *mp_next;
@@ -942,8 +1371,6 @@ mac_srs_disturb(mac_soft_ring_set_t *srs, mblk_t **mp_chainp, int *drop_cntp,
 		*drop_cntp = 0;
 	if (drop_bytesp != NULL)
 		*drop_bytesp = 0;
-	if (delay_cntp != NULL)
-		*delay_cntp = 0;
 	if (corrupt_cntp != NULL)
 		*corrupt_cntp = 0;
 
@@ -951,27 +1378,7 @@ mac_srs_disturb(mac_soft_ring_set_t *srs, mblk_t **mp_chainp, int *drop_cntp,
 	 * We should only be invoked when one of the disturb parameters
 	 * has been set.
 	 */
-	ASSERT(srs->srs_delay > 0 || srs->srs_corrupt > 0 || srs->srs_drop > 0);
-
-	if (srs->srs_delay != 0) {
-		uint32_t delay_usec = srs->srs_delay;
-
-		if (delay_cntp != NULL) {
-			for (mp = *mp_chainp; mp != NULL; mp = mp->b_next)
-				(*delay_cntp)++;
-		}
-
-		DTRACE_PROBE1(disturb__delay, mac_soft_ring_set_t *, srs);
-
-		mutex_exit(&srs->srs_lock);
-		if (servicing_interrupt() ||
-		    delay_usec < TICK_TO_USEC(1)) {
-			drv_usecwait(delay_usec);
-		} else {
-			delay(drv_usectohz(delay_usec));
-		}
-		mutex_enter(&srs->srs_lock);
-	}
+	ASSERT(srs->srs_corrupt > 0 || srs->srs_drop > 0);
 
 	if (srs->srs_drop == 0 && srs->srs_corrupt == 0) {
 		return;

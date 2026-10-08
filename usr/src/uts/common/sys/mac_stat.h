@@ -50,6 +50,7 @@ typedef struct mac_rx_stats_s {
 	uint64_t	mrs_sdrops;
 	uint64_t	mrs_admdrops;
 	uint64_t	mrs_admdelays;
+	uint64_t	mrs_delaydrops;
 	uint64_t	mrs_admcorrupts;
 	uint64_t	mrs_chaincntundr10;
 	uint64_t	mrs_chaincnt10to50;
@@ -73,6 +74,7 @@ typedef struct mac_tx_stats_s {
 	uint64_t	mts_unblockcnt;	/* unblock calls from driver */
 	uint64_t	mts_sdrops;
 	uint64_t	mts_admdelays;
+	uint64_t	mts_delaydrops;
 	uint64_t	mts_admcorrupts;
 } mac_tx_stats_t;
 

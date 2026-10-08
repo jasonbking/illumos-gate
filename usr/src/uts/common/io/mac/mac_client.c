@@ -3529,12 +3529,9 @@ mac_promisc_remove(mac_promisc_handle_t mph)
 	}								\
 }
 
-/*
- * Send function invoked by MAC clients.
- */
-mac_tx_cookie_t
-mac_tx(mac_client_handle_t mch, mblk_t *mp_chain, uintptr_t hint,
-    uint16_t flag, mblk_t **ret_mp)
+static mac_tx_cookie_t
+mac_tx_impl(mac_client_handle_t mch, mblk_t *mp_chain, uintptr_t hint,
+    uint16_t flag, mblk_t **ret_mp, boolean_t delayed)
 {
 	mac_tx_cookie_t		cookie = 0;
 	int			error;
@@ -3594,14 +3591,16 @@ mac_tx(mac_client_handle_t mch, mblk_t *mp_chain, uintptr_t hint,
 		goto done;
 	}
 
-	if (MAC_FLOW_DISTURB(flent)) {
-		int delay_cnt = 0;
+	if (!delayed && srs->srs_delay != 0 &&
+	    mac_srs_delay_tx(srs, mch, mp_chain, hint, flag, ret_mp,
+	    &cookie))
+		goto done;
+
+	if (srs->srs_corrupt != 0 || srs->srs_drop != 0) {
 		int corrupt_cnt = 0;
 
 		mutex_enter(&srs->srs_lock);
-		mac_srs_disturb(srs, &mp_chain, NULL, NULL, &delay_cnt,
-		    &corrupt_cnt);
-		SRS_TX_STAT_UPDATE(srs, admdelays, delay_cnt);
+		mac_srs_disturb(srs, &mp_chain, NULL, NULL, &corrupt_cnt);
 		SRS_TX_STAT_UPDATE(srs, admcorrupts, corrupt_cnt);
 		mutex_exit(&srs->srs_lock);
 		if (mp_chain == NULL)
@@ -3740,6 +3739,28 @@ done:
 		MAC_TX_RELE(mcip, mytx);
 
 	return (cookie);
+}
+
+/*
+ * Send function invoked by MAC clients.
+ */
+mac_tx_cookie_t
+mac_tx(mac_client_handle_t mch, mblk_t *mp_chain, uintptr_t hint,
+    uint16_t flag, mblk_t **ret_mp)
+{
+	return (mac_tx_impl(mch, mp_chain, hint, flag, ret_mp, B_FALSE));
+}
+
+void
+mac_tx_delayed(mac_client_handle_t mch, mblk_t *mp_chain, uintptr_t hint,
+    uint16_t flag)
+{
+	mblk_t *ret_mp = NULL;
+
+	flag &= ~(MAC_TX_NO_HOLD | MAC_TX_NO_ENQUEUE);
+	(void) mac_tx_impl(mch, mp_chain, hint, flag, &ret_mp, B_TRUE);
+	if (ret_mp != NULL)
+		freemsgchain(ret_mp);
 }
 
 /*

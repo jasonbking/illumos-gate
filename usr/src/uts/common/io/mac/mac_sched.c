@@ -1316,6 +1316,17 @@ mac_srs_bw_refund_tx(const mac_soft_ring_set_t *srs, const size_t bytes)
 	}								\
 }
 
+/*
+ * Queue packets whose contribution to sr_poll_pkt_cnt was recorded before
+ * entering the SRS.
+ */
+#define	MAC_RX_SRS_ENQUEUE_COUNTED_CHAIN(mac_srs, head, tail, count, sz, bw) { \
+	MAC_SRS_ENQUEUE_CHAIN(mac_srs, head, tail, count, sz);		\
+	if ((bw)) {							\
+		mac_srs_bw_enqueue((mac_srs), (sz));			\
+	}								\
+}
+
 #define	MAC_TX_SRS_ENQUEUE_CHAIN(mac_srs, head, tail, count, sz) {	\
 	mac_srs->srs_state |= SRS_ENQUEUED;				\
 	MAC_SRS_ENQUEUE_CHAIN(mac_srs, head, tail, count, sz);		\
@@ -3486,9 +3497,10 @@ mac_rx_srs_subflow_process(void *arg, mac_resource_handle_t srs,
  * path between MAC clients.
  */
 /* ARGSUSED */
-void
-mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
-    boolean_t loopback)
+static void
+mac_rx_srs_process_impl(void *arg, mac_resource_handle_t srs,
+    mblk_t *mp_chain, boolean_t loopback, boolean_t delayed,
+    boolean_t poll_counted)
 {
 	mac_soft_ring_set_t	*mac_srs = (mac_soft_ring_set_t *)srs;
 	mblk_t			*mp, *tail;
@@ -3496,6 +3508,10 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 	size_t			sz = 0;
 	mac_bw_ctl_t		*mac_bw = mac_srs->srs_bw;
 	mac_srs_rx_t		*srs_rx = &mac_srs->srs_rx;
+
+	if (!delayed && mac_srs->srs_delay != 0 &&
+	    mac_srs_delay_rx(mac_srs, arg, mp_chain, loopback))
+		return;
 
 	/*
 	 * Set the tail, count and sz. We set the sz irrespective
@@ -3521,18 +3537,17 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 		SRS_RX_STAT_UPDATE(mac_srs, intrcnt, count);
 	}
 
-	if (mac_srs->srs_delay > 0 || mac_srs->srs_corrupt > 0 ||
-	    mac_srs->srs_drop > 0) {
+	if (mac_srs->srs_corrupt > 0 || mac_srs->srs_drop > 0) {
 		size_t drop_bytes = 0;
 		int drop_cnt = 0;
-		int delay_cnt = 0;
 		int corrupt_cnt = 0;
 
 		mac_srs_disturb(mac_srs, &mp_chain, &drop_cnt, &drop_bytes,
-		    &delay_cnt, &corrupt_cnt);
+		    &corrupt_cnt);
 		SRS_RX_STAT_UPDATE(mac_srs, admdrops, drop_cnt);
-		SRS_RX_STAT_UPDATE(mac_srs, admdelays, delay_cnt);
 		SRS_RX_STAT_UPDATE(mac_srs, admcorrupts, corrupt_cnt);
+		if (poll_counted && drop_cnt != 0)
+			MAC_UPDATE_SRS_COUNT_LOCKED(mac_srs, drop_cnt);
 		count -= drop_cnt;
 		sz -= drop_bytes;
 
@@ -3567,6 +3582,8 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 			 */
 			srs_rx->sr_stat.mrs_sdrops += count;
 			mac_bw->mac_bw_drop_bytes += sz;
+			if (poll_counted)
+				MAC_UPDATE_SRS_COUNT_LOCKED(mac_srs, count);
 			MAC_SRS_BW_UNLOCK(mac_srs);
 			mutex_exit(&mac_srs->srs_lock);
 			mac_drop_chain(mp_chain, "Rx no bandwidth");
@@ -3578,8 +3595,13 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 		 * This allows for fine-grained bandwidth policing on dequeue.
 		 */
 		if (!limited || sz <= admit_at_most || count == 1) {
-			MAC_RX_SRS_ENQUEUE_CHAIN(mac_srs, mp_chain,
-			    tail, count, sz, B_TRUE);
+			if (poll_counted) {
+				MAC_RX_SRS_ENQUEUE_COUNTED_CHAIN(mac_srs,
+				    mp_chain, tail, count, sz, B_TRUE);
+			} else {
+				MAC_RX_SRS_ENQUEUE_CHAIN(mac_srs, mp_chain,
+				    tail, count, sz, B_TRUE);
+			}
 			mp_chain = NULL;
 		} else {
 			mp = mp_chain;
@@ -3603,8 +3625,14 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 			ASSERT(tail != NULL);
 			mblk_t *drop_head = tail->b_next;
 			tail->b_next = NULL;
-			MAC_RX_SRS_ENQUEUE_CHAIN(mac_srs, mp_chain, tail,
-			    sub_count, chain_sz, B_TRUE);
+			if (poll_counted) {
+				MAC_RX_SRS_ENQUEUE_COUNTED_CHAIN(mac_srs,
+				    mp_chain, tail, sub_count, chain_sz,
+				    B_TRUE);
+			} else {
+				MAC_RX_SRS_ENQUEUE_CHAIN(mac_srs, mp_chain,
+				    tail, sub_count, chain_sz, B_TRUE);
+			}
 			sz -= chain_sz;
 			count -= sub_count;
 
@@ -3612,6 +3640,9 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 				/* Drop any packet over the threshold */
 				srs_rx->sr_stat.mrs_sdrops += count;
 				mac_bw->mac_bw_drop_bytes += sz;
+				if (poll_counted)
+					MAC_UPDATE_SRS_COUNT_LOCKED(mac_srs,
+					    count);
 			}
 
 			mp_chain = drop_head;
@@ -3634,13 +3665,21 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 	 */
 	if (srs_rx->sr_poll_pkt_cnt > srs_rx->sr_hiwat) {
 		srs_rx->sr_stat.mrs_sdrops += count;
+		if (poll_counted)
+			MAC_UPDATE_SRS_COUNT_LOCKED(mac_srs, count);
 		mutex_exit(&mac_srs->srs_lock);
 
 		freemsgchain(mp_chain);
 		return;
 	}
 
-	MAC_RX_SRS_ENQUEUE_CHAIN(mac_srs, mp_chain, tail, count, sz, B_FALSE);
+	if (poll_counted) {
+		MAC_RX_SRS_ENQUEUE_COUNTED_CHAIN(mac_srs, mp_chain, tail,
+		    count, sz, B_FALSE);
+	} else {
+		MAC_RX_SRS_ENQUEUE_CHAIN(mac_srs, mp_chain, tail, count, sz,
+		    B_FALSE);
+	}
 
 	if (!(mac_srs->srs_state & SRS_PROC)) {
 		/*
@@ -3674,6 +3713,20 @@ mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
 		}
 	}
 	mutex_exit(&mac_srs->srs_lock);
+}
+
+void
+mac_rx_srs_process(void *arg, mac_resource_handle_t srs, mblk_t *mp_chain,
+    boolean_t loopback)
+{
+	mac_rx_srs_process_impl(arg, srs, mp_chain, loopback, B_FALSE, B_FALSE);
+}
+
+void
+mac_rx_srs_process_delayed(void *arg, mac_resource_handle_t srs,
+    mblk_t *mp_chain, boolean_t loopback)
+{
+	mac_rx_srs_process_impl(arg, srs, mp_chain, loopback, B_TRUE, B_TRUE);
 }
 
 /* TX SIDE ROUTINES (RUNTIME) */

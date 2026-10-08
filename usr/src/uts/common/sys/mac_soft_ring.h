@@ -38,7 +38,9 @@ extern "C" {
 #include <sys/types.h>
 #include <sys/cpuvar.h>
 #include <sys/cpupart.h>
+#include <sys/list.h>
 #include <sys/processor.h>
+#include <sys/systm.h>
 #include <sys/stream.h>
 #include <sys/squeue.h>
 #include <sys/dlpi.h>
@@ -933,6 +935,14 @@ struct mac_soft_ring_set_s {
 	uint8_t		srs_corrupt;	/* percent */
 	uint8_t		srs_drop;	/* percent */
 	long		srs_rand;	/* disturb rng state */
+	uint32_t	srs_delay_count;
+	size_t		srs_delay_size;
+	list_t		srs_delay_list;
+	boolean_t	srs_delay_running;
+	boolean_t	srs_delay_timer;
+	boolean_t	srs_delay_quiescing;
+	callout_id_t	srs_delay_tid;
+	kcondvar_t	srs_delay_cv;
 };
 
 static inline boolean_t
@@ -1137,7 +1147,13 @@ extern void mac_tx_srs_restart(mac_soft_ring_set_t *);
 extern void mac_rx_srs_remove(mac_soft_ring_set_t *);
 
 extern void mac_srs_disturb(mac_soft_ring_set_t *, mblk_t **, int *, size_t *,
-    int *, int *);
+    int *);
+extern boolean_t mac_srs_delay_rx(mac_soft_ring_set_t *, void *, mblk_t *,
+    boolean_t);
+extern boolean_t mac_srs_delay_tx(mac_soft_ring_set_t *, mac_client_handle_t,
+    mblk_t *, uintptr_t, uint16_t, mblk_t **, mac_tx_cookie_t *);
+extern void mac_srs_delay_init(mac_soft_ring_set_t *);
+extern void mac_srs_delay_fini(mac_soft_ring_set_t *);
 
 #ifdef	__cplusplus
 }
