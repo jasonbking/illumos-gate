@@ -434,7 +434,8 @@ iter_buses(boolean_t (*cb)(uint16_t, uint8_t, void *), void *arg)
 {
 	uint32_t seg, bus, min_bus, max_bus;
 
-	for (seg = 0; seg != UINT32_MAX; seg = pci_prd_next_segment(seg)) {
+	for (seg = pci_prd_first_segment(); seg != UINT32_MAX;
+	    seg = pci_prd_next_segment(seg)) {
 		min_bus = pci_prd_min_bus(seg);
 		max_bus = pci_prd_max_bus(seg);
 
@@ -490,10 +491,11 @@ static boolean_t
 pci_rc_scan_cb(uint16_t seg, uint32_t busno, void *arg)
 {
 	struct pci_bus_resource *r;
+	uint32_t min_bus = pci_prd_min_bus(seg);
 	uint32_t max_bus = pci_prd_max_bus(seg);
 
-	if (busno == UINT32_MAX || max_bus == UINT32_MAX ||
-	    busno > max_bus) {
+	if (busno == UINT32_MAX || min_bus == UINT32_MAX ||
+	    max_bus == UINT32_MAX || busno < min_bus || busno > max_bus) {
 		dcmn_err(CE_NOTE, "platform root complex scan returned bus "
 		    "with invalid bus id: 0x%x on segment %u", busno, seg);
 		return (B_TRUE);
@@ -672,6 +674,9 @@ pci_unitaddr_cache_create(void)
 	listp = nvf_list(puafd_handle);
 	min_bus = pci_prd_min_bus(0);
 	max_bus = pci_prd_max_bus(0);
+	if (min_bus == UINT32_MAX)
+		goto done;
+
 	for (i = min_bus; i <= max_bus; i++) {
 		struct pci_bus_resource *r = get_bus_res(0, i);
 
@@ -684,6 +689,7 @@ pci_unitaddr_cache_create(void)
 		list_insert_tail(listp, node);
 	}
 
+done:
 	(void) nvf_mark_dirty(puafd_handle);
 	rw_exit(nvf_lock(puafd_handle));
 	nvf_wake_daemon();
@@ -692,6 +698,8 @@ pci_unitaddr_cache_create(void)
 static boolean_t
 pci_init_scan_cb(uint16_t seg, uint32_t busno, void *arg __unused)
 {
+	struct pci_bus_resource *r;
+
 	/* We already handled segment 0 in pci_init() */
 	if (seg == 0) {
 		return (B_TRUE);
@@ -705,7 +713,9 @@ pci_init_scan_cb(uint16_t seg, uint32_t busno, void *arg __unused)
 		return (B_TRUE);
 	}
 
-	create_root_bus_dip(seg, busno);
+	r = get_bus_res(seg, busno);
+	if (r->dip == NULL)
+		create_root_bus_dip(seg, busno);
 	return (B_TRUE);
 }
 
@@ -714,19 +724,28 @@ void
 pci_init(void)
 {
 	struct pci_bus_resource *r;
-	uint32_t min_bus;
+	uint32_t min_bus, segment;
 
 	alloc_res_array();
 
 	/*
 	 * create_root_bus_dip() requires root_addr[bus] is assigned,
-	 * so we do that now
+	 * so do that now if segment 0 exists.
 	 */
 	min_bus = pci_prd_min_bus(0);
-	ASSERT3U(min_bus, !=, UINT32_MAX);
-	r = get_bus_res(0, min_bus);
-	r->root_addr = 0;
-	create_root_bus_dip(0, min_bus);
+	if (min_bus != UINT32_MAX) {
+		r = get_bus_res(0, min_bus);
+		r->root_addr = 0;
+		create_root_bus_dip(0, min_bus);
+	} else {
+		segment = pci_prd_first_segment();
+		ASSERT3U(segment, !=, UINT32_MAX);
+		min_bus = pci_prd_min_bus(segment);
+		ASSERT3U(min_bus, !=, UINT32_MAX);
+		r = get_bus_res(segment, min_bus);
+		r->root_addr = 0;
+		create_root_bus_dip(segment, min_bus);
+	}
 
 	/*
 	 * Create the root complex dips for all of the additional PCI
@@ -743,45 +762,50 @@ pci_setup_tree(void)
 {
 	struct pci_bus_resource *r;
 	/* We assigned addr 0 in pci_init(), so start with 1 */
-	uint_t i, seg, min_bus, max_bus, root_bus_addr = 1;
+	uint_t i, min_bus, max_bus, root_bus_addr = 1;
+	uint32_t seg;
 
 	min_bus = pci_prd_min_bus(0);
 	max_bus = pci_prd_max_bus(0);
-	ASSERT3U(min_bus, !=, UINT32_MAX);
-	ASSERT3U(max_bus, !=, UINT32_MAX);
 
-	(void) enumerate_bus_devs(0, min_bus, (intptr_t)CONFIG_INFO);
+	if (min_bus != UINT32_MAX) {
+		ASSERT3U(max_bus, !=, UINT32_MAX);
 
-	/*
-	 * Now enumerate peer busses
-	 *
-	 * We loop through the segment's reported bus range. On most systems,
-	 * there is
-	 * one more bus at the high end, which implements the ISA
-	 * compatibility bus. We don't care about that.
-	 *
-	 * Note: In the old (bootconf) enumeration, the peer bus
-	 *	address did not use the bus number, and there were
-	 *	too many peer busses created. The root_bus_addr is
-	 *	used to maintain the old peer bus address assignment.
-	 *	However, we stop enumerating phantom peers with no
-	 *	device below.
-	 */
-	for (i = min_bus + 1; i <= max_bus; i++) {
-		r = get_bus_res(0, i);
-		if (r->dip == NULL) {
-			r->root_addr = root_bus_addr++;
+		(void) enumerate_bus_devs(0, min_bus, (intptr_t)CONFIG_INFO);
+
+		/*
+		 * Now enumerate peer busses
+		 *
+		 * We loop through the segment's reported bus range. On most
+		 * systems, there is one more bus at the high end, which
+		 * implements the ISA compatibility bus. We don't care about
+		 * that.
+		 *
+		 * Note: In the old (bootconf) enumeration, the peer bus
+		 * address did not use the bus number, and there were too many
+		 * peer busses created. The root_bus_addr is used to maintain
+		 * the old peer bus address assignment. However, we stop
+		 * enumerating phantom peers with no device below.
+		 */
+		for (i = min_bus + 1; i <= max_bus; i++) {
+			r = get_bus_res(0, i);
+			if (r->dip == NULL)
+				r->root_addr = root_bus_addr++;
+			(void) enumerate_bus_devs(0, i,
+			    (intptr_t)CONFIG_INFO);
 		}
-		(void) enumerate_bus_devs(0, i, (intptr_t)CONFIG_INFO);
 	}
 
 	/*
-	 * We just handled segment 0 above, so handle the rest of the segments.
+	 * Handle all segments other than segment 0.
 	 * Since PCI segments postdate bootconf, there are no legacy bus
 	 * numbers we have to preserve for those segments.
 	 */
-	for (seg = pci_prd_next_segment(0); seg != UINT32_MAX;
+	for (seg = pci_prd_first_segment(); seg != UINT32_MAX;
 	    seg = pci_prd_next_segment(seg)) {
+		if (seg == 0)
+			continue;
+
 		min_bus = pci_prd_min_bus(seg);
 		max_bus = pci_prd_max_bus(seg);
 
@@ -1862,6 +1886,8 @@ pci_fix_unit_address(void)
 
 	min_bus = pci_prd_min_bus(0);
 	max_bus = pci_prd_max_bus(0);
+	if (min_bus == UINT32_MAX)
+		return;
 
 	for (bus = min_bus; bus <= max_bus; bus++) {
 		r = get_bus_res(0, bus);
@@ -1881,16 +1907,104 @@ pci_fix_unit_address(void)
 	}
 }
 
+static boolean_t
+pci_slot_name_cb(uint16_t seg, uint8_t bus, void *arg __unused)
+{
+	struct pci_bus_resource *r = get_bus_res(seg, bus);
+
+	pci_prd_slot_name(seg, bus, r->dip);
+	return (B_TRUE);
+}
+
+static boolean_t
+pci_root_res_cb(uint16_t seg, uint8_t bus, void *arg __unused)
+{
+	struct pci_bus_resource *r = get_bus_res(seg, bus);
+
+	/* skip non-root (peer) PCI busses */
+	if (r->par_bus != (uchar_t)-1)
+		return (B_TRUE);
+
+	/*
+	 * 1. find resources associated with this root bus
+	 */
+	populate_bus_res(seg, bus);
+
+	/*
+	 * 2. Exclude <1M address range here in case below reserved
+	 * ranges for BIOS data area, ROM area etc are wrongly reported
+	 * in ACPI resource producer entries for PCI root bus.
+	 *	00000000 - 000003FF	RAM
+	 *	00000400 - 000004FF	BIOS data area
+	 *	00000500 - 0009FFFF	RAM
+	 *	000A0000 - 000BFFFF	VGA RAM
+	 *	000C0000 - 000FFFFF	ROM area
+	 */
+	memlist_rsrc_delete(&r->mem_avail, 0, 0x100000);
+	memlist_rsrc_delete(&r->pmem_avail, 0, 0x100000);
+
+	/*
+	 * 3. Calculate the amount of "spare" 32-bit memory so that we
+	 * can use that later to determine how much additional memory
+	 * to allocate to bridges in order that they have a better
+	 * chance of supporting a device being hotplugged under them.
+	 */
+	if (r->num_bridge > 0) {
+		uint64_t mem = 0;
+
+		for (struct memlist *ml = r->mem_avail;
+		    ml != NULL; ml = ml->ml_next) {
+			if (ml->ml_address < UINT32_MAX)
+				mem += ml->ml_size;
+		}
+
+		if (mem > r->mem_size)
+			mem -= r->mem_size;
+		else
+			mem = 0;
+
+		r->mem_buffer = mem;
+
+		dcmn_err(CE_NOTE, "Segment 0x%x bus 0x%02x, bridges 0x%x, "
+		    "buffer mem 0x%lx", seg, bus, r->num_bridge, mem);
+	}
+
+	/*
+	 * 4. Remove used PCI and ISA resources from bus resource map
+	 */
+	memlist_rsrc_delete_list(&r->io_avail, r->io_used);
+	memlist_rsrc_delete_list(&r->mem_avail, r->mem_used);
+	memlist_rsrc_delete_list(&r->pmem_avail, r->pmem_used);
+	memlist_rsrc_delete_list(&r->mem_avail, r->pmem_used);
+	memlist_rsrc_delete_list(&r->pmem_avail, r->mem_used);
+
+	if (seg == 0) {
+		memlist_rsrc_delete_list(&r->io_avail, isa_res.io_used);
+		memlist_rsrc_delete_list(&r->mem_avail, isa_res.mem_used);
+	}
+
+	return (B_TRUE);
+}
+
+static boolean_t
+pci_setup_bus_res_cb(uint16_t seg, uint8_t bus, void *arg __unused)
+{
+	struct pci_bus_resource *r = get_bus_res(seg, bus);
+
+	/* create bus-range property on root/peer buses */
+	if (r->par_bus == (uchar_t)-1)
+		add_bus_range_prop(seg, bus);
+
+	/* setup bus range resource on each bus */
+	setup_bus_res(seg, bus);
+	return (B_TRUE);
+}
+
 void
 pci_reprogram(void)
 {
 	char *onoff;
-	struct pci_bus_resource *r;
 	int pci_reconfig = 1;
-	uint_t i, bus, min_bus, max_bus;
-
-	min_bus = pci_prd_min_bus(0);
-	max_bus = pci_prd_max_bus(0);
 
 	/*
 	 * Ask platform code for all of the root complexes it knows about in
@@ -1900,10 +2014,7 @@ pci_reprogram(void)
 	 * ask the platform if it wants to change the name of the slot.
 	 */
 	pci_prd_root_complex_iter(pci_rc_scan_cb, NULL);
-	for (bus = min_bus; bus <= max_bus; bus++) {
-		r = get_bus_res(0, bus);
-		pci_prd_slot_name(0, bus, r->dip);
-	}
+	iter_buses(pci_slot_name_cb, NULL);
 
 	pci_unitaddr_cache_init();
 	pci_fix_unit_address();
@@ -1911,100 +2022,13 @@ pci_reprogram(void)
 	/*
 	 * Do root-bus resource discovery
 	 */
-	for (bus = min_bus; bus <= max_bus; bus++) {
-		r = get_bus_res(0, bus);
-
-		/* skip non-root (peer) PCI busses */
-		if (r->par_bus != (uchar_t)-1)
-			continue;
-
-		/*
-		 * 1. find resources associated with this root bus
-		 */
-		populate_bus_res(0, bus);
-
-		/*
-		 * 2. Exclude <1M address range here in case below reserved
-		 * ranges for BIOS data area, ROM area etc are wrongly reported
-		 * in ACPI resource producer entries for PCI root bus.
-		 *	00000000 - 000003FF	RAM
-		 *	00000400 - 000004FF	BIOS data area
-		 *	00000500 - 0009FFFF	RAM
-		 *	000A0000 - 000BFFFF	VGA RAM
-		 *	000C0000 - 000FFFFF	ROM area
-		 */
-		memlist_rsrc_delete(&r->mem_avail, 0, 0x100000);
-		memlist_rsrc_delete(&r->pmem_avail, 0, 0x100000);
-
-		/*
-		 * 3. Calculate the amount of "spare" 32-bit memory so that we
-		 * can use that later to determine how much additional memory
-		 * to allocate to bridges in order that they have a better
-		 * chance of supporting a device being hotplugged under them.
-		 *
-		 * This is a root bus and the previous CONFIG_INFO pass has
-		 * populated `mem_size` with the sum of all of the BAR sizes
-		 * for all devices underneath, possibly adjusted up to allow
-		 * for alignment when it is later allocated. This pass has also
-		 * recorded the number of child bridges found under this bus in
-		 * `num_bridge`. To calculate the memory which can be used for
-		 * additional bridge allocations we sum up the contents of the
-		 * `mem_avail` list and subtract `mem_size`.
-		 *
-		 * When programming child bridges later in fix_ppb_res(), the
-		 * bridge count and spare memory values cached against the
-		 * relevant root port are used to determine how much memory to
-		 * be allocated.
-		 */
-		if (r->num_bridge > 0) {
-			uint64_t mem = 0;
-
-			for (struct memlist *ml = r->mem_avail;
-			    ml != NULL; ml = ml->ml_next) {
-				if (ml->ml_address < UINT32_MAX)
-					mem += ml->ml_size;
-			}
-
-			if (mem > r->mem_size)
-				mem -= r->mem_size;
-			else
-				mem = 0;
-
-			r->mem_buffer = mem;
-
-			dcmn_err(CE_NOTE,
-			    "Bus 0x%02x, bridges 0x%x, buffer mem 0x%lx",
-			    bus, r->num_bridge, mem);
-		}
-
-		/*
-		 * 4. Remove used PCI and ISA resources from bus resource map
-		 */
-
-		memlist_rsrc_delete_list(&r->io_avail, r->io_used);
-		memlist_rsrc_delete_list(&r->mem_avail, r->mem_used);
-		memlist_rsrc_delete_list(&r->pmem_avail, r->pmem_used);
-		memlist_rsrc_delete_list(&r->mem_avail, r->pmem_used);
-		memlist_rsrc_delete_list(&r->pmem_avail, r->mem_used);
-
-		memlist_rsrc_delete_list(&r->io_avail, isa_res.io_used);
-		memlist_rsrc_delete_list(&r->mem_avail, isa_res.mem_used);
-	}
+	iter_buses(pci_root_res_cb, NULL);
 
 	memlist_rsrc_free(&isa_res.io_used);
 	memlist_rsrc_free(&isa_res.mem_used);
 
 	/* add bus-range property for root/peer bus nodes */
-	for (i = min_bus; i <= max_bus; i++) {
-		r = get_bus_res(0, i);
-
-		/* create bus-range property on root/peer buses */
-		if (r->par_bus == (uchar_t)-1)
-			add_bus_range_prop(0, i); /* XXX */
-
-		/* setup bus range resource on each bus */
-		setup_bus_res(0, i);
-	}
+	iter_buses(pci_setup_bus_res_cb, NULL);
 
 	if (ddi_prop_lookup_string(DDI_DEV_T_ANY, ddi_root_node(),
 	    DDI_PROP_DONTPASS, "pci-reprog", &onoff) == DDI_SUCCESS) {

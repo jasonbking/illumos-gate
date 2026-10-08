@@ -85,13 +85,15 @@ extern void pci_prd_fini(void);
 
 /*
  * Return the number of PCI segments that exist on the running system.
- * Note that segment numbers can be discontiguous, however segment 0
- * should always exist.
+ * Note that segment numbers can be discontiguous.
  */
 extern uint16_t pci_prd_num_segments(void);
 
 /* Return the largest segment number that exists on the running system. */
 extern uint16_t pci_prd_max_segment(void);
+
+/* Return the first segment number that exists on the running system. */
+extern uint32_t pci_prd_first_segment(void);
 
 /*
  * Return the next segment number after the given segment. Returns UINT32_MAX

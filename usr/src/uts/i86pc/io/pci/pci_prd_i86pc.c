@@ -106,7 +106,7 @@ extern int pci_bios_maxbus;
 static int
 seg_to_idx(uint16_t segment)
 {
-	if (mcfg_bus_start == NULL) {
+	if (mcfg_n_segments == 0) {
 		if (segment != 0) {
 			return (-1);
 		}
@@ -750,6 +750,22 @@ pci_prd_max_segment(void)
 }
 
 uint32_t
+pci_prd_first_segment(void)
+{
+	uint32_t first = UINT32_MAX;
+
+	if (mcfg_n_segments == 0)
+		return (0);
+
+	for (uint_t i = 0; i < mcfg_n_segments; i++) {
+		if (mcfg_segments[i] < first)
+			first = mcfg_segments[i];
+	}
+
+	return (first);
+}
+
+uint32_t
 pci_prd_next_segment(uint16_t segment)
 {
 	uint_t i;
@@ -770,7 +786,7 @@ pci_prd_min_bus(uint16_t segment)
 {
 	uint32_t min = UINT32_MAX;
 
-	if (mcfg_bus_start == NULL) {
+	if (mcfg_n_segments == 0) {
 		if (segment == 0) {
 			return (0);
 		}
@@ -791,7 +807,7 @@ pci_prd_max_bus(uint16_t segment)
 {
 	uint32_t max = UINT32_MAX;
 
-	if (mcfg_bus_end == NULL) {
+	if (mcfg_n_segments == 0) {
 		if (segment == 0) {
 			return ((uint32_t)pci_bios_maxbus);
 		}
