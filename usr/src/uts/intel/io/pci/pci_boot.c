@@ -2110,8 +2110,37 @@ populate_bus_res(uint16_t seg, uchar_t bus)
 	add_ranges_prop(seg, bus, B_FALSE);
 }
 
+static uchar_t
+pci_alloc_root_addr(uint16_t seg)
+{
+	boolean_t used[UCHAR_MAX] = { B_FALSE };
+	uint32_t bus, min_bus, max_bus;
+
+	min_bus = pci_prd_min_bus(seg);
+	max_bus = pci_prd_max_bus(seg);
+	ASSERT3U(min_bus, !=, UINT32_MAX);
+	ASSERT3U(max_bus, !=, UINT32_MAX);
+
+	for (bus = min_bus; bus <= max_bus; bus++) {
+		struct pci_bus_resource *r = get_bus_res(seg, bus);
+
+		if (r->root_addr != UCHAR_MAX)
+			used[r->root_addr] = B_TRUE;
+	}
+
+	for (uint_t addr = 0; addr < UCHAR_MAX; addr++) {
+		if (!used[addr])
+			return ((uchar_t)addr);
+	}
+
+	cmn_err(CE_PANIC, "no unit address available for PCI segment %u",
+	    seg);
+	return (UCHAR_MAX);
+}
+
 /*
- * Create top-level bus dips, i.e. /pci@0,0, /pci@1,0...
+ * Create top-level bus dips. Segment 0 retains the legacy /pci@addr,0
+ * format. Other segments use /pci@segment,addr.
  */
 static void
 create_root_bus_dip(uint16_t seg, uchar_t bus)
@@ -2124,6 +2153,9 @@ create_root_bus_dip(uint16_t seg, uchar_t bus)
 
 	ASSERT(res->par_bus == (uchar_t)-1);
 
+	if (res->root_addr == UCHAR_MAX)
+		res->root_addr = pci_alloc_root_addr(seg);
+
 	num_root_bus++;
 	ndi_devi_alloc_sleep(ddi_root_node(), "pci",
 	    (pnode_t)DEVI_SID_NODEID, &dip);
@@ -2131,7 +2163,12 @@ create_root_bus_dip(uint16_t seg, uchar_t bus)
 	    "#address-cells", 3);
 	(void) ndi_prop_update_int(DDI_DEV_T_NONE, dip,
 	    "#size-cells", 2);
-	pci_regs[0] = res->root_addr;
+	if (seg == 0) {
+		pci_regs[0] = res->root_addr;
+	} else {
+		pci_regs[0] = seg;
+		pci_regs[1] = res->root_addr;
+	}
 	(void) ndi_prop_update_int_array(DDI_DEV_T_NONE, dip,
 	    "reg", (int *)pci_regs, 3);
 
