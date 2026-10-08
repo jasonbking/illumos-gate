@@ -50,13 +50,11 @@
 /*
  * Generic PCI constants.  Probably these should be in pci.h.
  */
-#define	PCI_MAX_BUSES		256
 #define	PCI_MAX_DEVS		32
 #define	PCI_MAX_FUNCS		8
 
-/* The total size of the PCIE extended configuration space */
-#define	PCIE_CFG_SPACE_SIZE	(1024 * 1024 * PCI_MAX_BUSES)
 #define	PCIE_CFG_SPACE_ALIGN	(1024 * 1024 * 2)
+#define	PCIE_CFG_SPACE_BUS_SIZE	(1024 * 1024)
 
 /* patchable variables */
 volatile boolean_t pci_cfgacc_force_io = B_FALSE;
@@ -263,21 +261,24 @@ pci_cfgacc_find_mcfg(int seg, uint8_t bus)
 	return (-1);
 }
 
+static uint16_t
+pci_cfgacc_segment(pci_cfgacc_req_t *req)
+{
+	if (req->rcdip != NULL) {
+		return ((uint16_t)ddi_prop_get_int(DDI_DEV_T_ANY, req->rcdip, 0,
+		    "pci-segment", 0));
+	}
+
+	return (req->segment);
+}
+
 static void
 pci_cfgacc_mmio(pci_cfgacc_req_t *req)
 {
 	uint8_t bus = PCI_BDF_BUS(req->bdf);
 	caddr_t vaddr;
 	int idx;
-	int seg = 0;
-
-	/*
-	 * We assume access without a dip is legacy stuff to segment 0
-	 */
-	if (req->rcdip != NULL) {
-		seg = ddi_prop_get_int(DDI_DEV_T_ANY, req->rcdip, 0,
-		    "pci-segment", 0);
-	}
+	uint16_t seg = pci_cfgacc_segment(req);
 
 	idx = pci_cfgacc_find_mcfg(seg, bus);
 	ASSERT3S(idx, >=, 0);
@@ -319,7 +320,7 @@ static boolean_t
 pci_cfgacc_valid(pci_cfgacc_req_t *req, size_t cfgspc_size)
 {
 	int sz = req->size;
-	int seg = 0;
+	uint16_t seg = pci_cfgacc_segment(req);
 	uint8_t bus, dev, func;
 
 	bus = PCI_BDF_BUS(req->bdf);
@@ -337,10 +338,7 @@ pci_cfgacc_valid(pci_cfgacc_req_t *req, size_t cfgspc_size)
 		return (B_FALSE);
 	}
 
-	if (req->rcdip != NULL) {
-		seg = ddi_prop_get_int(DDI_DEV_T_ANY, req->rcdip, 0,
-		    "pci-segment", 0);
-
+	if (req->rcdip != NULL || seg != 0) {
 		if (req->ioacc) {
 			/* IO access is limited to segment 0 */
 			if (seg != 0) {
@@ -371,15 +369,7 @@ void
 pci_cfgacc_check_io(pci_cfgacc_req_t *req)
 {
 	uint8_t bus = PCI_BDF_BUS(req->bdf);
-	int seg = 0;
-
-	/*
-	 * We assume access without a dip is legacy stuff to segment 0
-	 */
-	if (req->rcdip != NULL) {
-		seg = ddi_prop_get_int(DDI_DEV_T_ANY, req->rcdip, 0,
-		    "pci-segment", 0);
-	}
+	uint16_t seg = pci_cfgacc_segment(req);
 
 	/* cfg access via IO space is only possible for segment 0 */
 	if (seg != 0)
@@ -417,6 +407,7 @@ void
 pci_cfgacc_mmio_init(void)
 {
 	uintptr_t offset;
+	size_t cfgspace_size;
 	uint_t i;
 
 	if (mcfg_mem_base == NULL)
@@ -427,6 +418,8 @@ pci_cfgacc_mmio_init(void)
 	    sizeof (uint64_t));
 
 	for (i = 0; i < mcfg_n_segments; i++) {
+		cfgspace_size = ((size_t)mcfg_bus_end[i] -
+		    mcfg_bus_start[i] + 1) * PCIE_CFG_SPACE_BUS_SIZE;
 #ifdef __xpv
 		paddr_t phys_addr = mcfg_mem_base[i];
 
@@ -439,11 +432,11 @@ pci_cfgacc_mmio_init(void)
 #endif
 
 		pci_cfgacc_virt_base[i] =
-		    (caddr_t)alloc_vaddr(PCIE_CFG_SPACE_SIZE,
+		    (caddr_t)alloc_vaddr(cfgspace_size,
 		    PCIE_CFG_SPACE_ALIGN);
 
-		for (offset = 0; offset < PCIE_CFG_SPACE_SIZE;
-		    offset += PCIE_CFG_SPACE_ALIGN) {
+		for (offset = 0; offset < cfgspace_size;
+		    offset += MMU_PAGESIZE) {
 			kbm_map((uintptr_t)pci_cfgacc_virt_base[i] + offset,
 			    mcfg_mem_base[i] + offset, 0, 0);
 		}
@@ -461,6 +454,7 @@ pci_cfgacc_mmio_remap(void)
 	uint64_t *ecfg;
 	void *new_va;
 	pfn_t pfn;
+	size_t cfgspace_size;
 	uint_t i, idx;
 	int len;
 
@@ -494,10 +488,12 @@ pci_cfgacc_mmio_remap(void)
 	mcfg_bus_end = (uint8_t *)(mcfg_bus_start + mcfg_n_segments);
 
 	for (i = idx = 0; i < len; i += 4, idx++) {
-		new_va = vmem_alloc(heap_arena, PCIE_CFG_SPACE_SIZE, VM_SLEEP);
+		cfgspace_size = ((size_t)(uint8_t)ecfg[i + 3] -
+		    (uint8_t)ecfg[i + 2] + 1) * PCIE_CFG_SPACE_BUS_SIZE;
+		new_va = vmem_alloc(heap_arena, cfgspace_size, VM_SLEEP);
 		pfn = mmu_btop(ecfg[i]);
 
-		hat_devload(kas.a_hat, new_va, PCIE_CFG_SPACE_SIZE, pfn,
+		hat_devload(kas.a_hat, new_va, cfgspace_size, pfn,
 		    PROT_READ | PROT_WRITE | HAT_STRICTORDER,
 		    HAT_LOAD_LOCK);
 		pci_cfgacc_virt_base[idx] = (caddr_t)new_va;
@@ -511,7 +507,7 @@ pci_cfgacc_mmio_remap(void)
 		cmn_err(CE_CONT, "%s: mapping PCI segment %lu cfgspace 0x%p to "
 		    "vaddr 0x%p - 0x%p\n", __func__, ecfg[i + 1],
 		    (void *)ecfg[i], pci_cfgacc_virt_base[idx],
-		    pci_cfgacc_virt_base[idx] + PCIE_CFG_SPACE_SIZE - 1);
+		    pci_cfgacc_virt_base[idx] + cfgspace_size - 1);
 #endif
 	}
 

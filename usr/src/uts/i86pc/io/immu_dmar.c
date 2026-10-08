@@ -39,6 +39,7 @@
 #include <sys/sunddi.h>
 #include <sys/list.h>
 #include <sys/pci.h>
+#include <sys/pci_cfgacc.h>
 #include <sys/pci_cfgspace.h>
 #include <sys/pci_impl.h>
 #include <sys/sunndi.h>
@@ -176,7 +177,7 @@ rmrr_list_destroy(list_t *rmrr_list)
  *      parse a scope structure in the "raw" table
  */
 static scope_t *
-parse_scope(char *shead)
+parse_scope(char *shead, uint16_t seg)
 {
 	scope_t *scope;
 	char *phead;
@@ -203,7 +204,8 @@ parse_scope(char *shead)
 	func = get_uint8(phead++);
 
 	for (depth--; depth > 0; depth--) {
-		bus = pci_getb_func(bus, dev, func, PCI_BCNF_SECBUS);
+		bus = pci_cfgacc_get8_seg(seg, PCI_GETBDF(bus, dev, func),
+		    PCI_BCNF_SECBUS);
 		dev = get_uint8(phead++);
 		func = get_uint8(phead++);
 	}
@@ -344,7 +346,7 @@ parse_drhd(char *uhead, dmar_table_t *tbl)
 	 */
 	shead = &uhead[16];
 	while (shead < &uhead[len - 1]) {
-		scope = parse_scope(shead);
+		scope = parse_scope(shead, seg);
 		if (scope == NULL) {
 			return (DDI_FAILURE);
 		}
@@ -409,7 +411,7 @@ parse_rmrr(char *uhead, dmar_table_t *tbl)
 	 */
 	shead = &uhead[24];
 	while (shead < &uhead[len - 1]) {
-		scope = parse_scope(shead);
+		scope = parse_scope(shead, seg);
 		if (scope == NULL) {
 			return (DDI_FAILURE);
 		}

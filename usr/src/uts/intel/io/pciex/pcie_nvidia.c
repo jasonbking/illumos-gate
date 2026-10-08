@@ -33,6 +33,7 @@
 #include <sys/sunndi.h>
 #include <sys/pcie.h>
 #include <sys/pcie_impl.h>
+#include <sys/pci_cfgacc.h>
 #include <sys/pci_cfgspace.h>
 #include <io/pciex/pcie_nvidia.h>
 
@@ -57,14 +58,16 @@ check_if_device_is_pciex(dev_info_t *cdip, uchar_t bus, uchar_t dev,
 
 	*slot_valid = B_FALSE;
 
-	status = (*pci_getw_func)(bus, dev, func, PCI_CONF_STAT);
+	status = pci_cfgacc_get16(cdip, PCI_GETBDF(bus, dev, func),
+	    PCI_CONF_STAT);
 	if (!(status & PCI_STAT_CAP))
 		return (B_FALSE);
 
-	capsp = (*pci_getb_func)(bus, dev, func, PCI_CONF_CAP_PTR);
+	capsp = pci_cfgacc_get8(cdip, PCI_GETBDF(bus, dev, func),
+	    PCI_CONF_CAP_PTR);
 	while (cap_count-- && capsp >= PCI_CAP_PTR_OFF) {
 		capsp &= PCI_CAP_PTR_MASK;
-		cap = (*pci_getb_func)(bus, dev, func, capsp);
+		cap = pci_cfgacc_get8(cdip, PCI_GETBDF(bus, dev, func), capsp);
 
 		if (cap == PCI_CAP_ID_PCI_E) {
 #ifdef	DEBUG
@@ -73,7 +76,8 @@ check_if_device_is_pciex(dev_info_t *cdip, uchar_t bus, uchar_t dev,
 				    "capability found\n", bus, dev, func);
 #endif	/* DEBUG */
 
-			status = (*pci_getw_func)(bus, dev, func, capsp + 2);
+			status = pci_cfgacc_get16(cdip,
+			    PCI_GETBDF(bus, dev, func), capsp + 2);
 			/*
 			 * See section 7.8.2 of PCI-Express Base Spec v1.0a
 			 * for Device/Port Type.
@@ -90,7 +94,8 @@ check_if_device_is_pciex(dev_info_t *cdip, uchar_t bus, uchar_t dev,
 			 */
 			if (status & PCIE_PCIECAP_SLOT_IMPL) {
 				/* offset 14h is Slot Cap Register */
-				slot_cap = (*pci_getl_func)(bus, dev, func,
+				slot_cap = pci_cfgacc_get32(cdip,
+				    PCI_GETBDF(bus, dev, func),
 				    capsp + PCIE_SLOTCAP);
 				*slot_valid = B_TRUE;
 				*slot_number =
@@ -100,7 +105,7 @@ check_if_device_is_pciex(dev_info_t *cdip, uchar_t bus, uchar_t dev,
 			found_pciex = B_TRUE;
 		}
 
-		capsp = (*pci_getb_func)(bus, dev, func,
+		capsp = pci_cfgacc_get8(cdip, PCI_GETBDF(bus, dev, func),
 		    capsp + PCI_CAP_NEXT_PTR);
 	}
 
@@ -114,7 +119,7 @@ check_if_device_is_pciex(dev_info_t *cdip, uchar_t bus, uchar_t dev,
  * If found, return B_TRUE else B_FALSE
  */
 boolean_t
-look_for_any_pciex_device(uchar_t bus)
+look_for_any_pciex_device(dev_info_t *cdip, uchar_t bus)
 {
 	uchar_t dev, func;
 	uchar_t nfunc, header;
@@ -130,14 +135,14 @@ look_for_any_pciex_device(uchar_t bus)
 				    dev, func);
 #endif	/* DEBUG */
 
-			venid = (*pci_getw_func)(bus, dev, func,
-			    PCI_CONF_VENID);
+			venid = pci_cfgacc_get16(cdip,
+			    PCI_GETBDF(bus, dev, func), PCI_CONF_VENID);
 			/* no function at this address */
 			if ((venid == 0xffff) || (venid == 0))
 				continue;
 
-			header = (*pci_getb_func)(bus, dev, func,
-			    PCI_CONF_HEADER);
+			header = pci_cfgacc_get8(cdip,
+			    PCI_GETBDF(bus, dev, func), PCI_CONF_HEADER);
 			if (header == 0xff)
 				continue; /* illegal value */
 
@@ -150,7 +155,7 @@ look_for_any_pciex_device(uchar_t bus)
 			if ((func == 0) && (header & PCI_HEADER_MULTI))
 				nfunc = 8;
 
-			if (check_if_device_is_pciex(NULL, bus, dev, func,
+			if (check_if_device_is_pciex(cdip, bus, dev, func,
 			    &slot_valid, &slot_num, &is_pci_bridge) == B_TRUE)
 				return (B_TRUE);
 		} /* end of func */
@@ -168,7 +173,7 @@ create_pcie_root_bus(uchar_t bus, dev_info_t *dip)
 	 * have PCI-Ex in the path by looking for MCFG in
 	 * the ACPI tables
 	 */
-	if (look_for_any_pciex_device(bus) == B_FALSE)
+	if (look_for_any_pciex_device(dip, bus) == B_FALSE)
 		return (B_FALSE);
 
 #ifdef	DEBUG

@@ -25,8 +25,9 @@
 
 #include <sys/pci_cfgacc.h>
 
-#define	PCI_CFGACC_FILLREQ(r, d, b, o, s, w, v)				\
-	{(r).rcdip = (d); (r).bdf = (b); (r).offset = (o);		\
+#define	PCI_CFGACC_FILLREQ(r, d, g, b, o, s, w, v)			\
+	{(r).rcdip = (d); (r).segment = (g); (r).bdf = (b);		\
+	(r).offset = (o);							\
 	(r).size = (s); (r).write = w; (r).ioacc = B_FALSE; 		\
 	VAL64(&(r)) = (v); }
 
@@ -48,7 +49,7 @@ pci_cfgacc_get8(dev_info_t *rcdip, uint16_t bdf, uint16_t off)
 {
 	pci_cfgacc_req_t req;
 
-	PCI_CFGACC_FILLREQ(req, rcdip, bdf, off, 1, B_FALSE, 0);
+	PCI_CFGACC_FILLREQ(req, rcdip, 0, bdf, off, 1, B_FALSE, 0);
 	(*pci_cfgacc_acc_p)(&req);
 	return (VAL8(&req));
 }
@@ -58,7 +59,7 @@ pci_cfgacc_put8(dev_info_t *rcdip, uint16_t bdf, uint16_t off, uint8_t data)
 {
 	pci_cfgacc_req_t req;
 
-	PCI_CFGACC_FILLREQ(req, rcdip, bdf, off, 1, B_TRUE, data);
+	PCI_CFGACC_FILLREQ(req, rcdip, 0, bdf, off, 1, B_TRUE, data);
 	(*pci_cfgacc_acc_p)(&req);
 }
 
@@ -67,7 +68,7 @@ pci_cfgacc_get16(dev_info_t *rcdip, uint16_t bdf, uint16_t off)
 {
 	pci_cfgacc_req_t req;
 
-	PCI_CFGACC_FILLREQ(req, rcdip, bdf, off, 2, B_FALSE, 0);
+	PCI_CFGACC_FILLREQ(req, rcdip, 0, bdf, off, 2, B_FALSE, 0);
 	(*pci_cfgacc_acc_p)(&req);
 	return (VAL16(&req));
 }
@@ -77,7 +78,7 @@ pci_cfgacc_put16(dev_info_t *rcdip, uint16_t bdf, uint16_t off, uint16_t data)
 {
 	pci_cfgacc_req_t req;
 
-	PCI_CFGACC_FILLREQ(req, rcdip, bdf, off, 2, B_TRUE, data);
+	PCI_CFGACC_FILLREQ(req, rcdip, 0, bdf, off, 2, B_TRUE, data);
 	(*pci_cfgacc_acc_p)(&req);
 }
 
@@ -86,7 +87,7 @@ pci_cfgacc_get32(dev_info_t *rcdip, uint16_t bdf, uint16_t off)
 {
 	pci_cfgacc_req_t req;
 
-	PCI_CFGACC_FILLREQ(req, rcdip, bdf, off, 4, B_FALSE, 0);
+	PCI_CFGACC_FILLREQ(req, rcdip, 0, bdf, off, 4, B_FALSE, 0);
 	(*pci_cfgacc_acc_p)(&req);
 	return (VAL32(&req));
 }
@@ -96,7 +97,7 @@ pci_cfgacc_put32(dev_info_t *rcdip, uint16_t bdf, uint16_t off, uint32_t data)
 {
 	pci_cfgacc_req_t req;
 
-	PCI_CFGACC_FILLREQ(req, rcdip, bdf, off, 4, B_TRUE, data);
+	PCI_CFGACC_FILLREQ(req, rcdip, 0, bdf, off, 4, B_TRUE, data);
 	(*pci_cfgacc_acc_p)(&req);
 }
 
@@ -105,7 +106,7 @@ pci_cfgacc_get64(dev_info_t *rcdip, uint16_t bdf, uint16_t off)
 {
 	pci_cfgacc_req_t req;
 
-	PCI_CFGACC_FILLREQ(req, rcdip, bdf, off, 8, B_FALSE, 0);
+	PCI_CFGACC_FILLREQ(req, rcdip, 0, bdf, off, 8, B_FALSE, 0);
 	(*pci_cfgacc_acc_p)(&req);
 	return (VAL64(&req));
 }
@@ -115,6 +116,63 @@ pci_cfgacc_put64(dev_info_t *rcdip, uint16_t bdf, uint16_t off, uint64_t data)
 {
 	pci_cfgacc_req_t req;
 
-	PCI_CFGACC_FILLREQ(req, rcdip, bdf, off, 8, B_TRUE, data);
+	PCI_CFGACC_FILLREQ(req, rcdip, 0, bdf, off, 8, B_TRUE, data);
+	(*pci_cfgacc_acc_p)(&req);
+}
+
+uint8_t
+pci_cfgacc_get8_seg(uint16_t seg, uint16_t bdf, uint16_t off)
+{
+	pci_cfgacc_req_t req;
+
+	PCI_CFGACC_FILLREQ(req, NULL, seg, bdf, off, 1, B_FALSE, 0);
+	(*pci_cfgacc_acc_p)(&req);
+	return (VAL8(&req));
+}
+
+uint16_t
+pci_cfgacc_get16_seg(uint16_t seg, uint16_t bdf, uint16_t off)
+{
+	pci_cfgacc_req_t req;
+
+	PCI_CFGACC_FILLREQ(req, NULL, seg, bdf, off, 2, B_FALSE, 0);
+	(*pci_cfgacc_acc_p)(&req);
+	return (VAL16(&req));
+}
+
+uint32_t
+pci_cfgacc_get32_seg(uint16_t seg, uint16_t bdf, uint16_t off)
+{
+	pci_cfgacc_req_t req;
+
+	PCI_CFGACC_FILLREQ(req, NULL, seg, bdf, off, 4, B_FALSE, 0);
+	(*pci_cfgacc_acc_p)(&req);
+	return (VAL32(&req));
+}
+
+void
+pci_cfgacc_put8_seg(uint16_t seg, uint16_t bdf, uint16_t off, uint8_t data)
+{
+	pci_cfgacc_req_t req;
+
+	PCI_CFGACC_FILLREQ(req, NULL, seg, bdf, off, 1, B_TRUE, data);
+	(*pci_cfgacc_acc_p)(&req);
+}
+
+void
+pci_cfgacc_put16_seg(uint16_t seg, uint16_t bdf, uint16_t off, uint16_t data)
+{
+	pci_cfgacc_req_t req;
+
+	PCI_CFGACC_FILLREQ(req, NULL, seg, bdf, off, 2, B_TRUE, data);
+	(*pci_cfgacc_acc_p)(&req);
+}
+
+void
+pci_cfgacc_put32_seg(uint16_t seg, uint16_t bdf, uint16_t off, uint32_t data)
+{
+	pci_cfgacc_req_t req;
+
+	PCI_CFGACC_FILLREQ(req, NULL, seg, bdf, off, 4, B_TRUE, data);
 	(*pci_cfgacc_acc_p)(&req);
 }

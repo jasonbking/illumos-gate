@@ -45,8 +45,6 @@
 #include <sys/plat/pci_prd.h>
 
 extern int pci_boot_debug;
-extern int pci_boot_maxbus;
-
 /*
  * Interface routines
  */
@@ -122,7 +120,6 @@ pci_enumerate(int reprogram)
 	 * bus that we should use is.
 	 */
 	if (reprogram == 0) {
-		pci_boot_maxbus = pci_prd_max_bus(0);
 		pci_init();
 	}
 

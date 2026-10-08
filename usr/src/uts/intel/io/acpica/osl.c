@@ -37,6 +37,7 @@
 #include <sys/types.h>
 #include <sys/kmem.h>
 #include <sys/psm.h>
+#include <sys/pci_cfgacc.h>
 #include <sys/pci_cfgspace.h>
 #include <sys/apic.h>
 #include <sys/ddi.h>
@@ -955,16 +956,16 @@ AcpiOsReadPciConfiguration(ACPI_PCI_ID *PciId, UINT32 Reg,
 
 	switch (Width) {
 	case 8:
-		*Value = (UINT64)(*pci_getb_func)
-		    (PciId->Bus, PciId->Device, PciId->Function, Reg);
+		*Value = pci_cfgacc_get8_seg(PciId->Segment,
+		    PCI_GETBDF(PciId->Bus, PciId->Device, PciId->Function), Reg);
 		break;
 	case 16:
-		*Value = (UINT64)(*pci_getw_func)
-		    (PciId->Bus, PciId->Device, PciId->Function, Reg);
+		*Value = pci_cfgacc_get16_seg(PciId->Segment,
+		    PCI_GETBDF(PciId->Bus, PciId->Device, PciId->Function), Reg);
 		break;
 	case 32:
-		*Value = (UINT64)(*pci_getl_func)
-		    (PciId->Bus, PciId->Device, PciId->Function, Reg);
+		*Value = pci_cfgacc_get32_seg(PciId->Segment,
+		    PCI_GETBDF(PciId->Bus, PciId->Device, PciId->Function), Reg);
 		break;
 	case 64:
 	default:
@@ -994,15 +995,18 @@ AcpiOsWritePciConfiguration(ACPI_PCI_ID *PciId, UINT32 Reg,
 
 	switch (Width) {
 	case 8:
-		(*pci_putb_func)(PciId->Bus, PciId->Device, PciId->Function,
+		pci_cfgacc_put8_seg(PciId->Segment,
+		    PCI_GETBDF(PciId->Bus, PciId->Device, PciId->Function),
 		    Reg, (uint8_t)Value);
 		break;
 	case 16:
-		(*pci_putw_func)(PciId->Bus, PciId->Device, PciId->Function,
+		pci_cfgacc_put16_seg(PciId->Segment,
+		    PCI_GETBDF(PciId->Bus, PciId->Device, PciId->Function),
 		    Reg, (uint16_t)Value);
 		break;
 	case 32:
-		(*pci_putl_func)(PciId->Bus, PciId->Device, PciId->Function,
+		pci_cfgacc_put32_seg(PciId->Segment,
+		    PCI_GETBDF(PciId->Bus, PciId->Device, PciId->Function),
 		    Reg, (uint32_t)Value);
 		break;
 	case 64:

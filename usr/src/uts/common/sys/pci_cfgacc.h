@@ -61,6 +61,7 @@ typedef enum pci_config_size {
 
 typedef struct pci_cfgacc_req {
 	dev_info_t	*rcdip;
+	uint16_t	segment;
 	uint16_t	bdf;
 	uint16_t	offset;
 	uint8_t		size;
@@ -81,6 +82,12 @@ extern void	pci_cfgacc_put8(dev_info_t *, uint16_t, uint16_t, uint8_t);
 extern void	pci_cfgacc_put16(dev_info_t *, uint16_t, uint16_t, uint16_t);
 extern void	pci_cfgacc_put32(dev_info_t *, uint16_t, uint16_t, uint32_t);
 extern void	pci_cfgacc_put64(dev_info_t *, uint16_t, uint16_t, uint64_t);
+extern uint8_t	pci_cfgacc_get8_seg(uint16_t, uint16_t, uint16_t);
+extern uint16_t	pci_cfgacc_get16_seg(uint16_t, uint16_t, uint16_t);
+extern uint32_t	pci_cfgacc_get32_seg(uint16_t, uint16_t, uint16_t);
+extern void	pci_cfgacc_put8_seg(uint16_t, uint16_t, uint16_t, uint8_t);
+extern void	pci_cfgacc_put16_seg(uint16_t, uint16_t, uint16_t, uint16_t);
+extern void	pci_cfgacc_put32_seg(uint16_t, uint16_t, uint16_t, uint32_t);
 extern void	pci_cfgacc_acc(pci_cfgacc_req_t *);
 
 #endif /* _ASM */

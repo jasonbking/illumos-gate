@@ -272,8 +272,6 @@ struct pci_devfunc {
 
 extern int apic_nvidia_io_max;
 static uchar_t max_dev_pci = 32;	/* PCI standard */
-int pci_boot_maxbus;
-
 int pci_boot_debug = 0;
 int pci_debug_bus_start = -1;
 int pci_debug_bus_end = -1;
@@ -842,7 +840,7 @@ remove_subtractive_res(uint16_t seg, uint8_t bus, void *arg __unused)
 
 	r = get_bus_res(seg, bus);
 
-	if (r->subtractive)
+	if (!r->subtractive)
 		return (B_TRUE);
 
 	min_bus = pci_prd_min_bus(seg);
@@ -2173,13 +2171,6 @@ create_root_bus_dip(uint16_t seg, uchar_t bus)
 	    "reg", (int *)pci_regs, 3);
 
 	/*
-	 * If system has PCIe bus, then create different properties
-	 */
-	if (create_pcie_root_bus(bus, dip) == B_FALSE)
-		(void) ndi_prop_update_string(DDI_DEV_T_NONE, dip,
-		    "device_type", "pci");
-
-	/*
 	 * We want all of the root complexes to have their pci-segment
 	 * property set before we start enumerating any children. We're
 	 * still early enough in the boot process that the options dip
@@ -2188,6 +2179,13 @@ create_root_bus_dip(uint16_t seg, uchar_t bus)
 	 * panic will ensue).
 	 */
 	(void) ndi_prop_update_int(DDI_DEV_T_NONE, dip, "pci-segment", seg);
+
+	/*
+	 * If system has PCIe bus, then create different properties
+	 */
+	if (create_pcie_root_bus(bus, dip) == B_FALSE)
+		(void) ndi_prop_update_string(DDI_DEV_T_NONE, dip,
+		    "device_type", "pci");
 
 	(void) ndi_devi_bind_driver(dip, 0);
 	res->dip = dip;
@@ -3470,6 +3468,7 @@ add_ppb_props(dev_info_t *dip, uint16_t seg, uchar_t bus, uchar_t dev,
 	subbus = pci_cfgacc_get8(dip, bdf, PCI_BCNF_SUBBUS);
 
 	ASSERT3U(secbus, <=, subbus);
+	VERIFY3U(subbus, <=, pci_prd_max_bus(seg));
 
 	res = get_bus_res(seg, bus);
 	sec_res = get_bus_res(seg, secbus);
@@ -3483,13 +3482,6 @@ add_ppb_props(dev_info_t *dip, uint16_t seg, uchar_t bus, uchar_t dev,
 	progclass = pci_cfgacc_get8(dip, bdf, PCI_CONF_PROGCLASS);
 	if (progclass == PCI_BRIDGE_PCI_IF_SUBDECODE)
 		sec_res->subtractive = B_TRUE;
-
-	/*
-	 * pci_boot_maxbus always gets set to the maximum these days,
-	 * it should not be possible to get a child bus with a value
-	 * larger than the max.
-	 */
-	VERIFY3U(subbus, <=, pci_boot_maxbus);
 
 	ASSERT(sec_res->dip == NULL);
 	sec_res->dip = dip;
