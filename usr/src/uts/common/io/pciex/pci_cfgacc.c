@@ -23,6 +23,7 @@
  * Use is subject to license terms.
  */
 
+#include <sys/param.h>
 #include <sys/pci_cfgacc.h>
 
 #define	PCI_CFGACC_FILLREQ(r, d, g, b, o, s, w, v)			\
