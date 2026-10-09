@@ -22,8 +22,11 @@
 #include <mdb/mdb_ctf.h>
 #include <sys/dditypes.h>
 #include <sys/ddi_impldefs.h>
+#include <sys/ddipropdefs.h>
+#include <sys/pci.h>
 #include <sys/pcie_impl.h>
 #include <sys/stdbool.h>
+#include <string.h>
 
 boolean_t
 pcie_bus_match(const struct dev_info *devi, uintptr_t *bus_p)
@@ -38,6 +41,185 @@ pcie_bus_match(const struct dev_info *devi, uintptr_t *bus_p)
 	}
 
 	return (B_TRUE);
+}
+
+/*
+ * Read a property as ddi_prop_lookup_*() would: driver, system, global, then
+ * hardware properties.  MDB cannot use the DDI property interfaces directly.
+ */
+static int
+pciinfo_get_prop(const struct dev_info *devi, const char *name, void *value,
+    size_t len)
+{
+	ddi_prop_t *props[4];
+	ddi_prop_list_t global_props;
+	uint_t i;
+
+	props[0] = devi->devi_drv_prop_ptr;
+	props[1] = devi->devi_sys_prop_ptr;
+	props[2] = NULL;
+	props[3] = devi->devi_hw_prop_ptr;
+
+	if (devi->devi_global_prop_list != NULL) {
+		if (mdb_vread(&global_props, sizeof (global_props),
+		    (uintptr_t)devi->devi_global_prop_list) == -1) {
+			mdb_warn("failed to read global property list at %p",
+			    devi->devi_global_prop_list);
+			return (-1);
+		}
+		props[2] = global_props.prop_list;
+	}
+
+	for (i = 0; i < sizeof (props) / sizeof (props[0]); i++) {
+		ddi_prop_t prop;
+		uintptr_t prop_addr = (uintptr_t)props[i];
+
+		while (prop_addr != 0) {
+			char prop_name[128];
+
+			if (mdb_vread(&prop, sizeof (prop), prop_addr) == -1) {
+				mdb_warn("failed to read property at %p",
+				    prop_addr);
+				return (-1);
+			}
+
+			if (mdb_readstr(prop_name, sizeof (prop_name),
+			    (uintptr_t)prop.prop_name) == -1) {
+				mdb_warn("failed to read property name at %p",
+				    prop.prop_name);
+				return (-1);
+			}
+
+			if (strcmp(prop_name, name) == 0) {
+				if (prop.prop_flags & DDI_PROP_UNDEF_IT) {
+					mdb_warn("property '%s' at %p is undefined",
+					    name, prop_addr);
+					return (-1);
+				}
+
+				if (prop.prop_len < (int)len) {
+					mdb_warn("property '%s' at %p is too short",
+					    name, prop_addr);
+					return (-1);
+				}
+
+				if (mdb_vread(value, len,
+				    (uintptr_t)prop.prop_val) == -1) {
+					mdb_warn("failed to read property '%s' "
+					    "value at %p", name, prop.prop_val);
+					return (-1);
+				}
+
+				return (1);
+			}
+
+			prop_addr = (uintptr_t)prop.prop_next;
+		}
+	}
+
+	return (0);
+}
+
+static int
+pciinfo_get_segment(uintptr_t addr, struct dev_info *devi, uint16_t *segment)
+{
+	struct dev_info parent;
+	struct dev_info *cur = devi;
+	int value;
+	int ret;
+
+	for (;;) {
+		ret = pciinfo_get_prop(cur, "pci-segment", &value,
+		    sizeof (value));
+		if (ret < 0)
+			return (-1);
+
+		if (ret != 0) {
+			if (value < 0 || value > UINT16_MAX) {
+				mdb_warn("invalid pci-segment value %d at %p",
+				    value, addr);
+				return (-1);
+			}
+			*segment = (uint16_t)value;
+			return (0);
+		}
+
+		if (cur->devi_parent == NULL)
+			break;
+
+		addr = (uintptr_t)cur->devi_parent;
+		if (mdb_vread(&parent, sizeof (parent), addr) == -1) {
+			mdb_warn("failed to read parent devinfo at %p", addr);
+			return (-1);
+		}
+		cur = &parent;
+	}
+
+	*segment = 0;
+	return (0);
+}
+
+static int
+pciinfo_devinfo_cb(uintptr_t addr, struct dev_info *devi, void *arg)
+{
+	char binding_name[128];
+	uintptr_t bus_addr;
+	uint32_t reg;
+	uint16_t segment;
+	int ret;
+
+	if (!pcie_bus_match(devi, &bus_addr))
+		return (WALK_NEXT);
+
+	if (*(uint_t *)arg & DCMD_PIPE_OUT) {
+		mdb_printf("%-0?p\n", addr);
+		return (WALK_NEXT);
+	}
+
+	if (mdb_readstr(binding_name, sizeof (binding_name),
+	    (uintptr_t)devi->devi_binding_name) == -1) {
+		mdb_warn("failed to read binding name at %p",
+		    devi->devi_binding_name);
+		return (WALK_ERR);
+	}
+
+	ret = pciinfo_get_prop(devi, "reg", &reg, sizeof (reg));
+	if (ret < 0 || pciinfo_get_segment(addr, devi, &segment) != 0)
+		return (WALK_ERR);
+
+	if (ret == 0) {
+		mdb_warn("PCI device at %p has no reg property", addr);
+		return (WALK_NEXT);
+	}
+
+	mdb_printf("%-0?p %-24s#%-4d %-7u %-3u %-6u %-8u\n", addr,
+	    binding_name, devi->devi_instance, segment,
+	    PCI_REG_BUS_G(reg), PCI_REG_DEV_G(reg), PCI_REG_FUNC_G(reg));
+
+	return (WALK_NEXT);
+}
+
+/*ARGSUSED*/
+int
+pciinfo(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
+{
+	int status;
+
+	if (argc != 0 || (flags & DCMD_ADDRSPEC) != 0)
+		return (DCMD_USAGE);
+
+	if ((flags & DCMD_PIPE_OUT) == 0) {
+		mdb_printf("%<u>%-?s %-29s %-7s %-3s %-6s %-8s%</u>\n",
+		    "DEVINFO", "NAME", "SEGMENT", "BUS", "DEVICE", "FUNCTION");
+	}
+
+	status = mdb_walk("devinfo", pciinfo_devinfo_cb, &flags);
+	if (status == -1) {
+		mdb_warn("couldn't walk devinfo tree");
+		return (DCMD_ERR);
+	}
+
+	return (DCMD_OK);
 }
 
 int

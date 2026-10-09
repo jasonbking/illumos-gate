@@ -4374,6 +4374,8 @@ static const mdb_dcmd_t dcmds[] = {
 	    pcie_pf_impl_dcmd, pcie_pf_impl_help },
 	{ "bdf", ":", "decode a PCIe BDF (Bus/Device/Function) value and "
 	    "print it as b/d/f", pcie_bdf_dcmd },
+	{ "pciinfo", NULL, "print PCI devices and their segment:BDF",
+	    pciinfo },
 
 	/* from group.c */
 	{ "group", "?[-q]", "display a group", group},

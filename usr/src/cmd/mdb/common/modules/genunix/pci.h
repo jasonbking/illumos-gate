@@ -37,6 +37,7 @@ extern boolean_t pcie_bus_match(const struct dev_info *, uintptr_t *);
 extern int pcie_pf_impl_dcmd(uintptr_t, uint_t, int, const mdb_arg_t *);
 extern void pcie_pf_impl_help(void);
 extern int pcie_bdf_dcmd(uintptr_t, uint_t, int, const mdb_arg_t *);
+extern int pciinfo(uintptr_t, uint_t, int, const mdb_arg_t *);
 
 #ifdef __cplusplus
 }
