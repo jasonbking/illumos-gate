@@ -743,7 +743,7 @@ cpu_acpi_cache_cst(cpu_acpi_handle_t handle)
 	cstate = (cpu_acpi_cstate_t *)CPU_ACPI_CSTATES(handle);
 	p = cstate;
 
-	for (i = 1, count = 1; i <= cnt; i++) {
+	for (i = 1, count = 0; i <= cnt; i++) {
 		ACPI_OBJECT *pkg;
 		AML_RESOURCE_GENERIC_REGISTER *reg;
 		ACPI_OBJECT *element;
@@ -768,6 +768,7 @@ cpu_acpi_cache_cst(cpu_acpi_handle_t handle)
 		}
 		if (cstate == p) {
 			cstate++;
+			count++;
 		} else if (p->cs_type == cstate->cs_type) {
 			/*
 			 * if there are duplicate entries, we keep the
@@ -788,8 +789,8 @@ cpu_acpi_cache_cst(cpu_acpi_handle_t handle)
 		}
 	}
 
-	if (count < 2) {
-		cmn_err(CE_NOTE, "!cpu_acpi: _CST invalid count %d < 2 for "
+	if (count < 1) {
+		cmn_err(CE_NOTE, "!cpu_acpi: _CST invalid count %d < 1 for "
 		    "CPU %d", count, handle->cs_id);
 		kmem_free(CPU_ACPI_CSTATES(handle), alloc_size);
 		CPU_ACPI_CSTATES(handle) = NULL;
