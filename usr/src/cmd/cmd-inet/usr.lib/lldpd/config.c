@@ -108,6 +108,9 @@
 #include "log.h"
 #include "util.h"
 
+#define	DAEMON_PG		"daemon"
+#define	DAEMON_LOG_LEVEL	"log_level"
+
 #define	CONFIG_PG	"config"
 #define	CONFIG_SYSNAME	"sysname"
 #define	CONFIG_SYSDESC	"sysdesc"
@@ -243,6 +246,7 @@ static void config_get_sysdesc(log_t *, lldp_config_t *, scf_propertygroup_t *);
 static void set_chassis_id(lldp_chassis_t *, lldp_chassis_type_t,
     const uint8_t *, uint8_t);
 
+static void config_daemon_read(void);
 static void config_agent_defaults(agent_cfg_t *);
 static void config_agent_default_read(void);
 static void config_agent_build(const agent_t *, agent_cfg_t *);
@@ -347,6 +351,9 @@ config_init(void)
 		log_fatal_scferr(SMF_EXIT_ERR_FATAL, log,
 		    "failed to decode SMF fmri");
 	}
+
+	/* Set the log level as early as possible */
+	config_daemon_read();
 
 	topo_hdl = topo_open(TOPO_VERSION, NULL, &e);
 	if (topo_hdl == NULL) {
@@ -997,6 +1004,34 @@ config_agent_log(log_t *l, const char *msg, const agent_cfg_t *cfg)
 }
 
 /*
+ * Read the daemon property group: currently just the log level. An absent
+ * or invalid value leaves the current level unchanged.
+ */
+static void
+config_daemon_read(void)
+{
+	log_level_t	level;
+	char		*name;
+
+	if (!config_get_pg(log, DAEMON_PG, scf_pg))
+		return;
+
+	if (!pg_get_string(log, scf_pg, DAEMON_LOG_LEVEL, &name))
+		return;
+
+	if (!log_level_parse(name, &level)) {
+		prop_warn(log, scf_pg, DAEMON_LOG_LEVEL,
+		    "invalid log level (must be trace, debug, info, warn, "
+		    "error, or fatal); ignoring", name);
+		free(name);
+		return;
+	}
+	free(name);
+
+	lldp_set_log_level(level);
+}
+
+/*
  * (Re)build the default agent configuration: the built-in defaults,
  * overridden by anything set in the 'default' property group.
  */
@@ -1078,7 +1113,13 @@ config_agent_init(agent_t *a)
 
 	config_agent_build(a, cfg);
 
-	tl = topo_link_find(a->a_name);
+	/*
+	 * Topo names links by their datalink name, which differs from the
+	 * agent's (hardware) name if the link has been renamed.
+	 */
+	tl = topo_link_find(a->a_linkname);
+	if (tl == NULL)
+		tl = topo_link_find(a->a_name);
 	if (tl != NULL) {
 		if (tl->tl_has_portnum)
 			cfg->ac_portnum = tl->tl_portnum;
@@ -1111,6 +1152,7 @@ config_refresh(void)
 
 	log_info(log, "refreshing configuration", LOG_T_END);
 
+	config_daemon_read();
 	(void) config_read();
 	config_agent_default_read();
 

@@ -183,15 +183,20 @@ typedef struct lldp_agent_config {
 	lldp_tx_8023_tlv_t	lac_8023_tlvs;
 } lldp_agent_config_t;
 
+/*
+ * Per-agent counters, following the LLDP-V2-MIB statistics (802.1AB-2016
+ * 9.2.6.2 and 11.5). They count from when lldpd created the agent.
+ */
 typedef struct lldp_agent_stats {
-	uint64_t	las_ageouts;
-	uint64_t	las_discarded;
-	uint64_t	las_in_errors;
-	uint64_t	las_in_frames;
-	uint64_t	las_out_frames;
-	uint64_t	las_discarded_tlvs;
-	uint64_t	las_unknown_tlvs;
-	uint64_t	las_length_errs;
+	uint64_t	las_ageouts;	/* Neighbors whose info aged out */
+	uint64_t	las_discarded;	/* Received frames discarded */
+	uint64_t	las_in_errors;	/* Received frames in error */
+	uint64_t	las_in_frames;	/* Valid LLDPDUs received */
+	uint64_t	las_out_frames;	/* LLDPDUs sent (incl. shutdown) */
+	uint64_t	las_discarded_tlvs; /* TLVs discarded from valid PDUs */
+	uint64_t	las_unknown_tlvs; /* TLVs with a reserved type */
+	uint64_t	las_length_errs; /* TX TLVs that didn't fit the PDU */
+	uint64_t	las_rem_drops;	/* New neighbors dropped (too many) */
 } lldp_agent_stats_t;
 
 /*
@@ -205,13 +210,34 @@ typedef struct lldp_neighbor {
 } lldp_neighbor_t;
 
 /*
- * Retrieve the current neighbors of the agent for the given (hardware) link
- * name, or of all agents if link is NULL. On success, returns 0 and sets
+ * Retrieve the current neighbors of the agent for the given link, or of all
+ * agents if link is NULL. The link may be given by its hardware name (e.g.
+ * 'igb0') or, if it has been renamed, its datalink name; ln_link is always
+ * the hardware name. On success, returns 0 and sets
  * *nbrsp to an array of *nump neighbors, which must be freed with
- * lldp_neighbors_free(). On failure, returns an errno value.
+ * lldp_neighbors_free(). On failure, returns an errno value: ENOENT if
+ * there's no agent for link, ECONNREFUSED if lldpd isn't running.
  */
 int lldp_get_neighbors(const char *, lldp_neighbor_t **, uint_t *);
 void lldp_neighbors_free(lldp_neighbor_t *, uint_t);
+
+/*
+ * The statistics of one of lldpd's agents, as returned by lldp_get_stats().
+ */
+typedef struct lldp_stats {
+	char			ls_link[MAXLINKNAMELEN]; /* Agent's hw link */
+	lldp_agent_stats_t	ls_stats;
+} lldp_stats_t;
+
+/*
+ * Retrieve the statistics of the agent for the given link (by hardware or
+ * datalink name, as with lldp_get_neighbors()), or of every agent if link
+ * is NULL, ordered by ls_link. On success, returns 0 and sets *statsp to
+ * an array of *nump entries, which must be freed with lldp_stats_free().
+ * On failure, returns an errno value (as for lldp_get_neighbors()).
+ */
+int lldp_get_stats(const char *, lldp_stats_t **, uint_t *);
+void lldp_stats_free(lldp_stats_t *, uint_t);
 
 const char *lldp_tlv_type_str(lldp_tlv_type_t);
 

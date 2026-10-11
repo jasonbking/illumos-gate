@@ -67,7 +67,10 @@ neighbor_free(neighbor_t *nb)
 
 	(void) memset(nb->nb_src, '\0', sizeof (nb->nb_src));
 	(void) memset(nb->nb_dst, '\0', sizeof (nb->nb_dst));
-	(void) memset(nb->nb_pdu, '\0', sizeof (nb->nb_pdu));
+	if (nb->nb_pdu != NULL)
+		umem_free(nb->nb_pdu, nb->nb_pdu_alloc);
+	nb->nb_pdu = NULL;
+	nb->nb_pdu_alloc = 0;
 	nb->nb_pdu_len = 0;
 
 	tlv_list_free(&nb->nb_core_tlvs);

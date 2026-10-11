@@ -21,7 +21,7 @@ include		$(SRC)/cmd/Makefile.cmd.64
 include		$(SRC)/cmd/Makefile.ctf
 
 CSTD =		$(CSTD_GNU99)
-LDLIBS +=	-llldp
+LDLIBS +=	-llldp -lofmt
 
 .KEEP_STATE:
 

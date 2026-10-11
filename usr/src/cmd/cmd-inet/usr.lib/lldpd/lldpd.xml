@@ -43,6 +43,15 @@
 		<service_fmri value='svc:/network/ip-interface-mgmt' />
 	</dependency>
 
+	<!-- Links are enumerated (and their names resolved) via dlmgmtd -->
+	<dependency
+		name='datalink-management'
+		grouping='require_all'
+		restart_on='none'
+		type='service'>
+		<service_fmri value='svc:/network/datalink-management' />
+	</dependency>
+
 	<exec_method
 		type='method'
 		name='refresh'
@@ -72,7 +81,7 @@
 	</property_group>
 
 	<property_group name='daemon' type='application'>
-		<propval name='log_level' type='count' value='30'
+		<propval name='log_level' type='astring' value='info'
 		  override='true'/>
 		<propval name='value_authorization' type='astring'
 		  value='solaris.smf.manage.lldp' />
@@ -100,21 +109,8 @@
 	    Any property not set in a link's property group retains its
 	    default value (from this property group, or built-in).
 
-	    Agent properties (all optional):
-		admin_status		astring	disabled | tx | rx | txrx
-		port_desc		astring	port description TLV
-		tx_tlvs			astring	(list) port-desc sys-name
-						sys-desc sys-cap mgmt-addr none
-		tx_8021_tlvs		astring	(list) native-vlan vlans
-						vlan-name mgmt-vlan none
-		tx_8023_tlvs		astring	(list) phy-cfg mtu none
-		tx_interval		count	1-3600 (default 30)
-		tx_hold_multiplier	count	2-10 (default 4)
-		reinit_delay		count	1-10 (default 2)
-		tx_credit_max		count	1-10 (default 5)
-		tx_fast_interval	count	1-3600 (default 1)
-		tx_fast_init		count	1-8 (default 4)
-		neighbor_max		count	1-65535 (default 32)
+	    The agent properties (all optional) are described by the
+	    templates below; see 'svccfg -s network/lldpd describe -v'.
 	-->
 	<property_group name='default' type='application'>
 		<propval name='value_authorization' type='astring'
@@ -126,29 +122,959 @@
 	<template>
 		<common_name>
 			<loctext xml:lang='C'>
-				Link layer discovery protocol service
+				Link Layer Discovery Protocol (IEEE 802.1AB)
+				service
 			</loctext>
 		</common_name>
-		<pg_pattern name='daemon' type='application' target='this'
-		   required='false'>
+		<documentation>
+			<manpage title='lldpd' section='8'
+			    manpath='/usr/share/man' />
+		</documentation>
+		<pg_pattern name='daemon' type='application' target='all'
+		    required='false'>
 			<common_name>
 				<loctext xml:lang='C'>
-					lldp daemon startup options
+					lldpd startup options
 				</loctext>
 			</common_name>
-			<prop_pattern name='log_level' type='count'
+			<description>
+				<loctext xml:lang='C'>
+					Options controlling the LLDP daemon.
+				</loctext>
+			</description>
+			<prop_pattern name='log_level' type='astring'
 			    required='false'>
 				<common_name>
 					<loctext xml:lang='C'>
-						The log level
+						Log level
 					</loctext>
 				</common_name>
 				<description>
 					<loctext xml:lang='C'>
-						The minimum log level of events that are logged.
+						The minimum level of events that
+						are logged.
 					</loctext>
 				</description>
 				<cardinality min='1' max='1' />
+				<values>
+					<value name='trace'>
+						<description>
+							<loctext xml:lang='C'>
+								Trace
+							</loctext>
+						</description>
+					</value>
+					<value name='debug'>
+						<description>
+							<loctext xml:lang='C'>
+								Debug
+							</loctext>
+						</description>
+					</value>
+					<value name='info'>
+						<description>
+							<loctext xml:lang='C'>
+								Informational
+							</loctext>
+						</description>
+					</value>
+					<value name='warn'>
+						<description>
+							<loctext xml:lang='C'>
+								Warnings
+							</loctext>
+						</description>
+					</value>
+					<value name='error'>
+						<description>
+							<loctext xml:lang='C'>
+								Errors
+							</loctext>
+						</description>
+					</value>
+					<value name='fatal'>
+						<description>
+							<loctext xml:lang='C'>
+								Fatal errors
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='trace' />
+					<value name='debug' />
+					<value name='info' />
+					<value name='warn' />
+					<value name='error' />
+					<value name='fatal' />
+				</constraints>
+				<choices>
+					<include_values type='values' />
+				</choices>
+			</prop_pattern>
+		</pg_pattern>
+		<pg_pattern name='config' type='application' target='all'
+		    required='false'>
+			<common_name>
+				<loctext xml:lang='C'>
+					System configuration
+				</loctext>
+			</common_name>
+			<description>
+				<loctext xml:lang='C'>
+					System-wide information advertised on
+					every link.
+				</loctext>
+			</description>
+			<prop_pattern name='sysname' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						System name
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The contents of the System Name
+						TLV. If unset or empty, the
+						system hostname is used.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+			</prop_pattern>
+			<prop_pattern name='sysdesc' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						System description
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The contents of the System
+						Description TLV. If unset or
+						empty, a description derived
+						from uname(2) is used.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+			</prop_pattern>
+		</pg_pattern>
+		<pg_pattern name='default' type='application' target='all'
+		    required='false'>
+			<common_name>
+				<loctext xml:lang='C'>
+					Default agent configuration
+				</loctext>
+			</common_name>
+			<description>
+				<loctext xml:lang='C'>
+					Configuration used by every LLDP agent,
+					unless overridden by a property group of
+					type agent named after the link.
+				</loctext>
+			</description>
+			<prop_pattern name='admin_status' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Administrative status
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Whether the agent transmits
+						and/or receives LLDPDUs.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<values>
+					<value name='disabled'>
+						<description>
+							<loctext xml:lang='C'>
+								Neither transmit
+								nor receive
+							</loctext>
+						</description>
+					</value>
+					<value name='tx'>
+						<description>
+							<loctext xml:lang='C'>
+								Transmit only
+							</loctext>
+						</description>
+					</value>
+					<value name='rx'>
+						<description>
+							<loctext xml:lang='C'>
+								Receive only
+							</loctext>
+						</description>
+					</value>
+					<value name='txrx'>
+						<description>
+							<loctext xml:lang='C'>
+								Transmit and
+								receive
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='disabled' />
+					<value name='tx' />
+					<value name='rx' />
+					<value name='txrx' />
+				</constraints>
+				<choices>
+					<include_values type='values' />
+				</choices>
+			</prop_pattern>
+			<prop_pattern name='port_desc' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Port description
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The contents of the Port
+						Description TLV.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+			</prop_pattern>
+			<prop_pattern name='tx_tlvs' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Optional TLVs to transmit
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The optional basic TLVs included
+						in transmitted LLDPDUs.
+					</loctext>
+				</description>
+				<cardinality min='0' max='5' />
+				<values>
+					<value name='port-desc'>
+						<description>
+							<loctext xml:lang='C'>
+								Port Description
+							</loctext>
+						</description>
+					</value>
+					<value name='sys-name'>
+						<description>
+							<loctext xml:lang='C'>
+								System Name
+							</loctext>
+						</description>
+					</value>
+					<value name='sys-desc'>
+						<description>
+							<loctext xml:lang='C'>
+								System
+								Description
+							</loctext>
+						</description>
+					</value>
+					<value name='sys-cap'>
+						<description>
+							<loctext xml:lang='C'>
+								System
+								Capabilities
+							</loctext>
+						</description>
+					</value>
+					<value name='mgmt-addr'>
+						<description>
+							<loctext xml:lang='C'>
+								Management
+								Address
+							</loctext>
+						</description>
+					</value>
+					<value name='none'>
+						<description>
+							<loctext xml:lang='C'>
+								No optional TLVs
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='port-desc' />
+					<value name='sys-name' />
+					<value name='sys-desc' />
+					<value name='sys-cap' />
+					<value name='mgmt-addr' />
+					<value name='none' />
+				</constraints>
+				<choices>
+					<include_values type='values' />
+				</choices>
+			</prop_pattern>
+			<prop_pattern name='tx_8021_tlvs' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						IEEE 802.1 TLVs to transmit
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The IEEE 802.1 organizationally
+						specific TLVs included in
+						transmitted LLDPDUs.
+					</loctext>
+				</description>
+				<cardinality min='0' max='4' />
+				<values>
+					<value name='native-vlan'>
+						<description>
+							<loctext xml:lang='C'>
+								Port VLAN ID
+							</loctext>
+						</description>
+					</value>
+					<value name='vlans'>
+						<description>
+							<loctext xml:lang='C'>
+								Port and
+								Protocol VLAN
+								IDs
+							</loctext>
+						</description>
+					</value>
+					<value name='vlan-name'>
+						<description>
+							<loctext xml:lang='C'>
+								VLAN Name
+							</loctext>
+						</description>
+					</value>
+					<value name='mgmt-vlan'>
+						<description>
+							<loctext xml:lang='C'>
+								Management VID
+							</loctext>
+						</description>
+					</value>
+					<value name='none'>
+						<description>
+							<loctext xml:lang='C'>
+								No IEEE 802.1
+								TLVs
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='native-vlan' />
+					<value name='vlans' />
+					<value name='vlan-name' />
+					<value name='mgmt-vlan' />
+					<value name='none' />
+				</constraints>
+				<choices>
+					<include_values type='values' />
+				</choices>
+			</prop_pattern>
+			<prop_pattern name='tx_8023_tlvs' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						IEEE 802.3 TLVs to transmit
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The IEEE 802.3 organizationally
+						specific TLVs included in
+						transmitted LLDPDUs.
+					</loctext>
+				</description>
+				<cardinality min='0' max='2' />
+				<values>
+					<value name='phy-cfg'>
+						<description>
+							<loctext xml:lang='C'>
+								MAC/PHY Configur
+								ation/Status
+							</loctext>
+						</description>
+					</value>
+					<value name='mtu'>
+						<description>
+							<loctext xml:lang='C'>
+								Maximum Frame
+								Size
+							</loctext>
+						</description>
+					</value>
+					<value name='none'>
+						<description>
+							<loctext xml:lang='C'>
+								No IEEE 802.3
+								TLVs
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='phy-cfg' />
+					<value name='mtu' />
+					<value name='none' />
+				</constraints>
+				<choices>
+					<include_values type='values' />
+				</choices>
+			</prop_pattern>
+			<prop_pattern name='tx_interval' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Transmit interval
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Seconds between transmissions
+						(msgTxInterval).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='3600' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='tx_hold_multiplier' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Transmit hold multiplier
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Multiplied by the transmit
+						interval to give the TTL of
+						transmitted information
+						(msgTxHold).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='2' max='10' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='reinit_delay' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Reinitialization delay
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Seconds to wait after the agent
+						is disabled before it may be
+						reinitialized (reinitDelay).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='10' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='tx_credit_max' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Maximum transmit credit
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The maximum number of
+						consecutive LLDPDUs that can be
+						transmitted (txCreditMax).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='10' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='tx_fast_interval' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Fast transmit interval
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Seconds between transmissions
+						during fast transmission
+						(msgFastTx).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='3600' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='tx_fast_init' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Fast transmit count
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The number of LLDPDUs
+						transmitted during fast
+						transmission (txFastInit).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='8' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='neighbor_max' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Maximum neighbors
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The maximum number of neighbors
+						whose information is kept per
+						agent.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='65535' />
+				</constraints>
+			</prop_pattern>
+		</pg_pattern>
+		<pg_pattern type='agent' target='all'
+		    required='false'>
+			<common_name>
+				<loctext xml:lang='C'>
+					Agent configuration
+				</loctext>
+			</common_name>
+			<description>
+				<loctext xml:lang='C'>
+					Configuration for the LLDP agent of the
+					link (hardware name) the property group
+					is named after. Properties that are not
+					set use the default configuration.
+				</loctext>
+			</description>
+			<prop_pattern name='admin_status' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Administrative status
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Whether the agent transmits
+						and/or receives LLDPDUs.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<values>
+					<value name='disabled'>
+						<description>
+							<loctext xml:lang='C'>
+								Neither transmit
+								nor receive
+							</loctext>
+						</description>
+					</value>
+					<value name='tx'>
+						<description>
+							<loctext xml:lang='C'>
+								Transmit only
+							</loctext>
+						</description>
+					</value>
+					<value name='rx'>
+						<description>
+							<loctext xml:lang='C'>
+								Receive only
+							</loctext>
+						</description>
+					</value>
+					<value name='txrx'>
+						<description>
+							<loctext xml:lang='C'>
+								Transmit and
+								receive
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='disabled' />
+					<value name='tx' />
+					<value name='rx' />
+					<value name='txrx' />
+				</constraints>
+				<choices>
+					<include_values type='values' />
+				</choices>
+			</prop_pattern>
+			<prop_pattern name='port_desc' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Port description
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The contents of the Port
+						Description TLV.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+			</prop_pattern>
+			<prop_pattern name='tx_tlvs' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Optional TLVs to transmit
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The optional basic TLVs included
+						in transmitted LLDPDUs.
+					</loctext>
+				</description>
+				<cardinality min='0' max='5' />
+				<values>
+					<value name='port-desc'>
+						<description>
+							<loctext xml:lang='C'>
+								Port Description
+							</loctext>
+						</description>
+					</value>
+					<value name='sys-name'>
+						<description>
+							<loctext xml:lang='C'>
+								System Name
+							</loctext>
+						</description>
+					</value>
+					<value name='sys-desc'>
+						<description>
+							<loctext xml:lang='C'>
+								System
+								Description
+							</loctext>
+						</description>
+					</value>
+					<value name='sys-cap'>
+						<description>
+							<loctext xml:lang='C'>
+								System
+								Capabilities
+							</loctext>
+						</description>
+					</value>
+					<value name='mgmt-addr'>
+						<description>
+							<loctext xml:lang='C'>
+								Management
+								Address
+							</loctext>
+						</description>
+					</value>
+					<value name='none'>
+						<description>
+							<loctext xml:lang='C'>
+								No optional TLVs
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='port-desc' />
+					<value name='sys-name' />
+					<value name='sys-desc' />
+					<value name='sys-cap' />
+					<value name='mgmt-addr' />
+					<value name='none' />
+				</constraints>
+				<choices>
+					<include_values type='values' />
+				</choices>
+			</prop_pattern>
+			<prop_pattern name='tx_8021_tlvs' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						IEEE 802.1 TLVs to transmit
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The IEEE 802.1 organizationally
+						specific TLVs included in
+						transmitted LLDPDUs.
+					</loctext>
+				</description>
+				<cardinality min='0' max='4' />
+				<values>
+					<value name='native-vlan'>
+						<description>
+							<loctext xml:lang='C'>
+								Port VLAN ID
+							</loctext>
+						</description>
+					</value>
+					<value name='vlans'>
+						<description>
+							<loctext xml:lang='C'>
+								Port and
+								Protocol VLAN
+								IDs
+							</loctext>
+						</description>
+					</value>
+					<value name='vlan-name'>
+						<description>
+							<loctext xml:lang='C'>
+								VLAN Name
+							</loctext>
+						</description>
+					</value>
+					<value name='mgmt-vlan'>
+						<description>
+							<loctext xml:lang='C'>
+								Management VID
+							</loctext>
+						</description>
+					</value>
+					<value name='none'>
+						<description>
+							<loctext xml:lang='C'>
+								No IEEE 802.1
+								TLVs
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='native-vlan' />
+					<value name='vlans' />
+					<value name='vlan-name' />
+					<value name='mgmt-vlan' />
+					<value name='none' />
+				</constraints>
+				<choices>
+					<include_values type='values' />
+				</choices>
+			</prop_pattern>
+			<prop_pattern name='tx_8023_tlvs' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						IEEE 802.3 TLVs to transmit
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The IEEE 802.3 organizationally
+						specific TLVs included in
+						transmitted LLDPDUs.
+					</loctext>
+				</description>
+				<cardinality min='0' max='2' />
+				<values>
+					<value name='phy-cfg'>
+						<description>
+							<loctext xml:lang='C'>
+								MAC/PHY Configur
+								ation/Status
+							</loctext>
+						</description>
+					</value>
+					<value name='mtu'>
+						<description>
+							<loctext xml:lang='C'>
+								Maximum Frame
+								Size
+							</loctext>
+						</description>
+					</value>
+					<value name='none'>
+						<description>
+							<loctext xml:lang='C'>
+								No IEEE 802.3
+								TLVs
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='phy-cfg' />
+					<value name='mtu' />
+					<value name='none' />
+				</constraints>
+				<choices>
+					<include_values type='values' />
+				</choices>
+			</prop_pattern>
+			<prop_pattern name='tx_interval' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Transmit interval
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Seconds between transmissions
+						(msgTxInterval).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='3600' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='tx_hold_multiplier' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Transmit hold multiplier
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Multiplied by the transmit
+						interval to give the TTL of
+						transmitted information
+						(msgTxHold).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='2' max='10' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='reinit_delay' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Reinitialization delay
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Seconds to wait after the agent
+						is disabled before it may be
+						reinitialized (reinitDelay).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='10' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='tx_credit_max' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Maximum transmit credit
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The maximum number of
+						consecutive LLDPDUs that can be
+						transmitted (txCreditMax).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='10' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='tx_fast_interval' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Fast transmit interval
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Seconds between transmissions
+						during fast transmission
+						(msgFastTx).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='3600' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='tx_fast_init' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Fast transmit count
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The number of LLDPDUs
+						transmitted during fast
+						transmission (txFastInit).
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='8' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='neighbor_max' type='count'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Maximum neighbors
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The maximum number of neighbors
+						whose information is kept per
+						agent.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='65535' />
+				</constraints>
 			</prop_pattern>
 		</pg_pattern>
 	</template>

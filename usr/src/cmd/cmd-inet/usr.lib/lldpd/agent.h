@@ -41,14 +41,9 @@ typedef enum tx_state {
 } tx_state_t;
 #define	TX_BEGIN		TX_LLDP_INITIALIZE
 
-/* XXX: There's probably a better place for this */
-#define	LLDP_PDU_MAX	512
-
 typedef struct tx {
 	tx_state_t	tx_state;
 	struct log	*tx_log;
-
-	uint8_t		tx_frame[LLDP_PDU_MAX];
 
 	lldp_timer_t	tx_shutdown;
 	uint16_t	tx_ttl;
@@ -86,12 +81,40 @@ typedef enum rx_state {
 } rx_state_t;
 #define	RX_BEGIN		LLDP_WAIT_PORT_OPERATIONAL
 
+/*
+ * A received frame waiting to be processed by the rx state machine.
+ */
+typedef struct rx_pdu {
+	uint8_t		*rp_data;	/* Exactly rp_len bytes */
+	size_t		rp_len;
+	uint8_t		rp_src[DLPI_PHYSADDR_MAX];
+	size_t		rp_srclen;
+} rx_pdu_t;
+
+/*
+ * Frames received but not yet processed. Since a link normally has a single
+ * neighbor (e.g. a switch port), this only needs to absorb small bursts
+ * (e.g. a neighbor's fast start or a shutdown PDU followed by a new one).
+ * If it fills, newly received frames are discarded.
+ */
+#define	RX_QUEUE_LEN	4
+
 typedef struct rx {
 	rx_state_t		rx_state;
 	struct log		*rx_log;
 
-	uint8_t			rx_frame[LLDP_PDU_MAX];
-	size_t			rx_frame_len;
+	/*
+	 * Buffer frames are received into (by recv_frame(), on the main
+	 * thread), sized to the agent's maximum PDU (see agent_max_pdu()).
+	 * Only resized by recv_frame() before receiving into it.
+	 */
+	uint8_t			*rx_buf;
+	size_t			rx_buf_size;
+
+	/* Queue of received frames: a ring of rx_qcount from rx_qhead */
+	rx_pdu_t		rx_queue[RX_QUEUE_LEN];
+	uint_t			rx_qhead;
+	uint_t			rx_qcount;
 
 	struct neighbor		*rx_neighbor;
 	struct neighbor		*rx_curr_neighbor;
@@ -99,7 +122,6 @@ typedef struct rx {
 
 	lldp_timer_t		rx_too_many_neighbors_timer;
 	bool			rx_info_age;
-	bool			rx_recv_frame;
 	bool			rx_bad_frame;
 	bool			rx_changes;
 	bool			rx_too_many_neighbors;
@@ -147,7 +169,15 @@ typedef struct agent {
 	mutex_t			a_lock;
 	cond_t			a_cv;
 
+	/*
+	 * The hardware name of the link (e.g. 'igb0') is the agent's
+	 * canonical name: it's used for SMF property groups, logging, and
+	 * door replies. If the datalink has been renamed, a_linkname is its
+	 * current datalink name (otherwise it's the same as a_name); lookups
+	 * by link (agent_find(), topo) accept either.
+	 */
 	char			*a_name;	/* RO */
+	char			*a_linkname;	/* RO */
 	datalink_id_t		a_linkid;	/* RO */
 	struct log		*a_log;		/* RW */
 	thread_t		a_tid;		/* RO */
@@ -158,6 +188,7 @@ typedef struct agent {
 	fd_cb_t			a_dl_cb;
 
 	bool			a_exit;		/* RW */
+	bool			a_send_shutdown; /* RW: on exit */
 	bool			a_port_enabled;	/* RW */
 
 	agent_cfg_t		a_cfg;
@@ -183,8 +214,11 @@ extern uu_list_t	*agent_list;
 
 void	agent_init(void);
 
-agent_t	*agent_create(const char *, datalink_id_t);
+agent_t	*agent_create(const char *, const char *, datalink_id_t);
+agent_t	*agent_find(const char *);
 void	agent_start(agent_t *);
+void	agent_stop(agent_t *, bool);
+void	agent_wait(agent_t *);
 void	agent_destroy(agent_t *);
 bool	agent_enable(agent_t *);
 void	agent_disable(agent_t *);
@@ -194,7 +228,6 @@ void			agent_set_status(agent_t *, lldp_admin_status_t);
 lldp_admin_status_t	agent_get_status(agent_t *);
 
 void agent_local_change(agent_t *);
-void agent_rx_frame(agent_t *);
 size_t agent_num_neighbors(agent_t *);
 
 #ifdef __cplusplus

@@ -72,7 +72,9 @@ static const char *tx_statestr(tx_state_t);
 static const char *rx_statestr(rx_state_t);
 static const char *ttr_statestr(ttr_state_t);
 
-static void tx_frame(dlpi_handle_t, buf_t *, log_t *);
+static bool tx_frame(dlpi_handle_t, buf_t *, log_t *);
+static void tx_send(agent_t *, bool);
+static void agent_send_shutdown(agent_t *);
 static void rx_process_frame(agent_t *);
 
 static const uint_t	lldp_sap = 0x88cc;
@@ -108,8 +110,24 @@ too_many_neighbors(const agent_t *a)
 	return (false);
 }
 
+/*
+ * The largest LLDPDU we can send or receive on the agent's link: the link's
+ * maximum SDU (as reported by libdlpi, and kept up to date via
+ * DL_NOTE_SDU_SIZE), limited to what fits in a buf_t.
+ */
+static size_t
+agent_max_pdu(const agent_t *a)
+{
+	return (MIN(a->a_dl_info.di_max_sdu, UINT16_MAX));
+}
+
+/*
+ * Create an agent for a link. name is the link's hardware name (the
+ * agent's canonical name), linkname is its datalink name (which differs if
+ * the link has been renamed).
+ */
 agent_t *
-agent_create(const char *name, datalink_id_t linkid)
+agent_create(const char *name, const char *linkname, datalink_id_t linkid)
 {
 	agent_t *a;
 	int ret;
@@ -121,11 +139,13 @@ agent_create(const char *name, datalink_id_t linkid)
 	uu_list_node_init(a, &a->a_node, agent_list_pool);
 
 	a->a_name = xstrdup(name);
+	a->a_linkname = xstrdup((linkname != NULL) ? linkname : name);
 	a->a_linkid = linkid;
 	a->a_port_enabled = false;
 
 	(void) log_child(log, &a->a_log,
 	    LOG_T_STRING, "agent", a->a_name,
+	    LOG_T_STRING, "link", a->a_linkname,
 	    LOG_T_END);
 
 	if (!lldp_clock_init(a, &a->a_clk))
@@ -166,17 +186,79 @@ agent_start(agent_t *a)
 	VERIFY0(thr_continue(a->a_tid));
 }
 
+/*
+ * Ask the agent's thread to exit. If shutdown is set (an orderly shutdown
+ * of lldpd), the thread first sends a shutdown LLDPDU (TTL of 0) if it was
+ * advertising on its link, so neighbors discard our information immediately
+ * rather than when it ages out. This doesn't wait for the thread to exit;
+ * use agent_wait() for that. Requesting the exit of every agent before
+ * waiting on any lets the agents shut down in parallel.
+ */
+void
+agent_stop(agent_t *a, bool shutdown)
+{
+	VERIFY(!IS_AGENT_THREAD(a));
+
+	if (a->a_tid == 0)
+		return;
+
+	mutex_enter(&a->a_lock);
+	a->a_send_shutdown = shutdown;
+	a->a_exit = true;
+	VERIFY0(cond_signal(&a->a_cv));
+	mutex_exit(&a->a_lock);
+}
+
+/*
+ * Wait for the agent's thread (which must have been asked to exit with
+ * agent_stop()) to exit.
+ */
+void
+agent_wait(agent_t *a)
+{
+	thread_t tid = a->a_tid;
+
+	VERIFY(!IS_AGENT_THREAD(a));
+
+	if (tid == 0)
+		return;
+
+	VERIFY0(thr_join(tid, NULL, NULL));
+	a->a_tid = 0;
+}
+
+/*
+ * Called by the agent's thread as it exits during an orderly shutdown.
+ */
+static void
+agent_send_shutdown(agent_t *a)
+{
+	ASSERT(MUTEX_HELD(&a->a_lock));
+	ASSERT(IS_AGENT_THREAD(a));
+
+	switch (a->a_tx.tx_state) {
+	case TX_IDLE:
+	case TX_INFO_FRAME:
+		/*
+		 * The tx state machine only leaves TX_LLDP_INITIALIZE when
+		 * the port is enabled and the agent is transmitting.
+		 */
+		if (!a->a_port_enabled)
+			break;
+
+		log_info(a->a_log, "sending shutdown LLDPDU", LOG_T_END);
+		tx_send(a, true);
+		break;
+	default:
+		break;
+	}
+}
+
 void
 agent_destroy(agent_t *a)
 {
-	if (a->a_tid != 0) {
-		thread_t tid = a->a_tid;
-
-		a->a_exit = true;
-		membar_producer();
-		VERIFY0(cond_signal(&a->a_cv));
-		VERIFY0(thr_join(tid, NULL, NULL));
-	}
+	agent_stop(a, false);
+	agent_wait(a);
 
 	if (a->a_dlh != NULL)
 		dlpi_close(a->a_dlh);
@@ -204,6 +286,7 @@ agent_destroy(agent_t *a)
 	lldp_clock_fini(&a->a_clk);
 	config_agent_cfg_free(&a->a_cfg);
 	free(a->a_name);
+	free(a->a_linkname);
 	if (a->a_neighbors != NULL)
 		uu_list_destroy(a->a_neighbors);
 	VERIFY0(cond_destroy(&a->a_cv));
@@ -424,6 +507,9 @@ agent_thread(void *arg)
 		}
 	}
 
+	if (a->a_send_shutdown)
+		agent_send_shutdown(a);
+
 	mutex_exit(&a->a_lock);
 	return (a);
 }
@@ -465,7 +551,6 @@ static bool
 tx_machine(agent_t *a)
 {
 	tx_t	*tx = &a->a_tx;
-	buf_t	tx_buf;
 
 	TRACE_ENTER(tx->tx_log);
 
@@ -485,18 +570,11 @@ tx_machine(agent_t *a)
 		tx->tx_ttl = tx_ttl(a);
 		break;
 	case TX_SHUTDOWN_FRAME:
-		(void) memset(tx->tx_frame, '\0', sizeof (tx->tx_frame));
-		buf_init(&tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
-		make_shutdown_pdu(a, &tx_buf);
-		tx_frame(a->a_dlh, &tx_buf, tx->tx_log);
-
+		tx_send(a, true);
 		lldp_timer_set(&tx->tx_shutdown, a->a_cfg.ac_reinit_delay);
 		break;
 	case TX_INFO_FRAME:
-		(void) memset(tx->tx_frame, '\0', sizeof (tx->tx_frame));
-		buf_init(&tx_buf, tx->tx_frame, sizeof (tx->tx_frame));
-		make_pdu(a, &tx_buf);
-		tx_frame(a->a_dlh, &tx_buf, tx->tx_log);
+		tx_send(a, false);
 		if (dec(&a->a_ttr.ttr_tx_credit)) {
 			uint32_t credit = a->a_ttr.ttr_tx_credit;
 
@@ -590,15 +668,62 @@ rx_init(agent_t *a)
 
 	lldp_timer_init(&a->a_clk, &rx->rx_too_many_neighbors_timer,
 	    "tooManyNeighborsTimer", rx, rx->rx_log, NULL, NULL);
-	(void) memset(rx->rx_frame, '\0', sizeof (rx->rx_frame));
-	rx->rx_frame_len = 0;
+	rx->rx_buf = NULL;
+	rx->rx_buf_size = 0;
+	rx->rx_qhead = rx->rx_qcount = 0;
 	rx->rx_state = RX_BEGIN;
+}
+
+static inline bool
+rx_frame_pending(const rx_t *rx)
+{
+	return (rx->rx_qcount > 0);
+}
+
+/*
+ * Remove the oldest frame from the receive queue, transferring ownership
+ * of its data to *pdu.
+ */
+static void
+rx_dequeue(rx_t *rx, rx_pdu_t *pdu)
+{
+	VERIFY3U(rx->rx_qcount, >, 0);
+
+	*pdu = rx->rx_queue[rx->rx_qhead];
+	(void) memset(&rx->rx_queue[rx->rx_qhead], '\0', sizeof (*pdu));
+	rx->rx_qhead = (rx->rx_qhead + 1) % RX_QUEUE_LEN;
+	rx->rx_qcount--;
+}
+
+static void
+rx_pdu_free(rx_pdu_t *pdu)
+{
+	if (pdu->rp_data != NULL)
+		umem_free(pdu->rp_data, pdu->rp_len);
+	(void) memset(pdu, '\0', sizeof (*pdu));
+}
+
+/* Discard any received frames that haven't been processed */
+static void
+rx_queue_flush(rx_t *rx)
+{
+	rx_pdu_t pdu;
+
+	while (rx_frame_pending(rx)) {
+		rx_dequeue(rx, &pdu);
+		rx_pdu_free(&pdu);
+	}
 }
 
 static void
 rx_fini(rx_t *rx)
 {
 	lldp_timer_fini(&rx->rx_too_many_neighbors_timer);
+	rx_queue_flush(rx);
+	if (rx->rx_buf != NULL)
+		umem_free(rx->rx_buf, rx->rx_buf_size);
+	rx->rx_buf = NULL;
+	rx->rx_buf_size = 0;
 	log_fini(rx->rx_log);
 }
 
@@ -641,7 +766,7 @@ rx_next_state(agent_t *a)
 			break;
 		}
 
-		if (rx->rx_recv_frame) {
+		if (rx_frame_pending(rx)) {
 			next = RX_FRAME;
 			break;
 		}
@@ -723,8 +848,8 @@ rx_machine(agent_t *a)
 		something_changed_remote(a);
 		break;
 	case RX_LLDP_INITIALIZE:
+		/* rx_init_lldp() also discards any queued frames */
 		rx_init_lldp(a);
-		rx->rx_recv_frame = false;
 		break;
 	case RX_WAIT_FOR_FRAME:
 		rx->rx_bad_frame = false;
@@ -732,7 +857,6 @@ rx_machine(agent_t *a)
 		break;
 	case RX_FRAME:
 		rx->rx_changes = false;
-		rx->rx_recv_frame = false;
 		rx_process_frame(a);
 		break;
 	case DELETE_INFO:
@@ -772,8 +896,14 @@ ttr_init(agent_t *a)
 	(void) log_child(a->a_log, &ttr->ttr_log,
 	    LOG_T_STRING, "state_machine", "ttr",
 	    LOG_T_END);
+	/*
+	 * txTTR has no flag: when it expires, the ttr state machine goes
+	 * through TX_TIMER_EXPIRES to SIGNAL_TX, which sets tx_now (and
+	 * reloads the timer). Having the timer also set tx_now would
+	 * trigger a second transmission.
+	 */
 	lldp_timer_init(&a->a_clk, &ttr->ttr_timer, "txTTR", ttr, ttr->ttr_log,
-	    "tx_now", &a->a_tx.tx_now);
+	    NULL, NULL);
 	ttr->ttr_state = TTR_BEGIN;
 }
 
@@ -895,8 +1025,12 @@ ttr_machine(agent_t *a)
 	case SIGNAL_TX:
 		a->a_tx.tx_now = true;
 		a->a_local_changes = false;
+		/*
+		 * 802.1AB 9.2.9: while fast transmission is active (txFast > 0)
+		 * use msgFastTx, otherwise msgTxInterval.
+		 */
 		lldp_timer_set(&ttr->ttr_timer, ttr->ttr_tx_fast > 0 ?
-		    ttr->ttr_tx_fast : a->a_cfg.ac_tx_interval);
+		    a->a_cfg.ac_tx_fast_msg : a->a_cfg.ac_tx_interval);
 		break;
 	case TX_FAST_START:
 		a->a_new_neighbor = false;
@@ -920,6 +1054,8 @@ rx_init_lldp(agent_t *a)
 	rx_t		*rx = &a->a_rx;
 	void		*cookie = NULL;
 	neighbor_t	*nb;
+
+	rx_queue_flush(rx);
 
 	rx->rx_too_many_neighbors = false;
 	lldp_timer_set(&rx->rx_too_many_neighbors_timer, 0);
@@ -1031,6 +1167,7 @@ delete_objects(agent_t *a)
 
 		uu_list_remove(a->a_neighbors, nb);
 		neighbor_free(nb);
+		a->a_stats.las_ageouts++;
 		count++;
 	}
 
@@ -1062,7 +1199,7 @@ something_changed_remote(agent_t *a)
 	/* TODO */
 }
 
-static void
+static bool
 tx_frame(dlpi_handle_t dlh, buf_t *b, log_t *l)
 {
 	int ret;
@@ -1075,6 +1212,47 @@ tx_frame(dlpi_handle_t dlh, buf_t *b, log_t *l)
 		log_dlerr(l, "failed to send PDU", ret);
 
 	(void) memset(buf_ptr(b), '\0', buf_len(b));
+	return (ret == DLPI_SUCCESS);
+}
+
+/*
+ * Build and send an LLDPDU (or a shutdown LLDPDU), using a frame sized to
+ * the link's current maximum SDU.
+ */
+static void
+tx_send(agent_t *a, bool shutdown)
+{
+	tx_t	*tx = &a->a_tx;
+	size_t	len = agent_max_pdu(a);
+	uint8_t	*frame;
+	buf_t	b;
+	bool	ok;
+
+	ASSERT(MUTEX_HELD(&a->a_lock));
+
+	if (len == 0) {
+		log_error(tx->tx_log, "link has no maximum SDU; not sending",
+		    LOG_T_END);
+		return;
+	}
+
+	frame = umem_zalloc(len, UMEM_NOFAIL);
+	buf_init(&b, frame, len);
+
+	ok = shutdown ? make_shutdown_pdu(a, &b) : make_pdu(a, &b);
+	if (ok) {
+		if (tx_frame(a->a_dlh, &b, tx->tx_log))
+			a->a_stats.las_out_frames++;
+	} else {
+		a->a_stats.las_length_errs++;
+		log_error(tx->tx_log, "link's maximum SDU is too small for "
+		    "the mandatory TLVs; not sending",
+		    LOG_T_UINT32, "max_sdu", (uint32_t)len,
+		    LOG_T_BOOLEAN, "shutdown", shutdown,
+		    LOG_T_END);
+	}
+
+	umem_free(frame, len);
 }
 
 static void
@@ -1090,9 +1268,11 @@ recv_frame(int fd __unused, void *arg)
 {
 	agent_t		*a = arg;
 	rx_t		*rx = &a->a_rx;
+	rx_pdu_t	*pdu;
 	uint8_t		src[DLPI_PHYSADDR_MAX] = { 0 };
 	dlpi_recvinfo_t	di = { 0 };
 	size_t		srclen = sizeof (src);
+	size_t		len;
 	int		ret;
 
 	/* We should be running outside the agent's thread */
@@ -1100,23 +1280,36 @@ recv_frame(int fd __unused, void *arg)
 
 	mutex_enter(&a->a_lock);
 
-	(void) memset(rx->rx_frame, '\0', sizeof (rx->rx_frame));
-	rx->rx_frame_len = sizeof (rx->rx_frame);
+	/*
+	 * Size the receive buffer to the link's current maximum SDU. This
+	 * can't be done when DL_NOTE_SDU_SIZE arrives, since notifications
+	 * are delivered from within dlpi_recv() while it's writing into the
+	 * buffer. Received frames are copied into the queue, so nothing
+	 * else refers to this buffer.
+	 */
+	if (rx->rx_buf_size != agent_max_pdu(a)) {
+		if (rx->rx_buf != NULL)
+			umem_free(rx->rx_buf, rx->rx_buf_size);
+		rx->rx_buf_size = agent_max_pdu(a);
+		rx->rx_buf = (rx->rx_buf_size > 0) ?
+		    umem_alloc(rx->rx_buf_size, UMEM_NOFAIL) : NULL;
+	}
 
-	ret = dlpi_recv(a->a_dlh, &src, &srclen, rx->rx_frame,
-	    &rx->rx_frame_len, 0, &di);
+	len = rx->rx_buf_size;
+	ret = dlpi_recv(a->a_dlh, &src, &srclen, rx->rx_buf, &len, 0, &di);
 	if (ret != DLPI_SUCCESS) {
 		log_dlerr(rx->rx_log, "receive error", ret);
-		rx->rx_bad_frame = true;
+		a->a_stats.las_in_errors++;
 		goto done;
 	}
 
-	if (di.dri_totmsglen > sizeof (rx->rx_frame)) {
+	if (di.dri_totmsglen > rx->rx_buf_size) {
 		log_info(rx->rx_log, "oversize message",
 		    LOG_T_MAC, "src", src,
-		    LOG_T_UINT32, "len", (uint32_t)sizeof (rx->rx_frame),
+		    LOG_T_UINT32, "len", (uint32_t)di.dri_totmsglen,
+		    LOG_T_UINT32, "max", (uint32_t)rx->rx_buf_size,
 		    LOG_T_END);
-		rx->rx_bad_frame = true;
+		a->a_stats.las_discarded++;
 		/* XXX: do we need to drain dlh? */
 
 		goto done;
@@ -1129,12 +1322,28 @@ recv_frame(int fd __unused, void *arg)
 	if (di.dri_totmsglen == 0)
 		goto done;
 
+	if (rx->rx_qcount == RX_QUEUE_LEN) {
+		log_debug(rx->rx_log, "receive queue full; discarding frame",
+		    LOG_T_MAC, "src", src,
+		    LOG_T_UINT32, "len", (uint32_t)len,
+		    LOG_T_END);
+		a->a_stats.las_discarded++;
+		goto done;
+	}
+
 	log_debug(rx->rx_log, "received frame",
 	    LOG_T_MAC, "src", src,
-	    LOG_T_UINT32, "len", (uint32_t)rx->rx_frame_len,
+	    LOG_T_UINT32, "len", (uint32_t)len,
+	    LOG_T_UINT32, "queued", rx->rx_qcount + 1,
 	    LOG_T_END);
 
-	rx->rx_recv_frame = true;
+	pdu = &rx->rx_queue[(rx->rx_qhead + rx->rx_qcount) % RX_QUEUE_LEN];
+	pdu->rp_data = umem_alloc(len, UMEM_NOFAIL);
+	pdu->rp_len = len;
+	(void) memcpy(pdu->rp_data, rx->rx_buf, len);
+	pdu->rp_srclen = MIN(srclen, sizeof (pdu->rp_src));
+	(void) memcpy(pdu->rp_src, src, pdu->rp_srclen);
+	rx->rx_qcount++;
 
 done:
 	if (!schedule_fd(dlpi_fd(a->a_dlh), &a->a_dl_cb)) {
@@ -1145,15 +1354,31 @@ done:
 	VERIFY0(cond_signal(&a->a_cv));
 }
 
+static void rx_process_pdu(agent_t *, const rx_pdu_t *);
+
+/*
+ * Process the oldest frame in the receive queue (RX_FRAME).
+ */
 static void
 rx_process_frame(agent_t *a)
 {
+	rx_pdu_t pdu;
+
+	rx_dequeue(&a->a_rx, &pdu);
+	rx_process_pdu(a, &pdu);
+	rx_pdu_free(&pdu);
+}
+
+static void
+rx_process_pdu(agent_t *a, const rx_pdu_t *pdu)
+{
 	rx_t		*rx = &a->a_rx;
 	neighbor_t	*nb, *curr;
+	pdu_rx_stats_t	st;
 	buf_t		b;
 
-	VERIFY3U(rx->rx_frame_len, <=, UINT16_MAX);
-	buf_init(&b, rx->rx_frame, rx->rx_frame_len);
+	VERIFY3U(pdu->rp_len, <=, UINT16_MAX);
+	buf_init(&b, pdu->rp_data, pdu->rp_len);
 
 	/* Any previous frame should have been fully consumed */
 	ASSERT3P(rx->rx_neighbor, ==, NULL);
@@ -1161,11 +1386,27 @@ rx_process_frame(agent_t *a)
 	rx->rx_neighbor = NULL;
 	rx->rx_curr_neighbor = NULL;
 
-	if (!process_pdu(rx->rx_log, &b, &nb)) {
+	if (!process_pdu(rx->rx_log, &b, &nb, &st)) {
+		/*
+		 * 802.1AB 9.2.7.7.2: an invalid LLDPDU counts against both
+		 * statsFramesDiscardedTotal and statsFramesInErrorsTotal.
+		 * If we merely couldn't allocate memory, the frame is still
+		 * discarded, but it wasn't in error.
+		 */
+		a->a_stats.las_discarded++;
+		if (st.prs_malformed)
+			a->a_stats.las_in_errors++;
 		rx->rx_bad_frame = true;
 		return;
 	}
 	VERIFY3P(nb, !=, NULL);
+
+	a->a_stats.las_in_frames++;
+	a->a_stats.las_unknown_tlvs += st.prs_unknown_tlvs;
+	a->a_stats.las_discarded_tlvs += st.prs_discarded_tlvs;
+
+	(void) memcpy(nb->nb_src, pdu->rp_src, pdu->rp_srclen);
+	nb->nb_srclen = pdu->rp_srclen;
 
 	rx->rx_ttl = nb->nb_ttl;
 	curr = uu_list_find(a->a_neighbors, nb, NULL, NULL);
@@ -1210,6 +1451,7 @@ rx_process_frame(agent_t *a)
 
 			rx->rx_too_many_neighbors = true;
 			lldp_timer_set(t, MAX(lldp_timer_val(t), rx->rx_ttl));
+			a->a_stats.las_rem_drops++;
 
 			neighbor_free(nb);
 			rx->rx_changes = false;
@@ -1484,6 +1726,34 @@ fail:
 	}
 
 	return (false);
+}
+
+/*
+ * Find the agent for a link, by the link's hardware name (the agent's
+ * canonical name) or, if the datalink has been renamed, by its datalink
+ * name. A hardware name match takes precedence, so a datalink renamed to
+ * the hardware name of a different link is found by the latter. Caller
+ * must hold agent_list_lock.
+ */
+agent_t *
+agent_find(const char *name)
+{
+	agent_t	key = { .a_name = (char *)name };
+	agent_t	*a;
+
+	ASSERT(MUTEX_HELD(&agent_list_lock));
+
+	a = uu_list_find(agent_list, &key, NULL, NULL);
+	if (a != NULL)
+		return (a);
+
+	for (a = uu_list_first(agent_list); a != NULL;
+	    a = uu_list_next(agent_list, a)) {
+		if (strcmp(a->a_linkname, name) == 0)
+			return (a);
+	}
+
+	return (NULL);
 }
 
 static int

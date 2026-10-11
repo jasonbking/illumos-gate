@@ -19,6 +19,7 @@
 #include <sys/vlan.h>
 #include <liblldp.h>
 #include <string.h>
+#include <umem.h>
 
 #include "agent.h"
 #include "buf.h"
@@ -74,7 +75,7 @@ typedef struct tlv_tbl {
 	bool	(*write)(agent_t *, buf_t *);
 } tlv_tbl_t;
 
-static void write_tlv_table(tlv_tbl_t *, uint_t, uint_t, agent_t *, buf_t *);
+static bool write_tlv_table(tlv_tbl_t *, uint_t, uint_t, agent_t *, buf_t *);
 
 static tlv_tbl_t tlv_tbl[] = {
 	{ LLDP_TX_PORTDESC, write_portdesc },
@@ -112,23 +113,31 @@ make_tlv(lldp_tlv_type_t type, uint16_t len)
 	return ((uint16_t)type << 9 | len);
 }
 
-void
+/*
+ * Build an LLDPDU in buf (whose size is the link's maximum PDU size). The
+ * optional TLVs are included as space allows. Returns false if the
+ * mandatory TLVs don't fit.
+ */
+bool
 make_pdu(agent_t *a, buf_t *buf)
 {
 	agent_cfg_t *cfg;
 	buf_t w = *buf;
 	buf_t copy;
 	buf_t tlv_w;
+	bool all_fit;
 
 	ASSERT(MUTEX_HELD(&a->a_lock));
 	mutex_enter(&lldp_config_lock);
 
 	cfg = &a->a_cfg;
 
-	/* We should always have enough space for the mandatory TLVs */
-	VERIFY(write_chassis_id(&w));
-	VERIFY(write_port_id(a, &w));
-	VERIFY(write_ttl(&w, a->a_tx.tx_ttl));
+	/* The mandatory TLVs, plus room for the End TLV */
+	if (!write_chassis_id(&w) || !write_port_id(a, &w) ||
+	    !write_ttl(&w, a->a_tx.tx_ttl) || buf_len(&w) < 2) {
+		mutex_exit(&lldp_config_lock);
+		return (false);
+	}
 
 	/*
 	 * When writing TLVs, guarantee space for the final END TLV.
@@ -136,12 +145,19 @@ make_pdu(agent_t *a, buf_t *buf)
 	copy = w;
 	VERIFY(buf_take(&copy, buf_len(&w) - 2, &tlv_w));
 
-	write_tlv_table(tlv_tbl, ARRAY_SIZE(tlv_tbl), cfg->ac_tx_tlvs, a,
-	    &tlv_w);
-	write_tlv_table(tlv_8021_tlv_tbl, ARRAY_SIZE(tlv_8021_tlv_tbl),
-	    cfg->ac_tx_8021_tlvs, a, &tlv_w);
-	write_tlv_table(tlv_8023_tlv_tbl, ARRAY_SIZE(tlv_8023_tlv_tbl),
-	    cfg->ac_tx_8023_tlvs, a, &tlv_w);
+	/*
+	 * Each table is attempted even if an earlier one didn't fit, since
+	 * smaller TLVs may still fit. If anything was left out, it's an
+	 * LLDPDU length error (lldpV2StatsTxLLDPDULengthErrors).
+	 */
+	all_fit = write_tlv_table(tlv_tbl, ARRAY_SIZE(tlv_tbl),
+	    cfg->ac_tx_tlvs, a, &tlv_w);
+	all_fit &= write_tlv_table(tlv_8021_tlv_tbl,
+	    ARRAY_SIZE(tlv_8021_tlv_tbl), cfg->ac_tx_8021_tlvs, a, &tlv_w);
+	all_fit &= write_tlv_table(tlv_8023_tlv_tbl,
+	    ARRAY_SIZE(tlv_8023_tlv_tbl), cfg->ac_tx_8023_tlvs, a, &tlv_w);
+	if (!all_fit)
+		a->a_stats.las_length_errs++;
 
 	ASSERT3S((int)buf_len(&w), >=, (int)buf_len(&tlv_w));
 
@@ -155,31 +171,36 @@ make_pdu(agent_t *a, buf_t *buf)
 	VERIFY(buf_truncate(buf, buf_len(buf) - buf_len(&w)));
 
 	mutex_exit(&lldp_config_lock);
+	return (true);
 }
 
-void
+/*
+ * Build a shutdown LLDPDU (the mandatory TLVs with a TTL of 0) in buf.
+ * Returns false if it doesn't fit.
+ */
+bool
 make_shutdown_pdu(agent_t *a, buf_t *buf)
 {
 	buf_t w = *buf;
+	bool ok;
 
 	ASSERT(MUTEX_HELD(&a->a_lock));
 
 	mutex_enter(&lldp_config_lock);
-
-	/* We should always have enough space for a shutdown PDU */
-	VERIFY(write_chassis_id(&w));
-	VERIFY(write_port_id(a, &w));
-	VERIFY(write_ttl(&w, 0));
-	VERIFY(write_end(&w));
-
+	ok = write_chassis_id(&w) && write_port_id(a, &w) &&
+	    write_ttl(&w, 0) && write_end(&w);
 	mutex_exit(&lldp_config_lock);
+
+	if (!ok)
+		return (false);
 
 	/* Set written length in buf */
 	VERIFY(buf_truncate(buf, buf_len(buf) - buf_len(&w)));
+	return (true);
 }
 
 bool
-process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
+process_pdu(log_t *log, buf_t *raw, neighbor_t **np, pdu_rx_stats_t *st)
 {
 	neighbor_t	*nb = NULL;
 	buf_t		buf = { 0 };
@@ -189,10 +210,20 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 	buf_t		ttl_buf;
 	uint8_t		pdu_count[TLV_NUM_STANDARD] = { 0 };
 	bool		ret = true;
+	/* Set when a failure is ours (no memory) rather than the PDU's */
+	bool		nomem = false;
 
 	TRACE_ENTER(log);
 
 	*np = NULL;
+	(void) memset(st, '\0', sizeof (*st));
+
+	/* Even the smallest valid PDU has the mandatory TLVs */
+	if (buf_len(raw) == 0) {
+		st->prs_malformed = true;
+		TRACE_RETURN(log);
+		return (false);
+	}
 
 	nb = neighbor_new();
 	if (nb == NULL) {
@@ -201,7 +232,14 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 		return (false);
 	}
 
-	VERIFY3U(buf_len(raw), <=, sizeof (nb->nb_pdu));
+	nb->nb_pdu = umem_alloc(buf_len(raw), UMEM_DEFAULT);
+	if (nb->nb_pdu == NULL) {
+		log_warn(log, "failed to allocate neighbor PDU", LOG_T_END);
+		neighbor_free(nb);
+		TRACE_RETURN(log);
+		return (false);
+	}
+	nb->nb_pdu_alloc = buf_len(raw);
 	(void) memcpy(nb->nb_pdu, buf_ptr(raw), buf_len(raw));
 	nb->nb_pdu_len = buf_len(raw);
 
@@ -227,6 +265,7 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 	pdu_count[LLDP_TLV_CHASSIS_ID]++;
 	VERIFY3U(nb->nb_core_tlvs.tlvl_n, ==, NB_TLV_CHASSIS);
 	if (!tlv_list_add(&nb->nb_core_tlvs, &chassis)) {
+		nomem = true;
 		ret = false;
 		goto done;
 	}
@@ -247,6 +286,7 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 	pdu_count[LLDP_TLV_PORT_ID]++;
 	VERIFY3U(nb->nb_core_tlvs.tlvl_n, ==, NB_TLV_PORT);
 	if (!tlv_list_add(&nb->nb_core_tlvs, &port)) {
+		nomem = true;
 		ret = false;
 		goto done;
 	}
@@ -265,6 +305,7 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 	pdu_count[LLDP_TLV_TTL]++;
 	VERIFY3U(nb->nb_core_tlvs.tlvl_n, ==, NB_TLV_TTL);
 	if (!tlv_list_add(&nb->nb_core_tlvs, &ttl)) {
+		nomem = true;
 		ret = false;
 		goto done;
 	}
@@ -295,14 +336,16 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 			 * OUI (3) + subtype (1).
 			 */
 			if (buf_len(&tlv.tlv_buf) < 4) {
-				log_warn(log, "Org specific PDU does not "
-				     "required header",
-				     LOG_T_UINT32, "len", buf_len(&tlv.tlv_buf),
-				     LOG_T_END);
+				log_warn(log, "Org specific TLV is too short "
+				    "for its header; discarding TLV",
+				    LOG_T_UINT32, "len", buf_len(&tlv.tlv_buf),
+				    LOG_T_END);
+				st->prs_discarded_tlvs++;
 				continue;
 			}
 
 			if (!tlv_list_add(&nb->nb_org_tlvs, &tlv)) {
+				nomem = true;
 				ret = false;
 				goto done;
 			}
@@ -333,12 +376,16 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 			}
 
 			if (!tlv_list_add(&nb->nb_core_tlvs, &tlv)) {
+				nomem = true;
 				ret = false;
 				goto done;
 			}
 			pdu_count[tlv.tlv_type]++;
 		} else {
+			/* A reserved TLV type (9-126) */
+			st->prs_unknown_tlvs++;
 			if (!tlv_list_add(&nb->nb_unknown_tlvs, &tlv)) {
+				nomem = true;
 				ret = false;
 				goto done;
 			}
@@ -360,6 +407,7 @@ process_pdu(log_t *log, buf_t *raw, neighbor_t **np)
 
 done:
 	if (!ret) {
+		st->prs_malformed = !nomem;
 		neighbor_free(nb);
 		nb = NULL;
 	}
@@ -370,10 +418,12 @@ done:
 	return (ret);
 }
 
-static void
+static bool
 write_tlv_table(tlv_tbl_t *tbl, uint_t tbl_len, uint_t tlvs, agent_t *a,
     buf_t *w)
 {
+	bool all_fit = true;
+
 	for (uint_t i = 0; i < tbl_len; i++) {
 		/* TLV not marked for TX, skip */
 		if ((tbl[i].tlv & tlvs) == 0)
@@ -386,9 +436,13 @@ write_tlv_table(tlv_tbl_t *tbl, uint_t tbl_len, uint_t tlvs, agent_t *a,
 		 * END TLV, so we don't need to worry about that here.
 		 */
 		buf_t save = *w;
-		if (!tbl[i].write(a, w))
+		if (!tbl[i].write(a, w)) {
 			*w = save;
+			all_fit = false;
+		}
 	}
+
+	return (all_fit);
 }
 
 static bool
@@ -485,7 +539,8 @@ static bool
 write_port_id(agent_t *a, buf_t *w)
 {
 	lldp_port_t *port = &a->a_cfg.ac_port;
-	uint16_t tv = make_tlv(LLDP_TLV_PORT_ID, port->llp_len);
+	/* The TLV contains the subtype (1 byte) followed by the id */
+	uint16_t tv = make_tlv(LLDP_TLV_PORT_ID, port->llp_len + 1);
 
 	if (!buf_put16(w, tv))
 		return (false);
@@ -558,7 +613,7 @@ write_sysname(agent_t *a, buf_t *w)
 		return (false);
 	if (!buf_putbytes(w, lldp_config->lcfg_sysname, namelen))
 		return (false);
-	
+
 	return (true);
 }
 
@@ -577,7 +632,7 @@ write_sysdesc(agent_t *a, buf_t *w)
 		    "will be truncated",
 		    LOG_T_UINT32, "len", desclen,
 		    LOG_T_END);
-		desclen = LLDP_SYS_NAME_MAX;
+		desclen = LLDP_SYS_DESC_MAX;
 	}
 
 	tv = make_tlv(LLDP_TLV_SYS_DESC, desclen);
@@ -585,7 +640,7 @@ write_sysdesc(agent_t *a, buf_t *w)
 		return (false);
 	if (!buf_putbytes(w, lldp_config->lcfg_sysdesc, desclen))
 		return (false);
-	
+
 	return (true);
 }
 
@@ -603,37 +658,42 @@ write_syscap(agent_t *a, buf_t *w)
 	if (!buf_put16(w, lldp_config->lcfg_encap))
 		return (false);
 
-	return (false);
+	return (true);
 }
 
 static bool
-write_mgmtaddr(agent_t *a, buf_t *w)
+write_mgmtaddr(agent_t *a __unused, buf_t *w __unused)
 {
-	return (false);
+	/* XXX: Not yet implemented; send nothing */
+	return (true);
 }
 
 static bool
-write_native_vlan(agent_t *a, buf_t *w)
+write_native_vlan(agent_t *a __unused, buf_t *w __unused)
 {
-	return (false);
+	/* XXX: Not yet implemented; send nothing */
+	return (true);
 }
 
 static bool
-write_vlans(agent_t *a, buf_t *w)
+write_vlans(agent_t *a __unused, buf_t *w __unused)
 {
-	return (false);
+	/* XXX: Not yet implemented; send nothing */
+	return (true);
 }
 
 static bool
-write_vlan_name(agent_t *a, buf_t *w)
+write_vlan_name(agent_t *a __unused, buf_t *w __unused)
 {
-	return (false);
+	/* XXX: Not yet implemented; send nothing */
+	return (true);
 }
 
 static bool
-write_mgmt_vlan(agent_t *a, buf_t *w)
+write_mgmt_vlan(agent_t *a __unused, buf_t *w __unused)
 {
-	return (false);
+	/* XXX: Not yet implemented; send nothing */
+	return (true);
 }
 
 static bool

@@ -16,6 +16,9 @@
 #ifndef _PDU_H
 #define	_PDU_H
 
+#include <stdbool.h>
+#include <sys/types.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,9 +28,20 @@ struct buf;
 struct log;
 struct neighbor;
 
-void make_pdu(struct agent *, struct buf *);
-void make_shutdown_pdu(struct agent *, struct buf *);
-bool process_pdu(struct log *, struct buf *, struct neighbor **);
+/*
+ * Statistics from processing a received LLDPDU, for the agent's counters.
+ * The TLV counts are only meaningful if process_pdu() succeeds.
+ */
+typedef struct pdu_rx_stats {
+	uint32_t	prs_unknown_tlvs;	/* TLVs of a reserved type */
+	uint32_t	prs_discarded_tlvs;	/* Malformed TLVs ignored */
+	bool		prs_malformed;		/* PDU failed validation */
+} pdu_rx_stats_t;
+
+bool make_pdu(struct agent *, struct buf *);
+bool make_shutdown_pdu(struct agent *, struct buf *);
+bool process_pdu(struct log *, struct buf *, struct neighbor **,
+    pdu_rx_stats_t *);
 
 #ifdef __cplusplus
 }

@@ -53,8 +53,9 @@ typedef struct neighbor {
 	uint8_t			nb_dst[DLPI_PHYSADDR_MAX];
 	size_t			nb_dstlen;
 
-	uint8_t			nb_pdu[LLDP_PDU_MAX];
-	size_t			nb_pdu_len;
+	uint8_t			*nb_pdu;	/* The PDU, as received */
+	size_t			nb_pdu_alloc;	/* Allocated size of nb_pdu */
+	size_t			nb_pdu_len;	/* Up to/incl. the End TLV */
 
 	tlv_list_t		nb_core_tlvs;
 	tlv_list_t		nb_org_tlvs;

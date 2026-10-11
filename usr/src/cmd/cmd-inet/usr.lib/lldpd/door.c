@@ -38,8 +38,10 @@
 #include "neighbor.h"
 #include "timer.h"
 #include "tlv.h"
+#include "util.h"
 
 static int door_fd = -1;
+static char *door_path;
 
 /* Log for the door server threads (which don't otherwise have one) */
 static log_t *door_log;
@@ -51,7 +53,8 @@ static log_t *door_log;
  */
 static __thread uint8_t *door_reply_buf;
 
-CTASSERT(LLDP_DOOR_REC_OFF + LLDP_DOOR_NBR_RECLEN(LLDP_PDU_MAX) <=
+/* Any neighbor's PDU (which is < 64K, see buf_t) must fit in a reply */
+CTASSERT(LLDP_DOOR_REC_OFF + LLDP_DOOR_NBR_RECLEN(UINT16_MAX) <=
     LLDP_DOOR_REPLY_MAX);
 
 static inline int
@@ -183,9 +186,8 @@ door_neighbors(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
 	mutex_enter(&agent_list_lock);
 
 	if (one) {
-		agent_t key = { .a_name = (char *)req->ldrq_link };
-
-		a = uu_list_find(agent_list, &key, NULL, NULL);
+		/* Either the hardware or (renamed) datalink name */
+		a = agent_find(req->ldrq_link);
 		if (a == NULL) {
 			rep->ldrp_error = ENOENT;
 			off = sizeof (*rep);
@@ -215,6 +217,81 @@ door_neighbors(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
 			rep->ldrp_flags |= LLDP_DOOR_F_MORE;
 			break;
 		}
+
+		a = one ? NULL : uu_list_next(agent_list, a);
+	}
+
+done:
+	mutex_exit(&agent_list_lock);
+	return (off);
+}
+
+/*
+ * LLDP_DOOR_CMD_STATS. Returns the size of the reply.
+ */
+static size_t
+door_stats(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
+{
+	lldp_door_reply_t		*rep = (lldp_door_reply_t *)buf;
+	const lldp_door_cursor_t	*cur = &req->ldrq_cursor;
+	size_t				off = LLDP_DOOR_REC_OFF;
+	agent_t				*a;
+	bool				one;
+
+	if (strnlen(cur->ldc_link, sizeof (cur->ldc_link)) ==
+	    sizeof (cur->ldc_link) || cur->ldc_chassis_len != 0 ||
+	    cur->ldc_port_len != 0) {
+		rep->ldrp_error = EINVAL;
+		return (sizeof (*rep));
+	}
+
+	one = req->ldrq_link[0] != '\0';
+
+	/* If nothing is returned, the cursor doesn't move */
+	rep->ldrp_next = *cur;
+
+	mutex_enter(&agent_list_lock);
+
+	if (one) {
+		a = agent_find(req->ldrq_link);
+		if (a == NULL) {
+			rep->ldrp_error = ENOENT;
+			off = sizeof (*rep);
+			goto done;
+		}
+
+		/* The only agent was already returned */
+		if (cur->ldc_link[0] != '\0')
+			a = NULL;
+	} else {
+		/* The agent list is sorted by name; resume after the cursor */
+		a = uu_list_first(agent_list);
+		while (cur->ldc_link[0] != '\0' && a != NULL &&
+		    strcmp(a->a_name, cur->ldc_link) <= 0) {
+			a = uu_list_next(agent_list, a);
+		}
+	}
+
+	while (a != NULL) {
+		lldp_door_stats_t rec = { 0 };
+
+		if (off + sizeof (rec) > buflen) {
+			rep->ldrp_flags |= LLDP_DOOR_F_MORE;
+			break;
+		}
+
+		(void) strlcpy(rec.lds_link, a->a_name, sizeof (rec.lds_link));
+		mutex_enter(&a->a_lock);
+		rec.lds_stats = a->a_stats;
+		mutex_exit(&a->a_lock);
+
+		(void) memcpy(buf + off, &rec, sizeof (rec));
+		off += sizeof (rec);
+		rep->ldrp_count++;
+
+		(void) memset(&rep->ldrp_next, '\0', sizeof (rep->ldrp_next));
+		(void) strlcpy(rep->ldrp_next.ldc_link, a->a_name,
+		    sizeof (rep->ldrp_next.ldc_link));
 
 		a = one ? NULL : uu_list_next(agent_list, a);
 	}
@@ -260,6 +337,9 @@ lldp_door_server(void *cookie __unused, char *argp, size_t argsz,
 	switch (req.ldrq_cmd) {
 	case LLDP_DOOR_CMD_NEIGHBORS:
 		len = door_neighbors(&req, door_reply_buf, LLDP_DOOR_REPLY_MAX);
+		break;
+	case LLDP_DOOR_CMD_STATS:
+		len = door_stats(&req, door_reply_buf, LLDP_DOOR_REPLY_MAX);
 		break;
 	default:
 		rep->ldrp_error = EINVAL;
@@ -324,9 +404,29 @@ lldp_create_door(const char *path)
 	    LOG_T_STRING, "doorpath", dpath,
 	    LOG_T_END);
 
+	/*
+	 * Remove any door left attached by a previous instance first, so
+	 * that we open (and chown) the file itself rather than that door.
+	 */
+	(void) fdetach(dpath);
+
 	fd = open(dpath, O_CREAT|O_RDWR, 0644);
 	if (fd == -1) {
 		log_fatal(map_errno(errno), log, "failed to create door file",
+		    LOG_T_STRING, "errmsg", strerror(errno),
+		    LOG_T_UINT32, "errno", errno,
+		    LOG_T_STRING, "doorpath", dpath,
+		    LOG_T_END);
+	}
+
+	/*
+	 * lldpd drops to LLDPD_UID/LLDPD_GID once initialized (see
+	 * lldp_drop_privs()); it must own the file to fdetach() the door
+	 * at shutdown. The owner is recorded when the door is attached, so
+	 * this must happen before fattach().
+	 */
+	if (geteuid() == 0 && fchown(fd, LLDPD_UID, LLDPD_GID) != 0) {
+		log_fatal(map_errno(errno), log, "failed to chown door file",
 		    LOG_T_STRING, "errmsg", strerror(errno),
 		    LOG_T_UINT32, "errno", errno,
 		    LOG_T_STRING, "doorpath", dpath,
@@ -341,7 +441,7 @@ lldp_create_door(const char *path)
 		    LOG_T_END);
 	}
 
-	(void) fdetach(dpath);
+	door_path = xstrdup(dpath);
 
 	if (fattach(door_fd, dpath) < 0) {
 		log_fatal(map_errno(errno), log, "failed to attach door",
@@ -350,6 +450,22 @@ lldp_create_door(const char *path)
 		    LOG_T_STRING, "doorpath", dpath,
 		    LOG_T_END);
 	}
+}
+
+/*
+ * Stop accepting door calls: detach the door from the filesystem and
+ * revoke it. Calls already in progress are allowed to complete.
+ */
+void
+lldp_destroy_door(void)
+{
+	if (door_fd < 0)
+		return;
+
+	if (door_path != NULL)
+		(void) fdetach(door_path);
+	(void) door_revoke(door_fd);
+	door_fd = -1;
 }
 
 static void

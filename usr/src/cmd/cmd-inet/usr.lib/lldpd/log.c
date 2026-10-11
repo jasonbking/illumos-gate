@@ -404,6 +404,62 @@ log_stream_add(log_t *l, const char *name, log_fmt_type_t fmt,
 	return (0);
 }
 
+static const struct {
+	log_level_t	ll_level;
+	const char	*ll_name;
+} log_level_names[] = {
+	{ LOG_L_TRACE,	"trace" },
+	{ LOG_L_DEBUG,	"debug" },
+	{ LOG_L_INFO,	"info" },
+	{ LOG_L_WARN,	"warn" },
+	{ LOG_L_ERROR,	"error" },
+	{ LOG_L_FATAL,	"fatal" },
+};
+
+/* The name of a log level (e.g. "info") */
+const char *
+log_level_str(log_level_t level)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(log_level_names); i++) {
+		if (log_level_names[i].ll_level == level)
+			return (log_level_names[i].ll_name);
+	}
+	return ("unknown");
+}
+
+/* Convert the name of a log level (e.g. "info") to the level */
+bool
+log_level_parse(const char *name, log_level_t *levelp)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(log_level_names); i++) {
+		if (strcmp(log_level_names[i].ll_name, name) == 0) {
+			*levelp = log_level_names[i].ll_level;
+			return (true);
+		}
+	}
+	return (false);
+}
+
+/*
+ * Change the minimum level of messages sent to the named stream.
+ */
+int
+log_stream_set_level(log_t *l, const char *name, log_level_t level)
+{
+	log_stream_t *stream;
+	log_stream_t templ = {
+		.ls_name = (char *)name,
+	};
+
+	mutex_enter(&l->l_lock);
+	stream = uu_list_find(l->l_streams, &templ, NULL, NULL);
+	if (stream != NULL)
+		stream->ls_level = level;
+	mutex_exit(&l->l_lock);
+
+	return ((stream == NULL) ? ENOENT : 0);
+}
+
 int
 log_stream_remove(log_t *l, const char *name)
 {

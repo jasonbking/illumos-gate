@@ -28,6 +28,7 @@
 #include <paths.h>
 #include <pthread.h>
 #include <port.h>
+#include <priv.h>
 #include <priv_utils.h>
 #include <signal.h>
 #include <syslog.h>
@@ -37,6 +38,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/utsname.h>
+#include <sys/sysmacros.h>
 
 #include <libdladm.h>
 #include <libdllink.h>
@@ -58,6 +60,12 @@ int start_pipe_fd = -1;
 
 
 static bool debug;
+
+/* Logging configuration (see lldp_set_log_level()) */
+static log_t *root_log;
+static bool use_syslog;
+static bool log_level_cmdline;	/* -d or -t given */
+static log_level_t cur_log_level;
 static bool quit;
 static int evport = -1;
 static int sigfd = -1;
@@ -68,6 +76,8 @@ static void block_signals(sigset_t *);
 static int sigfd_create(void);
 static void lldp_init(void);
 static void lldp_main(void);
+static void lldp_fini(void);
+static void lldp_drop_privs(void);
 static void lldp_create_agents(void);
 static void lldp_handle_sig(int, void *);
 
@@ -91,7 +101,6 @@ main(int argc, char **argv)
 {
 	int c;
 	log_level_t level = LOG_L_INFO;
-	bool use_syslog = false;
 
 	/*
 	 * For simplicity, memory allocation failures are always treated
@@ -104,12 +113,14 @@ main(int argc, char **argv)
 		case 'd':
 			debug = true;
 			level = LOG_L_DEBUG;
+			log_level_cmdline = true;
 			break;
 		case 's':
 			use_syslog = true;
 			break;
 		case 't':
 			level = LOG_L_TRACE;
+			log_level_cmdline = true;
 			break;
 		case '?':
 			(void) fprintf(stderr, "Unknown option -%c\n", optopt);
@@ -130,6 +141,8 @@ main(int argc, char **argv)
 	log_sysinit();
 
 	(void) log_init("lldpd", &log);
+	root_log = log;
+	cur_log_level = level;
 
 	VERIFY0(log_stream_add(log, "stderr", LFMT_BUNYAN, LOG_L_ERROR,
 	    log_stream_fd, (void *)(uintptr_t)STDERR_FILENO));
@@ -147,8 +160,45 @@ main(int argc, char **argv)
 
 	lldp_init();
 	lldp_main();
+	lldp_fini();
 
 	return (EXIT_SUCCESS);
+}
+
+/*
+ * Set the level of messages logged (to stdout, which is the SMF log file
+ * when run by SMF), from the daemon/log_level SMF property. Called at
+ * startup and on refresh. A level given on the command line (-d, -t) takes
+ * precedence. The syslog stream (-s) also follows the level, but never logs
+ * below LOG_L_INFO; errors are always logged to stderr.
+ */
+void
+lldp_set_log_level(log_level_t level)
+{
+	if (log_level_cmdline) {
+		log_debug(root_log, "log level given on command line; "
+		    "ignoring SMF log_level",
+		    LOG_T_STRING, "log_level", log_level_str(level),
+		    LOG_T_END);
+		return;
+	}
+
+	if (level == cur_log_level)
+		return;
+
+	VERIFY0(log_stream_set_level(root_log, "stdout", level));
+	if (use_syslog) {
+		VERIFY0(log_stream_set_level(root_log, "syslog",
+		    MAX(level, LOG_L_INFO)));
+	}
+
+	/* Logged at the higher of the two levels, so it's always seen */
+	log_lvl(root_log, MAX(level, cur_log_level), "log level changed",
+	    LOG_T_STRING, "old_level", log_level_str(cur_log_level),
+	    LOG_T_STRING, "new_level", log_level_str(level),
+	    LOG_T_END);
+
+	cur_log_level = level;
 }
 
 static void
@@ -192,6 +242,68 @@ lldp_init(void)
 	}
 
 	lldp_create_agents();
+
+	/* Everything that needs privileges has been done */
+	lldp_drop_privs();
+
+	TRACE_RETURN(log);
+}
+
+/*
+ * Privileges
+ *
+ * Everything lldpd needs privileges for happens during initialization:
+ * taking a topo snapshot, opening, binding, and configuring notifications
+ * on each link's DLPI handle (net_rawaccess), and creating the door. After
+ * that, it only uses descriptors it already has open:
+ *
+ *	- sending and receiving on the DLPI handles
+ *	- reading MAC properties (DLDIOC_GETMACPROP on the dladm handle,
+ *	  which, unlike setting them, requires no privileges)
+ *	- answering door calls
+ *	- reading SMF properties (on refresh)
+ *	- logging (to its stdout/stderr, and syslog)
+ *
+ * so no privileges ever need to be re-acquired, and nothing needs
+ * bracketing. Once initialized, lldpd switches to LLDPD_UID/LLDPD_GID and
+ * reduces its privileges to the parts of the basic set it needs:
+ * file_read and file_write (to (re)open the syslog device and the SMF
+ * repository door). The limit set is cleared, so they can't be regained.
+ *
+ * If support for links that appear after startup is added, net_rawaccess
+ * will need to be retained (in the permitted set, but not effective) and
+ * bracketed around dlpi_open() and friends.
+ */
+static void
+lldp_drop_privs(void)
+{
+	TRACE_ENTER(log);
+
+	if (geteuid() == 0) {
+		/* P = E = basic, L cleared, uids/gids set to netadm */
+		if (__init_daemon_priv(PU_RESETGROUPS | PU_CLEARLIMITSET,
+		    LLDPD_UID, LLDPD_GID, NULL) != 0) {
+			log_fatal_syserr(log, "failed to set daemon privileges",
+			    errno);
+		}
+	} else {
+		log_warn(log, "not running as root; not changing uid",
+		    LOG_T_UINT32, "euid", (uint32_t)geteuid(),
+		    LOG_T_END);
+	}
+
+	/*
+	 * Give up the basic privileges we don't use (and, if we weren't
+	 * started as root, any extra ones we were given).
+	 */
+	__fini_daemon_priv(PRIV_PROC_FORK, PRIV_PROC_EXEC, PRIV_PROC_INFO,
+	    PRIV_PROC_SESSION, PRIV_PROC_SECFLAGS, PRIV_FILE_LINK_ANY,
+	    PRIV_NET_ACCESS, PRIV_NET_RAWACCESS, NULL);
+
+	log_info(log, "dropped privileges",
+	    LOG_T_UINT32, "uid", (uint32_t)getuid(),
+	    LOG_T_UINT32, "gid", (uint32_t)getgid(),
+	    LOG_T_END);
 
 	TRACE_RETURN(log);
 }
@@ -247,6 +359,9 @@ lldp_main(void)
 				log_syserr(log, "port_get failed", e);
 				break;
 			}
+
+			/* There's no event to process */
+			continue;
 		}
 
 		switch (pe.portev_source) {
@@ -266,6 +381,41 @@ lldp_main(void)
 	}
 
 	log_info(log, "shutting down", LOG_T_END);
+
+	TRACE_RETURN(log);
+}
+
+/*
+ * Orderly shutdown (after an exit signal): stop answering door calls, then
+ * stop the agents. Each agent's thread sends a shutdown LLDPDU on its link
+ * (if it was advertising) before exiting. All agents are asked to stop
+ * before waiting on any, so they shut down in parallel.
+ */
+static void
+lldp_fini(void)
+{
+	agent_t *a;
+
+	TRACE_ENTER(log);
+
+	lldp_destroy_door();
+
+	/*
+	 * Agent threads never take agent_list_lock, so it's safe to hold it
+	 * while waiting for them to exit.
+	 */
+	mutex_enter(&agent_list_lock);
+	for (a = uu_list_first(agent_list); a != NULL;
+	    a = uu_list_next(agent_list, a)) {
+		agent_stop(a, true);
+	}
+	for (a = uu_list_first(agent_list); a != NULL;
+	    a = uu_list_next(agent_list, a)) {
+		agent_wait(a);
+	}
+	mutex_exit(&agent_list_lock);
+
+	log_info(log, "shutdown complete", LOG_T_END);
 
 	TRACE_RETURN(log);
 }
@@ -324,7 +474,7 @@ dladm_cb(dladm_handle_t dlh, datalink_id_t did, void *arg)
 		return (DLADM_WALK_CONTINUE);
 	}
 
-	a = agent_create(dpa.dp_dev, did);
+	a = agent_create(dpa.dp_dev, link, did);
 	if (a == NULL) {
 		log_warn(log, "failed to create agent; skipping link",
 		    LOG_T_STRING, "agent", dpa.dp_dev,

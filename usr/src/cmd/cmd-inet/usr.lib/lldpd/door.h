@@ -21,6 +21,7 @@ extern "C" {
 #endif
 
 void lldp_create_door(const char *);
+void lldp_destroy_door(void);
 
 #ifdef __cplusplus
 }

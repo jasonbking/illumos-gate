@@ -33,10 +33,13 @@
  * LLDP_DOOR_CMD_NEIGHBORS
  *
  *	Returns the neighbors of every agent (ldrq_link is empty), or of a
- *	single agent (ldrq_link is the agent's hardware link name). Each
- *	record is a lldp_door_nbr_t followed by the neighbor's most recently
- *	received LLDPDU, exactly as received (up to and including the End
- *	TLV), padded so that the next record is 8-byte aligned.
+ *	single agent. Agents are identified by their link's hardware name
+ *	(e.g. 'igb0'), which is what's returned in ldn_link and the cursor;
+ *	ldrq_link may also be the link's datalink name if it has been
+ *	renamed. Each record is a lldp_door_nbr_t followed by the neighbor's
+ *	most recently received LLDPDU, exactly as received (up to and
+ *	including the End TLV), padded so that the next record is 8-byte
+ *	aligned.
  *
  *	A reply holds at most LLDP_DOOR_REPLY_MAX bytes. If there were more
  *	neighbors than fit, LLDP_DOOR_F_MORE is set in ldrp_flags, and the
@@ -50,11 +53,23 @@
  *	added behind the cursor during pagination won't be returned.
  *
  *	Errors: ENOENT (no agent for ldrq_link), EINVAL (malformed request).
+ *
+ * LLDP_DOOR_CMD_STATS
+ *
+ *	Returns the statistics of every agent (ldrq_link is empty), or of a
+ *	single agent (named as for LLDP_DOOR_CMD_NEIGHBORS). Each record is
+ *	a lldp_door_stats_t, ordered by agent name. Pagination works the
+ *	same way as for LLDP_DOOR_CMD_NEIGHBORS, except the cursor only
+ *	holds the name of the last agent returned (ldc_chassis_len and
+ *	ldc_port_len are zero).
+ *
+ *	Errors: ENOENT (no agent for ldrq_link), EINVAL (malformed request).
  */
 
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/sysmacros.h>
+#include <sys/debug.h>
 #include <liblldp.h>
 
 #ifdef __cplusplus
@@ -68,18 +83,24 @@ extern "C" {
 
 #define	LLDP_DOOR_VERSION	1
 
-/* Maximum size of a reply */
-#define	LLDP_DOOR_REPLY_MAX	(32 * 1024)
+/*
+ * Maximum size of a reply. This is large enough for a record with the
+ * largest possible LLDPDU (a received PDU is limited to the link's maximum
+ * SDU, and to 64K by lldpd), so every page holds at least one record.
+ */
+#define	LLDP_DOOR_REPLY_MAX	(128 * 1024)
 
 typedef enum lldp_door_cmd {
 	LLDP_DOOR_CMD_NEIGHBORS = 1,
+	LLDP_DOOR_CMD_STATS = 2,
 } lldp_door_cmd_t;
 
 /*
  * Position within the neighbor list. ldc_link is the agent of the last
  * neighbor returned, and ldc_chassis / ldc_port are the values (subtype
  * + id) of its Chassis ID and Port ID TLVs. An empty ldc_link means
- * 'start at the beginning'.
+ * 'start at the beginning'. For LLDP_DOOR_CMD_STATS, only ldc_link is
+ * used.
  */
 typedef struct lldp_door_cursor {
 	char		ldc_link[MAXLINKNAMELEN];
@@ -120,6 +141,14 @@ typedef struct lldp_door_nbr {
 
 #define	LLDP_DOOR_NBR_RECLEN(pdulen)	\
 	P2ROUNDUP(sizeof (lldp_door_nbr_t) + (pdulen), 8)
+
+typedef struct lldp_door_stats {
+	char			lds_link[MAXLINKNAMELEN];
+	lldp_agent_stats_t	lds_stats;
+} lldp_door_stats_t;
+
+/* Records are fixed size, so this keeps every one 8-byte aligned */
+CTASSERT(sizeof (lldp_door_stats_t) % 8 == 0);
 
 #ifdef __cplusplus
 }

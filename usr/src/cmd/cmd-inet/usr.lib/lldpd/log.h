@@ -18,6 +18,7 @@
 #define	_LOG_H
 
 #include <libdladm.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,6 +63,9 @@ typedef enum log_type {
 	LOG_T_CHASSIS,
 	LOG_T_PORT,
 } log_type_t;
+
+const char *log_level_str(log_level_t);
+bool log_level_parse(const char *, log_level_t *);
 
 void log_sysinit(void);
 void log_sysfini(void);
@@ -113,6 +117,8 @@ void log_stream_syslog(log_level_t, const log_msg_t *, void *);
 
 int log_stream_add(log_t *, const char *, log_fmt_type_t, log_level_t,
     log_stream_f, void *);
+int log_stream_set_level(log_t *, const char *, log_level_t);
+int log_stream_remove(log_t *, const char *);
 
 int log_key_add(log_t *, ...) __sentinel(0);
 int log_key_remove(log_t *, const char *);
