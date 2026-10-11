@@ -75,6 +75,8 @@ static const char *ttr_statestr(ttr_state_t);
 static bool tx_frame(dlpi_handle_t, buf_t *, log_t *);
 static void tx_send(agent_t *, bool);
 static void agent_send_shutdown(agent_t *);
+static void agent_port_update(agent_t *, bool);
+static void agent_port_switch(agent_t *);
 static void rx_process_frame(agent_t *);
 
 static const uint_t	lldp_sap = 0x88cc;
@@ -172,6 +174,11 @@ agent_create(const char *name, const char *linkname, datalink_id_t linkid)
 	}
 
 	agent_update_phy(a);
+
+	/* The port id may need the link's MAC address, so do this last */
+	mutex_enter(&a->a_lock);
+	agent_port_update(a, false);
+	mutex_exit(&a->a_lock);
 
 	ret = thr_create(NULL, 0, agent_thread, a, THR_SUSPENDED, &a->a_tid);
 	if (ret != 0)
@@ -285,6 +292,7 @@ agent_destroy(agent_t *a)
 	rx_fini(&a->a_rx);
 	lldp_clock_fini(&a->a_clk);
 	config_agent_cfg_free(&a->a_cfg);
+	free(a->a_port_desc);
 	free(a->a_name);
 	free(a->a_linkname);
 	if (a->a_neighbors != NULL)
@@ -321,10 +329,10 @@ agent_disable(agent_t *a)
 
 /*
  * Replace the SMF-configurable portion of an agent's configuration with
- * that of cfg. Values derived from the system rather than from SMF (port id,
- * topo information, MTU) are retained. The agent takes ownership of any
- * memory referenced by cfg, so the caller must not use or free it after
- * this returns.
+ * that of cfg. Values derived from the system rather than from SMF (topo
+ * information, MTU) are retained, and the port id is rebuilt. The agent
+ * takes ownership of any memory referenced by cfg, so the caller must not
+ * use or free it after this returns.
  */
 void
 agent_set_cfg(agent_t *a, agent_cfg_t *cfg)
@@ -339,7 +347,6 @@ agent_set_cfg(agent_t *a, agent_cfg_t *cfg)
 	old = *cur;
 
 	/* Carry over the values that don't come from SMF */
-	cfg->ac_port = old.ac_port;
 	cfg->ac_label = old.ac_label;
 	cfg->ac_devname = old.ac_devname;
 	cfg->ac_portnum = old.ac_portnum;
@@ -354,6 +361,9 @@ agent_set_cfg(agent_t *a, agent_cfg_t *cfg)
 	 */
 	if (a->a_ttr.ttr_tx_credit > cur->ac_tx_credit_max)
 		a->a_ttr.ttr_tx_credit = cur->ac_tx_credit_max;
+
+	/* The port id or its source may have changed */
+	agent_port_update(a, true);
 
 	if (old.ac_status != cur->ac_status) {
 		log_info(a->a_log, "agent admin status change",
@@ -498,6 +508,12 @@ agent_thread(void *arg)
 
 			if (a->a_exit)
 				break;
+
+			/*
+			 * Before anything is sent with a new port id, tell
+			 * neighbors to discard what we sent with the old one.
+			 */
+			agent_port_switch(a);
 
 			(void) lldp_clock_advance(&a->a_clk);
 
@@ -1199,6 +1215,199 @@ something_changed_remote(agent_t *a)
 	/* TODO */
 }
 
+static void
+port_set(lldp_port_t *p, lldp_port_type_t type, const void *id, size_t len)
+{
+	(void) memset(p, '\0', sizeof (*p));
+	p->llp_type = type;
+	p->llp_len = MIN(len, sizeof (p->llp_id));
+	(void) memcpy(p->llp_id, id, p->llp_len);
+}
+
+static bool
+port_same(const lldp_port_t *l, const lldp_port_t *r)
+{
+	return (l->llp_type == r->llp_type && l->llp_len == r->llp_len &&
+	    memcmp(l->llp_id, r->llp_id, l->llp_len) == 0);
+}
+
+static void
+desc_add(char *buf, size_t buflen, const char *s)
+{
+	if (s == NULL || *s == '\0')
+		return;
+	if (*buf != '\0')
+		(void) strlcat(buf, ", ", buflen);
+	(void) strlcat(buf, s, buflen);
+}
+
+/*
+ * Build the port id for the agent's configured port id source, falling back
+ * to the datalink name if the source isn't available, and the default port
+ * description: what we know that identifies the port (its datalink name,
+ * topo label, and device description), less what the port id carries.
+ */
+static void
+agent_port_build(agent_t *a, lldp_port_t *port, char **descp)
+{
+	const agent_cfg_t	*cfg = &a->a_cfg;
+	port_id_src_t		src = cfg->ac_port_id_src;
+	const char		*why = NULL;
+	char			desc[LLDP_PORT_DESC_MAX + 1] = "";
+	size_t			len;
+
+	ASSERT(MUTEX_HELD(&a->a_lock));
+
+	switch (src) {
+	case PORT_ID_IFNAME:
+		break;
+	case PORT_ID_HWNAME:
+		port_set(port, LLDP_PORT_IFNAME, a->a_name, strlen(a->a_name));
+		break;
+	case PORT_ID_MACADDR:
+		if (a->a_macaddrlen == 0) {
+			why = "link has no MAC address";
+			break;
+		}
+		port_set(port, LLDP_PORT_MACADDR, a->a_macaddr,
+		    a->a_macaddrlen);
+		break;
+	case PORT_ID_LABEL:
+		if (cfg->ac_label == NULL || *cfg->ac_label == '\0') {
+			why = "port has no topo label";
+			break;
+		}
+		port_set(port, LLDP_PORT_LOCAL, cfg->ac_label,
+		    strlen(cfg->ac_label));
+		break;
+	case PORT_ID_LOCAL:
+		if (cfg->ac_port_id == NULL || *cfg->ac_port_id == '\0') {
+			why = "port_id property is not set";
+			break;
+		}
+		port_set(port, LLDP_PORT_LOCAL, cfg->ac_port_id,
+		    strlen(cfg->ac_port_id));
+		break;
+	}
+
+	if (why != NULL) {
+		log_warn(a->a_log, "port id type unavailable; using the "
+		    "datalink name",
+		    LOG_T_STRING, "port_id_type", config_port_id_src_str(src),
+		    LOG_T_STRING, "reason", why,
+		    LOG_T_END);
+		src = PORT_ID_IFNAME;
+	}
+
+	if (src == PORT_ID_IFNAME) {
+		port_set(port, LLDP_PORT_IFNAME, a->a_linkname,
+		    strlen(a->a_linkname));
+	}
+
+	len = (src == PORT_ID_LOCAL) ? strlen(cfg->ac_port_id) :
+	    (src == PORT_ID_LABEL) ? strlen(cfg->ac_label) : 0;
+	if (len > LLDP_PORT_MAX) {
+		log_warn(a->a_log, "port id is too long; truncating",
+		    LOG_T_UINT32, "len", (uint32_t)len,
+		    LOG_T_UINT32, "max", LLDP_PORT_MAX,
+		    LOG_T_END);
+	}
+
+	/*
+	 * The datalink name is omitted if the port id is the datalink name,
+	 * or the hardware name of a link that hasn't been renamed.
+	 */
+	if (src != PORT_ID_IFNAME && (src != PORT_ID_HWNAME ||
+	    strcmp(a->a_name, a->a_linkname) != 0)) {
+		desc_add(desc, sizeof (desc), a->a_linkname);
+	}
+	if (src != PORT_ID_LABEL)
+		desc_add(desc, sizeof (desc), cfg->ac_label);
+	desc_add(desc, sizeof (desc), cfg->ac_devname);
+
+	*descp = xstrdup(desc);
+}
+
+/*
+ * (Re)build the agent's port id and default port description. If the port
+ * id changes and staged is set (the agent's thread is running), the new id
+ * is staged for the agent's thread to switch to (see agent_port_switch());
+ * otherwise it takes effect immediately. The caller must signal the agent
+ * (e.g. via a local change) for a staged change to be noticed.
+ */
+static void
+agent_port_update(agent_t *a, bool staged)
+{
+	lldp_port_t	port;
+	const lldp_port_t *target;
+	char		*desc;
+	char		oldstr[LLDP_PORT_MAX * 3 + 64];
+	char		newstr[LLDP_PORT_MAX * 3 + 64];
+
+	ASSERT(MUTEX_HELD(&a->a_lock));
+
+	agent_port_build(a, &port, &desc);
+
+	free(a->a_port_desc);
+	a->a_port_desc = desc;
+
+	/* What we're advertising, or are about to */
+	target = a->a_port_change ? &a->a_new_port : &a->a_port;
+	if (port_same(&port, target))
+		return;
+
+	(void) lldp_port_str(&a->a_port, oldstr, sizeof (oldstr));
+	(void) lldp_port_str(&port, newstr, sizeof (newstr));
+
+	if (!staged || a->a_port.llp_len == 0) {
+		a->a_port = port;
+		a->a_port_change = false;
+		log_info(a->a_log, "port id",
+		    LOG_T_STRING, "port_id", newstr,
+		    LOG_T_STRING, "port_id_type",
+		    lldp_port_typestr(port.llp_type),
+		    LOG_T_END);
+		return;
+	}
+
+	if (port_same(&port, &a->a_port)) {
+		/* Changed back before the agent switched */
+		a->a_port_change = false;
+		return;
+	}
+
+	log_info(a->a_log, "port id changing",
+	    LOG_T_STRING, "old_port_id", oldstr,
+	    LOG_T_STRING, "new_port_id", newstr,
+	    LOG_T_STRING, "port_id_type", lldp_port_typestr(port.llp_type),
+	    LOG_T_END);
+
+	a->a_new_port = port;
+	a->a_port_change = true;
+}
+
+/*
+ * Switch to a staged port id. Our neighbors identify the information we
+ * send by our chassis id and port id, so a new port id looks like a new
+ * neighbor; first send a shutdown LLDPDU with the old port id so they
+ * discard the old information now rather than when it ages out.
+ */
+static void
+agent_port_switch(agent_t *a)
+{
+	ASSERT(MUTEX_HELD(&a->a_lock));
+	ASSERT(IS_AGENT_THREAD(a));
+
+	if (!a->a_port_change)
+		return;
+
+	agent_send_shutdown(a);
+
+	a->a_port = a->a_new_port;
+	a->a_port_change = false;
+	a->a_local_changes = true;
+}
+
 static bool
 tx_frame(dlpi_handle_t dlh, buf_t *b, log_t *l)
 {
@@ -1667,6 +1876,27 @@ lldp_dlpi_cb(dlpi_handle_t dlh, dlpi_notifyinfo_t *ni, void *arg)
 		a->a_port_enabled = false;
 		break;
 
+	case DL_NOTE_PHYS_ADDR:
+		if (ni->dni_physaddrlen == 0 ||
+		    ni->dni_physaddrlen > sizeof (a->a_dl_info.di_physaddr))
+			break;
+
+		(void) memcpy(a->a_dl_info.di_physaddr, ni->dni_physaddr,
+		    ni->dni_physaddrlen);
+		a->a_dl_info.di_physaddrlen = ni->dni_physaddrlen;
+
+		/*
+		 * If we couldn't get the factory address, the port id
+		 * (if it's the MAC address) follows the current address.
+		 */
+		if (!a->a_mac_factory) {
+			(void) memcpy(a->a_macaddr, ni->dni_physaddr,
+			    ni->dni_physaddrlen);
+			a->a_macaddrlen = ni->dni_physaddrlen;
+			agent_port_update(a, true);
+		}
+		break;
+
 	case DL_NOTE_SDU_SIZE:
 		log_info(log, "max SDU changed",
 		    LOG_T_STRING, "port", a->a_name,
@@ -1695,6 +1925,28 @@ open_port(agent_t *a)
 	if (ret != DLPI_SUCCESS) {
 		log_dlerr(log, "failed to get link info", ret);
 		goto fail;
+	}
+
+	/*
+	 * Prefer the factory MAC address (e.g. for the port id), since the
+	 * current address can be changed. Not every driver supports
+	 * retrieving it, so fall back to the current address.
+	 */
+	a->a_macaddrlen = sizeof (a->a_macaddr);
+	ret = dlpi_get_physaddr(a->a_dlh, DL_FACT_PHYS_ADDR, a->a_macaddr,
+	    &a->a_macaddrlen);
+	if (ret == DLPI_SUCCESS && a->a_macaddrlen > 0) {
+		a->a_mac_factory = true;
+	} else {
+		log_debug(a->a_log, "factory MAC address not available; "
+		    "using current address",
+		    LOG_T_STRING, "errmsg", dlpi_strerror(ret),
+		    LOG_T_END);
+		a->a_macaddrlen = MIN(a->a_dl_info.di_physaddrlen,
+		    sizeof (a->a_macaddr));
+		(void) memcpy(a->a_macaddr, a->a_dl_info.di_physaddr,
+		    a->a_macaddrlen);
+		a->a_mac_factory = false;
 	}
 
 	ret = dlpi_enabmulti(a->a_dlh, lldp_addr, sizeof (lldp_addr));

@@ -538,7 +538,10 @@ write_chassis_id(buf_t *w)
 static bool
 write_port_id(agent_t *a, buf_t *w)
 {
-	lldp_port_t *port = &a->a_cfg.ac_port;
+	const lldp_port_t *port = &a->a_port;
+
+	VERIFY(MUTEX_HELD(&a->a_lock));
+
 	/* The TLV contains the subtype (1 byte) followed by the id */
 	uint16_t tv = make_tlv(LLDP_TLV_PORT_ID, port->llp_len + 1);
 
@@ -569,10 +572,13 @@ write_portdesc(agent_t *a, buf_t *w)
 {
 	VERIFY(MUTEX_HELD(&a->a_lock));
 
+	const char *desc;
 	size_t desclen;
 	uint16_t tv;
 
-	desclen = (a->a_cfg.ac_desc == NULL) ? 0 : strlen(a->a_cfg.ac_desc);
+	/* If no description is configured, use the one derived for the port */
+	desc = (a->a_cfg.ac_desc != NULL) ? a->a_cfg.ac_desc : a->a_port_desc;
+	desclen = (desc == NULL) ? 0 : strlen(desc);
 	if (desclen > LLDP_PORT_DESC_MAX) {
 		log_warn(a->a_tx.tx_log, "port description is too long; TLV "
 		    "will be truncated",
@@ -584,7 +590,7 @@ write_portdesc(agent_t *a, buf_t *w)
 	tv = make_tlv(LLDP_TLV_PORT_DESC, desclen);
 	if (!buf_put16(w, tv))
 		return (false);
-	if (!buf_putbytes(w, a->a_cfg.ac_desc, desclen))
+	if (!buf_putbytes(w, desc, desclen))
 		return (false);
 
 	return (true);

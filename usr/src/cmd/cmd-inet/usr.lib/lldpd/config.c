@@ -65,7 +65,20 @@
  * Agent properties:
  *
  *	admin_status		astring	disabled | tx | rx | txrx
- *	port_desc		astring	Port description TLV contents
+ *	port_id_type		astring	What the Port ID TLV contains:
+ *					  ifname	datalink name (default)
+ *					  hwname	hardware name
+ *					  macaddr	factory MAC address
+ *					  label		topo label of the port
+ *					  local		the port_id property
+ *	port_id			astring	Port ID for port_id_type 'local' (agent
+ *					property groups only, since a port id
+ *					must be unique within the system)
+ *	port_desc		astring	Port description TLV contents. If not
+ *					set, it's derived from what's known
+ *					about the port (its datalink name, topo
+ *					label, and device description) less
+ *					whatever the port id already contains.
  *	tx_tlvs			astring	(multi-valued) Optional core TLVs to
  *					send: port-desc, sys-name, sys-desc,
  *					sys-cap, mgmt-addr, or none
@@ -120,6 +133,8 @@
 #define	AGENT_PG_TYPE		"agent"
 
 #define	AGENT_PROP_STATUS	"admin_status"
+#define	AGENT_PROP_PORTID_TYPE	"port_id_type"
+#define	AGENT_PROP_PORTID	"port_id"
 #define	AGENT_PROP_PORTDESC	"port_desc"
 #define	AGENT_PROP_TX_TLVS	"tx_tlvs"
 #define	AGENT_PROP_TX_8021_TLVS	"tx_8021_tlvs"
@@ -129,6 +144,7 @@
 #define	AGENT_TLV_NONE		"none"
 
 #define	DEFAULT_ADMIN_STATUS	LLDP_LINK_TXRX
+#define	DEFAULT_PORT_ID_SRC	PORT_ID_IFNAME
 #define	DEFAULT_TX_TLVS		\
 	(LLDP_TX_PORTDESC | LLDP_TX_SYSNAME | LLDP_TX_SYSDESC | LLDP_TX_SYSCAP)
 #define	DEFAULT_TX_8021_TLVS	LLDP_TX_X1_NONE
@@ -176,6 +192,14 @@ static const name_val_t admin_status_names[] = {
 	{ "tx",		LLDP_LINK_TX },
 	{ "rx",		LLDP_LINK_RX },
 	{ "txrx",	LLDP_LINK_TXRX },
+};
+
+static const name_val_t port_id_src_names[] = {
+	{ "ifname",	PORT_ID_IFNAME },
+	{ "hwname",	PORT_ID_HWNAME },
+	{ "macaddr",	PORT_ID_MACADDR },
+	{ "label",	PORT_ID_LABEL },
+	{ "local",	PORT_ID_LOCAL },
 };
 
 static const name_val_t core_tlv_names[] = {
@@ -251,7 +275,7 @@ static void config_agent_defaults(agent_cfg_t *);
 static void config_agent_default_read(void);
 static void config_agent_build(const agent_t *, agent_cfg_t *);
 static void config_agent_apply_pg(log_t *, agent_cfg_t *,
-    const scf_propertygroup_t *);
+    const scf_propertygroup_t *, bool);
 static void config_agent_copy(agent_cfg_t *, const agent_cfg_t *);
 static void config_agent_log(log_t *, const char *, const agent_cfg_t *);
 static const topo_link_t *topo_link_find(const char *);
@@ -835,6 +859,19 @@ name_lookup(const name_val_t *tbl, size_t n, const char *name, uint_t *vp)
 }
 
 /*
+ * The name of a port id source, as used for the port_id_type property.
+ */
+const char *
+config_port_id_src_str(uint_t src)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(port_id_src_names); i++) {
+		if (port_id_src_names[i].nv_val == src)
+			return (port_id_src_names[i].nv_name);
+	}
+	return ("unknown");
+}
+
+/*
  * Retrieve a multi-valued astring property where each value is the name of
  * a flag in tbl, and OR the corresponding flags together. A property
  * with no values (or only the value 'none') yields 0. Unknown values are
@@ -900,6 +937,7 @@ config_agent_defaults(agent_cfg_t *cfg)
 	(void) memset(cfg, '\0', sizeof (*cfg));
 
 	cfg->ac_status = DEFAULT_ADMIN_STATUS;
+	cfg->ac_port_id_src = DEFAULT_PORT_ID_SRC;
 	cfg->ac_tx_tlvs = DEFAULT_TX_TLVS;
 	cfg->ac_tx_8021_tlvs = DEFAULT_TX_8021_TLVS;
 	cfg->ac_tx_8023_tlvs = DEFAULT_TX_8023_TLVS;
@@ -914,10 +952,12 @@ config_agent_defaults(agent_cfg_t *cfg)
 
 /*
  * Replace any values in cfg with those of any properties present in pg.
+ * agent_pg is set if pg is an agent's own property group (rather than the
+ * default property group).
  */
 static void
 config_agent_apply_pg(log_t *l, agent_cfg_t *cfg,
-    const scf_propertygroup_t *pg)
+    const scf_propertygroup_t *pg, bool agent_pg)
 {
 	char	*s;
 	uint_t	v;
@@ -931,6 +971,31 @@ config_agent_apply_pg(log_t *l, agent_cfg_t *cfg,
 			    "invalid admin status; ignoring", s);
 		}
 		free(s);
+	}
+
+	if (pg_get_string(l, pg, AGENT_PROP_PORTID_TYPE, &s)) {
+		if (name_lookup(port_id_src_names,
+		    ARRAY_SIZE(port_id_src_names), s, &v)) {
+			cfg->ac_port_id_src = (port_id_src_t)v;
+		} else {
+			prop_warn(l, pg, AGENT_PROP_PORTID_TYPE,
+			    "invalid port id type (must be ifname, hwname, "
+			    "macaddr, label, or local); ignoring", s);
+		}
+		free(s);
+	}
+
+	if (pg_get_string(l, pg, AGENT_PROP_PORTID, &s)) {
+		if (agent_pg) {
+			free(cfg->ac_port_id);
+			cfg->ac_port_id = s;
+		} else {
+			/* Every agent would have the same port id */
+			prop_warn(l, pg, AGENT_PROP_PORTID,
+			    "port id can only be set for a specific agent; "
+			    "ignoring", s);
+			free(s);
+		}
 	}
 
 	if (pg_get_string(l, pg, AGENT_PROP_PORTDESC, &s)) {
@@ -966,6 +1031,8 @@ config_agent_copy(agent_cfg_t *dst, const agent_cfg_t *src)
 {
 	*dst = *src;
 
+	if (src->ac_port_id != NULL)
+		dst->ac_port_id = xstrdup(src->ac_port_id);
 	if (src->ac_desc != NULL)
 		dst->ac_desc = xstrdup(src->ac_desc);
 	if (src->ac_label != NULL)
@@ -977,10 +1044,12 @@ config_agent_copy(agent_cfg_t *dst, const agent_cfg_t *src)
 void
 config_agent_cfg_free(agent_cfg_t *cfg)
 {
+	free(cfg->ac_port_id);
 	free(cfg->ac_desc);
 	free(cfg->ac_label);
 	free(cfg->ac_devname);
-	cfg->ac_desc = cfg->ac_label = cfg->ac_devname = NULL;
+	cfg->ac_port_id = cfg->ac_desc = cfg->ac_label = cfg->ac_devname =
+	    NULL;
 }
 
 static void
@@ -988,6 +1057,10 @@ config_agent_log(log_t *l, const char *msg, const agent_cfg_t *cfg)
 {
 	log_debug(l, msg,
 	    LOG_T_STRING, "admin_status", lldp_admin_status_str(cfg->ac_status),
+	    LOG_T_STRING, "port_id_type",
+	    config_port_id_src_str(cfg->ac_port_id_src),
+	    LOG_T_STRING, "port_id",
+	    (cfg->ac_port_id != NULL) ? cfg->ac_port_id : "",
 	    LOG_T_STRING, "port_desc",
 	    (cfg->ac_desc != NULL) ? cfg->ac_desc : "",
 	    LOG_T_XINT32, "tx_tlvs", (uint32_t)cfg->ac_tx_tlvs,
@@ -1042,7 +1115,7 @@ config_agent_default_read(void)
 
 	config_agent_defaults(&cfg);
 	if (config_get_pg(log, AGENT_DEFAULT_PG, scf_pg))
-		config_agent_apply_pg(log, &cfg, scf_pg);
+		config_agent_apply_pg(log, &cfg, scf_pg, false);
 
 	config_agent_cfg_free(&default_agent_cfg);
 	default_agent_cfg = cfg;
@@ -1056,7 +1129,7 @@ config_agent_default_read(void)
  * agent configuration, overridden by the contents of a property group of
  * type 'agent' named after the agent's hardware link name (if one exists).
  * Only the SMF-configurable fields of cfg are meaningful; the caller is
- * responsible for any system-derived fields (port id, topo info, etc).
+ * responsible for any system-derived fields (topo info, etc).
  */
 static void
 config_agent_build(const agent_t *a, agent_cfg_t *cfg)
@@ -1095,7 +1168,7 @@ config_agent_build(const agent_t *a, agent_cfg_t *cfg)
 	log_debug(l, "applying agent-specific configuration",
 	    LOG_T_STRING, "pg", a->a_name,
 	    LOG_T_END);
-	config_agent_apply_pg(l, cfg, scf_pg);
+	config_agent_apply_pg(l, cfg, scf_pg, true);
 }
 
 /*

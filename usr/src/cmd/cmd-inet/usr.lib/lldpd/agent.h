@@ -139,9 +139,22 @@ typedef struct agent_phy {
 	uint16_t	ap_mau;		/* Operational dot3MauType */
 } agent_phy_t;
 
+/*
+ * What the Port ID TLV is built from (the port_id_type SMF property), with
+ * the Port ID subtype used for each in parentheses.
+ */
+typedef enum port_id_src {
+	PORT_ID_IFNAME,		/* Datalink name (interface name) */
+	PORT_ID_HWNAME,		/* Hardware name (interface name) */
+	PORT_ID_MACADDR,	/* Factory MAC address (MAC address) */
+	PORT_ID_LABEL,		/* topo label (locally assigned) */
+	PORT_ID_LOCAL,		/* port_id property (locally assigned) */
+} port_id_src_t;
+
 typedef struct agent_cfg {
-	lldp_port_t		ac_port;
 	lldp_admin_status_t	ac_status;
+	port_id_src_t		ac_port_id_src;
+	char			*ac_port_id;	/* For PORT_ID_LOCAL */
 	lldp_tx_core_tlv_t	ac_tx_tlvs;
 	lldp_tx_8021_tlv_t	ac_tx_8021_tlvs;
 	lldp_tx_8023_tlv_t	ac_tx_8023_tlvs;
@@ -193,6 +206,31 @@ typedef struct agent {
 
 	agent_cfg_t		a_cfg;
 	agent_phy_t		a_phy;
+
+	/*
+	 * The link's factory MAC address, or if the driver can't report
+	 * that, its current address (a_mac_factory is false).
+	 */
+	uint8_t			a_macaddr[DLPI_PHYSADDR_MAX];
+	size_t			a_macaddrlen;
+	bool			a_mac_factory;
+
+	/*
+	 * The Port ID we advertise, built from the configuration and the
+	 * system by agent_port_update(). Neighbors identify our information
+	 * by chassis id and port id, so when the port id of a running agent
+	 * changes, the new id is staged in a_new_port; the agent's thread
+	 * then sends a shutdown LLDPDU with the old id (so neighbors discard
+	 * it immediately) before switching to the new one.
+	 *
+	 * a_port_desc is the Port Description used when none is configured
+	 * (port_desc): the identifying information about the port that the
+	 * port id doesn't already carry.
+	 */
+	lldp_port_t		a_port;
+	lldp_port_t		a_new_port;
+	bool			a_port_change;
+	char			*a_port_desc;
 
 	uu_list_t		*a_neighbors;
 

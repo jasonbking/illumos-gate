@@ -47,6 +47,7 @@ bool config_read(void);
 void config_refresh(void);
 void config_agent_init(struct agent *);
 void config_agent_cfg_free(struct agent_cfg *);
+const char *config_port_id_src_str(uint_t);
 
 bool config_get_pg(struct log *, const char *, scf_propertygroup_t *);
 bool config_get_prop(struct log *, const scf_propertygroup_t *, const char *,
