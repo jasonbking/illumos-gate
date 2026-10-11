@@ -995,6 +995,7 @@ file path=usr/lib/help/auths/locale/C/SmfILBStates.html
 file path=usr/lib/help/auths/locale/C/SmfIPsecStates.html
 file path=usr/lib/help/auths/locale/C/SmfIdmapStates.html
 file path=usr/lib/help/auths/locale/C/SmfInetdStates.html
+file path=usr/lib/help/auths/locale/C/SmfLLDPStates.html
 file path=usr/lib/help/auths/locale/C/SmfLocationStates.html
 file path=usr/lib/help/auths/locale/C/SmfMDNSStates.html
 file path=usr/lib/help/auths/locale/C/SmfManageAudit.html

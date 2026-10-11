@@ -30,6 +30,7 @@
 #include <port.h>
 #include <priv_utils.h>
 #include <signal.h>
+#include <syslog.h>
 #include <unistd.h>
 #include <umem.h>
 #include <netinet/in.h>
@@ -77,7 +78,11 @@ static fd_cb_t sig_cb = {
 static void __NORETURN
 usage(void)
 {
-	(void) fprintf(stderr, "Usage: %s [-d]\n", getprogname());
+	(void) fprintf(stderr, "Usage: %s [-dst]\n"
+	    "\t-d\tdebug: don't daemonize, log at debug level\n"
+	    "\t-s\talso log (info and above) to syslog, in RFC 5424 "
+	    "format\n"
+	    "\t-t\tlog at trace level\n", getprogname());
 	exit(EXIT_FAILURE);
 }
 
@@ -86,6 +91,7 @@ main(int argc, char **argv)
 {
 	int c;
 	log_level_t level = LOG_L_INFO;
+	bool use_syslog = false;
 
 	/*
 	 * For simplicity, memory allocation failures are always treated
@@ -93,11 +99,14 @@ main(int argc, char **argv)
 	 */
 	umem_nofail_callback(lldp_umem_nomem_cb);
 
-	while ((c = getopt(argc, argv, "dt")) != -1) {
+	while ((c = getopt(argc, argv, "dst")) != -1) {
 		switch (c) {
 		case 'd':
 			debug = true;
 			level = LOG_L_DEBUG;
+			break;
+		case 's':
+			use_syslog = true;
 			break;
 		case 't':
 			level = LOG_L_TRACE;
@@ -126,6 +135,15 @@ main(int argc, char **argv)
 	    log_stream_fd, (void *)(uintptr_t)STDERR_FILENO));
 	VERIFY0(log_stream_add(log, "stdout", LFMT_BUNYAN, level,
 	    log_stream_fd, (void *)(uintptr_t)STDOUT_FILENO));
+
+	/*
+	 * Any format can go to any destination; e.g. LFMT_BUNYAN to
+	 * log_stream_syslog would send the JSON object to syslog instead.
+	 */
+	if (use_syslog) {
+		VERIFY0(log_stream_add(log, "syslog", LFMT_SYSLOG, LOG_L_INFO,
+		    log_stream_syslog, (void *)(uintptr_t)LOG_DAEMON));
+	}
 
 	lldp_init();
 	lldp_main();

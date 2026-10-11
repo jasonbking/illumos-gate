@@ -10,7 +10,7 @@
 #
 
 #
-# Copyright 2023 Jason King
+# Copyright 2026 Jason King
 #
 
 PROG =		lldpd
@@ -35,6 +35,7 @@ SRCS =		$(OBJS:%.o=%.c)
 LIB_INC=	$(SRC)/lib/liblldp/common
 
 include		$(SRC)/cmd/Makefile.cmd
+include		$(SRC)/cmd/Makefile.cmd.64
 include		$(SRC)/cmd/Makefile.ctf
 include		$(SRC)/cmd/cmd-inet/Makefile.cmd-inet
 

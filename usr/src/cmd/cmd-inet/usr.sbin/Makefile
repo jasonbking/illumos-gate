@@ -64,11 +64,11 @@ SRCS=		$(PROGSRCS) $(OTHERSRC)
 
 SUBDIRS=	ifconfig ilbadm in.rdisc in.routed \
 		in.talkd inetadm inetconv ipadm ipmpstat ipqosconf ipsecutils \
-		nwamadm nwamcfg ping routeadm \
+		lldp nwamadm nwamcfg ping routeadm \
 		snoop sppptun traceroute wificonfig
 
 MSGSUBDIRS=	ifconfig ilbadm in.routed in.talkd \
-		inetadm inetconv ipadm ipmpstat ipqosconf ipsecutils \
+		inetadm inetconv ipadm ipmpstat ipqosconf ipsecutils lldp \
 		nwamadm nwamcfg routeadm sppptun snoop wificonfig
 
 # This controls the degree of compiler warnings emitted, and is named for

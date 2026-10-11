@@ -116,6 +116,7 @@ file path=usr/lib/help/auths/locale/SmfILBStates.html
 file path=usr/lib/help/auths/locale/SmfIPsecStates.html
 file path=usr/lib/help/auths/locale/SmfIdmapStates.html
 file path=usr/lib/help/auths/locale/SmfInetdStates.html
+file path=usr/lib/help/auths/locale/SmfLLDPStates.html
 file path=usr/lib/help/auths/locale/SmfLocationStates.html
 file path=usr/lib/help/auths/locale/SmfMDNSStates.html
 file path=usr/lib/help/auths/locale/SmfManageAudit.html

@@ -75,9 +75,41 @@ typedef enum log_fmt_type {
 	LFMT_BUNYAN =	(1 << 2),
 } log_fmt_type_t;
 
-typedef void (*log_stream_f)(log_level_t, const char *, void *);
+/*
+ * A formatted log message, as passed to a stream's destination function.
+ * Any format can be sent to any destination:
+ *
+ *	lm_msg/lm_len		The complete message, including the trailing
+ *				newline (e.g. a full RFC 5424 line, or a
+ *				bunyan JSON object). Suitable for writing to
+ *				a file or fd.
+ *
+ *	lm_body/lm_bodylen	The message without any framing a transport
+ *				supplies itself: no trailing newline, and for
+ *				LFMT_SYSLOG no RFC 5424 header (priority,
+ *				timestamp, hostname, app name, pid), since
+ *				syslog(3C) adds its own. For LFMT_BUNYAN this
+ *				is the JSON object. Not NUL-terminated at
+ *				lm_bodylen.
+ */
+typedef struct log_msg {
+	log_fmt_type_t	lm_fmt;
+	const char	*lm_msg;
+	size_t		lm_len;
+	const char	*lm_body;
+	size_t		lm_bodylen;
+} log_msg_t;
 
-void log_stream_fd(log_level_t, const char *, void *);
+typedef void (*log_stream_f)(log_level_t, const log_msg_t *, void *);
+
+/* Destinations. log_stream_fd's arg is the fd (cast to a pointer). */
+void log_stream_fd(log_level_t, const log_msg_t *, void *);
+
+/*
+ * log_stream_syslog's arg is the syslog(3C) facility (e.g. LOG_DAEMON, cast
+ * to a pointer), or 0 for LOG_DAEMON.
+ */
+void log_stream_syslog(log_level_t, const log_msg_t *, void *);
 
 int log_stream_add(log_t *, const char *, log_fmt_type_t, log_level_t,
     log_stream_f, void *);

@@ -671,6 +671,12 @@ usr/include/nvfru.h
 usr/include/libvrrpadm.h
 usr/lib/libvrrpadm.so
 usr/lib/amd64/libvrrpadm.so		i386
+#
+# Private liblldp interfaces, only used by lldp(8) and lldpd
+#
+usr/include/liblldp.h
+usr/lib/liblldp.so
+usr/lib/amd64/liblldp.so		i386
 
 #
 # These are only used during the -t tools build

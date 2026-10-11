@@ -123,6 +123,7 @@ HTMLENTS = \
 	SmfVscanStates.html \
 	SmfValueVt.html	\
 	SmfVRRPStates.html \
+	SmfLLDPStates.html \
 	SmfWpaStates.html \
 	NetworkAutoconfRead.html \
 	NetworkAutoconfSelect.html \

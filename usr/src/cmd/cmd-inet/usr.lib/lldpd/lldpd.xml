@@ -53,7 +53,7 @@
 	<exec_method
 		type='method'
 		name='start'
-		exec='/usr/lib/lldpd'
+		exec='/usr/lib/inet/lldpd'
 		timeout_seconds='60'>
 	</exec_method>
 
@@ -66,21 +66,21 @@
 
 	<property_group name='general' type='framework'>
 		<propval name='action_authorization' type='astring'
-		  value='illumos.smf.manage.lldp' />
+		  value='solaris.smf.manage.lldp' />
 		<propval name='value_authorization' type='astring'
-		  value='illumos.smf.manage.lldp' />
+		  value='solaris.smf.manage.lldp' />
 	</property_group>
 
 	<property_group name='daemon' type='application'>
 		<propval name='log_level' type='count' value='30'
 		  override='true'/>
 		<propval name='value_authorization' type='astring'
-		  value='illumos.smf.manage.lldp' />
+		  value='solaris.smf.manage.lldp' />
 	</property_group>
 
 	<property_group name='config' type='application'>
 		<propval name='value_authorization' type='astring'
-		  value='illumos.smf.manage.lldp' />
+		  value='solaris.smf.manage.lldp' />
 	</property_group>
 
 	<!--
@@ -118,7 +118,7 @@
 	-->
 	<property_group name='default' type='application'>
 		<propval name='value_authorization' type='astring'
-		  value='illumos.smf.manage.lldp' />
+		  value='solaris.smf.manage.lldp' />
 	</property_group>
 
 	<stability value='Unstable' />

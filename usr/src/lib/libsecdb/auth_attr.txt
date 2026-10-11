@@ -131,6 +131,7 @@ solaris.smf.manage.ilb:::Manage Integrated Load Balancer Service States::help=Sm
 solaris.smf.manage.inetd:::Manage inetd and inetd managed services States::help=SmfIntedStates.html
 solaris.smf.manage.ipsec:::Manage IPsec Service States::help=SmfIPsecStates.html
 solaris.smf.manage.labels:::Manage label server::help=LabelServer.html
+solaris.smf.manage.lldp:::Manage LLDP Service States::help=SmfLLDPStates.html
 solaris.smf.manage.location:::Manage Network Location Service States::help=SmfLocationStates.html
 solaris.smf.manage.mdns:::Manage Multicast DNS Service States::help=SmfMDNSStates.html
 solaris.smf.manage.name-service-cache:::Manage Name Service Cache Daemon Service States::help=SmfNscdStates.html

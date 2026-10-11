@@ -1,0 +1,37 @@
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+#
+
+#
+# Copyright 2026 Jason King
+#
+
+set name=pkg.fmri value=pkg:/system/network/lldp@$(PKGVERS)
+set name=pkg.summary value="Link Layer Discovery Protocol"
+set name=pkg.description \
+    value="Link Layer Discovery Protocol (IEEE 802.1AB) daemon, administration command, and library"
+set name=info.classification \
+    value="org.opensolaris.category.2008:System/Administration and Configuration"
+set name=variant.arch value=$(ARCH)
+dir  path=lib
+dir  path=lib/svc
+dir  path=lib/svc/manifest group=sys
+dir  path=lib/svc/manifest/network group=sys
+file path=lib/svc/manifest/network/lldpd.xml group=sys mode=0444
+dir  path=usr group=sys
+dir  path=usr/lib
+dir  path=usr/lib/$(ARCH64)
+file path=usr/lib/$(ARCH64)/liblldp.so.1
+dir  path=usr/lib/inet
+file path=usr/lib/inet/lldpd mode=0555
+file path=usr/lib/liblldp.so.1
+dir  path=usr/sbin
+file path=usr/sbin/lldp mode=0555
+license lic_CDDL license=lic_CDDL
