@@ -205,12 +205,35 @@ ack_restarter_event(rst_req_t *req, int ret)
 }
 
 /*
- * Start running svc on its schedule.
- * TODO: compute the next run with svc_next_run() and arm a timer.
+ * Start running svc on its schedule. resume is true when svc was already
+ * online (svc.startd or we restarted, or it was refreshed), so its existing
+ * schedule continues. Otherwise svc has just come online, and its first run
+ * follows its persistent and recover settings (see svc_first_run()).
+ * TODO: arm a timer for the next run.
  */
 static void
-svc_schedule(periodic_svc_t *svc __unused)
+svc_schedule(periodic_svc_t *svc, bool resume)
 {
+	int64_t now = (int64_t)time(NULL);
+
+	switch (svc->ps_type) {
+	case PST_PERIODIC: {
+		periodic_data_t *p = svc->ps_u.psu_periodic;
+
+		if (p == NULL) {
+			return;
+		}
+		if (!resume || p->ps_next_run == 0) {
+			p->ps_next_run = svc_first_run(svc, now);
+		}
+		break;
+	}
+	case PST_SCHEDULED:
+		/* TODO: the first run of each schedule */
+		break;
+	}
+
+	(void) save_run_times(svc);
 }
 
 /*
@@ -248,6 +271,31 @@ update_state(periodic_svc_t *svc, restarter_instance_state_t new_state,
 
 	/* As inetd does, our view of the state changes regardless */
 	svc->ps_state = new_state;
+
+	/*
+	 * restarter_set_states() overwrites restarter/auxiliary_state with
+	 * the reason for the transition, so if svc is (still) online, set
+	 * it back to running or scheduled.
+	 */
+	if (ret == 0 && svc_is_online(svc)) {
+		(void) set_aux_state(svc,
+		    svc->ps_running ? PA_RUNNING : PA_SCHEDULED);
+	}
+}
+
+/*
+ * Note that svc's method has started (running is true) or finished, and
+ * update its auxiliary state to match if it is online.
+ */
+void
+svc_set_running(periodic_svc_t *svc, bool running)
+{
+	svc->ps_running = running;
+
+	if (svc_is_online(svc)) {
+		(void) set_aux_state(svc,
+		    running ? PA_RUNNING : PA_SCHEDULED);
+	}
 }
 
 /*
@@ -294,20 +342,24 @@ svc_refresh(periodic_svc_t *svc)
 	if (svc_is_online(svc)) {
 		/* Pick up any change to the schedule */
 		svc_unschedule(svc);
-		svc_schedule(svc);
+		svc_schedule(svc, true);
 	}
 }
 
 /*
  * Create a periodic_svc_t for an instance we haven't seen before, starting
- * from the state svc.startd reports for it.
+ * from the state recorded in its restarter property group. As with
+ * svc.startd (restarter_insert_inst()), this is how we pick up where we
+ * left off if we're restarted. The restarter property group isn't
+ * persistent, so after a reboot every instance starts uninitialized.
  */
 static periodic_svc_t *
-svc_create(const char *fmri, restarter_event_t *event)
+svc_create(const char *fmri)
 {
 	periodic_svc_t			*svc;
-	restarter_instance_state_t	cur, next;
+	restarter_instance_state_t	state, next;
 	size_t				len = strlen(fmri) + 1;
+	int				ret;
 
 	svc = umem_zalloc(sizeof (*svc), UMEM_NOFAIL);
 	svc->ps_fmri = umem_alloc(len, UMEM_NOFAIL);
@@ -315,10 +367,43 @@ svc_create(const char *fmri, restarter_event_t *event)
 	VERIFY0(mutex_init(&svc->ps_lock, USYNC_THREAD | LOCK_ERRORCHECK,
 	    NULL));
 
-	svc->ps_state = RESTARTER_STATE_UNINIT;
-	if (restarter_event_get_current_states(event, &cur, &next) == 0 &&
-	    cur != RESTARTER_STATE_NONE) {
-		svc->ps_state = cur;
+	if (!get_restarter_state(svc, &state, &next) ||
+	    state == RESTARTER_STATE_NONE) {
+		/*
+		 * We can't tell; start from uninitialized and let
+		 * svc.startd's enable or disable event take it from there.
+		 */
+		state = RESTARTER_STATE_UNINIT;
+		next = RESTARTER_STATE_NONE;
+	}
+	svc->ps_state = state;
+
+	if (svc_is_online(svc)) {
+		periodic_aux_t aux;
+
+		/*
+		 * If its method was running when we stopped, that run was
+		 * interrupted. TODO: once methods run in contracts, adopt or
+		 * clean up the contract here, as svc.startd and inetd do.
+		 */
+		if (get_aux_state(svc, &aux) && aux == PA_RUNNING) {
+			logmsg(_("%s: method was running when %s stopped"),
+			    svc->ps_fmri, my_fmri);
+		}
+	}
+
+	if (next != RESTARTER_STATE_NONE) {
+		/*
+		 * A transition was in progress when we last stopped. As
+		 * svc.startd does, we don't try to finish it; just clear
+		 * next_state.
+		 */
+		ret = restarter_set_states(evt_hdl, svc->ps_fmri, state, state,
+		    next, RESTARTER_STATE_NONE, RERR_NONE, restarter_str_none);
+		if (ret != 0) {
+			logmsg(_("%s: failed to clear next state: %s"),
+			    svc->ps_fmri, strerror(ret));
+		}
 	}
 
 	periodic_svc_add(svc);
@@ -376,7 +461,9 @@ handle_restarter_event(periodic_svc_t *svc, restarter_event_type_t type)
 		 */
 		update_state(svc, svc->ps_state, RERR_NONE, restarter_str_none);
 		if (svc_is_online(svc)) {
-			svc_schedule(svc);
+			/* It may already be scheduled (svc.startd restarted) */
+			svc_unschedule(svc);
+			svc_schedule(svc, true);
 		}
 		return;
 
@@ -389,9 +476,11 @@ handle_restarter_event(periodic_svc_t *svc, restarter_event_type_t type)
 		return;
 
 	case RESTARTER_EVENT_TYPE_ADMIN_RESTART:
+	case RESTARTER_EVENT_TYPE_ADMIN_RESTORE:
 		/*
 		 * Take it offline; svc.startd will send a start event to
-		 * bring it back online.
+		 * bring it back online. As with svc.startd, restoring a
+		 * degraded instance restarts it.
 		 */
 		if (svc_is_online(svc)) {
 			svc_unschedule(svc);
@@ -413,7 +502,7 @@ handle_restarter_event(periodic_svc_t *svc, restarter_event_type_t type)
 			    RESTARTER_EVENT_TYPE_INVALID_DEPENDENCY) {
 				reason = restarter_str_invalid_dependency;
 			} else {
-				reason = restarter_str_administrative_request;
+				reason = admin_request_reason(svc);
 			}
 
 			svc_unschedule(svc);
@@ -448,7 +537,7 @@ handle_restarter_event(periodic_svc_t *svc, restarter_event_type_t type)
 		case RESTARTER_EVENT_TYPE_START:
 			update_state(svc, RESTARTER_STATE_ONLINE, RERR_NONE,
 			    restarter_str_dependencies_satisfied);
-			svc_schedule(svc);
+			svc_schedule(svc, false);
 			break;
 		case RESTARTER_EVENT_TYPE_DISABLE:
 		case RESTARTER_EVENT_TYPE_ADMIN_DISABLE:
@@ -481,15 +570,7 @@ handle_restarter_event(periodic_svc_t *svc, restarter_event_type_t type)
 		case RESTARTER_EVENT_TYPE_ADMIN_DEGRADE_IMMEDIATE:
 			if (svc->ps_state == RESTARTER_STATE_ONLINE) {
 				update_state(svc, RESTARTER_STATE_DEGRADED,
-				    RERR_NONE,
-				    restarter_str_administrative_request);
-			}
-			break;
-		case RESTARTER_EVENT_TYPE_ADMIN_RESTORE:
-			if (svc->ps_state == RESTARTER_STATE_DEGRADED) {
-				update_state(svc, RESTARTER_STATE_ONLINE,
-				    RERR_NONE,
-				    restarter_str_administrative_request);
+				    RERR_NONE, admin_request_reason(svc));
 			}
 			break;
 		default:
@@ -542,7 +623,7 @@ process_restarter_event(rst_req_t *req)
 			ack_restarter_event(req, 0);
 			return;
 		}
-		svc = svc_create(fmri, event);
+		svc = svc_create(fmri);
 	}
 	umem_free(fmri, max_fmri_len);
 

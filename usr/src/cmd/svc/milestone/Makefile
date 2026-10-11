@@ -83,7 +83,8 @@ SYSTEMMANIFESTS = $(SYSTEMSVCS:%=$(ROOTSVCSYSTEM)/%)
 
 SYSTEMSVCSVCS= \
 	restarter.xml \
-	global.xml
+	global.xml \
+	periodic.xml
 
 SYSTEMSVCMANIFESTS= $(SYSTEMSVCSVCS:%=$(ROOTSVCSYSTEM)/svc/%)
 

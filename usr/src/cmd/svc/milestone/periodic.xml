@@ -42,20 +42,48 @@
 	<single_instance/>
 
 	<!--
-		For now, just dummy entries until the code is written
+	    Services we run may have method executables and method contexts
+	    (users, groups, projects) that need local filesystems and name
+	    services.
 	-->
+	<dependency
+		name='filesystem'
+		grouping='require_all'
+		restart_on='error'
+		type='service'>
+		<service_fmri value='svc:/system/filesystem/local' />
+	</dependency>
 
+	<dependency
+		name='milestones'
+		grouping='require_all'
+		restart_on='none'
+		type='service'>
+		<service_fmri value='svc:/milestone/name-services' />
+	</dependency>
+
+	<dependent
+		name='periodic_multi-user'
+		grouping='optional_all'
+		restart_on='none'>
+		<service_fmri value='svc:/milestone/multi-user' />
+	</dependent>
+
+	<!--
+	    svc.periodicd forks, and the parent exits once the child has
+	    registered with svc.startd as a delegated restarter.
+	-->
 	<exec_method
 		type='method'
 		name='start'
-		exec=':true'
-		timeout_seconds='0' />
+		exec='/lib/svc/bin/svc.periodicd'
+		timeout_seconds='60' />
 
 	<exec_method
 		type='method'
 		name='stop'
-		exec=':true'
-		timeout_seconds='0' />
+		exec=':kill'
+		timeout_seconds='60' />
 
 	<stability value='Unstable' />
 
@@ -66,7 +94,7 @@ periodic and scheduled task restarter
 			</loctext>
 		</common_name>
 		<documentation>
-			<manpage title='svc.restartd' section='8'
+			<manpage title='svc.periodicd' section='8'
 			    manpath='/usr/share/man' />
 			<manpage title='smf_method' section='7'
 			    manpath='/usr/share/man' />
@@ -128,7 +156,7 @@ Time the start method was last run.
 		    required='false'>
 			<description>
 				<loctext xml:lang='C'>
-The periodic method defines the constraints svc.restartd uses to schedule service execution.
+The periodic method defines the constraints svc.periodicd uses to schedule service execution.
 				</loctext>
 			</description>
 			<prop_pattern name='delay' type='time'
@@ -214,7 +242,7 @@ downtime. Requires the persistent attribute to be set true to have any effect.
 		    required='false'>
 			<description>
 				<loctext xml:lang='C'>
-The scheduled method defines the constraints svc.restartd uses to schedule service execution.
+The scheduled method defines the constraints svc.periodicd uses to schedule service execution.
 				</loctext>
 			</description>
 			<prop_pattern name='interval' type='astring'
@@ -256,13 +284,6 @@ Weeks
 						<description>
 							<loctext xml:lang='C'>
 Days
-							</loctext>
-						</description>
-					</value>
-					<value name='day_of_month'>
-						<description>
-							<loctext xml:lang='C'>
-Day of the month (1 - 31 or -31 - -1)
 							</loctext>
 						</description>
 					</value>
@@ -336,13 +357,14 @@ The year to run the service
 				</common_name>
 				<description>
 					<loctext xml:lang='C'>
-The ISO 8601 week date year [1, 53]. Negative values [-53, -1] count backwards
-from the end of the year.
+The ISO 8601 week number of the year [1, 53]. Negative values [-53, -1] count
+backwards from the end of the year.
 					</loctext>
 				</description>
 				<cardinality min='1' max='1'/>
 				<constraints>
-					<range min='-53' max='53'/>
+					<range min='1' max='53'/>
+					<range min='-53' max='-1'/>
 				</constraints>
 			</prop_pattern>
 			<prop_pattern name='month' type='astring'
@@ -354,38 +376,16 @@ from the end of the year.
 				</common_name>
 				<description>
 					<loctext xml:lang='C'>
-The month of the year.
+The month of the year, either as its name (e.g. January) or three letter
+abbreviation (e.g. Jan) in any case, or as a number in [1, 12] (1 is January)
+or [-12, -1]. Negative numbers count backwards from the end of the year.
 					</loctext>
 				</description>
 				<cardinality min='1' max='1'/>
-				<constraints>
-					<value name='January'/>
-					<value name='February'/>
-					<value name='March'/>
-					<value name='April'/>
-					<value name='May'/>
-					<value name='June'/>
-					<value name='July'/>
-					<value name='August'/>
-					<value name='September'/>
-					<value name='October'/>
-					<value name='November'/>
-					<value name='December'/>
-					<value name='Jan'/>
-					<value name='Feb'/>
-					<value name='Mar'/>
-					<value name='Apr'/>
-					<!-- May already listed -->
-					<value name='Jun'/>
-					<value name='Jul'/>
-					<value name='Aug'/>
-					<value name='Sep'/>
-					<value name='Oct'/>
-					<value name='Nov'/>
-					<value name='Dec'/>
-					<range min='-12' max='-1'/>
-					<range min='1' max='12'/>
-				</constraints>
+				<!--
+				    No constraints: the value may be a name in any
+				    case or a number, which svc.periodicd validates.
+				-->
 			</prop_pattern>
 			<prop_pattern name='day_of_month' type='integer'
 			    required='false'>
@@ -397,7 +397,7 @@ Day of the month
 				<description>
 					<loctext xml:lang='C'>
 The day of the month [1, 31] or [-31, -1]. A negative number counts backwards
-from the last day of the month.
+from the last day of the month. May not be used with day.
 					</loctext>
 				</description>
 				<cardinality min='1' max='1'/>
@@ -433,30 +433,17 @@ Day of Week
 				</common_name>
 				<description>
 					<loctext xml:lang='C'>
-The day of the week either as a C locality name or 3 letter abbreviation or
-a number in the range [1, 7] or [-7, -1]. Negative values start from the
-end of the week.
+The day of the week, either as its name (e.g. Tuesday) or three letter
+abbreviation (e.g. Tue) in any case, or as a number in [1, 7] (1 is Sunday)
+or [-7, -1]. Negative numbers count backwards from the end of the week. May
+not be used with day_of_month.
 					</loctext>
 				</description>
 				<cardinality min='1' max='1'/>
-				<constraints>
-					<value name='Monday'/>
-					<value name='Tuesday'/>
-					<value name='Wednesday'/>
-					<value name='Thursday'/>
-					<value name='Friday'/>
-					<value name='Saturday'/>
-					<value name='Sunday'/>
-					<value name='Mon'/>
-					<value name='Tue'/>
-					<value name='Wed'/>
-					<value name='Thu'/>
-					<value name='Fri'/>
-					<value name='Sat'/>
-					<value name='Sun'/>
-					<range min='1' max='7'/>
-					<range min='-7' max='-1'/>
-				</constraints>
+				<!--
+				    No constraints: the value may be a name in any
+				    case or a number, which svc.periodicd validates.
+				-->
 			</prop_pattern>
 			<prop_pattern name='hour' type='integer'
 				required='false'>
@@ -513,7 +500,7 @@ missed due to system downtime.
 		    required='true'>
 			<description>
 				<loctext xml:lang='C'>
-The start method defines how svc.restartd should start the instance.
+The start method defines how svc.periodicd should start the instance.
 				</loctext>
 			</description>
 			<prop_pattern name='exec' type='astring'

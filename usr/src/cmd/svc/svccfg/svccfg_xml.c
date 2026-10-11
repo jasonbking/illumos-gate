@@ -503,7 +503,7 @@ new_opt_count_prop_from_attr(pgroup_t *pgrp, const char *pname, xmlNodePtr n,
 		val = strtoull((char *)str, &endptr, 10);
 		if (errno != 0 || endptr == (char *)str || endptr[0] != '\0')
 			uu_die(gettext("illegal value \"%s\" for %s (%s)\n"),
-			    (char *)str, (errno != 0) ? strerror(errno) :
+			    (char *)str, attr, (errno != 0) ? strerror(errno) :
 			    gettext("Illegal character"));
 	}
 
@@ -537,7 +537,7 @@ new_opt_int_prop_from_attr(pgroup_t *pgrp, const char *pname, xmlNodePtr n,
 		val = strtoll((char *)str, &endptr, 10);
 		if (errno != 0 || endptr == (char *)str || endptr[0] != '\0')
 			uu_die(gettext("illegal value \"%s\" for %s (%s)\n"),
-			    (char *)str, (errno != 0) ? strerror(errno) :
+			    (char *)str, attr, (errno != 0) ? strerror(errno) :
 			    gettext("Illegal character"));
 	}
 
@@ -1746,14 +1746,30 @@ out:
 	return (r);
 }
 
+/*
+ * Create the start method property group for a periodic_method or
+ * scheduled_method (named by elem, for messages). An entity can only have
+ * one start method, so this fails if it already has one, whether from an
+ * exec_method named start, or from another periodic_method or
+ * scheduled_method.
+ */
 static int
-lxml_create_start_method(entity_t *e, pgroup_t **pgp)
+lxml_create_start_method(entity_t *e, const char *elem, pgroup_t **pgp)
 {
 	pgroup_t *pg;
 	property_t *p;
 	int r = 0;
 
 	*pgp = NULL;
+
+	if (internal_pgroup_find(e, "start", NULL) != NULL) {
+		semerr(gettext("%s: %s conflicts with an existing start "
+		    "method; a service or instance may have only one of an "
+		    "exec_method named start, a periodic_method, or a "
+		    "scheduled_method\n"), e->sc_fmri, elem);
+		return (-1);
+	}
+
 	pg = internal_pgroup_find_or_create(e, "start",
 	    (char *)SCF_GROUP_METHOD);
 
@@ -1785,7 +1801,8 @@ lxml_get_periodic_method(entity_t *entity, xmlNodePtr pmeth)
 	pg = internal_pgroup_find_or_create(entity, "periodic",
 	    (char *)SCF_GROUP_PERIODIC);
 
-	if (lxml_create_start_method(entity, &start_pg) != 0)
+	if (lxml_create_start_method(entity, "periodic_method",
+	    &start_pg) != 0)
 		return (-1);
 
 	if (new_str_prop_from_attr(pg, SCF_PROPERTY_PERIOD, SCF_TYPE_TIME,
@@ -1889,10 +1906,18 @@ lxml_get_scheduled_method(entity_t *entity, xmlNodePtr smeth)
 	if (entity->sc_op == SVCCFG_OP_APPLY)
 		lxml_validate_element(smeth);
 
+	/* day and day_of_month are mutually exclusive */
+	if (xmlHasProp(smeth, (xmlChar *)day_attr) != NULL &&
+	    xmlHasProp(smeth, (xmlChar *)day_of_month_attr) != NULL) {
+		uu_die(gettext("scheduled method may not have both %s and %s "
+		    "attributes\n"), day_attr, day_of_month_attr);
+	}
+
 	pg = internal_pgroup_find_or_create(entity, "schedule",
 	    (char *)SCF_GROUP_SCHEDULE);
 
-	if (lxml_create_start_method(entity, &start_pg) != 0)
+	if (lxml_create_start_method(entity, "scheduled_method",
+	    &start_pg) != 0)
 		return (-1);
 
 	if (new_str_prop_from_attr(pg, SCF_PROPERTY_INTERVAL, SCF_TYPE_ASTRING,
@@ -3652,10 +3677,12 @@ lxml_get_instance(entity_t *service, xmlNodePtr inst, bundle_type_t bt,
 				return (-1);
 			break;
 		case SC_PERIODIC_METHOD:
-			(void) lxml_get_periodic_method(i, cursor);
+			if (lxml_get_periodic_method(i, cursor) != 0)
+				return (-1);
 			break;
 		case SC_SCHEDULED_METHOD:
-			(void) lxml_get_scheduled_method(i, cursor);
+			if (lxml_get_scheduled_method(i, cursor) != 0)
+				return (-1);
 			break;
 		default:
 			uu_die(gettext(
@@ -3919,10 +3946,12 @@ lxml_get_service(bundle_t *bundle, xmlNodePtr svc, svccfg_op_t op)
 			(void) lxml_get_single_instance(s, cursor);
 			break;
 		case SC_PERIODIC_METHOD:
-			(void) lxml_get_periodic_method(s, cursor);
+			if (lxml_get_periodic_method(s, cursor) != 0)
+				return (-1);
 			break;
 		case SC_SCHEDULED_METHOD:
-			(void) lxml_get_scheduled_method(s, cursor);
+			if (lxml_get_scheduled_method(s, cursor) != 0)
+				return (-1);
 			break;
 		default:
 			uu_die(gettext(

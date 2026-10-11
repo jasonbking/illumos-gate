@@ -56,12 +56,17 @@ typedef enum scheduled_ival {
 	SI_MONTH,
 	SI_WEEK,
 	SI_DAY,
-	SI_DAY_OF_MONTH,
 	SI_HOUR,
 	SI_MINUTE,
 } scheduled_ival_t;
 
-#define	SCHED_IVAL_NONE	INT64_MAX
+/*
+ * 'Not set' values for the optional calendar fields of a schedule (year,
+ * week_of_year, month, day_of_month, weekday_of_month, day, hour, and
+ * minute). None of them can legitimately take these values.
+ */
+#define	SCHED_IVAL_NONE	INT64_MAX	/* int64_t fields */
+#define	SCHED_UVAL_NONE	UINT64_MAX	/* uint64_t fields (year) */
 
 typedef struct scheduled_data {
 	struct scheduled_data	*ss_next;
@@ -81,6 +86,17 @@ typedef struct scheduled_data {
 	int64_t			ss_last_run;
 	int64_t			ss_next_run;
 } scheduled_data_t;
+
+/*
+ * The auxiliary state (restarter/auxiliary_state) of an online or degraded
+ * instance: running while its method runs, otherwise scheduled. PA_NONE
+ * means neither (e.g. the instance isn't online).
+ */
+typedef enum periodic_aux {
+	PA_NONE,
+	PA_SCHEDULED,
+	PA_RUNNING,
+} periodic_aux_t;
 
 typedef enum periodic_svctype {
 	PST_PERIODIC,
@@ -111,12 +127,20 @@ void periodic_svc_rele(periodic_svc_t *);
 bool init_scf(void);
 void fini_scf(void);
 bool get_service(periodic_svc_t *);
+bool get_restarter_state(periodic_svc_t *, restarter_instance_state_t *,
+    restarter_instance_state_t *);
+restarter_str_t admin_request_reason(periodic_svc_t *);
+bool save_run_times(periodic_svc_t *);
+bool get_aux_state(periodic_svc_t *, periodic_aux_t *);
+bool set_aux_state(periodic_svc_t *, periodic_aux_t);
+void svc_set_running(periodic_svc_t *, bool);
 void free_service(periodic_svc_t *);
 
 void logmsg(const char *, ...) __PRINTFLIKE(1);
 void panic(const char *, ...) __PRINTFLIKE(1) __NORETURN;
 
 int64_t svc_next_run(const periodic_svc_t *);
+int64_t svc_first_run(const periodic_svc_t *, int64_t);
 
 #ifdef __cplusplus
 }

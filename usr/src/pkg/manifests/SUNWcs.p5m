@@ -310,6 +310,7 @@ file path=lib/svc/bin/rootisramdisk group=sys mode=0555
 file path=lib/svc/bin/sqlite group=sys mode=0555
 file path=lib/svc/bin/svc.configd group=sys mode=0555
 file path=lib/svc/bin/svc.ipfd group=sys mode=0555
+file path=lib/svc/bin/svc.periodicd group=sys mode=0555
 file path=lib/svc/bin/svc.startd group=sys mode=0555
 dir  path=lib/svc/capture
 dir  path=lib/svc/manifest group=sys
@@ -403,6 +404,7 @@ file path=lib/svc/manifest/system/sac.xml group=sys mode=0444
 dir  path=lib/svc/manifest/system/security group=sys
 dir  path=lib/svc/manifest/system/svc group=sys
 file path=lib/svc/manifest/system/svc/global.xml group=sys mode=0444
+file path=lib/svc/manifest/system/svc/periodic.xml group=sys mode=0444
 file path=lib/svc/manifest/system/svc/restarter.xml group=sys mode=0444
 file path=lib/svc/manifest/system/system-log.xml group=sys mode=0444
 file path=lib/svc/manifest/system/utmp.xml group=sys mode=0444

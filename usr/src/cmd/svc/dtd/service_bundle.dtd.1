@@ -599,6 +599,51 @@
 
     A service or instance may not have both a scheduled_method and a
     periodic_method.
+
+    Its attributes are
+
+	interval The unit of time between executions: year, month, week,
+		day, hour, or minute.
+
+	frequency [count] How many intervals between executions
+		(default 1).
+
+	timezone The timezone used to determine when to run (default the
+		system's timezone).
+
+	year	[count] The year in which to run.
+
+	week_of_year [integer] The ISO 8601 week number [1, 53], or
+		[-53, -1] counting back from the end of the year.
+
+	month	The month: its name or three letter abbreviation (in any
+		case), or a number in [1, 12] or [-12, -1].
+
+	weekday_of_month [integer] Which occurrence of day within the
+		month [1, 5], or [-5, -1] counting back from the end of the
+		month.
+
+	day	The day of the week: its name or three letter abbreviation
+		(in any case), or a number in [1, 7] (1 is Sunday) or
+		[-7, -1]. May not be used with day_of_month.
+
+	day_of_month [integer] The day of the month [1, 31], or [-31, -1]
+		counting back from the end of the month. May not be used
+		with day.
+
+	hour	[integer] The hour [0, 23], or [-24, -1].
+
+	minute	[integer] The minute [0, 59], or [-60, -1].
+
+	recover	If true, run once after startup if a scheduled run was
+		missed while the system was down.
+
+	exec	The string identifying the action to take. This is a
+		string suitable to pass to exec(2).
+
+	timeout_seconds [integer] Duration, in seconds, to wait for the
+		method to complete. A '0' or '-1' denotes an infinite
+		timeout.
 -->
 
 <!ELEMENT scheduled_method
@@ -623,23 +668,37 @@
 <!--
   periodic_method
 
-    This element describes a method that is executed periodicially.
+    This element describes a method that is executed periodically. It
+    creates a property group of type 'periodic' named 'periodic' holding
+    the scheduling attributes, and the 'start' method property group
+    holding exec, timeout_seconds, and any method_context.
 
     Its attributes are
 
-	period
-	delay
-	jitter
-	exec	The string identifying the actino to take. This is a string
-		suite to pass to exec(2).
+	period	[time] The time, in seconds, between executions.
+
+	delay	[time] The time, in seconds, after the service comes online
+		before it is first executed (default 0).
+
+	jitter	[time] The maximum random time, in seconds, added to period
+		to vary when it is executed (default 0).
+
+	exec	The string identifying the action to take. This is a
+		string suitable to pass to exec(2).
 
 	timeout_seconds [integer] Duration, in seconds, to wait for this
 		method to complete.  A '0' or '-1' denotes an infinite
 		timeout.
 
-	persistent
-	recover
-	delete	If in the repository, the property group for this method
+	persistent If true, the time of the last execution is kept across
+		reboots, so the period continues from it. If false, the
+		period restarts after a reboot.
+
+	recover	If true, and persistent is true, run immediately after
+		startup if one or more executions were missed while the
+		system was down.
+
+	delete	If in the repository, the property groups for this method
 		should be removed.
 -->
 
