@@ -21,7 +21,7 @@ OBJS = \
 
 SRCS = $(OBJS:%.o=%.c)
 
-POFILE = $(OBJS:%.o=%.po)
+POFILES = $(OBJS:%.o=%.po)
 
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/cmd/Makefile.cmd.64
@@ -41,6 +41,7 @@ CFLAGS += $(CCVERBOSE)
 	$(POST_PROCESS_O)
 
 LDLIBS += \
+	  -lavl \
 	  -lcontract \
 	  -lnvpair \
 	  -lrestart \

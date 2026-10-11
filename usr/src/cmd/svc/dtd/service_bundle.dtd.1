@@ -586,6 +586,19 @@
 
 <!--
   scheduled_method
+
+    This element describes a method that is executed on a calendar
+    schedule. It creates a property group of type 'schedule' named
+    'schedule' holding the scheduling attributes, and the 'start' method
+    property group holding exec, timeout_seconds, and any method_context.
+
+    A service or instance may have at most one scheduled_method. To run the
+    method on additional schedules, add property_group elements of type
+    'schedule', each with its own name, containing the same properties as
+    the scheduling attributes below.
+
+    A service or instance may not have both a scheduled_method and a
+    periodic_method.
 -->
 
 <!ELEMENT scheduled_method
@@ -603,7 +616,9 @@
 	day_of_month	CDATA #IMPLIED
 	hour		CDATA #IMPLIED
 	minute		CDATA #IMPLIED
-	recover		( true | false ) "false" >
+	recover		( true | false ) "false"
+	exec		CDATA #REQUIRED
+	timeout_seconds	CDATA #REQUIRED >
 
 <!--
   periodic_method
@@ -1088,7 +1103,7 @@
 
 <!ELEMENT instance
 	( restarter?, dependency*, dependent*, method_context?,
-          exec_method*, periodic_method*, scheduled_method*,
+          exec_method*, periodic_method?, scheduled_method?,
           notification_parameters*, property_group*, template? ) >
 
 <!ATTLIST instance
@@ -1119,7 +1134,7 @@
 <!ELEMENT service
 	( create_default_instance?, single_instance?, restarter?,
 	dependency*, dependent*, method_context?, exec_method*,
-        periodic_method*, scheduled_method*, notification_parameters*,
+        periodic_method?, scheduled_method?, notification_parameters*,
         property_group*, instance*, stability?, template? ) >
 
 <!ATTLIST service

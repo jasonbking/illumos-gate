@@ -30,7 +30,7 @@
 	file.
 -->
 
-<service_bundle type='manifest' name='peroidic'>
+<service_bundle type='manifest' name='periodic'>
 
 <service
 	name='system/svc/periodic'
@@ -120,6 +120,7 @@ Time the start method was last run.
 				</description>
 				<visibility value='readonly'/>
 				<cardinality min='1' max='1'/>
+			</prop_pattern>
 			<!-- TODO XXX add more -->
 		</pg_pattern>
 
@@ -204,13 +205,18 @@ downtime. Requires the persistent attribute to be set true to have any effect.
 			</prop_pattern>
 		</pg_pattern>
 
-		<pg_pattern name='scheduled' type='scheduled' target='delegate'
+		<!--
+			No name, so this applies to every property group of
+			type schedule: the one created by scheduled_method, and
+			any additional schedules defined as property groups.
+		-->
+		<pg_pattern type='schedule' target='delegate'
 		    required='false'>
 			<description>
 				<loctext xml:lang='C'>
 The scheduled method defines the constraints svc.restartd uses to schedule service execution.
 				</loctext>
-			</decription>
+			</description>
 			<prop_pattern name='interval' type='astring'
 			    required='true'>
 				<common_name>
@@ -222,7 +228,7 @@ Interval between executions
 					<loctext xml:lang='C'>
 The units of the execution frequency from the frequency property.
 					</loctext>
-				</decription>
+				</description>
 				<cardinality min='1' max='1'/>
 				<constraints>
 					<value name='year'>
@@ -353,8 +359,6 @@ The month of the year.
 				</description>
 				<cardinality min='1' max='1'/>
 				<constraints>
-					<range min='-12' max='-1'/>
-					<range min='1' max='12'/>
 					<value name='January'/>
 					<value name='February'/>
 					<value name='March'/>
@@ -379,6 +383,8 @@ The month of the year.
 					<value name='Oct'/>
 					<value name='Nov'/>
 					<value name='Dec'/>
+					<range min='-12' max='-1'/>
+					<range min='1' max='12'/>
 				</constraints>
 			</prop_pattern>
 			<prop_pattern name='day_of_month' type='integer'
@@ -416,7 +422,7 @@ The week of the month [1-5] or [-5 - -1].
 				<constraints>
 					<range min='1' max='5'/>
 					<range min='-5' max='-1'/>
-				</contraints>
+				</constraints>
 			</prop_pattern>
 			<prop_pattern name='day' type='astring'
 			    required='false'>
@@ -434,8 +440,6 @@ end of the week.
 				</description>
 				<cardinality min='1' max='1'/>
 				<constraints>
-					<range min='1' max='7'/>
-					<range min='-7' max='-1'/>
 					<value name='Monday'/>
 					<value name='Tuesday'/>
 					<value name='Wednesday'/>
@@ -450,6 +454,8 @@ end of the week.
 					<value name='Fri'/>
 					<value name='Sat'/>
 					<value name='Sun'/>
+					<range min='1' max='7'/>
+					<range min='-7' max='-1'/>
 				</constraints>
 			</prop_pattern>
 			<prop_pattern name='hour' type='integer'
@@ -479,7 +485,8 @@ Minute
 				<description>
 					<loctext xml:lang='C'>
 The minute expressed as an integer in [0, 59] or [-60, -1].
-					</description>
+					</loctext>
+				</description>
 				<cardinality min='1' max='1'/>
 				<constraints>
 					<range min='-60' max='59'/>
@@ -489,7 +496,7 @@ The minute expressed as an integer in [0, 59] or [-60, -1].
 			    required='false'>
 				<common_name>
 					<loctext xml:lang='C'>
-Recover execution>
+Recover execution
 					</loctext>
 				</common_name>
 				<description>

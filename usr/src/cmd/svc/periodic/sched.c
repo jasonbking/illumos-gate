@@ -19,20 +19,33 @@
 
 #include "periodic.h"
 
-static int64_t periodic_next_run(const periodic_data_t *, int64_t);
-static int64_t scheduled_next_run(const scheduled_data_t *, int64_t);
+static int64_t periodic_next_run(const periodic_data_t *);
+static int64_t scheduled_next_run(const scheduled_data_t *);
 
 int64_t
 svc_next_run(const periodic_svc_t *svc)
 {
+	const scheduled_data_t	*s;
+	int64_t			next = INT64_MAX;
+
 	switch (svc->ps_type) {
 	case PST_PERIODIC:
-		return (periodic_next_run(&svc->ps_u.psu_periodic,
-		    svc->ps_exec.pe_last_run));
+		VERIFY3P(svc->ps_u.psu_periodic, !=, NULL);
+		return (periodic_next_run(svc->ps_u.psu_periodic));
 	case PST_SCHEDULED:
-		return (scheduled_next_run(&svc->ps_u.psu_scheduled,
-		    svc->ps_exec.pe_last_run));
-		break;
+		/*
+		 * A scheduled service may have multiple schedules; it
+		 * next runs at the earliest of them.
+		 */
+		VERIFY3P(svc->ps_u.psu_scheduled, !=, NULL);
+		for (s = svc->ps_u.psu_scheduled; s != NULL; s = s->ss_next) {
+			int64_t t = scheduled_next_run(s);
+
+			if (t < next) {
+				next = t;
+			}
+		}
+		return (next);
 	default:
 		/* We should never have an unknown service type */
 		panic("Invalid service type %d", svc->ps_type);
@@ -42,8 +55,9 @@ svc_next_run(const periodic_svc_t *svc)
 }
 
 static int64_t
-periodic_next_run(const periodic_data_t *p, int64_t last_run)
+periodic_next_run(const periodic_data_t *p)
 {
+	int64_t last_run = p->ps_last_run;
 	int64_t jitter = 0;
 
 	if (p->ps_jitter > 0) {
@@ -61,7 +75,7 @@ periodic_next_run(const periodic_data_t *p, int64_t last_run)
 }
 
 static int64_t
-scheduled_next_run(const scheduled_data_t *s, int64_t last_run)
+scheduled_next_run(const scheduled_data_t *s)
 {
 	/*
 	 * The minimum frequency is 1 and should be validated when we

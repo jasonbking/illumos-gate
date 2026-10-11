@@ -236,8 +236,8 @@ static const char *lxml_prop_types[] = {
 	"",				/* SC_NOTIFICATION_PARAMETERS */
 	"opaque",			/* SC_OPAQUE */
 	"",				/* SC_PARAMETER */
-	"",				/* SC_PERIODIC_METHOD */
 	"",				/* SC_PARAMVAL */
+	"",				/* SC_PERIODIC_METHOD */
 	"",				/* SC_PG_PATTERN */
 	"",				/* SC_PROP_PATTERN */
 	"",				/* SC_PROPERTY */
@@ -1190,7 +1190,7 @@ lxml_get_exec_method(entity_t *entity, xmlNodePtr emeth)
 		r = internal_attach_property(pg, p);
 		xmlFree(timeout);
 	}
-	if (r !=0)
+	if (r != 0)
 		return (-1);
 
 	/*
@@ -1775,7 +1775,7 @@ lxml_get_periodic_method(entity_t *entity, xmlNodePtr pmeth)
 {
 	pgroup_t *pg;
 	pgroup_t *start_pg;
-	xmlChar *timeout;
+	xmlChar *timeout, *delete;
 	xmlNodePtr cursor;
 	int r = 0;
 
@@ -1864,6 +1864,16 @@ lxml_get_periodic_method(entity_t *entity, xmlNodePtr pmeth)
 		}
 	}
 
+
+	/*
+	 * delete applies to everything this method created: the periodic
+	 * property group and the start method property group.
+	 */
+	delete = xmlGetProp(pmeth, (xmlChar *)delete_attr);
+	pg->sc_pgroup_delete = (xmlStrcmp(delete, (xmlChar *)true) == 0);
+	start_pg->sc_pgroup_delete = pg->sc_pgroup_delete;
+	xmlFree(delete);
+
 	return (0);
 }
 
@@ -1879,7 +1889,7 @@ lxml_get_scheduled_method(entity_t *entity, xmlNodePtr smeth)
 	if (entity->sc_op == SVCCFG_OP_APPLY)
 		lxml_validate_element(smeth);
 
-	pg = internal_pgroup_find_or_create(entity, "scheduled",
+	pg = internal_pgroup_find_or_create(entity, "schedule",
 	    (char *)SCF_GROUP_SCHEDULE);
 
 	if (lxml_create_start_method(entity, &start_pg) != 0)
@@ -1981,7 +1991,7 @@ lxml_get_scheduled_method(entity_t *entity, xmlNodePtr smeth)
 
 		default:
 			uu_die(gettext("illegal element \"%s\" on "
-			    "periodic method\n"), cursor->name);
+			    "scheduled method\n"), cursor->name);
 			break;
 		}
 	}

@@ -16,9 +16,11 @@
 #ifndef _SVC_PERIODIC_H
 #define	_SVC_PERIODIC_H
 
+#include <sys/avl.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <libintl.h>
+#include <librestart.h>
 #include <synch.h>
 
 #ifdef __cplusplus
@@ -35,8 +37,6 @@ typedef struct periodic_exec {
 	int64_t			pe_timeout_secs;
 	struct method_context	*pe_method_ctx;
 
-	int64_t			pe_last_run;
-	int64_t			pe_next_run;
 	bool			pe_recover;
 } periodic_exec_t;
 
@@ -46,6 +46,9 @@ typedef struct periodic_data {
 	uint64_t	ps_period;
 	uint32_t	ps_jitter;
 	bool		ps_persistent;
+
+	int64_t		ps_last_run;
+	int64_t		ps_next_run;
 } periodic_data_t;
 
 typedef enum scheduled_ival {
@@ -61,6 +64,7 @@ typedef enum scheduled_ival {
 #define	SCHED_IVAL_NONE	INT64_MAX
 
 typedef struct scheduled_data {
+	struct scheduled_data	*ss_next;
 	char			*ss_name;
 	scheduled_ival_t	ss_interval;
 	uint64_t		ss_frequency;
@@ -84,14 +88,16 @@ typedef enum periodic_svctype {
 } periodic_svctype_t;
 
 typedef struct periodic_svc {
+	avl_node_t		ps_avl;		/* protected by svcs_lock */
 	mutex_t			ps_lock;
 	char			*ps_fmri;
 	periodic_exec_t		ps_exec;
 	bool			ps_running;
+	restarter_instance_state_t ps_state;	/* current SMF state */
 	periodic_svctype_t	ps_type;
 	union {
-		periodic_data_t		psu_periodic;
-		scheduled_data_t	psu_scheduled;
+		periodic_data_t		*psu_periodic;
+		scheduled_data_t	*psu_scheduled;
 	} ps_u;
 } periodic_svc_t;
 
@@ -104,8 +110,10 @@ void periodic_svc_rele(periodic_svc_t *);
 
 bool init_scf(void);
 void fini_scf(void);
+bool get_service(periodic_svc_t *);
+void free_service(periodic_svc_t *);
 
-void log(const char *, ...) __PRINTFLIKE(1);
+void logmsg(const char *, ...) __PRINTFLIKE(1);
 void panic(const char *, ...) __PRINTFLIKE(1) __NORETURN;
 
 int64_t svc_next_run(const periodic_svc_t *);
