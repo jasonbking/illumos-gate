@@ -13,7 +13,6 @@
  * Copyright 2026 Jason King
  */
 
-#include <sys/avl.h>
 #include <sys/ccompile.h>
 #include <sys/debug.h>
 #include <sys/types.h>
@@ -54,8 +53,8 @@ static bool associate_fd(int);
 static int event_handler(restarter_event_t *);
 static char *event_get_instance(restarter_event_t *);
 static void process_restarter_event(struct rst_req *);
-static void svcs_init(void);
-static int svc_cmp(const void *, const void *);
+static bool svcs_init(void);
+static int svc_cmp(const void *, const void *, void *);
 
 static bool do_refresh;
 static bool do_exit;
@@ -95,7 +94,8 @@ restarter_event_handle_t *evt_hdl;
 size_t max_fmri_len;
 
 /* All the periodic_svc_t's we manage, sorted by FMRI */
-static avl_tree_t svcs;
+static uu_avl_pool_t *svcs_pool;
+static uu_avl_t *svcs;
 static mutex_t svcs_lock = ERRORCHECKMUTEX;
 
 int
@@ -669,7 +669,11 @@ init(int fd)
 	max_fmri_len = scf_limit(SCF_LIMIT_MAX_FMRI_LENGTH) + 1;
 
 	/* This must be ready before we start receiving restarter events */
-	svcs_init();
+	if (!svcs_init()) {
+		init_done(fd, EXIT_FAILURE,
+		    _("Error: failed to create service tree: %s"),
+		    uu_strerror(uu_error()));
+	}
 
 	if (!init_scf()) {
 		init_done(fd, EXIT_FAILURE, NULL);
@@ -897,7 +901,7 @@ handle_signals(void)
 }
 
 static int
-svc_cmp(const void *a, const void *b)
+svc_cmp(const void *a, const void *b, void *arg __unused)
 {
 	const periodic_svc_t	*l = a;
 	const periodic_svc_t	*r = b;
@@ -913,11 +917,31 @@ svc_cmp(const void *a, const void *b)
 	return (0);
 }
 
-static void
+#ifdef DEBUG
+#define	SVCS_POOL_FLAGS	UU_AVL_POOL_DEBUG
+#define	SVCS_FLAGS	UU_AVL_DEBUG
+#else
+#define	SVCS_POOL_FLAGS	UU_DEFAULT
+#define	SVCS_FLAGS	UU_DEFAULT
+#endif
+
+static bool
 svcs_init(void)
 {
-	avl_create(&svcs, svc_cmp, sizeof (periodic_svc_t),
-	    offsetof(periodic_svc_t, ps_avl));
+	svcs_pool = uu_avl_pool_create("periodic_svcs", sizeof (periodic_svc_t),
+	    offsetof(periodic_svc_t, ps_avl), svc_cmp, SVCS_POOL_FLAGS);
+	if (svcs_pool == NULL) {
+		return (false);
+	}
+
+	svcs = uu_avl_create(svcs_pool, NULL, SVCS_FLAGS);
+	if (svcs == NULL) {
+		uu_avl_pool_destroy(svcs_pool);
+		svcs_pool = NULL;
+		return (false);
+	}
+
+	return (true);
 }
 
 /*
@@ -932,7 +956,7 @@ periodic_svc_get(const char *fmri)
 	key.ps_fmri = (char *)fmri;
 
 	VERIFY0(mutex_lock(&svcs_lock));
-	svc = avl_find(&svcs, &key, NULL);
+	svc = uu_avl_find(svcs, &key, NULL, NULL);
 	VERIFY0(mutex_unlock(&svcs_lock));
 
 	return (svc);
@@ -940,15 +964,20 @@ periodic_svc_get(const char *fmri)
 
 /*
  * Add a service. It is a programming error to add a service whose FMRI is
- * already in the tree; avl_add() will abort if that happens.
+ * already in the tree.
  */
 void
 periodic_svc_add(periodic_svc_t *svc)
 {
+	uu_avl_index_t idx;
+
 	VERIFY3P(svc->ps_fmri, !=, NULL);
 
+	uu_avl_node_init(svc, &svc->ps_avl, svcs_pool);
+
 	VERIFY0(mutex_lock(&svcs_lock));
-	avl_add(&svcs, svc);
+	VERIFY3P(uu_avl_find(svcs, svc, NULL, &idx), ==, NULL);
+	uu_avl_insert(svcs, svc, idx);
 	VERIFY0(mutex_unlock(&svcs_lock));
 }
 
@@ -959,8 +988,10 @@ void
 periodic_svc_del(periodic_svc_t *svc)
 {
 	VERIFY0(mutex_lock(&svcs_lock));
-	avl_remove(&svcs, svc);
+	uu_avl_remove(svcs, svc);
 	VERIFY0(mutex_unlock(&svcs_lock));
+
+	uu_avl_node_fini(svc, &svc->ps_avl, svcs_pool);
 }
 
 static char *

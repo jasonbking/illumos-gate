@@ -41,7 +41,6 @@ CFLAGS += $(CCVERBOSE)
 	$(POST_PROCESS_O)
 
 LDLIBS += \
-	  -lavl \
 	  -lcontract \
 	  -lnvpair \
 	  -lrestart \

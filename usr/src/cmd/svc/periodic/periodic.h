@@ -16,11 +16,11 @@
 #ifndef _SVC_PERIODIC_H
 #define	_SVC_PERIODIC_H
 
-#include <sys/avl.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <libintl.h>
 #include <librestart.h>
+#include <libuutil.h>
 #include <synch.h>
 
 #ifdef __cplusplus
@@ -104,7 +104,7 @@ typedef enum periodic_svctype {
 } periodic_svctype_t;
 
 typedef struct periodic_svc {
-	avl_node_t		ps_avl;		/* protected by svcs_lock */
+	uu_avl_node_t		ps_avl;		/* protected by svcs_lock */
 	mutex_t			ps_lock;
 	char			*ps_fmri;
 	periodic_exec_t		ps_exec;
