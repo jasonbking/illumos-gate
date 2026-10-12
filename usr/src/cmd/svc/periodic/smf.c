@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <librestart.h>
 #include <libscf.h>
+#include <libscf_priv.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -52,6 +53,7 @@
 #define	PG_PERIODIC_RESTARTER	"periodic_restarter"
 #define	PROP_LAST_RUN		"last_run"
 #define	PROP_NEXT_RUN		"next_run"
+#define	PROP_BOOT_TIME		"boot_time"
 
 /* Values of restarter/auxiliary_state while an instance is online */
 #define	AUX_RUNNING		"running"
@@ -70,14 +72,8 @@
  */
 #define	LOAD_SCF_TRIES		3
 
-#define	IVAL_YEAR		"year"
-#define	IVAL_MONTH		"month"
-#define	IVAL_WEEK		"week"
-#define	IVAL_DAY		"day"
-#define	IVAL_HOUR		"hour"
-#define	IVAL_MINUTE		"minute"
-/* Longer than the longest interval (minute) */
-#define	MAX_IVAL_LEN		(sizeof (IVAL_MINUTE) + 1)
+/* Longer than the longest interval name in sched_units[] ("minute") */
+#define	MAX_IVAL_LEN		16
 
 struct names {
 	const char *full;
@@ -109,44 +105,56 @@ static struct names days[] = {
 	{ "Saturday", "Sat" },
 };
 
+/*
+ * Parse an SCF value into the field at vp, setting *validp to whether the
+ * value is acceptable.
+ */
+typedef scf_error_t parse_fn_t(scf_value_t *, void *, bool *);
+
 struct proptbl {
-	const char 	*pt_name;
+	const char	*pt_name;
 	size_t		pt_offset;
-	scf_error_t	(*pt_parse)(scf_value_t *, void *, bool *);
+	parse_fn_t	*pt_parse;
 	bool		pt_required;
 };
 
-static scf_error_t parse_ival(scf_value_t *, void *, bool *);
-static scf_error_t parse_str(scf_value_t *, void *, bool *);
-static scf_error_t parse_count(scf_value_t *, void *, bool *);
-static scf_error_t parse_int(scf_value_t *, void *, bool *);
-static scf_error_t parse_bool(scf_value_t *, void *, bool *);
-static scf_error_t parse_week_of_year(scf_value_t *, void *, bool *);
-static scf_error_t parse_month(scf_value_t *, void *, bool *);
-static scf_error_t parse_day_of_month(scf_value_t *, void *, bool *);
-static scf_error_t parse_weekday_of_month(scf_value_t *, void *, bool *);
-static scf_error_t parse_day(scf_value_t *, void *, bool *);
-static scf_error_t parse_hour(scf_value_t *, void *, bool *);
-static scf_error_t parse_minute(scf_value_t *, void *, bool *);
-static scf_error_t parse_time(scf_value_t *, void *, bool *);
-static scf_error_t parse_jitter(scf_value_t *, void *, bool *);
+static parse_fn_t parse_ival;
+static parse_fn_t parse_year;
+static parse_fn_t parse_str;
+static parse_fn_t parse_count;
+static parse_fn_t parse_int;
+static parse_fn_t parse_bool;
+static parse_fn_t parse_week_of_year;
+static parse_fn_t parse_month;
+static parse_fn_t parse_day_of_month;
+static parse_fn_t parse_weekday_of_month;
+static parse_fn_t parse_day;
+static parse_fn_t parse_hour;
+static parse_fn_t parse_minute;
+static parse_fn_t parse_time;
+static parse_fn_t parse_jitter;
 
 static struct proptbl sched_tbl[] = {
     { "interval", offsetof(scheduled_data_t, ss_interval), parse_ival, true },
     { "frequency", offsetof(scheduled_data_t, ss_frequency), parse_count,
 	false },
     { "timezone", offsetof(scheduled_data_t, ss_timezone), parse_str, false },
-    { "year", offsetof(scheduled_data_t, ss_year), parse_count, false },
-    { "week_of_year", offsetof(scheduled_data_t, ss_week_of_year),
-	parse_week_of_year, false },
-    { "month", offsetof(scheduled_data_t, ss_month), parse_month, false },
-    { "day_of_month", offsetof(scheduled_data_t, ss_day_of_month),
-	parse_day_of_month, false },
-    { "weekday_of_month", offsetof(scheduled_data_t, ss_weekday_of_month),
-	parse_weekday_of_month, false },
-    { "day", offsetof(scheduled_data_t, ss_day), parse_day, false },
-    { "hour", offsetof(scheduled_data_t, ss_hour), parse_hour, false },
-    { "minute", offsetof(scheduled_data_t, ss_minute), parse_minute, false },
+    { "recover", offsetof(scheduled_data_t, ss_recover), parse_bool, false },
+};
+
+/*
+ * The parser for each calendar field of a schedule. Their names and where
+ * they're stored come from sched_fields[].
+ */
+static parse_fn_t *const sched_field_parse[SF_NUM] = {
+	[SF_YEAR] =	parse_year,
+	[SF_MONTH] =	parse_month,
+	[SF_WEEK] =	parse_week_of_year,
+	[SF_MDAY] =	parse_day_of_month,
+	[SF_WDAY] =	parse_day,
+	[SF_WOM] =	parse_weekday_of_month,
+	[SF_HOUR] =	parse_hour,
+	[SF_MINUTE] =	parse_minute,
 };
 
 static struct proptbl periodic_tbl[] = {
@@ -346,24 +354,15 @@ fini_scf(void)
 }
 
 static bool
-ival_str_to_val(const char *str, scheduled_ival_t *ivp)
+ival_str_to_val(const char *str, sched_unit_t *ivp)
 {
-	if (strcmp(str, IVAL_YEAR) == 0) {
-		*ivp = SI_YEAR;
-	} else if (strcmp(str, IVAL_MONTH) == 0) {
-		*ivp = SI_MONTH;
-	} else if (strcmp(str, IVAL_WEEK) == 0) {
-		*ivp = SI_WEEK;
-	} else if (strcmp(str, IVAL_DAY) == 0) {
-		*ivp = SI_DAY;
-	} else if (strcmp(str, IVAL_HOUR) == 0) {
-		*ivp = SI_HOUR;
-	} else if (strcmp(str, IVAL_MINUTE) == 0) {
-		*ivp = SI_MINUTE;
-	} else {
-		return (false);
+	for (uint_t u = 0; u < SU_NUM; u++) {
+		if (strcmp(str, sched_units[u].su_name) == 0) {
+			*ivp = u;
+			return (true);
+		}
 	}
-	return (true);
+	return (false);
 }
 
 static scf_error_t
@@ -402,6 +401,28 @@ parse_count(scf_value_t *v, void *vp, bool *validp)
 	}
 
 	*validp = true;
+	return (SCF_ERROR_NONE);
+}
+
+/*
+ * year is stored as a count, but kept as an int64_t like the other calendar
+ * fields. Any year beyond SCHED_YEAR_MAX is invalid (see
+ * get_scheduled_data()), so all such values become SCHED_YEAR_MAX + 1 rather
+ * than risk not fitting.
+ */
+static scf_error_t
+parse_year(scf_value_t *v, void *vp, bool *validp)
+{
+	uint64_t	year;
+	scf_error_t	e;
+
+	e = parse_count(v, &year, validp);
+	if (e != SCF_ERROR_NONE || !*validp) {
+		return (e);
+	}
+
+	*(int64_t *)vp = (year > SCHED_YEAR_MAX) ? SCHED_YEAR_MAX + 1 :
+	    (int64_t)year;
 	return (SCF_ERROR_NONE);
 }
 
@@ -825,26 +846,110 @@ static void
 sched_init(scheduled_data_t *s)
 {
 	s->ss_frequency = 1;
-	s->ss_year = SCHED_UVAL_NONE;
-	s->ss_week_of_year = SCHED_IVAL_NONE;
-	s->ss_month = SCHED_IVAL_NONE;
-	s->ss_day_of_month = SCHED_IVAL_NONE;
-	s->ss_weekday_of_month = SCHED_IVAL_NONE;
-	s->ss_day = SCHED_IVAL_NONE;
-	s->ss_hour = SCHED_IVAL_NONE;
-	s->ss_minute = SCHED_IVAL_NONE;
+	s->ss_offset = -1;
+	for (uint_t f = 0; f < SF_NUM; f++) {
+		*sched_field(s, f) = SCHED_IVAL_NONE;
+	}
+}
+
+/*
+ * With a frequency greater than 1, a schedule must be anchored: every level
+ * from year down to its interval must be set. E.g. every 2 days needs year,
+ * month (or week_of_year), and day (or day_of_month); every 2 weeks needs
+ * year and month (or week_of_year). Levels smaller than the interval are
+ * optional. Log every missing level, and return false if any are.
+ */
+static bool
+sched_check_levels(const scheduled_data_t *s)
+{
+	uint_t		set = sched_fields_set(s);
+	sched_level_t	ilevel = sched_units[s->ss_interval].su_level;
+	/* Big enough for every level's names, plus separators */
+	char		missing[128] = { 0 };
+
+	for (uint_t l = SL_YEAR; l <= ilevel; l++) {
+		bool	lset = false;
+		bool	first = true;
+
+		for (uint_t f = 0; f < SF_NUM; f++) {
+			if (sched_fields[f].sf_level == l &&
+			    !sched_fields[f].sf_qualifier &&
+			    (set & SF_BIT(f)) != 0) {
+				lset = true;
+			}
+		}
+		if (lset) {
+			continue;
+		}
+
+		/* List the level's fields; property names aren't translated */
+		if (missing[0] != '\0') {
+			(void) strlcat(missing, ", ", sizeof (missing));
+		}
+		for (uint_t f = 0; f < SF_NUM; f++) {
+			if (sched_fields[f].sf_level != l ||
+			    sched_fields[f].sf_qualifier) {
+				continue;
+			}
+			if (!first) {
+				(void) strlcat(missing, " or ",
+				    sizeof (missing));
+			}
+			VERIFY3U(strlcat(missing, sched_fields[f].sf_name,
+			    sizeof (missing)), <, sizeof (missing));
+			first = false;
+		}
+	}
+
+	if (missing[0] == '\0') {
+		return (true);
+	}
+
+	logmsg(_("%s: a frequency greater than 1 with an interval of %s "
+	    "also requires: %s"), fmri, sched_units[s->ss_interval].su_name,
+	    missing);
+	return (false);
 }
 
 bool
 get_scheduled_data(const scf_propertygroup_t *pg, scheduled_data_t *s)
 {
-	if (!get_values(pg, sched_tbl, ARRAY_SIZE(sched_tbl), s)) {
+	struct proptbl	cal_tbl[SF_NUM];
+	bool		ret = true;
+
+	for (uint_t f = 0; f < SF_NUM; f++) {
+		cal_tbl[f].pt_name = sched_fields[f].sf_name;
+		cal_tbl[f].pt_offset = sched_fields[f].sf_offset;
+		cal_tbl[f].pt_parse = sched_field_parse[f];
+		cal_tbl[f].pt_required = false;
+	}
+
+	if (!get_values(pg, sched_tbl, ARRAY_SIZE(sched_tbl), s) ||
+	    !get_values(pg, cal_tbl, ARRAY_SIZE(cal_tbl), s)) {
 		return (false);
 	}
 
-	if (s->ss_frequency == 0) {
-		logmsg(_("%s: frequency must be at least 1"), fmri);
-		return (false);
+	/* Try to note all errors instead of just the first one encountered */
+
+	if (s->ss_frequency == 0 || s->ss_frequency > SCHED_FREQUENCY_MAX) {
+		logmsg(_("%s: frequency must be between 1 and %d"), fmri,
+		    SCHED_FREQUENCY_MAX);
+		ret = false;
+	}
+
+	if (s->ss_year != SCHED_IVAL_NONE &&
+	    (s->ss_year < SCHED_YEAR_MIN || s->ss_year > SCHED_YEAR_MAX)) {
+		logmsg(_("%s: year must be between %d and %d"), fmri,
+		    SCHED_YEAR_MIN, SCHED_YEAR_MAX);
+		ret = false;
+	}
+
+	/* week_of_year and month are mutually exclusive */
+	if (s->ss_week_of_year != SCHED_IVAL_NONE &&
+	    s->ss_month != SCHED_IVAL_NONE) {
+		logmsg(_("%s: month and week_of_year cannot both be set"),
+		    fmri);
+		ret = false;
 	}
 
 	/* day and day_of_month are mutually exclusive */
@@ -852,10 +957,22 @@ get_scheduled_data(const scf_propertygroup_t *pg, scheduled_data_t *s)
 	    s->ss_day_of_month != SCHED_IVAL_NONE) {
 		logmsg(_("%s: day and day_of_month cannot both be set"),
 		    fmri);
-		return (false);
+		ret = false;
 	}
 
-	return (true);
+	/* weekday_of_month requires day to be set */
+	if (s->ss_weekday_of_month != SCHED_IVAL_NONE &&
+	    s->ss_day == SCHED_IVAL_NONE) {
+		logmsg(_("%s: weekday_of_month requires day to be set"),
+		    fmri);
+		ret = false;
+	}
+
+	if (s->ss_frequency > 1 && !sched_check_levels(s)) {
+		ret = false;
+	}
+
+	return (ret);
 }
 
 bool
@@ -869,12 +986,16 @@ get_periodic_data(const scf_propertygroup_t *pg, periodic_data_t *p)
 	 * period and delay are read as (signed) times; a negative value would
 	 * be huge as a uint64_t, and a period of 0 would run continuously.
 	 */
-	if ((int64_t)p->ps_period <= 0) {
-		logmsg(_("%s: period must be greater than 0"), fmri);
+	if ((int64_t)p->ps_period <= 0 ||
+	    (int64_t)p->ps_period > PERIODIC_TIME_MAX) {
+		logmsg(_("%s: period must be greater than 0 and at most %lld"),
+		    fmri, (longlong_t)PERIODIC_TIME_MAX);
 		return (false);
 	}
-	if ((int64_t)p->ps_delay < 0) {
-		logmsg(_("%s: delay cannot be negative"), fmri);
+	if ((int64_t)p->ps_delay < 0 ||
+	    (int64_t)p->ps_delay > PERIODIC_TIME_MAX) {
+		logmsg(_("%s: delay must be between 0 and %lld"), fmri,
+		    (longlong_t)PERIODIC_TIME_MAX);
 		return (false);
 	}
 
@@ -1296,6 +1417,12 @@ read_time_prop(const char *svc_fmri, const char *name, int64_t *tp)
 		}
 	}
 
+	if (secs < 0 || secs > RUN_TIME_MAX) {
+		logmsg(_("%s: ignoring out of range %s/%s value %lld"),
+		    svc_fmri, PG_PERIODIC_RESTARTER, name, (longlong_t)secs);
+		return (true);
+	}
+
 	*tp = secs;
 	return (true);
 }
@@ -1306,7 +1433,8 @@ read_time_prop(const char *svc_fmri, const char *name, int64_t *tp)
  * property group or property means it has never run.
  */
 static bool
-read_run_times(const char *svc_fmri, periodic_data_t *p, scheduled_data_t *s)
+read_run_times(const char *svc_fmri, periodic_data_t *p, scheduled_data_t *s,
+    int64_t *bootp)
 {
 	if (scf_instance_get_pg(inst, PG_PERIODIC_RESTARTER, pg) != 0) {
 		switch (scf_error()) {
@@ -1321,6 +1449,10 @@ read_run_times(const char *svc_fmri, periodic_data_t *p, scheduled_data_t *s)
 			    scf_strerror(scf_error()));
 			return (false);
 		}
+	}
+
+	if (!read_time_prop(svc_fmri, PROP_BOOT_TIME, bootp)) {
+		return (false);
 	}
 
 	if (p != NULL) {
@@ -1487,6 +1619,10 @@ tx_set_run_times(periodic_svc_t *svc, void *arg __unused)
 {
 	const scheduled_data_t *s;
 
+	if (!tx_set_time(svc->ps_fmri, PROP_BOOT_TIME, boot_time)) {
+		return (false);
+	}
+
 	if (svc->ps_type == PST_PERIODIC) {
 		const periodic_data_t *p = svc->ps_u.psu_periodic;
 
@@ -1547,7 +1683,11 @@ store_run_times(periodic_svc_t *svc, void *arg __unused)
 		}
 	}
 
-	return (tx_commit(svc, PG_PERIODIC_RESTARTER, tx_set_run_times, NULL));
+	if (!tx_commit(svc, PG_PERIODIC_RESTARTER, tx_set_run_times, NULL)) {
+		return (false);
+	}
+	svc->ps_saved_boot = boot_time;
+	return (true);
 
 pg_fail:
 	logmsg(_("%s: failed to get or create %s property group: %s"),
@@ -1666,6 +1806,109 @@ store_aux_state(periodic_svc_t *svc, void *arg)
 }
 
 /*
+ * Return the path of the log for the instance fmri, allocated with
+ * umem_alloc(), or NULL if fmri isn't a valid instance FMRI. As in svc.startd
+ * (restarter_insert_inst()), the name is <service>:<instance> with each '/'
+ * replaced by '-', so svc:/site/backup:default logs to
+ * /var/svc/log/site-backup:default.log.
+ */
+char *
+svc_logfile(const char *fmri)
+{
+	const char	*scope, *svc_name, *inst_name, *pgn, *propn;
+	char		*buf, *path, *c;
+	size_t		len;
+
+	len = strlen(fmri) + 1;
+	buf = umem_alloc(len, UMEM_NOFAIL);
+	(void) strlcpy(buf, fmri, len);
+
+	if (scf_parse_svc_fmri(buf, &scope, &svc_name, &inst_name, &pgn,
+	    &propn) != 0 || svc_name == NULL || inst_name == NULL ||
+	    pgn != NULL || propn != NULL) {
+		umem_free(buf, len);
+		return (NULL);
+	}
+
+	len = strlen(LOG_PREFIX) + strlen(svc_name) + 1 + strlen(inst_name) +
+	    strlen(LOG_SUFFIX) + 1;
+	path = umem_alloc(len, UMEM_NOFAIL);
+	(void) snprintf(path, len, "%s%s:%s%s", LOG_PREFIX, svc_name,
+	    inst_name, LOG_SUFFIX);
+	umem_free(buf, strlen(fmri) + 1);
+
+	for (c = path + strlen(LOG_PREFIX); *c != '\0'; c++) {
+		if (*c == '/') {
+			*c = '-';
+		}
+	}
+
+	return (path);
+}
+
+static bool
+tx_set_logfile(periodic_svc_t *svc, void *arg __unused)
+{
+	return (tx_set_astring(svc->ps_fmri, SCF_PG_RESTARTER,
+	    SCF_PROPERTY_LOGFILE, svc->ps_logfile));
+}
+
+/*
+ * Write svc's log path to restarter/logfile, creating the restarter
+ * property group if needed, as svc.startd's libscf_note_method_log() does.
+ */
+static bool
+store_logfile(periodic_svc_t *svc, void *arg __unused)
+{
+	if (scf_handle_decode_fmri(rep_hdl, svc->ps_fmri, NULL, NULL, inst,
+	    NULL, NULL, 0) != 0) {
+		logmsg(_("%s: failed to decode fmri: %s"), svc->ps_fmri,
+		    scf_strerror(scf_error()));
+		return (false);
+	}
+
+	while (scf_instance_get_pg(inst, SCF_PG_RESTARTER, pg) != 0) {
+		if (scf_error() != SCF_ERROR_NOT_FOUND) {
+			goto fail;
+		}
+		if (scf_instance_add_pg(inst, SCF_PG_RESTARTER,
+		    SCF_PG_RESTARTER_TYPE, SCF_PG_RESTARTER_FLAGS, pg) == 0) {
+			break;
+		}
+		if (scf_error() != SCF_ERROR_EXISTS) {
+			goto fail;
+		}
+	}
+
+	return (tx_commit(svc, SCF_PG_RESTARTER, tx_set_logfile, NULL));
+
+fail:
+	logmsg(_("%s: failed to get %s property group: %s"), svc->ps_fmri,
+	    SCF_PG_RESTARTER, scf_strerror(scf_error()));
+	return (false);
+}
+
+/*
+ * Record where svc logs, so that svcs -l and svcs -L can find it.
+ * svc.startd does this each time it runs a method, and only warns if it
+ * fails; the log itself works either way. Any value an administrator set
+ * is overwritten: the property reports the log, it doesn't choose it.
+ */
+bool
+note_logfile(periodic_svc_t *svc)
+{
+	if (svc->ps_logfile == NULL) {
+		return (false);
+	}
+
+	if (!with_rebind(svc, store_logfile, NULL, _("note log location"))) {
+		logmsg(_("%s: couldn't note log location"), svc->ps_fmri);
+		return (false);
+	}
+	return (true);
+}
+
+/*
  * Set svc's auxiliary state to running or scheduled.
  */
 bool
@@ -1696,6 +1939,7 @@ load_service(periodic_svc_t *svc, void *arg __unused)
 	scheduled_data_t	**tailp = &sched;
 	periodic_exec_t		exec = { 0 };
 	bool			have_start = false;
+	int64_t			saved_boot = 0;
 	scf_snapshot_t		*snapp = snap;
 	int			ret;
 
@@ -1830,7 +2074,7 @@ load_service(periodic_svc_t *svc, void *arg __unused)
 		goto fail;
 	}
 
-	if (!read_run_times(svc->ps_fmri, periodic, sched)) {
+	if (!read_run_times(svc->ps_fmri, periodic, sched, &saved_boot)) {
 		goto fail;
 	}
 
@@ -1841,6 +2085,7 @@ load_service(periodic_svc_t *svc, void *arg __unused)
 	svc->ps_exec.pe_timeout_secs = exec.pe_timeout_secs;
 	svc->ps_exec.pe_method_ctx = exec.pe_method_ctx;
 	svc->ps_exec.pe_recover = exec.pe_recover;
+	svc->ps_saved_boot = saved_boot;
 
 	if (periodic != NULL) {
 		svc->ps_type = PST_PERIODIC;

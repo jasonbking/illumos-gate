@@ -41,11 +41,9 @@ CFLAGS += $(CCVERBOSE)
 	$(POST_PROCESS_O)
 
 LDLIBS += \
-	  -lcontract \
-	  -lnvpair \
+	  -lkstat \
 	  -lrestart \
 	  -lscf \
-	  -lsysevent \
 	  -lumem \
 	  -luutil
 

@@ -103,17 +103,17 @@ periodic and scheduled task restarter
 		</documentation>
 
 		<pg_pattern name='restarter' type='framework'
-		   target='delegate' required='false'>
+		    target='delegate' required='false'>
 			<description>
 				<loctext xml:lang='C'>
-Communicate restarter-set status of the service.
+Communicate restarter-set status of the service.  Periodic and scheduled services behave like transient services: each time the service is due, svc.periodicd runs the start method in a new process contract, logs its output to the logfile, and waits for the contract to empty.  The instance remains online between runs.  If a run is still in progress when the service is next due, that run is skipped and the service is scheduled for the following time.  For a scheduled service with several schedules, a run started by any schedule causes every schedule that comes due while it is running to be skipped.
 				</loctext>
 			</description>
 			<prop_pattern name='logfile' type='astring'
 			    required='false'>
 				<description>
 					<loctext xml:lang='C'>
-The logfile for restarter actions on this service and any direct output from execution.
+The logfile for restarter actions on this service and any direct output from its start method.  Output from every run is appended to this file.
 					</loctext>
 				</description>
 				<visibility value='readonly'/>
@@ -123,7 +123,7 @@ The logfile for restarter actions on this service and any direct output from exe
 			    required='false'>
 				<description>
 					<loctext xml:lang='C'>
-Primary process contract for a 'contract' or 'child' service.
+Process contract of the run currently in progress.  The property is set when the start method is launched and removed once the contract is empty, either because all of its processes exited or because they were killed when the start method's timeout_seconds expired.
 					</loctext>
 				</description>
 				<visibility value='readonly'/>
@@ -134,7 +134,7 @@ Primary process contract for a 'contract' or 'child' service.
 				<description>
 					<loctext xml:lang='C'>
 PID last launched as the start method for this service.
-</loctext>
+					</loctext>
 				</description>
 				<visibility value='readonly'/>
 				<cardinality min='1' max='1'/>
@@ -149,7 +149,166 @@ Time the start method was last run.
 				<visibility value='readonly'/>
 				<cardinality min='1' max='1'/>
 			</prop_pattern>
-			<!-- TODO XXX add more -->
+			<prop_pattern name='auxiliary_state' type='astring'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+Whether the online instance is currently running or waiting for its next run.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+				<values>
+					<value name='running'>
+						<description>
+							<loctext xml:lang='C'>
+The start method's contract is active.  Any run that comes due in this state is skipped.
+							</loctext>
+						</description>
+					</value>
+					<value name='scheduled'>
+						<description>
+							<loctext xml:lang='C'>
+No run is in progress; the instance is waiting for its next run time.
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='running'/>
+					<value name='scheduled'/>
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='auxiliary_fmri' type='astring'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+Auxiliary fmri information for service state diagnosis.
+					</loctext>
+				</description>
+				<visibility value='hidden'/>
+			</prop_pattern>
+			<prop_pattern name='state_timestamp' type='time'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+Time the current state was reached.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='state' type='astring'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+The current state of this service instance.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+				<values>
+					<value name='uninitialized'>
+						<description>
+							<loctext xml:lang='C'>
+svc.periodicd has not yet evaluated the instance.
+							</loctext>
+						</description>
+					</value>
+					<value name='offline'>
+						<description>
+							<loctext xml:lang='C'>
+The instance is enabled but its dependencies are not yet satisfied, so it is not scheduled.
+							</loctext>
+						</description>
+					</value>
+					<value name='online'>
+						<description>
+							<loctext xml:lang='C'>
+The instance is scheduled.  auxiliary_state says whether a run is in progress.
+							</loctext>
+						</description>
+					</value>
+					<value name='degraded'>
+						<description>
+							<loctext xml:lang='C'>
+The instance is scheduled but functioning at a limited capacity.
+							</loctext>
+						</description>
+					</value>
+					<value name='maintenance'>
+						<description>
+							<loctext xml:lang='C'>
+The instance is enabled but cannot be scheduled, for example because its periodic or schedule configuration is invalid.  Administrative action is required.
+							</loctext>
+						</description>
+					</value>
+					<value name='disabled'>
+						<description>
+							<loctext xml:lang='C'>
+The instance is disabled and will not run.
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='uninitialized'/>
+					<value name='offline'/>
+					<value name='online'/>
+					<value name='degraded'/>
+					<value name='maintenance'/>
+					<value name='disabled'/>
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='next_state' type='astring'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+The next expected state of this instance.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+		</pg_pattern>
+
+		<pg_pattern name='periodic_restarter' type='framework'
+		    target='delegate' required='false'>
+			<description>
+				<loctext xml:lang='C'>
+Persistent run history kept by svc.periodicd so that schedules survive reboots and restarts of svc.periodicd.  A periodic service uses last_run and next_run.  Each schedule of a scheduled service uses the properties schedule-name_last_run and schedule-name_next_run, where schedule-name is the name of the schedule property group.
+				</loctext>
+			</description>
+			<prop_pattern name='last_run' type='time'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+Time the periodic service last ran.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='next_run' type='time'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+Time the periodic service is next due to run.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='boot_time' type='time'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+Boot time of the system or zone when the run times were last written, used to tell a reboot from a restart of svc.periodicd.
+					</loctext>
+				</description>
+				<visibility value='hidden'/>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
 		</pg_pattern>
 
 		<pg_pattern name='periodic' type='periodic' target='delegate'
@@ -555,7 +714,7 @@ A method may only be of type method.
 			    required='false'>
 				<description>
 					<loctext xml:lang='C'>
-Number of seconds before the method is considered unresponsive.  After the method timeout expires, the method will be killed.
+Maximum number of seconds a run may take.  When the timeout expires, every process in the run's contract is killed, the run is logged as timed out, and the service is scheduled for its next run time as usual.
 					</loctext>
 				</description>
 				<cardinality min='1' max='1'/>

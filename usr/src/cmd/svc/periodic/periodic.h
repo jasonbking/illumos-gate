@@ -40,6 +40,14 @@ typedef struct periodic_exec {
 	bool			pe_recover;
 } periodic_exec_t;
 
+/*
+ * The largest period or delay we accept (about 100 years), and the largest
+ * saved run or boot time. These keep the scheduling arithmetic in sched.c
+ * from overflowing.
+ */
+#define	PERIODIC_TIME_MAX	((int64_t)100 * 365 * 24 * 60 * 60)
+#define	RUN_TIME_MAX		(INT64_MAX / 4)
+
 typedef struct periodic_data {
 	uint64_t	ps_delay;
 	uint64_t	ps_n;
@@ -49,32 +57,90 @@ typedef struct periodic_data {
 
 	int64_t		ps_last_run;
 	int64_t		ps_next_run;
+	int64_t		ps_base;	/* next regular run (not saved) */
 } periodic_data_t;
 
-typedef enum scheduled_ival {
-	SI_YEAR,
-	SI_MONTH,
-	SI_WEEK,
-	SI_DAY,
-	SI_HOUR,
-	SI_MINUTE,
-} scheduled_ival_t;
+/* Why a service's schedule is being (re)started; see sched.c */
+typedef enum periodic_start {
+	PSTART_ONLINE,		/* it has just come online */
+	PSTART_RESUME,		/* we're resuming an online instance */
+} periodic_start_t;
 
 /*
- * 'Not set' values for the optional calendar fields of a schedule (year,
- * week_of_year, month, day_of_month, weekday_of_month, day, hour, and
- * minute). None of them can legitimately take these values.
+ * The units of time a schedule works in: the possible intervals, and the
+ * granularity of each calendar field. Ordered from smallest to largest.
  */
-#define	SCHED_IVAL_NONE	INT64_MAX	/* int64_t fields */
-#define	SCHED_UVAL_NONE	UINT64_MAX	/* uint64_t fields (year) */
+typedef enum sched_unit {
+	SU_MINUTE,
+	SU_HOUR,
+	SU_DAY,
+	SU_WEEK,
+	SU_MONTH,
+	SU_YEAR,
+	SU_NUM
+} sched_unit_t;
+
+/*
+ * The levels the calendar fields of a schedule are grouped into, from
+ * largest to smallest. The fields within a level are mutually exclusive
+ * (apart from weekday_of_month, which qualifies day).
+ */
+typedef enum sched_level {
+	SL_YEAR,
+	SL_MONTH,
+	SL_DAY,
+	SL_HOUR,
+	SL_MINUTE,
+	SL_NUM
+} sched_level_t;
+
+/* The calendar fields of a schedule */
+typedef enum sched_field {
+	SF_YEAR,
+	SF_MONTH,
+	SF_WEEK,	/* week_of_year */
+	SF_MDAY,	/* day_of_month */
+	SF_WDAY,	/* day (of the week) */
+	SF_WOM,		/* weekday_of_month */
+	SF_HOUR,
+	SF_MINUTE,
+	SF_NUM
+} sched_field_t;
+
+#define	SF_BIT(f)	(1U << (f))
+
+typedef struct sched_unit_info {
+	const char	*su_name;	/* as an interval property value */
+	sched_level_t	su_level;	/* the level an interval of it is at */
+} sched_unit_info_t;
+
+typedef struct sched_field_info {
+	const char	*sf_name;	/* property name */
+	sched_level_t	sf_level;
+	sched_unit_t	sf_unit;
+	size_t		sf_offset;	/* of its int64_t in scheduled_data_t */
+	bool		sf_qualifier;	/* only qualifies another field */
+} sched_field_info_t;
+
+/* Indexed by sched_unit_t and sched_field_t; in sched.c */
+extern const sched_unit_info_t sched_units[SU_NUM];
+extern const sched_field_info_t sched_fields[SF_NUM];
+
+/*
+ * The 'not set' value of each calendar field. None of them can legitimately
+ * take this value.
+ */
+#define	SCHED_IVAL_NONE	INT64_MAX
 
 typedef struct scheduled_data {
 	struct scheduled_data	*ss_next;
 	char			*ss_name;
-	scheduled_ival_t	ss_interval;
+	sched_unit_t		ss_interval;
 	uint64_t		ss_frequency;
 	char			*ss_timezone;
-	uint64_t		ss_year;
+
+	/* The calendar fields; see sched_fields[] */
+	int64_t			ss_year;	/* a count in SMF */
 	int64_t			ss_week_of_year;
 	int64_t			ss_month;
 	int64_t			ss_day_of_month;
@@ -83,9 +149,21 @@ typedef struct scheduled_data {
 	int64_t			ss_hour;
 	int64_t			ss_minute;
 
+	bool			ss_recover;
+
 	int64_t			ss_last_run;
 	int64_t			ss_next_run;
+	int64_t			ss_base;	/* next regular run */
+	int64_t			ss_offset;	/* into window; -1 if unknown */
 } scheduled_data_t;
+
+/*
+ * Limits on schedules, which keep the calendar arithmetic in sched.c
+ * within range.
+ */
+#define	SCHED_YEAR_MIN		1970
+#define	SCHED_YEAR_MAX		9999
+#define	SCHED_FREQUENCY_MAX	1000000
 
 /*
  * The auxiliary state (restarter/auxiliary_state) of an online or degraded
@@ -107,9 +185,17 @@ typedef struct periodic_svc {
 	uu_avl_node_t		ps_avl;		/* protected by svcs_lock */
 	mutex_t			ps_lock;
 	char			*ps_fmri;
+	/*
+	 * Log for restarter messages about this instance and output from its
+	 * runs. As with svc.startd, the path is derived from the FMRI (never
+	 * read from restarter/logfile) and is set for the life of svc.
+	 */
+	char			*ps_logfile;
 	periodic_exec_t		ps_exec;
 	bool			ps_running;
 	restarter_instance_state_t ps_state;	/* current SMF state */
+	/* boot_time as of when its run times were last saved */
+	int64_t			ps_saved_boot;
 	periodic_svctype_t	ps_type;
 	union {
 		periodic_data_t		*psu_periodic;
@@ -117,7 +203,19 @@ typedef struct periodic_svc {
 	} ps_u;
 } periodic_svc_t;
 
+/*
+ * Instance logs, named as svc.startd names them (restarter_insert_inst()):
+ * LOG_PREFIX, then <service>:<instance> with each '/' replaced by '-', then
+ * LOG_SUFFIX. svc.periodicd depends on filesystem/local, so unlike
+ * svc.startd it never needs the early (/etc/svc/volatile) location.
+ */
+#define	LOG_PREFIX	"/var/svc/log/"
+#define	LOG_SUFFIX	".log"
+
 extern size_t max_fmri_len;
+extern int64_t boot_time;	/* when this system or zone booted */
+
+extern mutex_t tz_lock;
 
 periodic_svc_t *periodic_svc_get(const char *);
 void periodic_svc_add(periodic_svc_t *);
@@ -135,12 +233,17 @@ bool get_aux_state(periodic_svc_t *, periodic_aux_t *);
 bool set_aux_state(periodic_svc_t *, periodic_aux_t);
 void svc_set_running(periodic_svc_t *, bool);
 void free_service(periodic_svc_t *);
+char *svc_logfile(const char *);
+bool note_logfile(periodic_svc_t *);
 
 void logmsg(const char *, ...) __PRINTFLIKE(1);
 void panic(const char *, ...) __PRINTFLIKE(1) __NORETURN;
 
 int64_t svc_next_run(const periodic_svc_t *);
-int64_t svc_first_run(const periodic_svc_t *, int64_t);
+int64_t *sched_field(scheduled_data_t *, sched_field_t);
+uint_t sched_fields_set(const scheduled_data_t *);
+void svc_first_run(periodic_svc_t *, periodic_start_t, int64_t);
+void svc_after_run(periodic_svc_t *, int64_t);
 
 #ifdef __cplusplus
 }

@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <kstat.h>
 #include <librestart.h>
 #include <libscf.h>
 #include <libuutil.h>
@@ -39,6 +40,7 @@
 #include <umem.h>
 #include <unistd.h>
 #include <upanic.h>
+#include <zone.h>
 
 #include "periodic.h"
 
@@ -54,6 +56,7 @@ static int event_handler(restarter_event_t *);
 static char *event_get_instance(restarter_event_t *);
 static void process_restarter_event(struct rst_req *);
 static bool svcs_init(void);
+static bool get_boot_time(int64_t *);
 static int svc_cmp(const void *, const void *, void *);
 
 static bool do_refresh;
@@ -92,6 +95,16 @@ restarter_event_handle_t *evt_hdl;
 
 /* This includes the space for the terminating NUL byte */
 size_t max_fmri_len;
+
+/* When this system (or zone) booted */
+int64_t boot_time;
+
+/*
+ * Since the timezone is a process global, for now we have to synchronize
+ * time calls since scheduled services may need to adjust the timezone to
+ * do their calculations.
+ */
+mutex_t tz_lock = ERRORCHECKMUTEX;
 
 /* All the periodic_svc_t's we manage, sorted by FMRI */
 static uu_avl_pool_t *svcs_pool;
@@ -205,34 +218,29 @@ ack_restarter_event(rst_req_t *req, int ret)
 }
 
 /*
- * Start running svc on its schedule. resume is true when svc was already
- * online (svc.startd or we restarted, or it was refreshed), so its existing
- * schedule continues. Otherwise svc has just come online, and its first run
- * follows its persistent and recover settings (see svc_first_run()).
+ * Start running svc on its schedule, either because it has just come online
+ * (PSTART_ONLINE) or because we're resuming an instance that was already
+ * online (PSTART_RESUME: svc.periodicd restarted, or a refresh). See
+ * sched.c for how its next run is chosen.
  * TODO: arm a timer for the next run.
  */
 static void
-svc_schedule(periodic_svc_t *svc, bool resume)
+svc_schedule(periodic_svc_t *svc, periodic_start_t how)
 {
-	int64_t now = (int64_t)time(NULL);
-
-	switch (svc->ps_type) {
-	case PST_PERIODIC: {
-		periodic_data_t *p = svc->ps_u.psu_periodic;
-
-		if (p == NULL) {
-			return;
-		}
-		if (!resume || p->ps_next_run == 0) {
-			p->ps_next_run = svc_first_run(svc, now);
-		}
-		break;
-	}
-	case PST_SCHEDULED:
-		/* TODO: the first run of each schedule */
-		break;
+	if (svc->ps_type == PST_PERIODIC && svc->ps_u.psu_periodic == NULL) {
+		return;
 	}
 
+	/*
+	 * svc.startd notes the log just before it runs a method, which for
+	 * a transient service is when it starts. Our equivalent is when the
+	 * instance starts (or resumes) running on its schedule; the
+	 * restarter property group isn't persistent, so this also restores
+	 * it after a reboot.
+	 */
+	(void) note_logfile(svc);
+
+	svc_first_run(svc, how, (int64_t)time(NULL));
 	(void) save_run_times(svc);
 }
 
@@ -342,7 +350,7 @@ svc_refresh(periodic_svc_t *svc)
 	if (svc_is_online(svc)) {
 		/* Pick up any change to the schedule */
 		svc_unschedule(svc);
-		svc_schedule(svc, true);
+		svc_schedule(svc, PSTART_RESUME);
 	}
 }
 
@@ -366,6 +374,16 @@ svc_create(const char *fmri)
 	(void) strlcpy(svc->ps_fmri, fmri, len);
 	VERIFY0(mutex_init(&svc->ps_lock, USYNC_THREAD | LOCK_ERRORCHECK,
 	    NULL));
+
+	/*
+	 * Restarter events only carry instance FMRIs, so this only fails if
+	 * svc.startd sent us something malformed. Carry on without a log, as
+	 * svc.startd does when it can't open one; methods' output then goes
+	 * to /dev/null.
+	 */
+	if ((svc->ps_logfile = svc_logfile(fmri)) == NULL) {
+		logmsg(_("%s: invalid instance FMRI, not logging"), fmri);
+	}
 
 	if (!get_restarter_state(svc, &state, &next) ||
 	    state == RESTARTER_STATE_NONE) {
@@ -437,6 +455,9 @@ svc_destroy(periodic_svc_t *svc)
 	free_service(svc);
 
 	VERIFY0(mutex_destroy(&svc->ps_lock));
+	if (svc->ps_logfile != NULL) {
+		umem_free(svc->ps_logfile, strlen(svc->ps_logfile) + 1);
+	}
 	umem_free(svc->ps_fmri, strlen(svc->ps_fmri) + 1);
 	umem_free(svc, sizeof (*svc));
 }
@@ -463,7 +484,7 @@ handle_restarter_event(periodic_svc_t *svc, restarter_event_type_t type)
 		if (svc_is_online(svc)) {
 			/* It may already be scheduled (svc.startd restarted) */
 			svc_unschedule(svc);
-			svc_schedule(svc, true);
+			svc_schedule(svc, PSTART_RESUME);
 		}
 		return;
 
@@ -537,7 +558,7 @@ handle_restarter_event(periodic_svc_t *svc, restarter_event_type_t type)
 		case RESTARTER_EVENT_TYPE_START:
 			update_state(svc, RESTARTER_STATE_ONLINE, RERR_NONE,
 			    restarter_str_dependencies_satisfied);
-			svc_schedule(svc, false);
+			svc_schedule(svc, PSTART_ONLINE);
 			break;
 		case RESTARTER_EVENT_TYPE_DISABLE:
 		case RESTARTER_EVENT_TYPE_ADMIN_DISABLE:
@@ -640,6 +661,11 @@ init(int fd)
 	int		ret;
 	int		nullfd;
 
+	/*
+	 * Block everything but SIGABRT. We don't want to be interrupted
+	 * until we've finished setup. After that, signalfd handling will
+	 * take care of the signals we care about.
+	 */
 	VERIFY0(sigfillset(&mask));
 	VERIFY0(sigdelset(&mask, SIGABRT));
 	VERIFY0(sigprocmask(SIG_BLOCK, &mask, &omask));
@@ -668,6 +694,15 @@ init(int fd)
 	 */
 	max_fmri_len = scf_limit(SCF_LIMIT_MAX_FMRI_LENGTH) + 1;
 
+	/*
+	 * Used to tell whether a service is coming back from an outage (see
+	 * sched.c). This must be set before we receive restarter events.
+	 */
+	if (!get_boot_time(&boot_time)) {
+		init_done(fd, EXIT_FAILURE,
+		    _("Error: failed to get the system boot time"));
+	}
+
 	/* This must be ready before we start receiving restarter events */
 	if (!svcs_init()) {
 		init_done(fd, EXIT_FAILURE,
@@ -686,8 +721,6 @@ init(int fd)
 		    _("failed to register for restarter events: %s"),
 		    strerror(ret));
 	}
-
-	/* TODO */
 
 	if (setsid() < 0) {
 		init_done(fd, EXIT_FAILURE, _("failed to create session"));
@@ -900,6 +933,53 @@ handle_signals(void)
 	}
 }
 
+/*
+ * Get when this zone booted. In the global zone this is when the system
+ * booted. This uses the zone's zone_misc kstat which should be the
+ * correct value for both the GZ and any NGZs.
+ */
+static bool
+get_boot_time(int64_t *btp)
+{
+	char		zonename[ZONENAME_MAX];
+	kstat_ctl_t	*kc;
+	kstat_t		*ks;
+	kstat_named_t	*named;
+	bool		ret = false;
+
+	if ((kc = kstat_open()) == NULL) {
+		return (false);
+	}
+
+	if (getzonenamebyid(getzoneid(), zonename, sizeof (zonename)) < 0) {
+		goto done;
+	}
+
+	ks = kstat_lookup(kc, "zones", getzoneid(), zonename);
+	if (ks == NULL) {
+		goto done;
+	}
+
+	if (kstat_read(kc, ks, NULL) < 0) {
+		goto done;
+	}
+
+	named = kstat_data_lookup(ks, "boot_time");
+	if (named == NULL) {
+		goto done;
+	}
+	if (named->data_type != KSTAT_DATA_UINT64) {
+		goto done;
+	}
+
+	*btp = (int64_t)named->value.ui64;
+	ret = true;
+
+done:
+	(void) kstat_close(kc);
+	return (ret);
+}
+
 static int
 svc_cmp(const void *a, const void *b, void *arg __unused)
 {
@@ -1016,8 +1096,10 @@ logmsg(const char *msg, ...)
 	va_list		ap;
 
 	now = time(NULL);
+	mutex_enter(&tz_lock);
 	(void) localtime_r(&now, &tm);
 	(void) strftime(buf, sizeof (buf), "%FT%T", &tm);
+	mutex_exit(&tz_lock);
 
 	flockfile(stdout);
 

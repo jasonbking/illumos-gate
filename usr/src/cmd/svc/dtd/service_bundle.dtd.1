@@ -606,7 +606,10 @@
 		day, hour, or minute.
 
 	frequency [count] How many intervals between executions
-		(default 1).
+		(default 1). If greater than 1, the schedule must be
+		anchored: every field from year down to interval must be
+		set, where month or week_of_year, and day or day_of_month,
+		each count as one.
 
 	timezone The timezone used to determine when to run (default the
 		system's timezone).
@@ -614,14 +617,16 @@
 	year	[count] The year in which to run.
 
 	week_of_year [integer] The ISO 8601 week number [1, 53], or
-		[-53, -1] counting back from the end of the year.
+		[-53, -1] counting back from the end of the year. May not
+		be used with month.
 
 	month	The month: its name or three letter abbreviation (in any
-		case), or a number in [1, 12] or [-12, -1].
+		case), or a number in [1, 12] or [-12, -1]. May not be used
+		with week_of_year.
 
 	weekday_of_month [integer] Which occurrence of day within the
 		month [1, 5], or [-5, -1] counting back from the end of the
-		month.
+		month. Requires day.
 
 	day	The day of the week: its name or three letter abbreviation
 		(in any case), or a number in [1, 7] (1 is Sunday) or
