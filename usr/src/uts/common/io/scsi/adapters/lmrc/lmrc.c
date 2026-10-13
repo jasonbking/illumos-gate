@@ -1009,8 +1009,10 @@ lmrc_reset_ctrl(lmrc_t *lmrc)
 			status = lmrc_read_reg(lmrc, MPI26_SCRATCHPAD0_OFFSET);
 			fw_state = LMRC_FW_STATE(status);
 
-			if (fw_state <= LMRC_FW_STATE_FW_INIT)
+			if (fw_state <= LMRC_FW_STATE_FW_INIT) {
 				delay(drv_usectohz(100 * MILLISEC));
+				max_wait--;
+			}
 		} while (fw_state <= LMRC_FW_STATE_FW_INIT && max_wait > 0);
 
 		if (fw_state <= LMRC_FW_STATE_FW_INIT) {
