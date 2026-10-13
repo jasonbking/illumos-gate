@@ -45,6 +45,7 @@
 static uint32_t lmrc_read_reg(lmrc_t *, uint32_t);
 static void lmrc_write_reg(lmrc_t *, uint32_t, uint32_t);
 static int lmrc_transition_to_ready(lmrc_t *);
+static void lmrc_reset_reply_desc(lmrc_t *);
 static void lmrc_process_mptmfi_passthru(lmrc_t *, lmrc_mpt_cmd_t *);
 static int lmrc_poll_mfi(lmrc_t *, lmrc_mfi_cmd_t *, uint8_t);
 static boolean_t lmrc_check_fw_fault(lmrc_t *);
@@ -227,6 +228,19 @@ lmrc_build_atomic_request(lmrc_t *lmrc, lmrc_mpt_cmd_t *mpt, uint8_t flags)
 	req_desc.rd_atomic.SMID = mpt->mpt_smid;
 
 	return (req_desc);
+}
+
+/*
+ * Reset reply descriptor ownership before giving the queue back to firmware.
+ */
+static void
+lmrc_reset_reply_desc(lmrc_t *lmrc)
+{
+	bzero(lmrc->l_last_reply_idx, sizeof (*lmrc->l_last_reply_idx) *
+	    lmrc->l_max_reply_queues);
+	memset(lmrc->l_reply_dma.ld_buf, -1, lmrc->l_reply_dma.ld_len);
+	VERIFY3S(ddi_dma_sync(lmrc->l_reply_dma.ld_hdl, 0,
+	    lmrc->l_reply_dma.ld_len, DDI_DMA_SYNC_FORDEV), ==, DDI_SUCCESS);
 }
 
 /*
@@ -1228,6 +1242,8 @@ lmrc_thread(void *arg)
 
 			if (lmrc_transition_to_ready(lmrc) != DDI_SUCCESS)
 				continue;
+
+			lmrc_reset_reply_desc(lmrc);
 
 			if (lmrc_ioc_init(lmrc) != DDI_SUCCESS)
 				continue;
