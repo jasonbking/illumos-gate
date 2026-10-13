@@ -252,6 +252,7 @@ lmrc_mfi_ioctl(lmrc_t *lmrc, mfi_ioctl_t *ioc, int mode)
 	if (ioc_hdr->mh_sense_len > MFI_IOC_SENSE_LEN)
 		return (EINVAL);
 
+	bzero(&sense, sizeof (sense));
 	mfi = lmrc_get_mfi(lmrc);
 	mfi_hdr = &mfi->mfi_frame->mf_hdr;
 
@@ -308,6 +309,11 @@ lmrc_mfi_ioctl(lmrc_t *lmrc, mfi_ioctl_t *ioc, int mode)
 	}
 #endif
 
+	if (xferlen != mfi_hdr->mh_data_xfer_len) {
+		ret = EINVAL;
+		goto out;
+	}
+
 	if (xferlen != 0) {
 		/* This ioctl uses DMA. */
 		ret = lmrc_dma_alloc(lmrc, lmrc->l_dma_attr,
@@ -332,8 +338,11 @@ lmrc_mfi_ioctl(lmrc_t *lmrc, mfi_ioctl_t *ioc, int mode)
 		lmrc_dma_set_addr64(&mfi->mfi_data_dma,
 		    &mfi_sgl->ms64_phys_addr);
 		mfi_sgl->ms64_length = lmrc_dma_get_size(&mfi->mfi_data_dma);
+		mfi_hdr->mh_data_xfer_len = mfi_sgl->ms64_length;
+		mfi_hdr->mh_sge_count = 1;
 	} else {
 		mfi_hdr->mh_flags &= ~MFI_FRAME_DIR_BOTH;
+		mfi_hdr->mh_sge_count = 0;
 	}
 
 	if (mfi_hdr->mh_sense_len != 0) {
