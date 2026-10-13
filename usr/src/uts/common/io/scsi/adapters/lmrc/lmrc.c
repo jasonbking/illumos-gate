@@ -345,6 +345,7 @@ lmrc_process_mpt_pkt(lmrc_t *lmrc, struct scsi_pkt *pkt, uint8_t status,
 		break;
 
 	case MFI_STAT_SCSI_DONE_WITH_ERROR:
+	case MFI_STAT_SCSI_IO_FAILED:
 	case MFI_STAT_LD_LBA_OUT_OF_RANGE: {
 		struct scsi_arq_status *arq =
 		    (struct scsi_arq_status *)pkt->pkt_scbp;
