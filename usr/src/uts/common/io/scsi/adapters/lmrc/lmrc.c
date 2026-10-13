@@ -367,6 +367,10 @@ lmrc_process_mpt_pkt(lmrc_t *lmrc, struct scsi_pkt *pkt, uint8_t status,
 		pkt->pkt_statistics = STAT_DISCON;
 		break;
 
+	case MFI_STAT_CONFIG_SEQ_MISMATCH:
+		pkt->pkt_reason = CMD_INCOMPLETE;
+		break;
+
 	default:
 		dev_err(lmrc->l_dip, CE_WARN, "!command failed, status = %x, "
 		    "ex_status = %x, cdb[0] = %x", status, ex_status,
