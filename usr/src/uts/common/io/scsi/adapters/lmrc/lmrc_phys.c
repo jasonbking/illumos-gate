@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2024 Racktop Systems, Inc.
+ * Copyright 2024-2026 Racktop Systems, Inc.
  */
 
 /*
@@ -183,6 +183,7 @@ int
 lmrc_setup_pdmap(lmrc_t *lmrc)
 {
 	mfi_pd_map_t *pdmap = NULL;
+	mfi_pd_map_t *old_pdmap;
 	int ret;
 
 	ret = lmrc_get_pdmap(lmrc, &pdmap);
@@ -190,9 +191,16 @@ lmrc_setup_pdmap(lmrc_t *lmrc)
 		return (ret);
 
 	rw_enter(&lmrc->l_pdmap_lock, RW_WRITER);
-	ASSERT(lmrc->l_pdmap == NULL);
+	old_pdmap = lmrc->l_pdmap;
 	lmrc->l_pdmap = pdmap;
 	rw_exit(&lmrc->l_pdmap_lock);
+
+	if (old_pdmap != NULL) {
+		uint32_t old_pdmap_sz = sizeof (mfi_pd_map_t) +
+		    old_pdmap->pm_count * sizeof (mfi_pd_cfg_t);
+
+		kmem_free(old_pdmap, old_pdmap_sz);
+	}
 
 	ret = lmrc_sync_pdmap(lmrc, pdmap->pm_count);
 	return (ret);

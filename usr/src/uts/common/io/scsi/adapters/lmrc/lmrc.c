@@ -1201,7 +1201,8 @@ lmrc_thread(void *arg)
 		if (lmrc->l_thread_stop)
 			continue;
 
-		lmrc->l_fw_fault = lmrc_check_fw_fault(lmrc);
+		if (!lmrc->l_recovering)
+			lmrc->l_fw_fault = lmrc_check_fw_fault(lmrc);
 
 		/*
 		 * Check all targets for timed-out commands. If we find any
@@ -1221,9 +1222,10 @@ lmrc_thread(void *arg)
 		/*
 		 * If the FW is faulted, try to recover by performing a reset.
 		 */
-		if (lmrc->l_fw_fault) {
+		if (lmrc->l_fw_fault || lmrc->l_recovering) {
 			int ret;
 
+			lmrc->l_recovering = B_TRUE;
 			lmrc_disable_intr(lmrc);
 
 			/*
@@ -1255,13 +1257,38 @@ lmrc_thread(void *arg)
 
 			lmrc_enable_intr(lmrc);
 
+			/*
+			 * Internal commands need l_fw_fault clear while
+			 * l_recovering keeps normal I/O from using stale maps.
+			 */
+			lmrc->l_fw_fault = B_FALSE;
+			if (lmrc_fw_init(lmrc) != DDI_SUCCESS ||
+			    (INITLEVEL_ACTIVE(lmrc, LMRC_INITLEVEL_RAID) &&
+			    lmrc_setup_raidmap(lmrc) != DDI_SUCCESS)) {
+				dev_err(lmrc->l_dip, CE_WARN,
+				    "failed to refresh controller maps after "
+				    "reset");
+				lmrc->l_fw_fault = B_TRUE;
+				continue;
+			}
+
+			if (INITLEVEL_ACTIVE(lmrc, LMRC_INITLEVEL_PHYS) &&
+			    lmrc->l_use_seqnum_jbod_fp &&
+			    lmrc_setup_pdmap(lmrc) != DDI_SUCCESS) {
+				dev_err(lmrc->l_dip, CE_WARN,
+				    "failed to refresh PD map after reset");
+				lmrc->l_use_seqnum_jbod_fp = B_FALSE;
+			}
+
 			if (lmrc_start_aen(lmrc) != DDI_SUCCESS) {
 				dev_err(lmrc->l_dip, CE_WARN,
 				    "failed to re-initiate AEN");
+				lmrc->l_fw_fault = B_TRUE;
 				continue;
 			}
 
 			lmrc->l_fw_fault = lmrc_check_fw_fault(lmrc);
+			lmrc->l_recovering = lmrc->l_fw_fault;
 		}
 	} while (!lmrc->l_thread_stop);
 

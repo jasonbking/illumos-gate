@@ -212,6 +212,7 @@ struct lmrc {
 	/* Controller HW/FW properties */
 	boolean_t		l_disable_online_ctrl_reset;
 	boolean_t		l_fw_fault;
+	boolean_t		l_recovering;
 	boolean_t		l_fw_msix_enabled;
 	boolean_t		l_fw_sync_cache_support;
 	size_t			l_fw_supported_vd_count;

@@ -260,7 +260,7 @@ lmrc_tran_start(struct scsi_address *sa, struct scsi_pkt *pkt)
 	lmrc = tgt->tgt_lmrc;
 	VERIFY(lmrc != NULL);
 
-	if (lmrc->l_fw_fault)
+	if (lmrc->l_fw_fault || lmrc->l_recovering)
 		return (TRAN_FATAL_ERROR);
 
 	if (atomic_inc_uint_nv(&lmrc->l_fw_outstanding_cmds) >
