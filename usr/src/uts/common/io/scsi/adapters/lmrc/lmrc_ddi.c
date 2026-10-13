@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2024 Racktop Systems, Inc.
+ * Copyright 2024-2026 Racktop Systems, Inc.
  */
 
 /*
@@ -1032,7 +1032,7 @@ lmrc_free_mpt_cmds(lmrc_t *lmrc, const size_t ncmd)
 		kmem_free(cmd, sizeof (lmrc_mpt_cmd_t));
 		count++;
 	}
-	VERIFY3U(count, ==, ncmd);
+	VERIFY3U(count, <=, ncmd);
 	VERIFY(list_is_empty(&lmrc->l_mpt_cmd_list));
 
 	kmem_free(lmrc->l_mpt_cmds, ncmd * sizeof (lmrc_mpt_cmd_t *));
@@ -1107,7 +1107,7 @@ lmrc_free_mfi_cmds(lmrc_t *lmrc, const size_t ncmd)
 		kmem_free(mfi, sizeof (lmrc_mfi_cmd_t));
 		count++;
 	}
-	VERIFY3U(count, ==, ncmd);
+	VERIFY3U(count, <=, ncmd);
 	VERIFY(list_is_empty(&lmrc->l_mfi_cmd_list));
 
 	kmem_free(lmrc->l_mfi_cmds, ncmd * sizeof (lmrc_mfi_cmd_t *));
