@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2024 Racktop Systems, Inc.
+ * Copyright 2024-2026 Racktop Systems, Inc.
  */
 
 /*
@@ -1594,8 +1594,10 @@ lmrc_ioc_init(lmrc_t *lmrc)
 	req_desc.rd_mfa_io.RequestFlags = LMRC_REQ_DESCRIPT_FLAGS_MFA;
 
 	lmrc_disable_intr(lmrc);
-	if (!lmrc_wait_for_reg(lmrc, MPI2_DOORBELL_OFFSET, 1, 0, 10))
-		return (DDI_FAILURE);
+	if (!lmrc_wait_for_reg(lmrc, MPI2_DOORBELL_OFFSET, 1, 0, 10)) {
+		ret = DDI_FAILURE;
+		goto out;
+	}
 
 	(void) ddi_dma_sync(dma.ld_hdl, 0, dma.ld_len, DDI_DMA_SYNC_FORDEV);
 	(void) ddi_dma_sync(mfi->mfi_frame_dma.ld_hdl, 0,
@@ -1614,6 +1616,7 @@ lmrc_ioc_init(lmrc_t *lmrc)
 			    hdr->mh_cmd_status);
 	}
 
+out:
 	lmrc_dma_free(&dma);
 	lmrc_put_mfi(mfi);
 
