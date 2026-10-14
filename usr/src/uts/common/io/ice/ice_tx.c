@@ -1020,11 +1020,11 @@ ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 
 	/*
 	 * If we're not doing LSO or can't do LSO because it's either
-	 * been disabled in the driver or the packet is too small, we
+	 * been disabled in the driver or the MSS is too small, we
 	 * proceed as a normal packet.
 	 */
 	if ((lsoflags & HW_LSO) == 0 || !ice->ice_tx_lso_enable ||
-	    pkt->itxp_meo.meoi_len < ICE_TX_LSO_MIN_MSS) {
+	    mss < ICE_TX_LSO_MIN_MSS) {
 
 		/* A non-LSO packet has to respect the packet limits */
 		if (pkt->itxp_meo.meoi_len > ice->ice_frame_size) {
@@ -1042,7 +1042,7 @@ ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 		 * XXX: dtrace probe?
 		 */
 		if ((lsoflags & HW_LSO) != 0 &&
-		    pkt->itxp_meo.meoi_len < ICE_TX_LSO_MIN_MSS) {
+		    mss < ICE_TX_LSO_MIN_MSS) {
 			mutex_enter(&txr->itxr_lock);
 			txr->itxr_stats.ictxs_badmss.value.ui64++;
 			mutex_exit(&txr->itxr_lock);
@@ -1058,6 +1058,7 @@ ice_tx_pkt_init(ice_tx_ring_t *txr, ice_tx_pkt_t *pkt, mblk_t *mp)
 		return (true);
 	}
 
+	pkt->itxp_mss = (uint16_t)mss;
 
 	/*
 	 * For LSO, we need to copy the header into its own buffer
