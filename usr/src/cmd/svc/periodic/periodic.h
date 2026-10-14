@@ -16,7 +16,9 @@
 #ifndef _SVC_PERIODIC_H
 #define	_SVC_PERIODIC_H
 
+#include <sys/types.h>
 #include <inttypes.h>
+#include <port.h>
 #include <stdbool.h>
 #include <libintl.h>
 #include <librestart.h>
@@ -194,6 +196,13 @@ typedef struct periodic_svc {
 	periodic_exec_t		ps_exec;
 	bool			ps_running;
 	restarter_instance_state_t ps_state;	/* current SMF state */
+	/*
+	 * Non-fatal faults of its runs in a row, and whether a run (rather
+	 * than an administrator) degraded it; see exec.c. Saved in the
+	 * periodic_restarter property group.
+	 */
+	uint_t			ps_fault_count;
+	bool			ps_fault_degraded;
 	/* boot_time as of when its run times were last saved */
 	int64_t			ps_saved_boot;
 	periodic_svctype_t	ps_type;
@@ -214,6 +223,8 @@ typedef struct periodic_svc {
 
 extern size_t max_fmri_len;
 extern int64_t boot_time;	/* when this system or zone booted */
+extern int evport;		/* the main loop's event port */
+extern char *my_fmri;		/* our own instance's FMRI */
 
 extern mutex_t tz_lock;
 
@@ -229,12 +240,24 @@ bool get_restarter_state(periodic_svc_t *, restarter_instance_state_t *,
     restarter_instance_state_t *);
 restarter_str_t admin_request_reason(periodic_svc_t *);
 bool save_run_times(periodic_svc_t *);
+bool save_faults(periodic_svc_t *);
 bool get_aux_state(periodic_svc_t *, periodic_aux_t *);
 bool set_aux_state(periodic_svc_t *, periodic_aux_t);
 void svc_set_running(periodic_svc_t *, bool);
+void update_state(periodic_svc_t *, restarter_instance_state_t,
+    restarter_error_t, restarter_str_t);
+void svc_unschedule(periodic_svc_t *);
 void free_service(periodic_svc_t *);
 char *svc_logfile(const char *);
 bool note_logfile(periodic_svc_t *);
+bool note_run(periodic_svc_t *, pid_t, ctid_t, int64_t);
+bool clear_run(periodic_svc_t *);
+
+void exec_init(void);
+int exec_start(periodic_svc_t *);
+bool exec_running(const char *);
+bool exec_kill(const char *, int);
+bool exec_port_event(const port_event_t *);
 
 void logmsg(const char *, ...) __PRINTFLIKE(1);
 void panic(const char *, ...) __PRINTFLIKE(1) __NORETURN;

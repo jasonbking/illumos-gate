@@ -55,6 +55,13 @@
 #define	PROP_NEXT_RUN		"next_run"
 #define	PROP_BOOT_TIME		"boot_time"
 
+/*
+ * The fault state of an instance (see exec.c), also kept in
+ * periodic_restarter so that it survives restarts of svc.periodicd.
+ */
+#define	PROP_FAULT_COUNT	"fault_count"
+#define	PROP_FAULT_DEGRADED	"fault_degraded"
+
 /* Values of restarter/auxiliary_state while an instance is online */
 #define	AUX_RUNNING		"running"
 #define	AUX_SCHEDULED		"scheduled"
@@ -1428,13 +1435,80 @@ read_time_prop(const char *svc_fmri, const char *name, int64_t *tp)
 }
 
 /*
- * Read the last and next run times for a newly loaded periodic or scheduled
- * service from the instance (inst) itself, not a snapshot. A missing
- * property group or property means it has never run.
+ * Read the count property name from pg into *np, as read_time_prop() does
+ * for times.
+ */
+static bool
+read_count_prop(const char *svc_fmri, const char *name, uint_t *np)
+{
+	uint64_t n;
+
+	if (scf_pg_get_property(pg, name, prop) != 0 ||
+	    scf_property_get_value(prop, val) != 0 ||
+	    scf_value_get_count(val, &n) != 0) {
+		switch (scf_error()) {
+		case SCF_ERROR_NOT_FOUND:
+			return (true);
+		case SCF_ERROR_CONNECTION_BROKEN:
+		case SCF_ERROR_NOT_BOUND:
+			return (false);
+		default:
+			logmsg(_("%s: ignoring bad %s/%s property: %s"),
+			    svc_fmri, PG_PERIODIC_RESTARTER, name,
+			    scf_strerror(scf_error()));
+			return (true);
+		}
+	}
+
+	if (n > UINT_MAX) {
+		logmsg(_("%s: ignoring out of range %s/%s value %llu"),
+		    svc_fmri, PG_PERIODIC_RESTARTER, name, (u_longlong_t)n);
+		return (true);
+	}
+
+	*np = (uint_t)n;
+	return (true);
+}
+
+/*
+ * Read the boolean property name from pg into *bp, as read_time_prop()
+ * does for times.
+ */
+static bool
+read_bool_prop(const char *svc_fmri, const char *name, bool *bp)
+{
+	uint8_t b;
+
+	if (scf_pg_get_property(pg, name, prop) != 0 ||
+	    scf_property_get_value(prop, val) != 0 ||
+	    scf_value_get_boolean(val, &b) != 0) {
+		switch (scf_error()) {
+		case SCF_ERROR_NOT_FOUND:
+			return (true);
+		case SCF_ERROR_CONNECTION_BROKEN:
+		case SCF_ERROR_NOT_BOUND:
+			return (false);
+		default:
+			logmsg(_("%s: ignoring bad %s/%s property: %s"),
+			    svc_fmri, PG_PERIODIC_RESTARTER, name,
+			    scf_strerror(scf_error()));
+			return (true);
+		}
+	}
+
+	*bp = (b != 0);
+	return (true);
+}
+
+/*
+ * Read the last and next run times and the fault state for a newly loaded
+ * periodic or scheduled service from the instance (inst) itself, not a
+ * snapshot. A missing property group or property means it has never run
+ * (or never faulted).
  */
 static bool
 read_run_times(const char *svc_fmri, periodic_data_t *p, scheduled_data_t *s,
-    int64_t *bootp)
+    int64_t *bootp, uint_t *faultsp, bool *fdegradedp)
 {
 	if (scf_instance_get_pg(inst, PG_PERIODIC_RESTARTER, pg) != 0) {
 		switch (scf_error()) {
@@ -1451,7 +1525,9 @@ read_run_times(const char *svc_fmri, periodic_data_t *p, scheduled_data_t *s,
 		}
 	}
 
-	if (!read_time_prop(svc_fmri, PROP_BOOT_TIME, bootp)) {
+	if (!read_time_prop(svc_fmri, PROP_BOOT_TIME, bootp) ||
+	    !read_count_prop(svc_fmri, PROP_FAULT_COUNT, faultsp) ||
+	    !read_bool_prop(svc_fmri, PROP_FAULT_DEGRADED, fdegradedp)) {
 		return (false);
 	}
 
@@ -1646,6 +1722,35 @@ tx_set_run_times(periodic_svc_t *svc, void *arg __unused)
 }
 
 /*
+ * Get svc's periodic_restarter property group (from inst, which must
+ * already refer to svc) into pg, creating it (persistent, so flags of 0) if
+ * needed. If someone else creates it between our get and add, the add
+ * fails with EXISTS, so get it again.
+ */
+static bool
+get_periodic_pg(periodic_svc_t *svc)
+{
+	while (scf_instance_get_pg(inst, PG_PERIODIC_RESTARTER, pg) != 0) {
+		if (scf_error() != SCF_ERROR_NOT_FOUND) {
+			goto fail;
+		}
+		if (scf_instance_add_pg(inst, PG_PERIODIC_RESTARTER,
+		    SCF_GROUP_FRAMEWORK, 0, pg) == 0) {
+			return (true);
+		}
+		if (scf_error() != SCF_ERROR_EXISTS) {
+			goto fail;
+		}
+	}
+	return (true);
+
+fail:
+	logmsg(_("%s: failed to get or create %s property group: %s"),
+	    svc->ps_fmri, PG_PERIODIC_RESTARTER, scf_strerror(scf_error()));
+	return (false);
+}
+
+/*
  * Write svc's last and next run times to its periodic_restarter property
  * group, creating it if needed.
  */
@@ -1665,22 +1770,8 @@ store_run_times(periodic_svc_t *svc, void *arg __unused)
 		return (false);
 	}
 
-	/*
-	 * Get the property group, creating it (persistent, so flags of 0) if
-	 * needed. If someone else creates it between our get and add, the
-	 * add fails with EXISTS, so get it again.
-	 */
-	while (scf_instance_get_pg(inst, PG_PERIODIC_RESTARTER, pg) != 0) {
-		if (scf_error() != SCF_ERROR_NOT_FOUND) {
-			goto pg_fail;
-		}
-		if (scf_instance_add_pg(inst, PG_PERIODIC_RESTARTER,
-		    SCF_GROUP_FRAMEWORK, 0, pg) == 0) {
-			break;
-		}
-		if (scf_error() != SCF_ERROR_EXISTS) {
-			goto pg_fail;
-		}
+	if (!get_periodic_pg(svc)) {
+		return (false);
 	}
 
 	if (!tx_commit(svc, PG_PERIODIC_RESTARTER, tx_set_run_times, NULL)) {
@@ -1688,11 +1779,6 @@ store_run_times(periodic_svc_t *svc, void *arg __unused)
 	}
 	svc->ps_saved_boot = boot_time;
 	return (true);
-
-pg_fail:
-	logmsg(_("%s: failed to get or create %s property group: %s"),
-	    svc->ps_fmri, PG_PERIODIC_RESTARTER, scf_strerror(scf_error()));
-	return (false);
 }
 
 /*
@@ -1703,6 +1789,49 @@ save_run_times(periodic_svc_t *svc)
 {
 	return (with_rebind(svc, store_run_times, NULL,
 	    _("save run times")));
+}
+
+static bool tx_set_num(const char *, const char *, const char *, scf_type_t,
+    int64_t);
+
+static bool
+tx_set_faults(periodic_svc_t *svc, void *arg __unused)
+{
+	return (tx_set_num(svc->ps_fmri, PG_PERIODIC_RESTARTER,
+	    PROP_FAULT_COUNT, SCF_TYPE_COUNT, svc->ps_fault_count) &&
+	    tx_set_num(svc->ps_fmri, PG_PERIODIC_RESTARTER,
+	    PROP_FAULT_DEGRADED, SCF_TYPE_BOOLEAN, svc->ps_fault_degraded));
+}
+
+static bool
+store_faults(periodic_svc_t *svc, void *arg __unused)
+{
+	if (scf_handle_decode_fmri(rep_hdl, svc->ps_fmri, NULL, NULL, inst,
+	    NULL, NULL, 0) != 0) {
+		logmsg(_("%s: failed to decode fmri: %s"), svc->ps_fmri,
+		    scf_strerror(scf_error()));
+		return (false);
+	}
+
+	if (!get_periodic_pg(svc)) {
+		return (false);
+	}
+
+	return (tx_commit(svc, PG_PERIODIC_RESTARTER, tx_set_faults, NULL));
+}
+
+/*
+ * Save svc's fault state (ps_fault_count and ps_fault_degraded) to the
+ * repository, so that it survives a restart of svc.periodicd.
+ */
+bool
+save_faults(periodic_svc_t *svc)
+{
+	if (!with_rebind(svc, store_faults, NULL, _("save fault state"))) {
+		logmsg(_("%s: couldn't save fault state"), svc->ps_fmri);
+		return (false);
+	}
+	return (true);
 }
 
 /*
@@ -1921,6 +2050,201 @@ set_aux_state(periodic_svc_t *svc, periodic_aux_t aux)
 }
 
 /*
+ * Add setting the count, time or boolean (per type) property name of pgname
+ * to n to the transaction xact, as tx_set_time() does.
+ */
+static bool
+tx_set_num(const char *svc_fmri, const char *pgname, const char *name,
+    scf_type_t type, int64_t n)
+{
+	scf_transaction_entry_t	*e;
+	scf_value_t		*v;
+
+	VERIFY(type == SCF_TYPE_COUNT || type == SCF_TYPE_TIME ||
+	    type == SCF_TYPE_BOOLEAN);
+
+	if ((e = scf_entry_create(rep_hdl)) == NULL) {
+		logmsg(_("%s: failed to create SCF entry: %s"), svc_fmri,
+		    scf_strerror(scf_error()));
+		return (false);
+	}
+
+	if (scf_transaction_property_new(xact, e, name, type) != 0 &&
+	    scf_transaction_property_change_type(xact, e, name, type) != 0) {
+		logmsg(_("%s: failed to set %s/%s: %s"), svc_fmri, pgname,
+		    name, scf_strerror(scf_error()));
+		scf_entry_destroy(e);
+		return (false);
+	}
+	/* e now belongs to xact */
+
+	if ((v = scf_value_create(rep_hdl)) == NULL) {
+		logmsg(_("%s: failed to create SCF value: %s"), svc_fmri,
+		    scf_strerror(scf_error()));
+		return (false);
+	}
+
+	if (type == SCF_TYPE_COUNT) {
+		scf_value_set_count(v, (uint64_t)n);
+	} else if (type == SCF_TYPE_BOOLEAN) {
+		scf_value_set_boolean(v, n != 0);
+	} else if (scf_value_set_time(v, n, 0) != 0) {
+		logmsg(_("%s: failed to set %s/%s: %s"), svc_fmri, pgname,
+		    name, scf_strerror(scf_error()));
+		scf_value_destroy(v);
+		return (false);
+	}
+
+	if (scf_entry_add_value(e, v) != 0) {
+		logmsg(_("%s: failed to set %s/%s: %s"), svc_fmri, pgname,
+		    name, scf_strerror(scf_error()));
+		scf_value_destroy(v);
+		return (false);
+	}
+	/* v now belongs to e */
+
+	return (true);
+}
+
+typedef struct run_note {
+	pid_t	rn_pid;
+	ctid_t	rn_ctid;
+	int64_t	rn_start;
+} run_note_t;
+
+static bool
+tx_set_run(periodic_svc_t *svc, void *arg)
+{
+	const run_note_t *rn = arg;
+
+	if (rn->rn_ctid != -1 &&
+	    !tx_set_num(svc->ps_fmri, SCF_PG_RESTARTER, SCF_PROPERTY_CONTRACT,
+	    SCF_TYPE_COUNT, rn->rn_ctid)) {
+		return (false);
+	}
+
+	return (tx_set_num(svc->ps_fmri, SCF_PG_RESTARTER,
+	    SCF_PROPERTY_START_PID, SCF_TYPE_COUNT, rn->rn_pid) &&
+	    tx_set_num(svc->ps_fmri, SCF_PG_RESTARTER,
+	    SCF_PROPERTY_START_METHOD_TIMESTAMP, SCF_TYPE_TIME, rn->rn_start));
+}
+
+static bool
+store_run(periodic_svc_t *svc, void *arg)
+{
+	if (scf_handle_decode_fmri(rep_hdl, svc->ps_fmri, NULL, NULL, inst,
+	    NULL, NULL, 0) != 0) {
+		logmsg(_("%s: failed to decode fmri: %s"), svc->ps_fmri,
+		    scf_strerror(scf_error()));
+		return (false);
+	}
+
+	while (scf_instance_get_pg(inst, SCF_PG_RESTARTER, pg) != 0) {
+		if (scf_error() != SCF_ERROR_NOT_FOUND) {
+			goto fail;
+		}
+		if (scf_instance_add_pg(inst, SCF_PG_RESTARTER,
+		    SCF_PG_RESTARTER_TYPE, SCF_PG_RESTARTER_FLAGS, pg) == 0) {
+			break;
+		}
+		if (scf_error() != SCF_ERROR_EXISTS) {
+			goto fail;
+		}
+	}
+
+	return (tx_commit(svc, SCF_PG_RESTARTER, tx_set_run, arg));
+
+fail:
+	logmsg(_("%s: failed to get %s property group: %s"), svc->ps_fmri,
+	    SCF_PG_RESTARTER, scf_strerror(scf_error()));
+	return (false);
+}
+
+/*
+ * Record a run of svc's start method that has just started: its contract
+ * (restarter/contract; ctid is -1 if unknown), its pid (start_pid), and
+ * when it started (start_method_timestamp). As with svc.startd, these are
+ * informational, so failure is only logged.
+ */
+bool
+note_run(periodic_svc_t *svc, pid_t pid, ctid_t ctid, int64_t start)
+{
+	run_note_t rn = { .rn_pid = pid, .rn_ctid = ctid, .rn_start = start };
+
+	if (!with_rebind(svc, store_run, &rn, _("note run"))) {
+		logmsg(_("%s: couldn't record run in repository"),
+		    svc->ps_fmri);
+		return (false);
+	}
+	return (true);
+}
+
+static bool
+tx_clear_contract(periodic_svc_t *svc, void *arg __unused)
+{
+	scf_transaction_entry_t *e;
+
+	if ((e = scf_entry_create(rep_hdl)) == NULL) {
+		logmsg(_("%s: failed to create SCF entry: %s"), svc->ps_fmri,
+		    scf_strerror(scf_error()));
+		return (false);
+	}
+
+	if (scf_transaction_property_delete(xact, e,
+	    SCF_PROPERTY_CONTRACT) != 0) {
+		scf_entry_destroy(e);
+		/* Nothing to delete is fine; commit the empty transaction */
+		if (scf_error() == SCF_ERROR_NOT_FOUND) {
+			return (true);
+		}
+		logmsg(_("%s: failed to delete %s/%s: %s"), svc->ps_fmri,
+		    SCF_PG_RESTARTER, SCF_PROPERTY_CONTRACT,
+		    scf_strerror(scf_error()));
+		return (false);
+	}
+	/* e now belongs to xact */
+
+	return (true);
+}
+
+static bool
+store_clear_run(periodic_svc_t *svc, void *arg __unused)
+{
+	if (scf_handle_decode_fmri(rep_hdl, svc->ps_fmri, NULL, NULL, inst,
+	    NULL, NULL, 0) != 0) {
+		logmsg(_("%s: failed to decode fmri: %s"), svc->ps_fmri,
+		    scf_strerror(scf_error()));
+		return (false);
+	}
+
+	if (scf_instance_get_pg(inst, SCF_PG_RESTARTER, pg) != 0) {
+		if (scf_error() == SCF_ERROR_NOT_FOUND) {
+			return (true);
+		}
+		logmsg(_("%s: failed to get %s property group: %s"),
+		    svc->ps_fmri, SCF_PG_RESTARTER, scf_strerror(scf_error()));
+		return (false);
+	}
+
+	return (tx_commit(svc, SCF_PG_RESTARTER, tx_clear_contract, NULL));
+}
+
+/*
+ * Remove restarter/contract once svc's run has finished (or if it was left
+ * behind by a run that a previous svc.periodicd couldn't finish).
+ */
+bool
+clear_run(periodic_svc_t *svc)
+{
+	if (!with_rebind(svc, store_clear_run, NULL, _("clear run"))) {
+		logmsg(_("%s: couldn't remove contract from repository"),
+		    svc->ps_fmri);
+		return (false);
+	}
+	return (true);
+}
+
+/*
  * Load the periodic or scheduled data for svc from the repository. A
  * periodic service has exactly one property group of type 'periodic'. A
  * scheduled service has one or more property groups of type 'schedule',
@@ -1940,6 +2264,8 @@ load_service(periodic_svc_t *svc, void *arg __unused)
 	periodic_exec_t		exec = { 0 };
 	bool			have_start = false;
 	int64_t			saved_boot = 0;
+	uint_t			faults = 0;
+	bool			fdegraded = false;
 	scf_snapshot_t		*snapp = snap;
 	int			ret;
 
@@ -2074,7 +2400,8 @@ load_service(periodic_svc_t *svc, void *arg __unused)
 		goto fail;
 	}
 
-	if (!read_run_times(svc->ps_fmri, periodic, sched, &saved_boot)) {
+	if (!read_run_times(svc->ps_fmri, periodic, sched, &saved_boot,
+	    &faults, &fdegraded)) {
 		goto fail;
 	}
 
@@ -2086,6 +2413,8 @@ load_service(periodic_svc_t *svc, void *arg __unused)
 	svc->ps_exec.pe_method_ctx = exec.pe_method_ctx;
 	svc->ps_exec.pe_recover = exec.pe_recover;
 	svc->ps_saved_boot = saved_boot;
+	svc->ps_fault_count = faults;
+	svc->ps_fault_degraded = fdegraded;
 
 	if (periodic != NULL) {
 		svc->ps_type = PST_PERIODIC;

@@ -276,7 +276,7 @@ The next expected state of this instance.
 		    target='delegate' required='false'>
 			<description>
 				<loctext xml:lang='C'>
-Persistent run history kept by svc.periodicd so that schedules survive reboots and restarts of svc.periodicd.  A periodic service uses last_run and next_run.  Each schedule of a scheduled service uses the properties schedule-name_last_run and schedule-name_next_run, where schedule-name is the name of the schedule property group.
+Persistent run history kept by svc.periodicd so that schedules and fault tracking survive reboots and restarts of svc.periodicd.  A periodic service uses last_run and next_run.  Each schedule of a scheduled service uses the properties schedule-name_last_run and schedule-name_next_run, where schedule-name is the name of the schedule property group.  Both use fault_count and fault_degraded.
 				</loctext>
 			</description>
 			<prop_pattern name='last_run' type='time'
@@ -304,6 +304,26 @@ Time the periodic service is next due to run.
 				<description>
 					<loctext xml:lang='C'>
 Boot time of the system or zone when the run times were last written, used to tell a reboot from a restart of svc.periodicd.
+					</loctext>
+				</description>
+				<visibility value='hidden'/>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='fault_count' type='count'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+Number of consecutive runs that failed with a non-fatal fault: a non-zero exit status other than those smf_method(7) gives a specific meaning, death by a signal, or exceeding the start method's timeout_seconds.  The first such fault degrades an online instance, and the third places it in maintenance.  A successful run, and the instance coming online, reset it to 0.
+					</loctext>
+				</description>
+				<visibility value='readonly'/>
+				<cardinality min='1' max='1'/>
+			</prop_pattern>
+			<prop_pattern name='fault_degraded' type='boolean'
+			    required='false'>
+				<description>
+					<loctext xml:lang='C'>
+True if the instance is degraded because of how a run went, rather than by an administrator, so that the next successful run brings it back online.
 					</loctext>
 				</description>
 				<visibility value='hidden'/>

@@ -15,11 +15,15 @@
 
 PROG = svc.periodicd
 OBJS = \
+       exec.o \
        periodic.o \
        sched.o \
        smf.o
 
-SRCS = $(OBJS:%.o=%.c)
+ALLOBJS = $(OBJS) definit.o
+
+SRCS = $(OBJS:%.o=%.c) \
+	$(SRC)/common/definit/definit.c
 
 POFILES = $(OBJS:%.o=%.po)
 
@@ -31,7 +35,7 @@ CSTD =	$(CSTD_GNU99)
 
 $(NOT_RELEASE_BUILD)CPPFLAGS += -DDEBUG
 
-CPPFLAGS += -I. -I../common
+CPPFLAGS += -I. -I../common -I$(SRC)/common/definit
 CPPFLAGS += -D_REENTRANT
 
 CFLAGS += $(CCVERBOSE)
@@ -40,7 +44,12 @@ CFLAGS += $(CCVERBOSE)
 	$(COMPILE.c) $(OUTPUT_OPTION) $<
 	$(POST_PROCESS_O)
 
+%.o:	$(SRC)/common/definit/%.c
+	$(COMPILE.c) $(OUTPUT_OPTION) $<
+	$(POST_PROCESS_O)
+
 LDLIBS += \
+	  -lcontract \
 	  -lkstat \
 	  -lrestart \
 	  -lscf \
@@ -51,12 +60,12 @@ FILEMODE = 0555
 
 .KEEP_STATE:
 
-.PARALLEL: $(OBJS)
+.PARALLEL: $(ALLOBJS)
 
 all: $(PROG)
 
-$(PROG): $(OBJS)
-	$(LINK.c) -o $@ $(OBJS) $(LDLIBS) $(LDFLAGS) $(CTFMERGE_HOOK)
+$(PROG): $(ALLOBJS)
+	$(LINK.c) -o $@ $(ALLOBJS) $(LDLIBS) $(LDFLAGS) $(CTFMERGE_HOOK)
 	$(POST_PROCESS)
 
 $(POFILE): $(POFILES)
@@ -65,6 +74,6 @@ $(POFILE): $(POFILES)
 install: all $(ROOTLIBSVCBINPROG)
 
 clean:
-	$(RM) $(OBJS)
+	$(RM) $(ALLOBJS)
 
 include $(SRC)/cmd/Makefile.targ

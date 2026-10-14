@@ -149,7 +149,17 @@ main(int argc, const char * const argv[])
 				handle_signals();
 				break;
 			}
+			if (exec_port_event(&pe)) {
+				break;
+			}
 			logmsg(_("unexpected event on fd %d"),
+			    (int)pe.portev_object);
+			break;
+		case PORT_SOURCE_TIMER:
+			if (exec_port_event(&pe)) {
+				break;
+			}
+			logmsg(_("unexpected event from timer %d"),
 			    (int)pe.portev_object);
 			break;
 		default:
@@ -240,6 +250,14 @@ svc_schedule(periodic_svc_t *svc, periodic_start_t how)
 	 */
 	(void) note_logfile(svc);
 
+	/* As svc.startd does, a newly online instance starts afresh */
+	if (how == PSTART_ONLINE &&
+	    (svc->ps_fault_count != 0 || svc->ps_fault_degraded)) {
+		svc->ps_fault_count = 0;
+		svc->ps_fault_degraded = false;
+		(void) save_faults(svc);
+	}
+
 	svc_first_run(svc, how, (int64_t)time(NULL));
 	(void) save_run_times(svc);
 }
@@ -248,7 +266,7 @@ svc_schedule(periodic_svc_t *svc, periodic_start_t how)
  * Stop running svc on its schedule.
  * TODO: cancel any timer armed by svc_schedule().
  */
-static void
+void
 svc_unschedule(periodic_svc_t *svc __unused)
 {
 }
@@ -263,7 +281,7 @@ svc_is_online(const periodic_svc_t *svc)
 /*
  * Move svc to new_state, recording it in the repository.
  */
-static void
+void
 update_state(periodic_svc_t *svc, restarter_instance_state_t new_state,
     restarter_error_t err, restarter_str_t reason)
 {
@@ -400,13 +418,17 @@ svc_create(const char *fmri)
 		periodic_aux_t aux;
 
 		/*
-		 * If its method was running when we stopped, that run was
-		 * interrupted. TODO: once methods run in contracts, adopt or
-		 * clean up the contract here, as svc.startd and inetd do.
+		 * If its method was running when we stopped, exec_init() has
+		 * adopted the run's contract if it is still in progress.
+		 * Otherwise it has finished (or its contract was lost), and
+		 * we remove the stale restarter/contract.
 		 */
-		if (get_aux_state(svc, &aux) && aux == PA_RUNNING) {
+		if (exec_running(svc->ps_fmri)) {
+			svc->ps_running = true;
+		} else if (get_aux_state(svc, &aux) && aux == PA_RUNNING) {
 			logmsg(_("%s: method was running when %s stopped"),
 			    svc->ps_fmri, my_fmri);
+			(void) clear_run(svc);
 		}
 	}
 
@@ -590,6 +612,11 @@ handle_restarter_event(periodic_svc_t *svc, restarter_event_type_t type)
 		case RESTARTER_EVENT_TYPE_ADMIN_DEGRADED:
 		case RESTARTER_EVENT_TYPE_ADMIN_DEGRADE_IMMEDIATE:
 			if (svc->ps_state == RESTARTER_STATE_ONLINE) {
+				/* A successful run doesn't undo this */
+				if (svc->ps_fault_degraded) {
+					svc->ps_fault_degraded = false;
+					(void) save_faults(svc);
+				}
 				update_state(svc, RESTARTER_STATE_DEGRADED,
 				    RERR_NONE, admin_request_reason(svc));
 			}
@@ -713,6 +740,13 @@ init(int fd)
 	if (!init_scf()) {
 		init_done(fd, EXIT_FAILURE, NULL);
 	}
+
+	/*
+	 * Adopt any runs a previous svc.periodicd left in progress. This
+	 * needs the event port, and must happen before we receive restarter
+	 * events so that svc_create() knows which instances are running.
+	 */
+	exec_init();
 
 	ret = restarter_bind_handle(RESTARTER_EVENT_VERSION, my_fmri,
 	    event_handler, 0, &evt_hdl);
