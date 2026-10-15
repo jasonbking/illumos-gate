@@ -24,6 +24,7 @@
  * Copyright 2018 Joyent, Inc.
  * Copyright 2013 Nexenta Systems, Inc. All rights reserved.
  * Copyright 2026 Oxide Computer Company
+ * Copyright 2026 RackTop Systems, Inc.
  */
 
 /*
@@ -2828,6 +2829,7 @@ mac_rx_srs_drain(mac_soft_ring_set_t *mac_srs,
 	mblk_t			*tail;
 	timeout_id_t		tid;
 	int			cnt = 0;
+	size_t			sz = 0;
 	mac_client_impl_t	*mcip = mac_srs->srs_mcip;
 	mac_srs_rx_t		*srs_rx = &mac_srs->srs_rx;
 
@@ -2863,6 +2865,7 @@ again:
 	ASSERT3P(mac_srs->srs_last, !=, NULL);
 
 	head = mac_srs->srs_first;
+	MAC_COUNT_CHAIN(mac_srs, head, tail, cnt, sz);
 	mac_srs->srs_first = NULL;
 	mac_srs->srs_last = NULL;
 	mac_srs->srs_count = 0;
