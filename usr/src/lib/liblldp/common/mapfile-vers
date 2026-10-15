@@ -32,6 +32,7 @@ $mapfile_version 2
 SYMBOL_VERSION ILLUMOSprivate {
     global:
 	lldp_admin_status_str;
+	lldp_autoneg_caps_str;
 	lldp_cap_str;
 	lldp_caps_str;
 	lldp_chassis_str;
@@ -40,11 +41,21 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_get_neighbors;
 	lldp_get_stats;
 	lldp_link_notify;
+	lldp_mau_mode_str;
+	lldp_mau_str;
+	lldp_mgmt_addr_str;
+	lldp_mgmt_iftype_str;
 	lldp_neighbors_free;
 	lldp_oui_8023		{ ASSERT = { TYPE = OBJECT; SIZE = 3; }; };
+	lldp_oui_str;
+	lldp_pdu_free;
+	lldp_pdu_parse;
 	lldp_port_str;
 	lldp_port_typestr;
 	lldp_stats_free;
+	lldp_str_print;
+	lldp_tlv_iter_init;
+	lldp_tlv_iter_next;
 	lldp_tlv_type_str;
     local:
 	*;

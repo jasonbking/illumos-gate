@@ -422,3 +422,133 @@ lldp_tlv_type_str(lldp_tlv_type_t type)
 		return ("Unknown");
 	}
 }
+
+/*
+ * Write a printable form of a string from a TLV; see liblldp.h.
+ */
+size_t
+lldp_str_print(const lldp_str_t *s, char *buf, size_t buflen, uint_t flags)
+{
+	const uint8_t	*v = s->ls_data;
+	size_t		len = s->ls_len;
+	size_t		total = 0;
+
+	if (buflen > 0)
+		buf[0] = '\0';
+
+	/* Some implementations pad with NULs or whitespace */
+	while (len > 0 && (v[len - 1] == '\0' || v[len - 1] == ' ' ||
+	    v[len - 1] == '\t' || v[len - 1] == '\r' || v[len - 1] == '\n')) {
+		len--;
+	}
+
+	for (size_t i = 0; i < len; i++) {
+		uint8_t c = v[i];
+
+		/* CR LF is a single line break */
+		if (c == '\r' && i + 1 < len && v[i + 1] == '\n')
+			continue;
+
+		if (c == '\n' || c == '\r') {
+			total += lldp_append(buf, buflen, total, "%s",
+			    (flags & LLDP_STR_MULTILINE) ? "\n" : " ");
+		} else if (c == '\t') {
+			total += lldp_append(buf, buflen, total, " ");
+		} else if (c == '\\') {
+			total += lldp_append(buf, buflen, total, "\\\\");
+		} else if (c < 0x20 || c > 0x7e) {
+			/* Includes all non-ASCII bytes, and DEL */
+			total += lldp_append(buf, buflen, total, "\\x%02x", c);
+		} else {
+			total += lldp_append(buf, buflen, total, "%c", c);
+		}
+	}
+
+	return (total);
+}
+
+size_t
+lldp_mgmt_addr_str(const lldp_mgmt_addr_t *ma, char *buf, size_t buflen)
+{
+	uint8_t	v[1 + LLDP_MGMT_ADDR_MAX];
+	size_t	alen = MIN(ma->lma_addrlen, LLDP_MGMT_ADDR_MAX);
+
+	/* Same encoding as a network address chassis/port id */
+	v[0] = ma->lma_af;
+	(void) memcpy(v + 1, ma->lma_addr, alen);
+	return (lldp_netaddr_str(v, 1 + alen, buf, buflen));
+}
+
+const char *
+lldp_mgmt_iftype_str(lldp_mgmt_ifnum_t t)
+{
+	switch (t) {
+	case LLDP_MGMT_UNKNOWN:
+		return ("unknown");
+	case LLDP_MGMT_IFINDEX:
+		return ("ifIndex");
+	case LLDP_MGMT_SYSPORT:
+		return ("system port");
+	default:
+		return ("unknown");
+	}
+}
+
+/*
+ * RFC 4836 ifMauAutoNegCapAdvertisedBits, by bit number. The media names
+ * match lldp_mau_str(), with the duplex as HD/FD.
+ */
+static const char *autoneg_cap_names[16] = {
+	"other",		/* bOther */
+	"10BASE-T HD",		/* b10baseT */
+	"10BASE-T FD",		/* b10baseTFD */
+	"100BASE-T4",		/* b100baseT4 */
+	"100BASE-TX HD",	/* b100baseTX */
+	"100BASE-TX FD",	/* b100baseTXFD */
+	"100BASE-T2 HD",	/* b100baseT2 */
+	"100BASE-T2 FD",	/* b100baseT2FD */
+	"PAUSE",		/* bFdxPause */
+	"asym PAUSE",		/* bFdxAPause */
+	"sym PAUSE",		/* bFdxSPause */
+	"asym+sym PAUSE",	/* bFdxBPause */
+	"1000BASE-X HD",	/* b1000baseX */
+	"1000BASE-X FD",	/* b1000baseXFD */
+	"1000BASE-T HD",	/* b1000baseT */
+	"1000BASE-T FD",	/* b1000baseTFD */
+};
+
+size_t
+lldp_autoneg_caps_str(uint16_t adv, char *buf, size_t buflen)
+{
+	size_t total = 0;
+
+	if (buflen > 0)
+		buf[0] = '\0';
+
+	for (uint_t i = 0; i < ARRAY_SIZE(autoneg_cap_names); i++) {
+		if ((adv & LLDP_AUTONEG_CAP(i)) == 0)
+			continue;
+		total += lldp_append(buf, buflen, total, "%s%s",
+		    (total > 0) ? "," : "", autoneg_cap_names[i]);
+	}
+
+	if (total == 0)
+		total = lldp_append(buf, buflen, 0, "none");
+
+	return (total);
+}
+
+const char *
+lldp_oui_str(uint32_t oui)
+{
+	switch (oui) {
+	case LLDP_OUI_8021:
+		return ("IEEE 802.1");
+	case LLDP_OUI_8023:
+		return ("IEEE 802.3");
+	case LLDP_OUI_TIA:
+		return ("TIA TR-41");
+	default:
+		return (NULL);
+	}
+}

@@ -17,7 +17,9 @@ LIBRARY =	liblldp.a
 VERS =		.1
 OBJECTS =	lldp.o		\
 		lldp_door.o	\
-		lldp_mau.o
+		lldp_mau.o	\
+		lldp_pdu.o	\
+		mau.o
 
 include		$(SRC)/lib/Makefile.lib
 

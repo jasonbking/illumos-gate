@@ -215,12 +215,15 @@ lldp_ether_media_to_mau(mac_ether_media_t media)
 		return (146);		/* dot3MauType100GbaseLR1 */
 	case ETHER_MEDIA_100GBASE_FR:
 		return (145);		/* dot3MauType100GbaseFR1 */
+	case ETHER_MEDIA_100GBASE_KR:
+		return (238);		/* dot3MauType100GbaseKR1 */
+	case ETHER_MEDIA_100GBASE_CR:
+		return (237);		/* dot3MauType100GbaseCR1 */
+	case ETHER_MEDIA_100GBASE_SR:
+		return (231);		/* dot3MauType100GbaseSR1 */
 	case ETHER_MEDIA_100GBASE_CAUI4:
 	case ETHER_MEDIA_100GBASE_AOC4:
 	case ETHER_MEDIA_100GBASE_ACC4:
-	case ETHER_MEDIA_100GBASE_KR:
-	case ETHER_MEDIA_100GBASE_CR:
-	case ETHER_MEDIA_100GBASE_SR:
 		return (101);		/* dot3MauType100GbaseR */
 
 	/* 200 Gbit/s */
@@ -238,11 +241,14 @@ lldp_ether_media_to_mau(mac_ether_media_t media)
 		return (130);		/* dot3MauType200GbaseLR4 */
 	case ETHER_MEDIA_200GBASE_ER4:
 		return (134);		/* dot3MauType200GbaseER4 */
+	case ETHER_MEDIA_200GBASE_KR2:
+		return (240);		/* dot3MauType200GbaseKR2 */
+	case ETHER_MEDIA_200GBASE_CR2:
+		return (239);		/* dot3MauType200GbaseCR2 */
+	case ETHER_MEDIA_200GBASE_SR2:
+		return (233);		/* dot3MauType200GbaseSR2 */
 	case ETHER_MEDIA_200GAUI_4:
 	case ETHER_MEDIA_200GAUI_2:
-	case ETHER_MEDIA_200GBASE_KR2:
-	case ETHER_MEDIA_200GBASE_CR2:
-	case ETHER_MEDIA_200GBASE_SR2:
 		return (127);		/* dot3MauType200GbaseR */
 
 	/* 400 Gbit/s */
@@ -256,16 +262,17 @@ lldp_ether_media_to_mau(mac_ether_media_t media)
 		return (137);		/* dot3MauType400GbaseDR4 */
 	case ETHER_MEDIA_400GBASE_FR4:
 		return (147);		/* dot3MauType400GbaseFR4 */
+	case ETHER_MEDIA_400GBASE_KR4:
+		return (242);		/* dot3MauType400GbaseKR4 */
+	case ETHER_MEDIA_400GBASE_CR4:
+		return (241);		/* dot3MauType400GbaseCR4 */
+	case ETHER_MEDIA_400GBASE_SR4:
+		/* 400GBASE-SR4 (802.3db), not 400GBASE-SR4.2 */
+		return (235);		/* dot3MauType400GbaseSR4 */
 	case ETHER_MEDIA_400GAUI_8:
 	case ETHER_MEDIA_400GBASE_KR8:
 	case ETHER_MEDIA_400GAUI_4:
-	case ETHER_MEDIA_400GBASE_KR4:
-	case ETHER_MEDIA_400GBASE_CR4:
-	case ETHER_MEDIA_400GBASE_SR4:
-		/*
-		 * 400GBASE-SR4 (802.3db) is not 400GBASE-SR4.2, and there
-		 * are no MAU types for the others.
-		 */
+		/* There's no MAU type for 400GBASE-KR8 (non-IEEE) */
 		return (135);		/* dot3MauType400GbaseR */
 	}
 
