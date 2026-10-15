@@ -979,6 +979,32 @@ svc_first_run(periodic_svc_t *svc, periodic_start_t how, int64_t now)
 }
 
 /*
+ * Record that svc ran at now: its last_run, or for a scheduled service, the
+ * last_run of each schedule that was due. Called just before svc_after_run()
+ * when a run starts (not when one is skipped).
+ */
+void
+svc_mark_run(periodic_svc_t *svc, int64_t now)
+{
+	switch (svc->ps_type) {
+	case PST_PERIODIC:
+		VERIFY3P(svc->ps_u.psu_periodic, !=, NULL);
+		svc->ps_u.psu_periodic->ps_last_run = now;
+		return;
+	case PST_SCHEDULED:
+		for (scheduled_data_t *s = svc->ps_u.psu_scheduled; s != NULL;
+		    s = s->ss_next) {
+			if (s->ss_next_run != 0 && s->ss_next_run <= now) {
+				s->ss_last_run = now;
+			}
+		}
+		return;
+	}
+
+	panic("Invalid service type %d", svc->ps_type);
+}
+
+/*
  * Set svc's next run time after it has run.
  */
 void

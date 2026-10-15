@@ -203,6 +203,13 @@ typedef struct periodic_svc {
 	 */
 	uint_t			ps_fault_count;
 	bool			ps_fault_degraded;
+	/*
+	 * The timer that fires at its next run time, while it is online
+	 * (see svc_schedule() in periodic.c). Main thread only.
+	 */
+	bool			ps_timer_created;
+	timer_t			ps_timer;
+	port_notify_t		ps_timer_pn;
 	/* boot_time as of when its run times were last saved */
 	int64_t			ps_saved_boot;
 	periodic_svctype_t	ps_type;
@@ -253,7 +260,11 @@ bool note_logfile(periodic_svc_t *);
 bool note_run(periodic_svc_t *, pid_t, ctid_t, int64_t);
 bool clear_run(periodic_svc_t *);
 
+int expand_method_tokens(const char *, scf_instance_t *, scf_snapshot_t *,
+    char **);
+
 void exec_init(void);
+void exec_refresh(void);
 int exec_start(periodic_svc_t *);
 bool exec_running(const char *);
 bool exec_kill(const char *, int);
@@ -266,6 +277,7 @@ int64_t svc_next_run(const periodic_svc_t *);
 int64_t *sched_field(scheduled_data_t *, sched_field_t);
 uint_t sched_fields_set(const scheduled_data_t *);
 void svc_first_run(periodic_svc_t *, periodic_start_t, int64_t);
+void svc_mark_run(periodic_svc_t *, int64_t);
 void svc_after_run(periodic_svc_t *, int64_t);
 
 #ifdef __cplusplus

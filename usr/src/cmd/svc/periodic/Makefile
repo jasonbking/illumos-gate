@@ -16,6 +16,7 @@
 PROG = svc.periodicd
 OBJS = \
        exec.o \
+       expand.o \
        periodic.o \
        sched.o \
        smf.o

@@ -1022,7 +1022,9 @@ exec_tmpl_activate(const periodic_svc_t *svc)
  * Run svc's start method now. Returns 0 if it was started (or was :true,
  * which finishes immediately), EBUSY if a run is already in progress (the
  * caller should skip this one), or another errno value if it couldn't be
- * started, which has been logged. Must be called on the main thread.
+ * started, which has been logged. Failing to fork or to set up the
+ * contract counts as a non-fatal fault, as a failed run does, so it may
+ * change svc's state. Must be called on the main thread.
  */
 int
 exec_start(periodic_svc_t *svc)
@@ -1139,12 +1141,21 @@ exec_start(periodic_svc_t *svc)
 	}
 
 out:
+	if (err != 0) {
+		fd_log(logfd, true, "Method \"%s\" could not be started: %s.",
+		    EXEC_METHOD, strerror(err));
+	}
+
 	if (env != NULL) {
 		free_env(env, envslots);
 	}
 	xstrfree(cmd);
 	if (logfd >= 0) {
 		(void) close(logfd);
+	}
+
+	if (err != 0) {
+		method_done(svc, EO_FAULT);
 	}
 
 	return (err);
@@ -1462,6 +1473,23 @@ exec_init(void)
 {
 	env_init();
 	exec_recover();
+}
+
+/*
+ * Re-read the global method environment (/etc/default/init), e.g. after
+ * svc.periodicd is refreshed. Runs already started keep theirs.
+ */
+void
+exec_refresh(void)
+{
+	for (size_t i = 0; i < glob_env_cnt; i++) {
+		xstrfree(glob_envp[i]);
+	}
+	umem_free(glob_envp, sizeof (char *) * glob_env_n);
+	glob_envp = NULL;
+	glob_env_n = glob_env_cnt = 0;
+
+	env_init();
 }
 
 /*

@@ -1071,7 +1071,8 @@ free_exec(periodic_exec_t *pe)
 static bool
 get_exec(const char *svc_fmri, scf_snapshot_t *snapp, periodic_exec_t *pe)
 {
-	mc_error_t *mc_err;
+	mc_error_t	*mc_err;
+	char		*expanded;
 
 	if (!get_values(pg, exec_tbl, ARRAY_SIZE(exec_tbl), pe)) {
 		return (false);
@@ -1097,6 +1098,21 @@ get_exec(const char *svc_fmri, scf_snapshot_t *snapp, periodic_exec_t *pe)
 	if (restarter_is_null_method(pe->pe_exec)) {
 		return (true);
 	}
+
+	/*
+	 * Expand the method tokens (%s, %i, %f, %m, %r and %{prop}), as
+	 * svc.startd's libscf_get_method() does. We do it when the
+	 * configuration is loaded rather than for each run; the properties
+	 * come from the same snapshot either way.
+	 */
+	if (expand_method_tokens(pe->pe_exec, inst, snapp, &expanded) != 0) {
+		logmsg(_("%s: could not expand method tokens of \"%s\": %s"),
+		    svc_fmri, pe->pe_exec, expanded);
+		free(expanded);
+		return (false);
+	}
+	free(pe->pe_exec);
+	pe->pe_exec = expanded;
 
 	mc_err = restarter_get_method_context(RESTARTER_METHOD_CONTEXT_VERSION,
 	    inst, snapp, START_METHOD, pe->pe_exec, &pe->pe_method_ctx);

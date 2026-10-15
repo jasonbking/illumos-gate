@@ -18,6 +18,7 @@
 #include <sys/types.h>
 #include <sys/signalfd.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <kstat.h>
@@ -57,6 +58,10 @@ static char *event_get_instance(restarter_event_t *);
 static void process_restarter_event(struct rst_req *);
 static bool svcs_init(void);
 static bool get_boot_time(int64_t *);
+static bool svc_is_online(const periodic_svc_t *);
+static bool svc_arm(periodic_svc_t *);
+static bool sched_port_event(const port_event_t *);
+static bool periodic_svc_valid(const void *);
 static int svc_cmp(const void *, const void *, void *);
 
 static bool do_refresh;
@@ -156,7 +161,7 @@ main(int argc, const char * const argv[])
 			    (int)pe.portev_object);
 			break;
 		case PORT_SOURCE_TIMER:
-			if (exec_port_event(&pe)) {
+			if (exec_port_event(&pe) || sched_port_event(&pe)) {
 				break;
 			}
 			logmsg(_("unexpected event from timer %d"),
@@ -169,8 +174,13 @@ main(int argc, const char * const argv[])
 		}
 
 		if (do_refresh) {
+			/*
+			 * We have no configuration of our own; instances get
+			 * refresh events of their own. Pick up any change to
+			 * /etc/default/init for the methods we run.
+			 */
 			do_refresh = false;
-			/* TODO: handle refresh */
+			exec_refresh();
 		}
 	}
 
@@ -231,8 +241,8 @@ ack_restarter_event(rst_req_t *req, int ret)
  * Start running svc on its schedule, either because it has just come online
  * (PSTART_ONLINE) or because we're resuming an instance that was already
  * online (PSTART_RESUME: svc.periodicd restarted, or a refresh). See
- * sched.c for how its next run is chosen.
- * TODO: arm a timer for the next run.
+ * sched.c for how its next run is chosen, and svc_due() for what happens
+ * then.
  */
 static void
 svc_schedule(periodic_svc_t *svc, periodic_start_t how)
@@ -260,15 +270,169 @@ svc_schedule(periodic_svc_t *svc, periodic_start_t how)
 
 	svc_first_run(svc, how, (int64_t)time(NULL));
 	(void) save_run_times(svc);
+
+	if (!svc_arm(svc)) {
+		update_state(svc, RESTARTER_STATE_MAINT, RERR_FAULT,
+		    restarter_str_method_failed);
+	}
 }
 
 /*
- * Stop running svc on its schedule.
- * TODO: cancel any timer armed by svc_schedule().
+ * Stop running svc on its schedule. A run in progress isn't affected; see
+ * handle_restarter_event().
  */
 void
-svc_unschedule(periodic_svc_t *svc __unused)
+svc_unschedule(periodic_svc_t *svc)
 {
+	if (svc->ps_timer_created) {
+		(void) timer_delete(svc->ps_timer);
+		svc->ps_timer_created = false;
+	}
+}
+
+/*
+ * The longest we let a run timer wait. The kernel converts an absolute
+ * CLOCK_REALTIME expiry into clock ticks when the timer is set, so it
+ * doesn't follow a step in the system time (e.g. NTP setting the clock
+ * after boot). By never waiting longer than this, svc_due() notices such a
+ * change within RUN_TIMER_MAX_WAIT seconds.
+ */
+#define	RUN_TIMER_MAX_WAIT	300
+
+/*
+ * Arm svc's timer (creating it if need be) to fire at its next run time, or
+ * in RUN_TIMER_MAX_WAIT seconds if that is sooner. Each instance has a
+ * timer_create(3C) timer that delivers its expiry to the main loop's event
+ * port, as exec.c does for method timeouts. A run time that has already
+ * passed fires at once. Returns false if the timer couldn't be set, in
+ * which case svc would never run.
+ */
+static bool
+svc_arm(periodic_svc_t *svc)
+{
+	struct itimerspec	its = { 0 };
+	int64_t			next = svc_next_run(svc);
+	int64_t			now;
+
+	if (next == INT64_MAX) {
+		/* It never runs again; sched.c has logged why */
+		svc_unschedule(svc);
+		return (true);
+	}
+
+	if (!svc->ps_timer_created) {
+		struct sigevent sev = { 0 };
+
+		svc->ps_timer_pn.portnfy_port = evport;
+		svc->ps_timer_pn.portnfy_user = svc;
+		sev.sigev_notify = SIGEV_PORT;
+		sev.sigev_value.sival_ptr = &svc->ps_timer_pn;
+
+		if (timer_create(CLOCK_REALTIME, &sev, &svc->ps_timer) != 0) {
+			logmsg(_("%s: failed to create run timer: %s"),
+			    svc->ps_fmri, strerror(errno));
+			return (false);
+		}
+		svc->ps_timer_created = true;
+	}
+
+	now = (int64_t)time(NULL);
+	if (next > now + RUN_TIMER_MAX_WAIT) {
+		next = now + RUN_TIMER_MAX_WAIT;
+	}
+
+	/* An it_value of 0 would disarm the timer instead */
+	its.it_value.tv_sec = (time_t)MAX(next, 1);
+	if (timer_settime(svc->ps_timer, TIMER_ABSTIME, &its, NULL) != 0) {
+		logmsg(_("%s: failed to set run timer: %s"), svc->ps_fmri,
+		    strerror(errno));
+		svc_unschedule(svc);
+		return (false);
+	}
+
+	return (true);
+}
+
+/*
+ * svc's timer has fired: run it if it is due, then arm the timer for its
+ * next run.
+ *
+ * As periodic.xml describes, if the previous run is still in progress, this
+ * one is skipped, and for a scheduled service, every schedule that is due
+ * is skipped with it. Either way the schedules that were due move on to
+ * their next run times, which are saved before the method is started, so
+ * that if we are restarted we don't run it again. last_run records only
+ * runs that happened.
+ */
+static void
+svc_due(periodic_svc_t *svc)
+{
+	int64_t	now = (int64_t)time(NULL);
+	bool	skip;
+	int	ret;
+
+	if (!svc_is_online(svc)) {
+		/* svc_unschedule() raced with the timer; nothing to do */
+		return;
+	}
+
+	if (svc_next_run(svc) > now) {
+		/*
+		 * Not due yet: the timer waited RUN_TIMER_MAX_WAIT, went off a
+		 * little early, or this is a stale expiry. Wait some more.
+		 */
+		if (!svc_arm(svc)) {
+			update_state(svc, RESTARTER_STATE_MAINT, RERR_FAULT,
+			    restarter_str_method_failed);
+		}
+		return;
+	}
+
+	skip = exec_running(svc->ps_fmri);
+	if (skip) {
+		logmsg(_("%s: previous run still in progress; skipping this "
+		    "run"), svc->ps_fmri);
+	} else {
+		svc_mark_run(svc, now);
+	}
+	svc_after_run(svc, now);
+	(void) save_run_times(svc);
+
+	if (!skip) {
+		/*
+		 * exec_start() logs its own failures, and counts a failure
+		 * to start the method as a fault, which may have changed
+		 * svc's state by the time it returns.
+		 */
+		ret = exec_start(svc);
+		VERIFY3S(ret, !=, EBUSY);
+	}
+
+	if (svc_is_online(svc) && !svc_arm(svc)) {
+		update_state(svc, RESTARTER_STATE_MAINT, RERR_FAULT,
+		    restarter_str_method_failed);
+	}
+}
+
+/*
+ * Called by the main loop for each timer event exec.c doesn't claim.
+ * Returns true if it was an instance's run timer (and has been handled).
+ * An expiry can still be queued after svc_unschedule() deletes the timer
+ * (or even after the instance is freed), so check both that pe's instance
+ * is one we manage and that the timer is its current one.
+ */
+static bool
+sched_port_event(const port_event_t *pe)
+{
+	periodic_svc_t *svc = pe->portev_user;
+
+	if (!periodic_svc_valid(svc) || !svc->ps_timer_created ||
+	    (timer_t)pe->portev_object != svc->ps_timer) {
+		return (false);
+	}
+
+	svc_due(svc);
+	return (true);
 }
 
 static bool
@@ -597,7 +761,12 @@ handle_restarter_event(periodic_svc_t *svc, restarter_event_type_t type)
 		switch (type) {
 		case RESTARTER_EVENT_TYPE_DISABLE:
 		case RESTARTER_EVENT_TYPE_ADMIN_DISABLE:
-			/* TODO: deal with a method that is still running */
+			/*
+			 * As with svc.startd's transient services, a run in
+			 * progress is left to finish (its method's timeout
+			 * still applies). Its outcome no longer changes the
+			 * instance's state; see method_done() in exec.c.
+			 */
 			svc_unschedule(svc);
 			update_state(svc, RESTARTER_STATE_DISABLED,
 			    RERR_RESTART, restarter_str_disable_request);
@@ -1074,6 +1243,28 @@ periodic_svc_get(const char *fmri)
 	VERIFY0(mutex_unlock(&svcs_lock));
 
 	return (svc);
+}
+
+/*
+ * Whether p (e.g. from an event's user pointer) is a service we manage.
+ */
+static bool
+periodic_svc_valid(const void *p)
+{
+	periodic_svc_t	*svc;
+	bool		found = false;
+
+	VERIFY0(mutex_lock(&svcs_lock));
+	for (svc = uu_avl_first(svcs); svc != NULL;
+	    svc = uu_avl_next(svcs, svc)) {
+		if (svc == p) {
+			found = true;
+			break;
+		}
+	}
+	VERIFY0(mutex_unlock(&svcs_lock));
+
+	return (found);
 }
 
 /*

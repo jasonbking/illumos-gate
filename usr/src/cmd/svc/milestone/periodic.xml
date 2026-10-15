@@ -106,7 +106,7 @@ periodic and scheduled task restarter
 		    target='delegate' required='false'>
 			<description>
 				<loctext xml:lang='C'>
-Communicate restarter-set status of the service.  Periodic and scheduled services behave like transient services: each time the service is due, svc.periodicd runs the start method in a new process contract, logs its output to the logfile, and waits for the contract to empty.  The instance remains online between runs.  If a run is still in progress when the service is next due, that run is skipped and the service is scheduled for the following time.  For a scheduled service with several schedules, a run started by any schedule causes every schedule that comes due while it is running to be skipped.
+Communicate restarter-set status of the service.  Periodic and scheduled services behave like transient services: each time the service is due, svc.periodicd runs the start method in a new process contract, logs its output to the logfile, and waits for the contract to empty.  The instance remains online between runs.  If a run is still in progress when the service is next due, that run is skipped and the service is scheduled for the following time.  For a scheduled service with several schedules, a run started by any schedule causes every schedule that comes due while it is running to be skipped.  If the instance is disabled or goes offline or into maintenance while a run is in progress, the run is allowed to finish, subject to the start method's timeout_seconds.
 				</loctext>
 			</description>
 			<prop_pattern name='logfile' type='astring'
@@ -691,7 +691,7 @@ method executable
 				</common_name>
 				<description>
 					<loctext xml:lang='C'>
-The method executable may be a script, program, or keyword.
+The method executable may be a script, program, or keyword.  As with svc.startd, it is run with /sbin/sh -c, after the method tokens described in smf_method(7) are expanded.
 					</loctext>
 				</description>
 				<cardinality min='1' max='1'/>
@@ -734,7 +734,7 @@ A method may only be of type method.
 			    required='false'>
 				<description>
 					<loctext xml:lang='C'>
-Maximum number of seconds a run may take.  When the timeout expires, every process in the run's contract is killed, the run is logged as timed out, and the service is scheduled for its next run time as usual.
+Maximum number of seconds a run may take.  When the timeout expires, every process in the run's contract is killed, the run is logged as timed out, and the service is scheduled for its next run time as usual.  A timeout counts as a fault of the run: see fault_count in the periodic_restarter property group.
 					</loctext>
 				</description>
 				<cardinality min='1' max='1'/>
