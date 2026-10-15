@@ -829,9 +829,14 @@ verify_lif(const dhcp_lif_t *lif)
 		    "netmask"))
 			return (B_FALSE);
 
-		return (checkaddr(lif,
-		    (lif->lif_flags & IFF_POINTOPOINT) ? SIOCGLIFDSTADDR :
-		    SIOCGLIFBRDADDR, &lif->lif_v6peer, "peer address"));
+		if (lif->lif_flags & IFF_POINTOPOINT) {
+			return (checkaddr(lif, SIOCGLIFDSTADDR,
+			    &lif->lif_v6peer, "peer address"));
+		}
+
+		return (lif->lif_broadcast == INADDR_ANY ||
+		    checkaddr(lif, SIOCGLIFBRDADDR, &lif->lif_v6peer,
+		    "broadcast address"));
 	}
 }
 
