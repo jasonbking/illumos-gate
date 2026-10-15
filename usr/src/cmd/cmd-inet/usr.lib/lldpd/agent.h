@@ -195,6 +195,16 @@ typedef struct agent {
 	struct log		*a_log;		/* RW */
 	thread_t		a_tid;		/* RO */
 
+	/*
+	 * The link's DLPI handle. It's only open while the agent is enabled
+	 * (its admin status isn't 'disabled') and its link hasn't been
+	 * offlined (e.g. for DR) through RCM: a link with an open DLPI
+	 * stream can't be renamed or removed, so otherwise we keep out of
+	 * the way. The handle is only opened and closed by the main thread
+	 * (agent_port_open(), agent_port_close()). Before closing it, the
+	 * main thread sets a_release and waits on a_release_cv until the
+	 * agent's thread has stopped using it (see agent_release_port()).
+	 */
 	dlpi_handle_t		a_dlh;
 	dlpi_notifyid_t		a_dl_nid;
 	dlpi_info_t		a_dl_info;
@@ -203,6 +213,9 @@ typedef struct agent {
 	bool			a_exit;		/* RW */
 	bool			a_send_shutdown; /* RW: on exit */
 	bool			a_port_enabled;	/* RW */
+	bool			a_offline;	/* RW: link offlined via RCM */
+	bool			a_release;	/* RW: release DLPI handle */
+	cond_t			a_release_cv;
 
 	agent_cfg_t		a_cfg;
 	agent_phy_t		a_phy;
@@ -254,12 +267,13 @@ void	agent_init(void);
 
 agent_t	*agent_create(const char *, const char *, datalink_id_t);
 agent_t	*agent_find(const char *);
+agent_t	*agent_find_linkid(datalink_id_t);
 void	agent_start(agent_t *);
 void	agent_stop(agent_t *, bool);
 void	agent_wait(agent_t *);
 void	agent_destroy(agent_t *);
-bool	agent_enable(agent_t *);
-void	agent_disable(agent_t *);
+void	agent_offline(agent_t *);
+bool	agent_online(agent_t *);
 
 void			agent_set_cfg(agent_t *, agent_cfg_t *);
 void			agent_set_status(agent_t *, lldp_admin_status_t);

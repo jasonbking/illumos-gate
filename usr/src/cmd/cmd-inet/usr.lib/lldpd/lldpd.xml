@@ -52,6 +52,19 @@
 		<service_fmri value='svc:/network/datalink-management' />
 	</dependency>
 
+	<!--
+	     Links that appear after startup are noticed via sysevents (from
+	     dlmgmtd); without syseventd, only the links present at startup
+	     get agents.
+	-->
+	<dependency
+		name='sysevent'
+		grouping='optional_all'
+		restart_on='none'
+		type='service'>
+		<service_fmri value='svc:/system/sysevent' />
+	</dependency>
+
 	<exec_method
 		type='method'
 		name='refresh'

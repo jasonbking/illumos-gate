@@ -226,6 +226,7 @@ void lldp_neighbors_free(lldp_neighbor_t *, uint_t);
  */
 typedef struct lldp_stats {
 	char			ls_link[MAXLINKNAMELEN]; /* Agent's hw link */
+	uint32_t		ls_linkid;	/* Its datalink id */
 	lldp_agent_stats_t	ls_stats;
 } lldp_stats_t;
 
@@ -238,6 +239,22 @@ typedef struct lldp_stats {
  */
 int lldp_get_stats(const char *, lldp_stats_t **, uint_t *);
 void lldp_stats_free(lldp_stats_t *, uint_t);
+
+/*
+ * For the lldp RCM module: tell lldpd that the link with the given datalink
+ * id is being offlined (lldpd releases it), that the offline has been
+ * undone or the link is back online (lldpd reopens it), or that it has been
+ * removed (lldpd destroys its agent). Returns 0 on success, or an errno
+ * value: ENOENT if lldpd has no agent for the link, ECONNREFUSED if lldpd
+ * isn't running, EPERM if the caller lacks {PRIV_SYS_DL_CONFIG}.
+ */
+typedef enum lldp_link_event {
+	LLDP_LINK_EV_OFFLINE = 1,
+	LLDP_LINK_EV_ONLINE,
+	LLDP_LINK_EV_REMOVE,
+} lldp_link_event_t;
+
+int lldp_link_notify(lldp_link_event_t, uint32_t);
 
 const char *lldp_tlv_type_str(lldp_tlv_type_t);
 

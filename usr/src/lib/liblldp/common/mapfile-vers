@@ -39,6 +39,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_ether_media_to_mau;
 	lldp_get_neighbors;
 	lldp_get_stats;
+	lldp_link_notify;
 	lldp_neighbors_free;
 	lldp_oui_8023		{ ASSERT = { TYPE = OBJECT; SIZE = 3; }; };
 	lldp_port_str;

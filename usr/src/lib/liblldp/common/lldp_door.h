@@ -58,12 +58,31 @@
  *
  *	Returns the statistics of every agent (ldrq_link is empty), or of a
  *	single agent (named as for LLDP_DOOR_CMD_NEIGHBORS). Each record is
- *	a lldp_door_stats_t, ordered by agent name. Pagination works the
+ *	a lldp_door_stats_t (which also gives the agent's datalink id),
+ *	ordered by agent name. Pagination works the
  *	same way as for LLDP_DOOR_CMD_NEIGHBORS, except the cursor only
  *	holds the name of the last agent returned (ldc_chassis_len and
  *	ldc_port_len are zero).
  *
  *	Errors: ENOENT (no agent for ldrq_link), EINVAL (malformed request).
+ *
+ * LLDP_DOOR_CMD_LINK_OFFLINE, LLDP_DOOR_CMD_LINK_ONLINE,
+ * LLDP_DOOR_CMD_LINK_REMOVE
+ *
+ *	Sent by the lldp RCM module when the link with datalink id
+ *	ldrq_linkid is being offlined (e.g. for DR), when that's undone (or
+ *	the link is back online), and when it's been removed. On offline,
+ *	lldpd sends a shutdown LLDPDU (if it was advertising) and closes the
+ *	link, so it can be detached; on online, it reopens it (unless the
+ *	agent is disabled); on remove, it destroys the agent. No records are
+ *	returned; the request is complete when the reply is sent.
+ *
+ *	The caller must be in lldpd's zone and have {PRIV_SYS_DL_CONFIG} in
+ *	its effective set.
+ *
+ *	Errors: ENOENT (no agent for the link), EPERM (insufficient
+ *	privileges), EIO (the link couldn't be reopened), ESHUTDOWN (lldpd
+ *	is exiting).
  */
 
 #include <sys/types.h>
@@ -81,7 +100,7 @@ extern "C" {
 /* If set, overrides LLDP_DOOR_PATH (for both lldpd and liblldp) */
 #define	LLDP_DOOR_ENV		"LLDP_DOOR"
 
-#define	LLDP_DOOR_VERSION	1
+#define	LLDP_DOOR_VERSION	2
 
 /*
  * Maximum size of a reply. This is large enough for a record with the
@@ -93,6 +112,9 @@ extern "C" {
 typedef enum lldp_door_cmd {
 	LLDP_DOOR_CMD_NEIGHBORS = 1,
 	LLDP_DOOR_CMD_STATS = 2,
+	LLDP_DOOR_CMD_LINK_OFFLINE = 3,
+	LLDP_DOOR_CMD_LINK_ONLINE = 4,
+	LLDP_DOOR_CMD_LINK_REMOVE = 5,
 } lldp_door_cmd_t;
 
 /*
@@ -114,6 +136,8 @@ typedef struct lldp_door_req {
 	uint32_t		ldrq_version;	/* LLDP_DOOR_VERSION */
 	uint32_t		ldrq_cmd;	/* lldp_door_cmd_t */
 	char			ldrq_link[MAXLINKNAMELEN];
+	uint32_t		ldrq_linkid;	/* LLDP_DOOR_CMD_LINK_* */
+	uint32_t		ldrq_pad;
 	lldp_door_cursor_t	ldrq_cursor;
 } lldp_door_req_t;
 
@@ -144,6 +168,8 @@ typedef struct lldp_door_nbr {
 
 typedef struct lldp_door_stats {
 	char			lds_link[MAXLINKNAMELEN];
+	uint32_t		lds_linkid;	/* datalink_id_t */
+	uint32_t		lds_pad;
 	lldp_agent_stats_t	lds_stats;
 } lldp_door_stats_t;
 

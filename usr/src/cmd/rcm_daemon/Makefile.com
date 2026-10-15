@@ -24,6 +24,7 @@
 # Copyright 2016 Nexenta Systems, Inc.
 # Copyright 2020 Joyent, Inc.
 # Copyright 2019 Peter Tribble.
+# Copyright 2026 Jason King
 #
 
 include ../../Makefile.cmd
@@ -60,7 +61,8 @@ COMMON_MOD_SRC = \
 	$(COMMON)/pool_rcm.c \
 	$(COMMON)/mpxio_rcm.c \
 	$(COMMON)/ip_anon_rcm.c \
-	$(COMMON)/bridge_rcm.c
+	$(COMMON)/bridge_rcm.c \
+	$(COMMON)/lldp_rcm.c
 
 COMMON_PERL_SCRIPT_SRC =
 
@@ -83,7 +85,8 @@ COMMON_MOD_OBJ = \
 	pool_rcm.o \
 	mpxio_rcm.o \
 	ip_anon_rcm.o \
-	bridge_rcm.o
+	bridge_rcm.o \
+	lldp_rcm.o
 
 RCM_DAEMON = rcm_daemon
 
@@ -101,7 +104,8 @@ COMMON_RCM_MODS = \
 	SUNW_pool_rcm.so \
 	SUNW_mpxio_rcm.so \
 	SUNW_ip_anon_rcm.so \
-	SUNW_bridge_rcm.so
+	SUNW_bridge_rcm.so \
+	SUNW_lldp_rcm.so
 
 RCM_DIR = rcm
 MOD_DIR = modules
@@ -133,6 +137,7 @@ SUNW_aggr_rcm.so := LDLIBS_MODULES += -ldladm -lnvpair
 SUNW_ip_rcm.so := LDLIBS_MODULES += -linetutil -ldladm -lipmp -lipadm -lnvpair -lsocket -lgen
 SUNW_ip_anon_rcm.so := LDLIBS_MODULES += -linetutil
 SUNW_bridge_rcm.so := LDLIBS_MODULES += -ldladm -lnvpair
+SUNW_lldp_rcm.so := LDLIBS_MODULES += -ldladm -llldp -lnvpair
 SUNW_mpxio_rcm.so := LDLIBS_MODULES += -ldevinfo
 LDLIBS_MODULES += -lrcm -lc $(LDSTACKPROTECT)
 

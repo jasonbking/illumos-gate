@@ -142,10 +142,16 @@ process_reply(const char *data, size_t len, lldp_door_page_f func,
 	if (len < LLDP_DOOR_REC_OFF)
 		return (EPROTO);
 
-	ret = func(data + LLDP_DOOR_REC_OFF, len - LLDP_DOOR_REC_OFF,
-	    rep.ldrp_count, arg);
-	if (ret != 0)
-		return (ret);
+	/* Commands without a page function return no records */
+	if (func == NULL) {
+		if (rep.ldrp_count != 0)
+			return (EPROTO);
+	} else {
+		ret = func(data + LLDP_DOOR_REC_OFF, len - LLDP_DOOR_REC_OFF,
+		    rep.ldrp_count, arg);
+		if (ret != 0)
+			return (ret);
+	}
 
 	*morep = (rep.ldrp_flags & LLDP_DOOR_F_MORE) != 0;
 
@@ -161,11 +167,12 @@ process_reply(const char *data, size_t len, lldp_door_page_f func,
 }
 
 /*
- * Issue cmd (for link, or all agents if NULL), following the cursor until
- * every page has been passed to func.
+ * Issue cmd (for link, or all agents if NULL; or for the link with datalink
+ * id linkid), following the cursor until every page has been passed to
+ * func (which may be NULL if cmd returns no records).
  */
 static int
-lldp_door_request(lldp_door_cmd_t cmd, const char *link,
+lldp_door_request(lldp_door_cmd_t cmd, const char *link, uint32_t linkid,
     lldp_door_page_f func, void *arg)
 {
 	lldp_door_req_t		req = { 0 };
@@ -176,6 +183,7 @@ lldp_door_request(lldp_door_cmd_t cmd, const char *link,
 
 	req.ldrq_version = LLDP_DOOR_VERSION;
 	req.ldrq_cmd = cmd;
+	req.ldrq_linkid = linkid;
 	if (link != NULL &&
 	    strlcpy(req.ldrq_link, link, sizeof (req.ldrq_link)) >=
 	    sizeof (req.ldrq_link)) {
@@ -285,7 +293,8 @@ lldp_get_neighbors(const char *link, lldp_neighbor_t **nbrsp, uint_t *nump)
 	if (nbrsp == NULL || nump == NULL)
 		return (EINVAL);
 
-	ret = lldp_door_request(LLDP_DOOR_CMD_NEIGHBORS, link, nbrs_page, &na);
+	ret = lldp_door_request(LLDP_DOOR_CMD_NEIGHBORS, link, 0, nbrs_page,
+	    &na);
 	if (ret != 0) {
 		lldp_neighbors_free(na.na_nbrs, na.na_num);
 		return (ret);
@@ -337,6 +346,7 @@ stats_page(const char *data, size_t len, uint32_t count, void *arg)
 		(void) memset(s, '\0', sizeof (*s));
 		(void) memcpy(s->ls_link, rec.lds_link, sizeof (s->ls_link));
 		s->ls_link[sizeof (s->ls_link) - 1] = '\0';
+		s->ls_linkid = rec.lds_linkid;
 		s->ls_stats = rec.lds_stats;
 	}
 
@@ -352,7 +362,7 @@ lldp_get_stats(const char *link, lldp_stats_t **statsp, uint_t *nump)
 	if (statsp == NULL || nump == NULL)
 		return (EINVAL);
 
-	ret = lldp_door_request(LLDP_DOOR_CMD_STATS, link, stats_page, &sa);
+	ret = lldp_door_request(LLDP_DOOR_CMD_STATS, link, 0, stats_page, &sa);
 	if (ret != 0) {
 		lldp_stats_free(sa.sa_stats, sa.sa_num);
 		return (ret);
@@ -367,4 +377,26 @@ void
 lldp_stats_free(lldp_stats_t *stats, uint_t num __unused)
 {
 	free(stats);
+}
+
+int
+lldp_link_notify(lldp_link_event_t ev, uint32_t linkid)
+{
+	lldp_door_cmd_t cmd;
+
+	switch (ev) {
+	case LLDP_LINK_EV_OFFLINE:
+		cmd = LLDP_DOOR_CMD_LINK_OFFLINE;
+		break;
+	case LLDP_LINK_EV_ONLINE:
+		cmd = LLDP_DOOR_CMD_LINK_ONLINE;
+		break;
+	case LLDP_LINK_EV_REMOVE:
+		cmd = LLDP_DOOR_CMD_LINK_REMOVE;
+		break;
+	default:
+		return (EINVAL);
+	}
+
+	return (lldp_door_request(cmd, NULL, linkid, NULL, NULL));
 }

@@ -21,12 +21,15 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <libscf.h>
+#include <priv.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ucred.h>
 #include <umem.h>
 #include <unistd.h>
+#include <zone.h>
 #include <sys/debug.h>
 #include <sys/sysmacros.h>
 
@@ -281,6 +284,7 @@ door_stats(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
 		}
 
 		(void) strlcpy(rec.lds_link, a->a_name, sizeof (rec.lds_link));
+		rec.lds_linkid = a->a_linkid;
 		mutex_enter(&a->a_lock);
 		rec.lds_stats = a->a_stats;
 		mutex_exit(&a->a_lock);
@@ -299,6 +303,87 @@ door_stats(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
 done:
 	mutex_exit(&agent_list_lock);
 	return (off);
+}
+
+/*
+ * The link commands change what lldpd is doing (and are only meant for the
+ * lldp RCM module, which runs in rcm_daemon), so the caller must be in our
+ * zone and be allowed to configure datalinks. The read-only commands are
+ * open to anyone, like 'dladm show-link'.
+ */
+static int
+door_check_link_privs(uint32_t cmd)
+{
+	ucred_t			*uc = NULL;
+	const priv_set_t	*eset;
+	int			ret = 0;
+
+	if (door_ucred(&uc) != 0) {
+		ret = errno;
+		log_syserr(log, "failed to get door caller credentials", ret);
+		return (ret);
+	}
+
+	if (ucred_getzoneid(uc) != getzoneid()) {
+		ret = EPERM;
+	} else if ((eset = ucred_getprivset(uc, PRIV_EFFECTIVE)) == NULL ||
+	    !priv_ismember(eset, PRIV_SYS_DL_CONFIG)) {
+		ret = EPERM;
+	}
+
+	if (ret != 0) {
+		log_warn(log, "door caller not permitted to make request",
+		    LOG_T_UINT32, "cmd", cmd,
+		    LOG_T_INT32, "pid", (int32_t)ucred_getpid(uc),
+		    LOG_T_UINT32, "euid", (uint32_t)ucred_geteuid(uc),
+		    LOG_T_INT32, "zoneid", (int32_t)ucred_getzoneid(uc),
+		    LOG_T_END);
+	}
+
+	ucred_free(uc);
+	return (ret);
+}
+
+/*
+ * LLDP_DOOR_CMD_LINK_*: hand the request to the main thread (which does
+ * all opening and closing of links), and wait for it to complete. Returns
+ * the size of the reply.
+ */
+static size_t
+door_link_op(const lldp_door_req_t *req, lldp_door_reply_t *rep)
+{
+	lldp_link_op_t	op;
+	int		ret;
+
+	switch (req->ldrq_cmd) {
+	case LLDP_DOOR_CMD_LINK_OFFLINE:
+		op = LLDP_LINK_OP_OFFLINE;
+		break;
+	case LLDP_DOOR_CMD_LINK_ONLINE:
+		op = LLDP_LINK_OP_ONLINE;
+		break;
+	case LLDP_DOOR_CMD_LINK_REMOVE:
+		op = LLDP_LINK_OP_REMOVE;
+		break;
+	default:
+		rep->ldrp_error = EINVAL;
+		return (sizeof (*rep));
+	}
+
+	if ((ret = door_check_link_privs(req->ldrq_cmd)) != 0) {
+		rep->ldrp_error = ret;
+		return (sizeof (*rep));
+	}
+
+	ret = lldp_link_request(op, (datalink_id_t)req->ldrq_linkid);
+	log_debug(log, "link request",
+	    LOG_T_UINT32, "cmd", req->ldrq_cmd,
+	    LOG_T_UINT32, "linkid", req->ldrq_linkid,
+	    LOG_T_INT32, "error", ret,
+	    LOG_T_END);
+
+	rep->ldrp_error = ret;
+	return (sizeof (*rep));
 }
 
 static void
@@ -340,6 +425,11 @@ lldp_door_server(void *cookie __unused, char *argp, size_t argsz,
 		break;
 	case LLDP_DOOR_CMD_STATS:
 		len = door_stats(&req, door_reply_buf, LLDP_DOOR_REPLY_MAX);
+		break;
+	case LLDP_DOOR_CMD_LINK_OFFLINE:
+	case LLDP_DOOR_CMD_LINK_ONLINE:
+	case LLDP_DOOR_CMD_LINK_REMOVE:
+		len = door_link_op(&req, rep);
 		break;
 	default:
 		rep->ldrp_error = EINVAL;

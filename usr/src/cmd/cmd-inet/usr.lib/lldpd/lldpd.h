@@ -51,6 +51,19 @@ void cancel_fd(int);
 extern dladm_handle_t dl_handle;
 
 void lldp_set_log_level(log_level_t);
+void lldp_priv_bracket(bool);
+
+/*
+ * Requests (from lldp_rcm, via the door) about a link that's being
+ * reconfigured. See lldp_link_request().
+ */
+typedef enum lldp_link_op {
+	LLDP_LINK_OP_OFFLINE,	/* Release the link (e.g. for DR) */
+	LLDP_LINK_OP_ONLINE,	/* Undo LLDP_LINK_OP_OFFLINE */
+	LLDP_LINK_OP_REMOVE,	/* The link is gone; destroy its agent */
+} lldp_link_op_t;
+
+int lldp_link_request(lldp_link_op_t, datalink_id_t);
 
 #ifdef __cplusplus
 }

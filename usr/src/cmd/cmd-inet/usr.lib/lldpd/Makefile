@@ -57,7 +57,9 @@ LDLIBS +=	-lcustr		\
 		-ldladm		\
 		-ldlpi		\
 		-llldp		\
+		-lnvpair	\
 		-lscf		\
+		-lsysevent	\
 		-ltopo		\
 		-lumem		\
 		-luutil

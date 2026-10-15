@@ -32,6 +32,9 @@ file path=usr/lib/$(ARCH64)/liblldp.so.1
 dir  path=usr/lib/inet
 file path=usr/lib/inet/lldpd mode=0555
 file path=usr/lib/liblldp.so.1
+dir  path=usr/lib/rcm
+dir  path=usr/lib/rcm/modules
+file path=usr/lib/rcm/modules/SUNW_lldp_rcm.so mode=0555
 dir  path=usr/sbin
 file path=usr/sbin/lldp mode=0555
 license lic_CDDL license=lic_CDDL

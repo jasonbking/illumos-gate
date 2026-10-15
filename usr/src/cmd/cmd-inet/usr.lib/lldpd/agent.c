@@ -77,6 +77,10 @@ static void tx_send(agent_t *, bool);
 static void agent_send_shutdown(agent_t *);
 static void agent_port_update(agent_t *, bool);
 static void agent_port_switch(agent_t *);
+static bool agent_port_open(agent_t *);
+static void agent_port_close(agent_t *);
+static void agent_port_sync(agent_t *);
+static void agent_release_port(agent_t *);
 static void rx_process_frame(agent_t *);
 
 static const uint_t	lldp_sap = 0x88cc;
@@ -138,6 +142,7 @@ agent_create(const char *name, const char *linkname, datalink_id_t linkid)
 
 	VERIFY0(mutex_init(&a->a_lock, USYNC_THREAD|LOCK_ERRORCHECK, NULL));
 	VERIFY0(cond_init(&a->a_cv, USYNC_THREAD, NULL));
+	VERIFY0(cond_init(&a->a_release_cv, USYNC_THREAD, NULL));
 	uu_list_node_init(a, &a->a_node, agent_list_pool);
 
 	a->a_name = xstrdup(name);
@@ -168,17 +173,26 @@ agent_create(const char *name, const char *linkname, datalink_id_t linkid)
 	a->a_dl_cb.fc_fn = recv_frame;
 	a->a_dl_cb.fc_arg = a;
 
-	if (!open_port(a)) {
-		agent_destroy(a);
-		return (NULL);
-	}
-
 	agent_update_phy(a);
 
-	/* The port id may need the link's MAC address, so do this last */
-	mutex_enter(&a->a_lock);
-	agent_port_update(a, false);
-	mutex_exit(&a->a_lock);
+	/*
+	 * A disabled agent leaves its link closed. Otherwise, failing to
+	 * open the link means we can't run an agent on it at all.
+	 */
+	if (a->a_cfg.ac_status != LLDP_LINK_DISABLED) {
+		if (!agent_port_open(a)) {
+			agent_destroy(a);
+			return (NULL);
+		}
+	} else {
+		log_info(a->a_log, "agent is disabled; not opening link",
+		    LOG_T_END);
+
+		/* Without the link open, the port id can't be its address */
+		mutex_enter(&a->a_lock);
+		agent_port_update(a, false);
+		mutex_exit(&a->a_lock);
+	}
 
 	ret = thr_create(NULL, 0, agent_thread, a, THR_SUSPENDED, &a->a_tid);
 	if (ret != 0)
@@ -267,8 +281,11 @@ agent_destroy(agent_t *a)
 	agent_stop(a, false);
 	agent_wait(a);
 
-	if (a->a_dlh != NULL)
+	if (a->a_dlh != NULL) {
+		cancel_fd(dlpi_fd(a->a_dlh));
 		dlpi_close(a->a_dlh);
+		a->a_dlh = NULL;
+	}
 
 	/*
 	 * Free the neighbors (and any in-flight neighbor) first; their
@@ -297,34 +314,10 @@ agent_destroy(agent_t *a)
 	free(a->a_linkname);
 	if (a->a_neighbors != NULL)
 		uu_list_destroy(a->a_neighbors);
+	VERIFY0(cond_destroy(&a->a_release_cv));
 	VERIFY0(cond_destroy(&a->a_cv));
 	VERIFY0(mutex_destroy(&a->a_lock));
 	umem_free(a, sizeof (*a));
-}
-
-bool
-agent_enable(agent_t *a)
-{
-	VERIFY(!IS_AGENT_THREAD(a));
-
-	mutex_enter(&a->a_lock);
-	a->a_port_enabled = true;
-	VERIFY0(cond_signal(&a->a_cv));
-	log_info(a->a_log, "port enabled", LOG_T_END);
-	mutex_exit(&a->a_lock);
-	return (true);
-}
-
-void
-agent_disable(agent_t *a)
-{
-	VERIFY(!IS_AGENT_THREAD(a));
-
-	mutex_enter(&a->a_lock);
-	a->a_port_enabled = false;
-	VERIFY0(cond_signal(&a->a_cv));
-	log_info(a->a_log, "port disabled", LOG_T_END);
-	mutex_exit(&a->a_lock);
 }
 
 /*
@@ -381,6 +374,9 @@ agent_set_cfg(agent_t *a, agent_cfg_t *cfg)
 	mutex_exit(&a->a_lock);
 
 	config_agent_cfg_free(&old);
+
+	/* The agent may have been enabled or disabled */
+	agent_port_sync(a);
 }
 
 void
@@ -409,6 +405,8 @@ agent_set_status(agent_t *a, lldp_admin_status_t status)
 	    LOG_T_STRING, "new_status", lldp_admin_status_str(status),
 	    LOG_T_END);
 	mutex_exit(&a->a_lock);
+
+	agent_port_sync(a);
 }
 
 lldp_admin_status_t
@@ -463,14 +461,6 @@ agent_thread(void *arg)
 
 	VERIFY0(pthread_setname_np(pthread_self(), a->a_name));
 
-	if (!schedule_fd(dlpi_fd(a->a_dlh), &a->a_dl_cb)) {
-		log_fatal(SMF_EXIT_ERR_FATAL, log,
-		    "failed to schedule port",
-		    LOG_T_STRING, "errmsg", strerror(errno),
-		    LOG_T_UINT32, "errno", errno,
-		    LOG_T_END);
-	}
-
 	run_tx = tx_machine(a);
 	run_rx = rx_machine(a);
 	run_ttr = ttr_machine(a);
@@ -502,6 +492,20 @@ agent_thread(void *arg)
 		 * ticks that are due.
 		 */
 		while (!run_tx && !run_rx && !run_ttr) {
+			/*
+			 * The main thread wants to close the link. This is
+			 * checked once the state machines are idle, so that
+			 * if the agent was just disabled, the tx state
+			 * machine has already sent its shutdown LLDPDU.
+			 */
+			if (a->a_release) {
+				agent_release_port(a);
+				run_tx = tx_next_state(&a->a_tx);
+				run_rx = rx_next_state(a);
+				run_ttr = ttr_next_state(&a->a_ttr);
+				continue;
+			}
+
 			lldp_clock_reltime(&a->a_clk, &rel);
 			ret = cond_reltimedwait(&a->a_cv, &a->a_lock, &rel);
 			VERIFY(ret == 0 || ret == ETIME || ret == EINTR);
@@ -1439,6 +1443,13 @@ tx_send(agent_t *a, bool shutdown)
 
 	ASSERT(MUTEX_HELD(&a->a_lock));
 
+	if (a->a_dlh == NULL) {
+		log_debug(tx->tx_log, "link is closed; not sending",
+		    LOG_T_BOOLEAN, "shutdown", shutdown,
+		    LOG_T_END);
+		return;
+	}
+
 	if (len == 0) {
 		log_error(tx->tx_log, "link has no maximum SDU; not sending",
 		    LOG_T_END);
@@ -1488,6 +1499,16 @@ recv_frame(int fd __unused, void *arg)
 	VERIFY3U(thr_self(), !=, a->a_tid);
 
 	mutex_enter(&a->a_lock);
+
+	/*
+	 * agent_port_close() dissociates the handle before closing it, which
+	 * also discards any event that's pending for it, so this shouldn't
+	 * happen; but if it did, there's nothing to read (or reschedule).
+	 */
+	if (a->a_dlh == NULL) {
+		mutex_exit(&a->a_lock);
+		return;
+	}
 
 	/*
 	 * Size the receive buffer to the link's current maximum SDU. This
@@ -1981,6 +2002,175 @@ fail:
 }
 
 /*
+ * Open the agent's link (if it isn't already) and start receiving on it.
+ * The port becomes enabled when DLPI reports the link is up. Only called
+ * from the main thread.
+ */
+static bool
+agent_port_open(agent_t *a)
+{
+	bool ok;
+
+	VERIFY(!IS_AGENT_THREAD(a));
+
+	mutex_enter(&a->a_lock);
+	if (a->a_dlh != NULL) {
+		mutex_exit(&a->a_lock);
+		return (true);
+	}
+
+	/* Opening a DLPI link requires net_rawaccess */
+	lldp_priv_bracket(true);
+	ok = open_port(a);
+	lldp_priv_bracket(false);
+
+	if (ok && !schedule_fd(dlpi_fd(a->a_dlh), &a->a_dl_cb)) {
+		dlpi_close(a->a_dlh);
+		a->a_dlh = NULL;
+		ok = false;
+	}
+
+	if (ok) {
+		log_info(a->a_log, "opened link", LOG_T_END);
+
+		/* The port id may need the link's MAC address */
+		agent_port_update(a, true);
+		VERIFY0(cond_signal(&a->a_cv));
+	} else {
+		log_warn(a->a_log, "failed to open link", LOG_T_END);
+	}
+
+	mutex_exit(&a->a_lock);
+	return (ok);
+}
+
+/*
+ * Close the agent's link, so it can be renamed or removed. If the agent's
+ * thread is running, it first sends a shutdown LLDPDU if it was advertising
+ * on the link (agent_release_port()). The agent's state machines see the
+ * port as disabled until the link is reopened. Only called from the main
+ * thread.
+ */
+static void
+agent_port_close(agent_t *a)
+{
+	VERIFY(!IS_AGENT_THREAD(a));
+
+	mutex_enter(&a->a_lock);
+	if (a->a_dlh == NULL) {
+		mutex_exit(&a->a_lock);
+		return;
+	}
+
+	/*
+	 * Only the main thread asks the agent's thread to exit, so if it
+	 * hasn't been asked to, it's still running and will answer.
+	 */
+	if (a->a_tid != 0 && !a->a_exit) {
+		a->a_release = true;
+		VERIFY0(cond_signal(&a->a_cv));
+		while (a->a_release)
+			(void) cond_wait(&a->a_release_cv, &a->a_lock);
+	}
+
+	/*
+	 * Dissociating the handle from the event port also discards any
+	 * event pending for it, so recv_frame() won't be called for it.
+	 */
+	cancel_fd(dlpi_fd(a->a_dlh));
+	dlpi_close(a->a_dlh);
+	a->a_dlh = NULL;
+	a->a_port_enabled = false;
+	rx_queue_flush(&a->a_rx);
+	VERIFY0(cond_signal(&a->a_cv));
+
+	log_info(a->a_log, "closed link", LOG_T_END);
+	mutex_exit(&a->a_lock);
+}
+
+/*
+ * Called by the agent's thread when the main thread wants to close the
+ * link: tell neighbors to discard our information (if we were advertising),
+ * then stop using the link.
+ */
+static void
+agent_release_port(agent_t *a)
+{
+	ASSERT(MUTEX_HELD(&a->a_lock));
+	ASSERT(IS_AGENT_THREAD(a));
+
+	agent_send_shutdown(a);
+	a->a_port_enabled = false;
+	a->a_release = false;
+	VERIFY0(cond_broadcast(&a->a_release_cv));
+}
+
+/*
+ * Open or close the agent's link as needed: it's open when the agent isn't
+ * disabled and its link hasn't been offlined. Only called from the main
+ * thread (which is the only one that changes either).
+ */
+static void
+agent_port_sync(agent_t *a)
+{
+	bool want, have;
+
+	VERIFY(!IS_AGENT_THREAD(a));
+
+	mutex_enter(&a->a_lock);
+	want = !a->a_offline && a->a_cfg.ac_status != LLDP_LINK_DISABLED;
+	have = (a->a_dlh != NULL);
+	mutex_exit(&a->a_lock);
+
+	if (want && !have)
+		(void) agent_port_open(a);
+	else if (!want && have)
+		agent_port_close(a);
+}
+
+/*
+ * The agent's link is being offlined (e.g. for DR): release it. It stays
+ * closed until agent_online(), regardless of the agent's admin status.
+ */
+void
+agent_offline(agent_t *a)
+{
+	VERIFY(!IS_AGENT_THREAD(a));
+
+	mutex_enter(&a->a_lock);
+	a->a_offline = true;
+	mutex_exit(&a->a_lock);
+
+	log_info(a->a_log, "link offlined", LOG_T_END);
+	agent_port_sync(a);
+}
+
+/*
+ * Undo agent_offline(). Returns false if the link should be open (the agent
+ * isn't disabled), but couldn't be opened.
+ */
+bool
+agent_online(agent_t *a)
+{
+	bool ok;
+
+	VERIFY(!IS_AGENT_THREAD(a));
+
+	mutex_enter(&a->a_lock);
+	a->a_offline = false;
+	mutex_exit(&a->a_lock);
+
+	log_info(a->a_log, "link onlined", LOG_T_END);
+	agent_port_sync(a);
+
+	mutex_enter(&a->a_lock);
+	ok = (a->a_dlh != NULL || a->a_cfg.ac_status == LLDP_LINK_DISABLED);
+	mutex_exit(&a->a_lock);
+
+	return (ok);
+}
+
+/*
  * Find the agent for a link, by the link's hardware name (the agent's
  * canonical name) or, if the datalink has been renamed, by its datalink
  * name. A hardware name match takes precedence, so a datalink renamed to
@@ -2005,6 +2195,23 @@ agent_find(const char *name)
 			return (a);
 	}
 
+	return (NULL);
+}
+
+/*
+ * Find the agent for a link by its datalink id. Caller must hold
+ * agent_list_lock.
+ */
+agent_t *
+agent_find_linkid(datalink_id_t linkid)
+{
+	ASSERT(MUTEX_HELD(&agent_list_lock));
+
+	for (agent_t *a = uu_list_first(agent_list); a != NULL;
+	    a = uu_list_next(agent_list, a)) {
+		if (a->a_linkid == linkid)
+			return (a);
+	}
 	return (NULL);
 }
 

@@ -43,7 +43,11 @@
 #include <libdladm.h>
 #include <libdllink.h>
 #include <liblldp.h>
+#include <libnvpair.h>
+#include <librcm.h>
 #include <libscf.h>
+#include <libsysevent.h>
+#include <sys/sysevent/eventdefs.h>
 
 #include "agent.h"
 #include "config.h"
@@ -70,6 +74,39 @@ static bool quit;
 static int evport = -1;
 static int sigfd = -1;
 
+/* Set once lldp_drop_privs() has run; see lldp_priv_bracket() */
+static bool privs_dropped;
+
+/* syseventd(8) subscription, for links that appear after startup */
+static sysevent_handle_t *sysevent_hdl;
+static log_t *sysevent_log;
+
+/*
+ * Work for the main thread, posted by other threads (door server threads
+ * and the sysevent handler) to the event port as PORT_SOURCE_USER events.
+ * Agents are only created and destroyed, and their links only opened and
+ * closed, by the main thread, which also dispatches the event port events
+ * for the agents' DLPI handles; so there's no race between closing a
+ * handle and receiving on it.
+ *
+ * If lt_wait is set, the poster waits (on lt_cv) for lt_done, and owns the
+ * task; otherwise the main thread frees it once it has run. Once
+ * tasks_closed is set (during shutdown), no more tasks are accepted, and
+ * any that are pending are cancelled (with ECANCELED) without running.
+ */
+typedef struct lldp_task {
+	void		(*lt_fn)(struct lldp_task *);
+	datalink_id_t	lt_linkid;
+	int		lt_err;
+	bool		lt_wait;
+	bool		lt_done;
+	mutex_t		lt_lock;
+	cond_t		lt_cv;
+} lldp_task_t;
+
+static mutex_t	tasks_lock = ERRORCHECKMUTEX;
+static bool	tasks_closed;
+
 static int lldp_daemonize(void);
 static int lldp_umem_nomem_cb(void);
 static void block_signals(sigset_t *);
@@ -79,7 +116,12 @@ static void lldp_main(void);
 static void lldp_fini(void);
 static void lldp_drop_privs(void);
 static void lldp_create_agents(void);
+static bool lldp_agent_add(datalink_id_t);
 static void lldp_handle_sig(int, void *);
+static void lldp_task_done(lldp_task_t *);
+static void lldp_tasks_drain(void);
+static void lldp_sysevent_init(void);
+static void lldp_sysevent_fini(void);
 
 static fd_cb_t sig_cb = {
 	.fc_fn = lldp_handle_sig,
@@ -241,6 +283,14 @@ lldp_init(void)
 		    dlret);
 	}
 
+	/*
+	 * Subscribe before looking for links, so a link that appears in
+	 * between isn't missed (one we already have an agent for is
+	 * ignored). Binding requires root, so this is done before
+	 * dropping privileges.
+	 */
+	lldp_sysevent_init();
+
 	lldp_create_agents();
 
 	/* Everything that needs privileges has been done */
@@ -252,10 +302,11 @@ lldp_init(void)
 /*
  * Privileges
  *
- * Everything lldpd needs privileges for happens during initialization:
- * taking a topo snapshot, opening, binding, and configuring notifications
- * on each link's DLPI handle (net_rawaccess), and creating the door. After
- * that, it only uses descriptors it already has open:
+ * Almost everything lldpd needs privileges for happens during
+ * initialization: taking a topo snapshot, opening, binding, and configuring
+ * notifications on each link's DLPI handle (net_rawaccess), subscribing to
+ * sysevents, and creating the door. After that, it mostly uses descriptors
+ * it already has open:
  *
  *	- sending and receiving on the DLPI handles
  *	- reading MAC properties (DLDIOC_GETMACPROP on the dladm handle,
@@ -264,15 +315,20 @@ lldp_init(void)
  *	- reading SMF properties (on refresh)
  *	- logging (to its stdout/stderr, and syslog)
  *
- * so no privileges ever need to be re-acquired, and nothing needs
- * bracketing. Once initialized, lldpd switches to LLDPD_UID/LLDPD_GID and
- * reduces its privileges to the parts of the basic set it needs:
- * file_read and file_write (to (re)open the syslog device and the SMF
- * repository door). The limit set is cleared, so they can't be regained.
+ * Once initialized, lldpd switches to LLDPD_UID/LLDPD_GID and reduces its
+ * privileges to the parts of the basic set it needs: file_read and
+ * file_write (to (re)open the syslog device and the SMF repository door).
+ * The limit set is cleared, so nothing else can be regained.
  *
- * If support for links that appear after startup is added, net_rawaccess
- * will need to be retained (in the permitted set, but not effective) and
- * bracketed around dlpi_open() and friends.
+ * The one exception is net_rawaccess, which is needed to open a link's DLPI
+ * handle after startup: when an agent is re-enabled, when a link that was
+ * offlined (through RCM) is onlined again, or when a link appears (via
+ * sysevent). It's kept in the permitted set, but not the effective set,
+ * and only raised around opening a link (lldp_priv_bracket()).
+ *
+ * The syseventd(8) subscription for new links must be made as root, so
+ * that's done before dropping privileges too (the subscription's door
+ * remains usable afterwards).
  */
 static void
 lldp_drop_privs(void)
@@ -280,9 +336,12 @@ lldp_drop_privs(void)
 	TRACE_ENTER(log);
 
 	if (geteuid() == 0) {
-		/* P = E = basic, L cleared, uids/gids set to netadm */
+		/*
+		 * P = E = basic + net_rawaccess, L cleared, uids/gids set
+		 * to netadm
+		 */
 		if (__init_daemon_priv(PU_RESETGROUPS | PU_CLEARLIMITSET,
-		    LLDPD_UID, LLDPD_GID, NULL) != 0) {
+		    LLDPD_UID, LLDPD_GID, PRIV_NET_RAWACCESS, NULL) != 0) {
 			log_fatal_syserr(log, "failed to set daemon privileges",
 			    errno);
 		}
@@ -298,7 +357,12 @@ lldp_drop_privs(void)
 	 */
 	__fini_daemon_priv(PRIV_PROC_FORK, PRIV_PROC_EXEC, PRIV_PROC_INFO,
 	    PRIV_PROC_SESSION, PRIV_PROC_SECFLAGS, PRIV_FILE_LINK_ANY,
-	    PRIV_NET_ACCESS, PRIV_NET_RAWACCESS, NULL);
+	    PRIV_NET_ACCESS, NULL);
+
+	/* Only raised around opening a link; see lldp_priv_bracket() */
+	if (priv_set(PRIV_OFF, PRIV_EFFECTIVE, PRIV_NET_RAWACCESS, NULL) != 0)
+		log_syserr(log, "failed to lower net_rawaccess", errno);
+	privs_dropped = true;
 
 	log_info(log, "dropped privileges",
 	    LOG_T_UINT32, "uid", (uint32_t)getuid(),
@@ -306,6 +370,27 @@ lldp_drop_privs(void)
 	    LOG_T_END);
 
 	TRACE_RETURN(log);
+}
+
+/*
+ * Raise (or lower) net_rawaccess, needed to open a link, in the effective
+ * set. Until privileges are dropped (during startup), it's already
+ * effective, so this does nothing.
+ */
+void
+lldp_priv_bracket(bool on)
+{
+	if (!privs_dropped)
+		return;
+
+	if (priv_set(on ? PRIV_ON : PRIV_OFF, PRIV_EFFECTIVE,
+	    PRIV_NET_RAWACCESS, NULL) != 0) {
+		/* E.g. not started as root (so never had it) */
+		log_debug(log, "failed to change net_rawaccess",
+		    LOG_T_BOOLEAN, "raise", on,
+		    LOG_T_STRING, "errmsg", strerror(errno),
+		    LOG_T_END);
+	}
 }
 
 static void
@@ -369,6 +454,13 @@ lldp_main(void)
 			cb = pe.portev_user;
 			cb->fc_fn((int)pe.portev_object, cb->fc_arg);
 			break;
+		case PORT_SOURCE_USER: {
+			lldp_task_t *t = pe.portev_user;
+
+			t->lt_fn(t);
+			lldp_task_done(t);
+			break;
+		}
 		default:
 			log_error(log, "unexpected port event",
 			    LOG_T_UINT32, "source", pe.portev_source,
@@ -398,7 +490,14 @@ lldp_fini(void)
 
 	TRACE_ENTER(log);
 
+	/*
+	 * Stop taking requests from other threads: no more new links, no
+	 * more door calls, and cancel anything that was waiting on the main
+	 * thread (which is done processing events).
+	 */
+	lldp_sysevent_fini();
 	lldp_destroy_door();
+	lldp_tasks_drain();
 
 	/*
 	 * Agent threads never take agent_list_lock, so it's safe to hold it
@@ -420,8 +519,12 @@ lldp_fini(void)
 	TRACE_RETURN(log);
 }
 
-static int
-dladm_cb(dladm_handle_t dlh, datalink_id_t did, void *arg)
+/*
+ * Create (and start) an agent for the physical link did. Only called from
+ * the main thread.
+ */
+static bool
+lldp_agent_add(datalink_id_t did)
 {
 	datalink_class_t	class;
 	dladm_status_t		ret;
@@ -441,8 +544,15 @@ dladm_cb(dladm_handle_t dlh, datalink_id_t did, void *arg)
 		    LOG_T_STRING, "errstr", dladm_status2str(ret, buf),
 		    LOG_T_END);
 
-		/* Keep going */
-		return (DLADM_WALK_CONTINUE);
+		return (false);
+	}
+
+	if (class != DATALINK_CLASS_PHYS) {
+		log_debug(log, "not a physical link; ignoring",
+		    LOG_T_UINT32, "id", did,
+		    LOG_T_STRING, "link", link,
+		    LOG_T_END);
+		return (false);
 	}
 
 	char buf[32] = { 0 };
@@ -470,8 +580,7 @@ dladm_cb(dladm_handle_t dlh, datalink_id_t did, void *arg)
 		    LOG_T_STRING, "errstr", dladm_status2str(ret, buf),
 		    LOG_T_END);
 
-		/* Keep going */
-		return (DLADM_WALK_CONTINUE);
+		return (false);
 	}
 
 	a = agent_create(dpa.dp_dev, link, did);
@@ -480,7 +589,7 @@ dladm_cb(dladm_handle_t dlh, datalink_id_t did, void *arg)
 		    LOG_T_STRING, "agent", dpa.dp_dev,
 		    LOG_T_STRING, "link", link,
 		    LOG_T_END);
-		return (DLADM_WALK_CONTINUE);
+		return (false);
 	}
 
 	/* The agent list is sorted by name */
@@ -497,6 +606,14 @@ dladm_cb(dladm_handle_t dlh, datalink_id_t did, void *arg)
 	/* Agent threads are created suspended */
 	agent_start(a);
 
+	return (true);
+}
+
+static int
+dladm_cb(dladm_handle_t dlh __unused, datalink_id_t did, void *arg __unused)
+{
+	/* Failures are logged; keep going */
+	(void) lldp_agent_add(did);
 	return (DLADM_WALK_CONTINUE);
 }
 
@@ -512,7 +629,308 @@ lldp_create_agents(void)
 	(void) dladm_walk_datalink_id(dladm_cb, dl_handle, NULL,
 	    DATALINK_CLASS_PHYS, DATALINK_ANY_MEDIATYPE, DLADM_OPT_ACTIVE);
 
-	TRACE_RETURN(log);	
+	TRACE_RETURN(log);
+}
+
+/*
+ * Post a task to the main thread. Fails (with ESHUTDOWN) once lldpd is
+ * shutting down.
+ */
+static int
+lldp_task_post(lldp_task_t *t)
+{
+	int ret = 0;
+
+	mutex_enter(&tasks_lock);
+	if (tasks_closed)
+		ret = ESHUTDOWN;
+	else if (port_send(evport, 0, t) != 0)
+		ret = errno;
+	mutex_exit(&tasks_lock);
+
+	return (ret);
+}
+
+/*
+ * Run fn (for linkid) on the main thread, and wait for it to finish.
+ * Returns fn's result (lt_err), or why it couldn't be run.
+ */
+static int
+lldp_task_run(void (*fn)(lldp_task_t *), datalink_id_t linkid)
+{
+	lldp_task_t	t = {
+		.lt_fn = fn,
+		.lt_linkid = linkid,
+		.lt_wait = true,
+	};
+	int		ret;
+
+	VERIFY0(mutex_init(&t.lt_lock, USYNC_THREAD | LOCK_ERRORCHECK, NULL));
+	VERIFY0(cond_init(&t.lt_cv, USYNC_THREAD, NULL));
+
+	if ((ret = lldp_task_post(&t)) == 0) {
+		mutex_enter(&t.lt_lock);
+		while (!t.lt_done)
+			(void) cond_wait(&t.lt_cv, &t.lt_lock);
+		ret = t.lt_err;
+		mutex_exit(&t.lt_lock);
+	}
+
+	VERIFY0(cond_destroy(&t.lt_cv));
+	VERIFY0(mutex_destroy(&t.lt_lock));
+	return (ret);
+}
+
+/*
+ * Run fn (for linkid) on the main thread, without waiting for it.
+ */
+static int
+lldp_task_async(void (*fn)(lldp_task_t *), datalink_id_t linkid)
+{
+	lldp_task_t	*t = umem_zalloc(sizeof (*t), UMEM_NOFAIL);
+	int		ret;
+
+	t->lt_fn = fn;
+	t->lt_linkid = linkid;
+
+	if ((ret = lldp_task_post(t)) != 0)
+		umem_free(t, sizeof (*t));
+	return (ret);
+}
+
+/* Called from the main thread once a task has run (or been cancelled) */
+static void
+lldp_task_done(lldp_task_t *t)
+{
+	if (!t->lt_wait) {
+		umem_free(t, sizeof (*t));
+		return;
+	}
+
+	mutex_enter(&t->lt_lock);
+	t->lt_done = true;
+	VERIFY0(cond_signal(&t->lt_cv));
+	mutex_exit(&t->lt_lock);
+}
+
+/*
+ * Stop accepting tasks, and cancel any still pending. Called from the main
+ * thread during shutdown, after it's stopped processing events.
+ */
+static void
+lldp_tasks_drain(void)
+{
+	timespec_t	zero = { 0 };
+	port_event_t	pe;
+
+	mutex_enter(&tasks_lock);
+	tasks_closed = true;
+	mutex_exit(&tasks_lock);
+
+	while (port_get(evport, &pe, &zero) == 0) {
+		if (pe.portev_source != PORT_SOURCE_USER)
+			continue;
+
+		lldp_task_t *t = pe.portev_user;
+
+		t->lt_err = ECANCELED;
+		lldp_task_done(t);
+	}
+}
+
+/* Task: a physical link appeared (or reappeared); create its agent */
+static void
+task_link_add(lldp_task_t *t)
+{
+	agent_t *a;
+
+	/* Only the main thread creates or destroys agents */
+	mutex_enter(&agent_list_lock);
+	a = agent_find_linkid(t->lt_linkid);
+	mutex_exit(&agent_list_lock);
+
+	if (a != NULL) {
+		log_debug(log, "already have an agent for new link; ignoring",
+		    LOG_T_UINT32, "id", t->lt_linkid,
+		    LOG_T_STRING, "agent", a->a_name,
+		    LOG_T_END);
+		return;
+	}
+
+	log_info(log, "new link",
+	    LOG_T_UINT32, "id", t->lt_linkid,
+	    LOG_T_END);
+
+	if (!lldp_agent_add(t->lt_linkid))
+		t->lt_err = EIO;
+}
+
+static agent_t *
+task_agent(lldp_task_t *t)
+{
+	agent_t *a;
+
+	mutex_enter(&agent_list_lock);
+	a = agent_find_linkid(t->lt_linkid);
+	mutex_exit(&agent_list_lock);
+
+	if (a == NULL)
+		t->lt_err = ENOENT;
+	return (a);
+}
+
+/* Task: release a link that's being offlined */
+static void
+task_link_offline(lldp_task_t *t)
+{
+	agent_t *a;
+
+	if ((a = task_agent(t)) != NULL)
+		agent_offline(a);
+}
+
+/* Task: an offline was undone, or the link is back */
+static void
+task_link_online(lldp_task_t *t)
+{
+	agent_t *a;
+
+	if ((a = task_agent(t)) != NULL && !agent_online(a))
+		t->lt_err = EIO;
+}
+
+/* Task: the link has been removed */
+static void
+task_link_remove(lldp_task_t *t)
+{
+	agent_t *a;
+
+	if ((a = task_agent(t)) == NULL)
+		return;
+
+	log_info(a->a_log, "link removed; destroying agent", LOG_T_END);
+
+	/* Once it's off the list, no door call can find it */
+	mutex_enter(&agent_list_lock);
+	uu_list_remove(agent_list, a);
+	mutex_exit(&agent_list_lock);
+
+	/* The link has (normally) already been offlined and closed */
+	agent_destroy(a);
+}
+
+/*
+ * Handle a request (from lldp_rcm, via the door) about a link that's being
+ * reconfigured. Runs on the main thread; the caller waits for the result:
+ * 0, ENOENT if there's no agent for the link, or another errno value.
+ */
+int
+lldp_link_request(lldp_link_op_t op, datalink_id_t linkid)
+{
+	switch (op) {
+	case LLDP_LINK_OP_OFFLINE:
+		return (lldp_task_run(task_link_offline, linkid));
+	case LLDP_LINK_OP_ONLINE:
+		return (lldp_task_run(task_link_online, linkid));
+	case LLDP_LINK_OP_REMOVE:
+		return (lldp_task_run(task_link_remove, linkid));
+	}
+	return (EINVAL);
+}
+
+/*
+ * dlmgmtd posts ESC_DATALINK_PHYS_ADD when a physical link is created or
+ * (after DR) reattached. Runs on a libsysevent thread; the agent is created
+ * on the main thread.
+ */
+static void
+lldp_sysevent_handler(sysevent_t *ev)
+{
+	nvlist_t	*nvl = NULL;
+	uint64_t	id64;
+	boolean_t	reconfigured = B_FALSE;
+	int		ret;
+
+	if (log == NULL)
+		log = sysevent_log;
+
+	if (strcmp(sysevent_get_class_name(ev), EC_DATALINK) != 0 ||
+	    strcmp(sysevent_get_subclass_name(ev), ESC_DATALINK_PHYS_ADD) != 0)
+		return;
+
+	if (sysevent_get_attr_list(ev, &nvl) != 0) {
+		log_syserr(log, "failed to get sysevent attributes", errno);
+		return;
+	}
+
+	if (nvlist_lookup_uint64(nvl, RCM_NV_LINKID, &id64) != 0 ||
+	    id64 > UINT32_MAX) {
+		log_warn(log, "sysevent has no valid link id; ignoring",
+		    LOG_T_STRING, "subclass", ESC_DATALINK_PHYS_ADD,
+		    LOG_T_END);
+		nvlist_free(nvl);
+		return;
+	}
+	(void) nvlist_lookup_boolean_value(nvl, RCM_NV_RECONFIGURED,
+	    &reconfigured);
+	nvlist_free(nvl);
+
+	log_debug(log, "physical link added",
+	    LOG_T_UINT32, "id", (uint32_t)id64,
+	    LOG_T_BOOLEAN, "reconfigured", (bool)reconfigured,
+	    LOG_T_END);
+
+	if ((ret = lldp_task_async(task_link_add, (datalink_id_t)id64)) != 0 &&
+	    ret != ESHUTDOWN) {
+		log_syserr(log, "failed to queue new link", ret);
+	}
+}
+
+/*
+ * Subscribe to new physical links. If this fails, lldpd still runs agents
+ * on the links present at startup.
+ */
+static void
+lldp_sysevent_init(void)
+{
+	const char *subclasses[] = { ESC_DATALINK_PHYS_ADD };
+
+	(void) log_child(log, &sysevent_log,
+	    LOG_T_STRING, "component", "sysevent",
+	    LOG_T_END);
+
+	sysevent_hdl = sysevent_bind_handle(lldp_sysevent_handler);
+	if (sysevent_hdl == NULL) {
+		log_warn(log, "failed to bind sysevent handle; links that "
+		    "appear later won't be noticed",
+		    LOG_T_STRING, "errmsg", strerror(errno),
+		    LOG_T_END);
+		return;
+	}
+
+	if (sysevent_subscribe_event(sysevent_hdl, EC_DATALINK, subclasses,
+	    ARRAY_SIZE(subclasses)) != 0) {
+		log_warn(log, "failed to subscribe to datalink sysevents; "
+		    "links that appear later won't be noticed",
+		    LOG_T_STRING, "errmsg", strerror(errno),
+		    LOG_T_END);
+		sysevent_unbind_handle(sysevent_hdl);
+		sysevent_hdl = NULL;
+		return;
+	}
+
+	log_debug(log, "subscribed to datalink sysevents", LOG_T_END);
+}
+
+static void
+lldp_sysevent_fini(void)
+{
+	if (sysevent_hdl == NULL)
+		return;
+
+	sysevent_unsubscribe_event(sysevent_hdl, EC_DATALINK);
+	sysevent_unbind_handle(sysevent_hdl);
+	sysevent_hdl = NULL;
 }
 
 static void
