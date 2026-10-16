@@ -163,20 +163,22 @@ ice_intr_hw_init(ice_t *ice)
 
 	for (i = 0; i < ice->ice_num_txq; i++) {
 		const ice_tx_ring_t *txr = &ice->ice_txr[i];
-		const uint32_t index = ice->ice_first_txq + txr->itxr_index;
 
-		ice_intr_program(ice, ICE_REG_QINT_TQCTL(index),
+		/* QINT_TQCTL is indexed by the queue ID in PF space. */
+		ice_intr_program(ice, ICE_REG_QINT_TQCTL(txr->itxr_index),
 		    txr->itxr_vec, ICE_ITR_INDEX_TX);
-		ice_intr_cause_enable(ice, ICE_REG_QINT_TQCTL(index));
+		ice_intr_cause_enable(ice,
+		    ICE_REG_QINT_TQCTL(txr->itxr_index));
 	}
 
 	for (i = 0; i < ice->ice_num_vsis * ice->ice_num_rxq_per_vsi; i++) {
 		const ice_rx_ring_t *rxr = &ice->ice_rxr[i];
-		const uint32_t index = ice->ice_first_rxq + rxr->irxr_index;
 
-		ice_intr_program(ice, ICE_REG_QINT_RQCTL(index),
+		/* QINT_RQCTL is indexed by the queue ID in PF space. */
+		ice_intr_program(ice, ICE_REG_QINT_RQCTL(rxr->irxr_index),
 		    rxr->irxr_vec, ICE_ITR_INDEX_RX);
-		ice_intr_cause_enable(ice, ICE_REG_QINT_RQCTL(index));
+		ice_intr_cause_enable(ice,
+		    ICE_REG_QINT_RQCTL(rxr->irxr_index));
 	}
 
 	/*

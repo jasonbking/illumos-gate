@@ -2647,10 +2647,9 @@ ice_cmd_add_txq_grp(ice_t *ice, ice_vsi_t *vsi, ice_tx_ring_t *txr,
 	grp->ihtg_nqueue = 1;
 
 	/*
-	 * Currently, we use a contiguous span of TX queue ids
-	 * from the hardware, so we do not need to do any mapping of
-	 * ids. If we start supporting multiple VSIs or RDMA, this
-	 * will likely need to change.
+	 * The admin command takes a queue ID in PF space; firmware translates
+	 * it to the absolute hardware queue ID. If we start supporting multiple
+	 * VSIs or RDMA, the PF-space mapping will likely need to change.
 	 */
 	perq->ihtp_qid = txr->itxr_index;
 
