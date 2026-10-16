@@ -238,7 +238,6 @@ extern mutex_t tz_lock;
 periodic_svc_t *periodic_svc_get(const char *);
 void periodic_svc_add(periodic_svc_t *);
 void periodic_svc_del(periodic_svc_t *);
-void periodic_svc_rele(periodic_svc_t *);
 
 bool init_scf(void);
 void fini_scf(void);
@@ -267,10 +266,10 @@ void exec_init(void);
 void exec_refresh(void);
 int exec_start(periodic_svc_t *);
 bool exec_running(const char *);
-bool exec_kill(const char *, int);
 bool exec_port_event(const port_event_t *);
 
 void logmsg(const char *, ...) __PRINTFLIKE(1);
+void inst_log(const periodic_svc_t *, const char *, ...) __PRINTFLIKE(2);
 void panic(const char *, ...) __PRINTFLIKE(1) __NORETURN;
 
 int64_t svc_next_run(const periodic_svc_t *);

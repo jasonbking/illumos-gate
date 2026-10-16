@@ -74,6 +74,7 @@ extern "C" {
 
 /* Flags for lscf_service_export() */
 #define	SCE_ALL_VALUES	0x01		/* Include all property values */
+#define	SCE_ARCHIVE	0x02		/* For svccfg archive, not export */
 
 extern int yyerror(const char *);
 extern int yyparse(void);

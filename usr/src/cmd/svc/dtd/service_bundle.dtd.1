@@ -600,6 +600,10 @@
     A service or instance may not have both a scheduled_method and a
     periodic_method.
 
+    The service or instance is delegated to svc.periodicd(8): its
+    restarter is set to svc:/system/svc/periodic:default, and a restarter
+    element naming any other restarter is an error.
+
     Its attributes are
 
 	interval The unit of time between executions: year, month, week,
@@ -677,6 +681,10 @@
     creates a property group of type 'periodic' named 'periodic' holding
     the scheduling attributes, and the 'start' method property group
     holding exec, timeout_seconds, and any method_context.
+
+    The service or instance is delegated to svc.periodicd(8): its
+    restarter is set to svc:/system/svc/periodic:default, and a restarter
+    element naming any other restarter is an error.
 
     Its attributes are
 

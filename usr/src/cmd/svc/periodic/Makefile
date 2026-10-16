@@ -55,7 +55,8 @@ LDLIBS += \
 	  -lrestart \
 	  -lscf \
 	  -lumem \
-	  -luutil
+	  -luutil \
+	  -lzoneinfo
 
 FILEMODE = 0555
 

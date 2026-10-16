@@ -73,6 +73,18 @@ extern "C" {
 
 #define	SCF_LEGACY_SERVICE		((const char *)"smf/legacy_run")
 
+/*
+ * The delegated restarter for services with a periodic_method or
+ * scheduled_method.
+ */
+#define	SCF_SERVICE_PERIODICD	"svc:/system/svc/periodic:default"
+
+/*
+ * The persistent run history svc.periodicd keeps in each instance it
+ * manages: runtime state, not configuration.
+ */
+#define	SCF_PG_PERIODIC_RESTARTER	"periodic_restarter"
+
 #define	SCF_LEGACY_PROPERTY_NAME	((const char *)"name")
 #define	SCF_LEGACY_PROPERTY_INODE	((const char *)"inode")
 #define	SCF_LEGACY_PROPERTY_SUFFIX	((const char *)"suffix")

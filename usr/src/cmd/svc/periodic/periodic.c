@@ -392,6 +392,8 @@ svc_due(periodic_svc_t *svc)
 	if (skip) {
 		logmsg(_("%s: previous run still in progress; skipping this "
 		    "run"), svc->ps_fmri);
+		inst_log(svc, "Previous run of method \"start\" is still in "
+		    "progress; skipping this run.");
 	} else {
 		svc_mark_run(svc, now);
 	}
@@ -688,6 +690,12 @@ handle_restarter_event(periodic_svc_t *svc, restarter_event_type_t type)
 		 * Take it offline; svc.startd will send a start event to
 		 * bring it back online. As with svc.startd, restoring a
 		 * degraded instance restarts it.
+		 *
+		 * A run in progress is left to finish (its method's timeout
+		 * still applies), as for a disable. Restarting only
+		 * restarts the schedule: once back online, the instance's
+		 * first run is chosen as for a newly online instance, and is
+		 * skipped like any other if this run is still going.
 		 */
 		if (svc_is_online(svc)) {
 			svc_unschedule(svc);
@@ -1337,6 +1345,8 @@ logmsg(const char *msg, ...)
 	if (msg[0] != '\0' && msg[strlen(msg) - 1] != '\n') {
 		(void) fputc('\n', stdout);
 	}
+
+	(void) fflush(stdout);
 
 	funlockfile(stdout);
 }

@@ -172,6 +172,10 @@ periodic_after_run(periodic_data_t *p, int64_t now)
  * calendar year, month, ISO week (starting Monday), day, hour, or minute in
  * the schedule's timezone), and it runs at most once per period:
  *
+ * Hours are wall clock hours, so an hourly schedule runs once in the hour
+ * that occurs twice when the clock falls back, and every n hours counts
+ * wall clock hours; minutes are elapsed minutes (see unit_start()).
+ *
  * - With a frequency of 1, every period is a candidate, and all of the
  *   constraints select which times qualify (e.g. an interval of day with
  *   month January runs on each day of January).
@@ -320,22 +324,54 @@ mk(struct tm *tm)
 }
 
 /*
- * The start of the unit u containing t. Minutes and hours are found by
- * arithmetic rather than mktime(), so that when the clock falls back, an hour
- * that occurs twice is two distinct hours rather than being resolved to one
- * of them.
+ * Hours are wall clock hours. When the clock falls back, the hour that occurs
+ * twice is a single hour (two hours long) starting at its first occurrence,
+ * so an hourly schedule runs once in it, as it does in every other hour. When
+ * the clock springs forward, the skipped hour doesn't exist. Minutes are
+ * elapsed minutes: a minute that occurs twice is two minutes.
+ *
+ * wall_secs() is t's wall clock time as seconds since the epoch (as if the
+ * timezone were UTC), which hours are counted in.
+ */
+static time_t
+wall_secs(time_t t)
+{
+	struct tm tm;
+
+	(void) localtime_r(&t, &tm);
+	return (timegm(&tm));
+}
+
+/* Whether t and u are in the same wall clock hour of the same day */
+static bool
+same_wall_hour(time_t t, time_t u)
+{
+	return (wall_secs(t) / 3600 == wall_secs(u) / 3600);
+}
+
+/*
+ * The start of the unit u containing t. Minutes are found by arithmetic
+ * rather than mktime(), so that when the clock falls back, a minute that
+ * occurs twice is two distinct minutes. An hour is found the same way, then
+ * moved back to the first occurrence if it is the second occurrence of a
+ * repeated hour.
  */
 static time_t
 unit_start(time_t t, sched_unit_t u)
 {
-	struct tm tm;
+	struct tm	tm;
+	time_t		h;
 
 	(void) localtime_r(&t, &tm);
 	switch (u) {
 	case SU_MINUTE:
 		return (t - tm.tm_sec);
 	case SU_HOUR:
-		return (t - tm.tm_min * 60 - tm.tm_sec);
+		h = t - tm.tm_min * 60 - tm.tm_sec;
+		if (same_wall_hour(h - 60 * 60, h)) {
+			h -= 60 * 60;
+		}
+		return (h);
 	default:
 		break;
 	}
@@ -362,19 +398,34 @@ unit_start(time_t t, sched_unit_t u)
 }
 
 /*
- * Add n units u to t (the start of a unit). Minutes and hours are added as
- * seconds, so a daylight saving change doesn't stall or skip them.
+ * Add n units u to t (the start of a unit). Minutes are added as seconds, so
+ * a daylight saving change doesn't stall or skip them. Hours are added to
+ * the wall clock time: the result is the start of the hour n wall clock
+ * hours on (its first occurrence, if it is repeated), or the first time
+ * after it if the clock sprang forward over it.
  */
 static time_t
 unit_add(time_t t, sched_unit_t u, int64_t n)
 {
-	struct tm tm;
+	struct tm	tm;
+	time_t		w, r;
 
 	switch (u) {
 	case SU_MINUTE:
 		return (t + n * 60);
 	case SU_HOUR:
-		return (t + n * 60 * 60);
+		w = wall_secs(t) + n * 60 * 60;
+		(void) gmtime_r(&w, &tm);
+		r = mk(&tm);
+		/*
+		 * If the clock sprang forward over that hour, mktime() may
+		 * have resolved it to the time before the change rather than
+		 * after it; move it to the change.
+		 */
+		if (wall_secs(r) < w) {
+			r += w - wall_secs(r);
+		}
+		return (unit_start(r, SU_HOUR));
 	default:
 		break;
 	}
@@ -695,6 +746,8 @@ sched_info(const scheduled_data_t *s, sinfo_t *si)
 	return (true);
 }
 
+static time_t period_of(const sinfo_t *, time_t);
+
 /*
  * Find the window of the period starting at p. For an unanchored schedule,
  * periods without a window are skipped, so this is the first window in or
@@ -718,7 +771,13 @@ window_in(const scheduled_data_t *s, const sinfo_t *si, time_t p,
 	} else {
 		pstart = p;
 		pend = next_unit(p, si->si_period);
-		*nextp = unit_add(p, si->si_period, si->si_n);
+		/*
+		 * Count the next period from the anchor rather than from p:
+		 * if the clock sprang forward over p's period, p is the time
+		 * after the change, which is later than the period it
+		 * stands for.
+		 */
+		*nextp = period_of(si, unit_add(p, si->si_period, si->si_n));
 		if (*nextp <= p) {
 			return (W_NEVER);
 		}
@@ -753,7 +812,7 @@ units_between(time_t a, time_t t, sched_unit_t u)
 	case SU_MINUTE:
 		return ((t - a) / 60);
 	case SU_HOUR:
-		return ((t - a) / (60 * 60));
+		return ((wall_secs(t) - wall_secs(a)) / (60 * 60));
 	case SU_DAY:
 		return ((t - a) / (24 * 60 * 60));
 	case SU_WEEK:

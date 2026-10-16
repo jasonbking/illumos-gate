@@ -1786,6 +1786,47 @@ lxml_create_start_method(entity_t *e, const char *elem, pgroup_t **pgp)
 	return (r);
 }
 
+/*
+ * A periodic_method or scheduled_method (named by elem) is run by
+ * svc.periodicd, so delegate the entity to it by setting general/restarter.
+ * The DTD puts any restarter element before the methods, so if the manifest
+ * names a restarter we have already seen it; anything other than
+ * svc.periodicd is an error, as nothing else runs these methods.
+ */
+static int
+lxml_set_periodic_restarter(entity_t *entity, const char *elem)
+{
+	pgroup_t *pg;
+	property_t *p;
+	value_t *v;
+
+	pg = internal_pgroup_find_or_create(entity, (char *)scf_pg_general,
+	    (char *)scf_group_framework);
+
+	if ((p = internal_property_find(pg, SCF_PROPERTY_RESTARTER)) != NULL) {
+		v = uu_list_first(p->sc_property_values);
+		if (v != NULL && v->sc_u.sc_string != NULL &&
+		    strcmp(v->sc_u.sc_string, SCF_SERVICE_PERIODICD) == 0)
+			return (0);
+
+		semerr(gettext("%s: %s requires the restarter %s, but the "
+		    "restarter is %s\n"), entity->sc_fmri, elem,
+		    SCF_SERVICE_PERIODICD,
+		    (v != NULL && v->sc_u.sc_string != NULL) ?
+		    v->sc_u.sc_string : gettext("unset"));
+		return (-1);
+	}
+
+	p = internal_property_create(SCF_PROPERTY_RESTARTER, SCF_TYPE_FMRI, 1,
+	    safe_strdup(SCF_SERVICE_PERIODICD));
+	if (internal_attach_property(pg, p) != 0) {
+		internal_property_free(p);
+		return (-1);
+	}
+
+	return (0);
+}
+
 static int
 lxml_get_periodic_method(entity_t *entity, xmlNodePtr pmeth)
 {
@@ -1803,6 +1844,9 @@ lxml_get_periodic_method(entity_t *entity, xmlNodePtr pmeth)
 
 	if (lxml_create_start_method(entity, "periodic_method",
 	    &start_pg) != 0)
+		return (-1);
+
+	if (lxml_set_periodic_restarter(entity, "periodic_method") != 0)
 		return (-1);
 
 	if (new_str_prop_from_attr(pg, SCF_PROPERTY_PERIOD, SCF_TYPE_TIME,
@@ -1918,6 +1962,9 @@ lxml_get_scheduled_method(entity_t *entity, xmlNodePtr smeth)
 
 	if (lxml_create_start_method(entity, "scheduled_method",
 	    &start_pg) != 0)
+		return (-1);
+
+	if (lxml_set_periodic_restarter(entity, "scheduled_method") != 0)
 		return (-1);
 
 	if (new_str_prop_from_attr(pg, SCF_PROPERTY_INTERVAL, SCF_TYPE_ASTRING,

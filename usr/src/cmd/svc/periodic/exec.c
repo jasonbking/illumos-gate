@@ -219,8 +219,6 @@ static void method_outcome(periodic_svc_t *, exec_outcome_t, bool);
 static void exec_child(const char *, char **, struct method_context *, int,
     int) __NORETURN;
 static void fd_log(int, bool, const char *, ...) __PRINTFLIKE(3);
-static void inst_log(const periodic_svc_t *, const char *, ...)
-    __PRINTFLIKE(2);
 
 static char *
 xstrdup(const char *s)
@@ -326,9 +324,9 @@ fd_log(int fd, bool lock, const char *fmt, ...)
 
 /*
  * Log a message to svc's log, as svc.startd's log_instance() does. As there,
- * a log we can't open is silently skipped.
+ * a log we can't open is silently skipped, and the message isn't localized.
  */
-static void
+void
 inst_log(const periodic_svc_t *svc, const char *fmt, ...)
 {
 	va_list	ap;
@@ -1499,22 +1497,6 @@ bool
 exec_running(const char *fmri)
 {
 	return (run_find(fmri) != NULL);
-}
-
-/*
- * Send sig to every process in the run of fmri in progress, if there is
- * one. Returns whether there was.
- */
-bool
-exec_kill(const char *fmri, int sig)
-{
-	exec_run_t *r = run_find(fmri);
-
-	if (r == NULL) {
-		return (false);
-	}
-	run_kill(r, sig);
-	return (true);
 }
 
 /*

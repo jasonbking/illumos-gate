@@ -20,6 +20,7 @@
 #include <librestart.h>
 #include <libscf.h>
 #include <libscf_priv.h>
+#include <libzoneinfo.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -27,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <tzfile.h>
 #include <umem.h>
 #include <unistd.h>
 
@@ -50,7 +52,7 @@
  * schedule of a scheduled service uses <schedule name>_last_run and
  * <schedule name>_next_run.
  */
-#define	PG_PERIODIC_RESTARTER	"periodic_restarter"
+#define	PG_PERIODIC_RESTARTER	SCF_PG_PERIODIC_RESTARTER
 #define	PROP_LAST_RUN		"last_run"
 #define	PROP_NEXT_RUN		"next_run"
 #define	PROP_BOOT_TIME		"boot_time"
@@ -976,6 +978,19 @@ get_scheduled_data(const scf_propertygroup_t *pg, scheduled_data_t *s)
 	}
 
 	if (s->ss_frequency > 1 && !sched_check_levels(s)) {
+		ret = false;
+	}
+
+	/*
+	 * An unknown TZ silently means UTC, so a misspelt timezone would run
+	 * the service at the wrong time without complaint. Only accept the
+	 * name of a file under /usr/share/lib/zoneinfo, as cron does for TZ
+	 * (though cron also allows a POSIX TZ string).
+	 */
+	if (s->ss_timezone != NULL &&
+	    isvalid_tz(s->ss_timezone, NULL, _VTZ_ZONEINFO) == 0) {
+		logmsg(_("%s: timezone \"%s\" is not a timezone in %s"),
+		    fmri, s->ss_timezone, TZDIR);
 		ret = false;
 	}
 

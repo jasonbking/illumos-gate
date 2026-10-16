@@ -113,6 +113,8 @@ struct entity_elts {
 	xmlNodePtr	dependents;
 	xmlNodePtr	method_context;
 	xmlNodePtr	exec_methods;
+	xmlNodePtr	periodic_method;
+	xmlNodePtr	scheduled_method;
 	xmlNodePtr	notify_params;
 	xmlNodePtr	property_groups;
 	xmlNodePtr	instances;
@@ -9709,6 +9711,326 @@ export_method(scf_propertygroup_t *pg, struct entity_elts *eelts)
 		(void) xmlAddSibling(eelts->exec_methods, n);
 }
 
+/*
+ * periodic_method and scheduled_method.
+ *
+ * On import, each of these becomes a start method property group plus a
+ * "periodic" or "schedule" property group (see lxml_get_periodic_method()
+ * and lxml_get_scheduled_method()). On export we reverse that when we can:
+ * if an entity has a start method and one of those property groups, and
+ * every property in them has a place in the element, export them as the
+ * element. Otherwise they are exported generically, as an exec_method and a
+ * property_group, which import back to the same thing. Other property
+ * groups of type schedule (a scheduled service's further schedules) are
+ * always exported as property_groups.
+ */
+
+/* The property groups import creates for these elements */
+#define	SCHED_START_PG		"start"
+#define	SCHED_PERIODIC_PG	"periodic"
+#define	SCHED_SCHEDULE_PG	"schedule"
+
+/* The attributes of the element that come from its property group */
+struct sched_attr {
+	const char	*sa_name;	/* property and attribute name */
+	scf_type_t	sa_type;
+	const char	*sa_default;	/* omitted if equal; NULL for none */
+	boolean_t	sa_required;
+};
+
+static const struct sched_attr periodic_attrs[] = {
+	{ SCF_PROPERTY_PERIOD, SCF_TYPE_TIME, NULL, B_TRUE },
+	{ SCF_PROPERTY_DELAY, SCF_TYPE_TIME, "0", B_FALSE },
+	{ SCF_PROPERTY_JITTER, SCF_TYPE_TIME, "0", B_FALSE },
+	{ SCF_PROPERTY_PERSISTENT, SCF_TYPE_BOOLEAN, "false", B_FALSE },
+	{ SCF_PROPERTY_RECOVER, SCF_TYPE_BOOLEAN, "false", B_FALSE },
+	{ NULL }
+};
+
+static const struct sched_attr scheduled_attrs[] = {
+	{ SCF_PROPERTY_INTERVAL, SCF_TYPE_ASTRING, NULL, B_TRUE },
+	{ SCF_PROPERTY_FREQUENCY, SCF_TYPE_COUNT, "1", B_FALSE },
+	{ SCF_PROPERTY_TIMEZONE, SCF_TYPE_ASTRING, NULL, B_FALSE },
+	{ SCF_PROPERTY_YEAR, SCF_TYPE_COUNT, NULL, B_FALSE },
+	{ SCF_PROPERTY_WEEK_OF_YEAR, SCF_TYPE_INTEGER, NULL, B_FALSE },
+	{ SCF_PROPERTY_MONTH, SCF_TYPE_ASTRING, NULL, B_FALSE },
+	{ SCF_PROPERTY_WEEKDAY_OF_MONTH, SCF_TYPE_INTEGER, NULL, B_FALSE },
+	{ SCF_PROPERTY_DAY, SCF_TYPE_ASTRING, NULL, B_FALSE },
+	{ SCF_PROPERTY_DAY_OF_MONTH, SCF_TYPE_INTEGER, NULL, B_FALSE },
+	{ SCF_PROPERTY_HOUR, SCF_TYPE_INTEGER, NULL, B_FALSE },
+	{ SCF_PROPERTY_MINUTE, SCF_TYPE_INTEGER, NULL, B_FALSE },
+	{ SCF_PROPERTY_RECOVER, SCF_TYPE_BOOLEAN, "false", B_FALSE },
+	{ NULL }
+};
+
+/*
+ * Set the attributes of n from the properties of pg described by attrs, and
+ * return pg's stability element (or NULL) in *stabp. Returns -1 if pg has a
+ * property that isn't one of them (or isn't a single value of the right
+ * type), or lacks a required one, so it can't be exported as n.
+ */
+static int
+export_sched_attrs(scf_propertygroup_t *pg, const struct sched_attr *attrs,
+    xmlNodePtr n, xmlNodePtr *stabp)
+{
+	const struct sched_attr *a;
+	char *name;
+	uint_t seen = 0, required = 0, i;
+	int ret, err = 0;
+
+	*stabp = NULL;
+	name = safe_malloc(max_scf_name_len + 1);
+
+	if (scf_iter_pg_properties(exp_prop_iter, pg) != SCF_SUCCESS)
+		scfdie();
+
+	while ((ret = scf_iter_next_property(exp_prop_iter, exp_prop)) == 1) {
+		if (scf_property_get_name(exp_prop, name,
+		    max_scf_name_len + 1) < 0)
+			scfdie();
+
+		if (strcmp(name, SCF_PROPERTY_STABILITY) == 0 &&
+		    *stabp == NULL) {
+			xmlNodePtr m;
+
+			m = xmlNewNode(NULL, (xmlChar *)"stability");
+			if (m == NULL)
+				uu_die(emsg_create_xml);
+			if (set_attr_from_prop(exp_prop, m, value_attr) != 0) {
+				xmlFreeNode(m);
+				err = 1;
+				break;
+			}
+			*stabp = m;
+			continue;
+		}
+
+		for (a = attrs, i = 0; a->sa_name != NULL; a++, i++) {
+			if (strcmp(name, a->sa_name) == 0)
+				break;
+		}
+		if (a->sa_name == NULL ||
+		    prop_check_type(exp_prop, a->sa_type) != 0 ||
+		    set_attr_from_prop_default(exp_prop, n, a->sa_name,
+		    a->sa_default) != 0) {
+			err = 1;
+			break;
+		}
+		seen |= 1U << i;
+	}
+	if (ret == -1)
+		scfdie();
+
+	for (a = attrs, i = 0; a->sa_name != NULL; a++, i++) {
+		if (a->sa_required)
+			required |= 1U << i;
+	}
+	if ((seen & required) != required)
+		err = 1;
+
+	free(name);
+
+	if (err) {
+		xmlFreeNode(*stabp);
+		*stabp = NULL;
+		return (-1);
+	}
+	return (0);
+}
+
+/*
+ * Get the property group name of the service or instance ent (inst says
+ * which) into pg, if it exists and has the given type.
+ */
+static int
+entity_get_typed_pg(void *ent, boolean_t inst, const char *name,
+    const char *type, scf_propertygroup_t *pg)
+{
+	char *pgtype;
+	int r;
+
+	if ((inst ? scf_instance_get_pg(ent, name, pg) :
+	    scf_service_get_pg(ent, name, pg)) != SCF_SUCCESS) {
+		if (scf_error() != SCF_ERROR_NOT_FOUND)
+			scfdie();
+		return (-1);
+	}
+
+	pgtype = safe_malloc(max_scf_pg_type_len + 1);
+	if (scf_pg_get_type(pg, pgtype, max_scf_pg_type_len + 1) < 0)
+		scfdie();
+	r = (strcmp(pgtype, type) == 0) ? 0 : -1;
+	free(pgtype);
+
+	return (r);
+}
+
+/*
+ * If the service or instance ent (inst says which) can be exported with a
+ * periodic_method or scheduled_method, put it in eelts and return the name
+ * of the property group (other than "start") it was made from, which the
+ * caller must then not export again. Otherwise return NULL.
+ */
+static const char *
+export_sched_method(void *ent, boolean_t inst, struct entity_elts *eelts)
+{
+	scf_propertygroup_t *start_pg, *spg;
+	struct entity_elts tmp;
+	const struct sched_attr *attrs;
+	const char *elem, *pgname = NULL;
+	xmlNodePtr em = NULL, n = NULL, c, ctxt = NULL, stab = NULL;
+	xmlChar *v;
+	boolean_t ok = B_FALSE;
+
+	if ((start_pg = scf_pg_create(g_hndl)) == NULL ||
+	    (spg = scf_pg_create(g_hndl)) == NULL)
+		scfdie();
+
+	if (entity_get_typed_pg(ent, inst, SCHED_START_PG, SCF_GROUP_METHOD,
+	    start_pg) != 0)
+		goto out;
+
+	if (entity_get_typed_pg(ent, inst, SCHED_PERIODIC_PG,
+	    SCF_GROUP_PERIODIC, spg) == 0) {
+		elem = "periodic_method";
+		pgname = SCHED_PERIODIC_PG;
+		attrs = periodic_attrs;
+	} else if (entity_get_typed_pg(ent, inst, SCHED_SCHEDULE_PG,
+	    SCF_GROUP_SCHEDULE, spg) == 0) {
+		elem = "scheduled_method";
+		pgname = SCHED_SCHEDULE_PG;
+		attrs = scheduled_attrs;
+	} else {
+		goto out;
+	}
+
+	/*
+	 * Let export_method() do the start method. If it can't make an
+	 * exec_method of it, or the exec_method has anything other than a
+	 * method_context, the element can't hold it.
+	 */
+	(void) memset(&tmp, 0, sizeof (tmp));
+	export_method(start_pg, &tmp);
+	em = tmp.exec_methods;
+	if (tmp.property_groups != NULL) {
+		xmlFreeNodeList(tmp.property_groups);
+		goto out;
+	}
+	if (em == NULL)
+		goto out;
+
+	v = xmlGetProp(em, (xmlChar *)type_attr);
+	if (v == NULL || xmlStrcmp(v, (xmlChar *)"method") != 0) {
+		xmlFree(v);
+		goto out;
+	}
+	xmlFree(v);
+
+	for (c = em->children; c != NULL; c = c->next) {
+		if (c->type != XML_ELEMENT_NODE)
+			continue;
+		if (xmlStrcmp(c->name, (xmlChar *)"method_context") != 0 ||
+		    ctxt != NULL)
+			goto out;
+		ctxt = c;
+	}
+
+	n = xmlNewNode(NULL, (xmlChar *)elem);
+	if (n == NULL)
+		uu_die(emsg_create_xml);
+
+	if (export_sched_attrs(spg, attrs, n, &stab) != 0)
+		goto out;
+
+	/* As on import, day and day_of_month are mutually exclusive */
+	if (xmlHasProp(n, (xmlChar *)SCF_PROPERTY_DAY) != NULL &&
+	    xmlHasProp(n, (xmlChar *)SCF_PROPERTY_DAY_OF_MONTH) != NULL)
+		goto out;
+
+	v = xmlGetProp(em, (xmlChar *)"exec");
+	safe_setprop(n, "exec", (char *)v);
+	xmlFree(v);
+	v = xmlGetProp(em, (xmlChar *)"timeout_seconds");
+	safe_setprop(n, "timeout_seconds", (char *)v);
+	xmlFree(v);
+
+	if (ctxt != NULL) {
+		xmlUnlinkNode(ctxt);
+		(void) xmlAddChild(n, ctxt);
+	}
+	if (stab != NULL) {
+		(void) xmlAddChild(n, stab);
+		stab = NULL;
+	}
+
+	if (strcmp(elem, "periodic_method") == 0)
+		eelts->periodic_method = n;
+	else
+		eelts->scheduled_method = n;
+	n = NULL;
+	ok = B_TRUE;
+
+out:
+	xmlFreeNode(em);
+	xmlFreeNode(n);
+	xmlFreeNode(stab);
+	scf_pg_destroy(start_pg);
+	scf_pg_destroy(spg);
+
+	return (ok ? pgname : NULL);
+}
+
+/*
+ * Whether pg is one export_sched_method() has already exported as part of
+ * a periodic_method or scheduled_method: the start method, or the property
+ * group sched_pg.
+ */
+static boolean_t
+export_sched_pg_done(scf_propertygroup_t *pg, const char *sched_pg)
+{
+	char *name = safe_malloc(max_scf_name_len + 1);
+	boolean_t done;
+
+	if (scf_pg_get_name(pg, name, max_scf_name_len + 1) < 0)
+		scfdie();
+	done = (strcmp(name, SCHED_START_PG) == 0 ||
+	    strcmp(name, sched_pg) == 0);
+	free(name);
+
+	return (done);
+}
+
+/*
+ * After the general property group has been exported: a restarter element
+ * naming svc.periodicd is implied by a periodic_method or scheduled_method,
+ * so leave it out, as a manifest would.
+ */
+static void
+export_drop_periodic_restarter(struct entity_elts *eelts)
+{
+	xmlNodePtr sf;
+	xmlChar *v;
+
+	if ((eelts->periodic_method == NULL &&
+	    eelts->scheduled_method == NULL) || eelts->restarter == NULL)
+		return;
+
+	for (sf = eelts->restarter->children; sf != NULL; sf = sf->next) {
+		if (sf->type == XML_ELEMENT_NODE)
+			break;
+	}
+	if (sf == NULL)
+		return;
+
+	v = xmlGetProp(sf, (xmlChar *)value_attr);
+	if (v != NULL &&
+	    xmlStrcmp(v, (xmlChar *)SCF_SERVICE_PERIODICD) == 0) {
+		xmlFreeNode(eelts->restarter);
+		eelts->restarter = NULL;
+	}
+	xmlFree(v);
+}
+
 static void
 export_pg_elts(struct pg_elts *elts, const char *name, const char *type,
     struct entity_elts *eelts)
@@ -10579,6 +10901,7 @@ export_instance(scf_instance_t *inst, struct entity_elts *selts, int flags)
 	boolean_t isdefault;
 	struct entity_elts elts;
 	struct template_elts template_elts;
+	const char *sched_pg;
 	int ret;
 
 	n = xmlNewNode(NULL, (xmlChar *)"instance");
@@ -10626,6 +10949,9 @@ export_instance(scf_instance_t *inst, struct entity_elts *selts, int flags)
 	(void) memset(&elts, 0, sizeof (elts));
 	(void) memset(&template_elts, 0, sizeof (template_elts));
 
+	/* Before iterating, since it uses exp_prop_iter and friends */
+	sched_pg = export_sched_method(inst, B_TRUE, &elts);
+
 	while ((ret = scf_iter_next_pg(exp_pg_iter, exp_pg)) == 1) {
 		uint32_t pgflags;
 
@@ -10633,6 +10959,9 @@ export_instance(scf_instance_t *inst, struct entity_elts *selts, int flags)
 			scfdie();
 
 		if (pgflags & SCF_PG_FLAG_NONPERSISTENT)
+			continue;
+
+		if (sched_pg != NULL && export_sched_pg_done(exp_pg, sched_pg))
 			continue;
 
 		if (scf_pg_get_type(exp_pg, exp_str, exp_str_sz) < 0)
@@ -10651,6 +10980,15 @@ export_instance(scf_instance_t *inst, struct entity_elts *selts, int flags)
 
 			if (strcmp(exp_str, scf_pg_general) == 0) {
 				export_inst_general(exp_pg, n, &elts);
+				continue;
+			} else if (strcmp(exp_str,
+			    SCF_PG_PERIODIC_RESTARTER) == 0 &&
+			    !(flags & SCE_ARCHIVE)) {
+				/*
+				 * svc.periodicd's run history is runtime
+				 * state: it belongs in an archive of the
+				 * repository, but not in a manifest.
+				 */
 				continue;
 			} else if (strcmp(exp_str, SCF_PG_METHOD_CONTEXT) ==
 			    0) {
@@ -10684,9 +11022,12 @@ export_instance(scf_instance_t *inst, struct entity_elts *selts, int flags)
 		xmlFreeNode(template_elts.documentation);
 	}
 
+	export_drop_periodic_restarter(&elts);
+
 	if (isdefault && elts.restarter == NULL &&
 	    elts.dependencies == NULL && elts.method_context == NULL &&
-	    elts.exec_methods == NULL && elts.notify_params == NULL &&
+	    elts.exec_methods == NULL && elts.periodic_method == NULL &&
+	    elts.scheduled_method == NULL && elts.notify_params == NULL &&
 	    elts.property_groups == NULL && elts.template == NULL) {
 		xmlChar *eval;
 
@@ -10710,6 +11051,8 @@ export_instance(scf_instance_t *inst, struct entity_elts *selts, int flags)
 		(void) xmlAddChildList(n, elts.dependents);
 		(void) xmlAddChild(n, elts.method_context);
 		(void) xmlAddChildList(n, elts.exec_methods);
+		(void) xmlAddChild(n, elts.periodic_method);
+		(void) xmlAddChild(n, elts.scheduled_method);
 		(void) xmlAddChildList(n, elts.notify_params);
 		(void) xmlAddChildList(n, elts.property_groups);
 		(void) xmlAddChild(n, elts.template);
@@ -10730,6 +11073,7 @@ export_service(scf_service_t *svc, int flags)
 	xmlNodePtr snode;
 	struct entity_elts elts;
 	struct template_elts template_elts;
+	const char *sched_pg;
 	int ret;
 
 	snode = xmlNewNode(NULL, (xmlChar *)"service");
@@ -10751,6 +11095,9 @@ export_service(scf_service_t *svc, int flags)
 	(void) memset(&elts, 0, sizeof (elts));
 	(void) memset(&template_elts, 0, sizeof (template_elts));
 
+	/* Before iterating, since it uses exp_prop_iter and friends */
+	sched_pg = export_sched_method(svc, B_FALSE, &elts);
+
 	while ((ret = scf_iter_next_pg(exp_pg_iter, exp_pg)) == 1) {
 		uint32_t pgflags;
 
@@ -10758,6 +11105,9 @@ export_service(scf_service_t *svc, int flags)
 			scfdie();
 
 		if (pgflags & SCF_PG_FLAG_NONPERSISTENT)
+			continue;
+
+		if (sched_pg != NULL && export_sched_pg_done(exp_pg, sched_pg))
 			continue;
 
 		if (scf_pg_get_type(exp_pg, exp_str, exp_str_sz) < 0)
@@ -10819,6 +11169,8 @@ export_service(scf_service_t *svc, int flags)
 	if (ret == -1)
 		scfdie();
 
+	export_drop_periodic_restarter(&elts);
+
 	/* Now add all of the accumulated elements in order. */
 	(void) xmlAddChild(snode, elts.create_default_instance);
 	(void) xmlAddChild(snode, elts.single_instance);
@@ -10827,6 +11179,8 @@ export_service(scf_service_t *svc, int flags)
 	(void) xmlAddChildList(snode, elts.dependents);
 	(void) xmlAddChild(snode, elts.method_context);
 	(void) xmlAddChildList(snode, elts.exec_methods);
+	(void) xmlAddChild(snode, elts.periodic_method);
+	(void) xmlAddChild(snode, elts.scheduled_method);
 	(void) xmlAddChildList(snode, elts.notify_params);
 	(void) xmlAddChildList(snode, elts.property_groups);
 	(void) xmlAddChildList(snode, elts.instances);
@@ -11077,7 +11431,7 @@ lscf_archive(const char *filename, int flags)
 	    (xmlChar *)MANIFEST_DTD_PATH) == NULL)
 		uu_die(emsg_create_xml);
 
-	(void) xmlAddSibling(doc->children, make_archive(flags));
+	(void) xmlAddSibling(doc->children, make_archive(flags | SCE_ARCHIVE));
 
 	result = write_service_bundle(doc, f);
 
