@@ -239,6 +239,10 @@ static kmem_cache_t *ice_tx_pkt_cache;
 
 static void ice_tx_recycle_ring(ice_tx_ring_t *);
 
+/*
+ * Queue registers in a PF's BAR use queue IDs in PF space. Firmware translates
+ * these to the absolute IDs reported by global diagnostic registers.
+ */
 static inline uintptr_t
 ice_qtx_index(const ice_tx_ring_t *txr)
 {
@@ -2092,8 +2096,8 @@ ice_ring_tx_start(mac_ring_driver_t mri, uint64_t gen)
 	 * mindful of the lower limit (2K vs. 16K) for TSO queues when
 	 * allocating/assigning TX queues to a mac NIC.
 	 *
-	 * Note that this value is in PF space, so we don't need to
-	 * adjust it.
+	 * This value is in PF space, so the function's physical queue
+	 * base must not be added.
 	 */
 	ctx.ihtc_tso_queue = txr->itxr_index;
 
