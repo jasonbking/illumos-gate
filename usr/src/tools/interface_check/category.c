@@ -75,8 +75,12 @@ parse_category(const char *vstr, const char *soname, category_t *c)
 	if (regexec(&re_cat_version, vstr, 7, pmatch, 0) == 0) {
 		c->c_type = CT_NUMBERED;
 
-		/* Major number */
+		/* The <prefix><major> family, e.g. 'SUNW_1' */
+		VERIFY(matched(&pmatch[1]));
 		VERIFY(matched(&pmatch[3]));
+		c->c_famlen = pmatch[3].rm_eo;
+
+		/* Major number */
 		c->c_ver[c->c_num++] = parse_num(vstr, pmatch[3].rm_so,
 		    pmatch[3].rm_eo);
 

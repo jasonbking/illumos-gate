@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2024 Jason King
+ * Copyright 2026 Jason King
  */
 
 /*
@@ -63,6 +63,7 @@
 #include "find_elf.h"
 #include "header.h"
 #include "exceptions.h"
+#include "str.h"
 #include "util.h"
 
 extern char **environ;
@@ -115,6 +116,7 @@ static bool has_versions(obj_t *, bool);
 static bool open_obj(obj_t *);
 static void obj_close(obj_t *);
 static bool check_version_names(obj_t *);
+static void check_inheritance_chains(obj_t *);
 static void print_symbols(obj_t *);
 
 static void get_symbols(obj_t *);
@@ -860,7 +862,104 @@ check_version_names(obj_t *obj)
 		return (false);
 	}
 
+	check_inheritance_chains(obj);
+
 	return (true);
+}
+
+typedef struct chain {
+	char	*ch_family;	/* <prefix><major>, e.g. SUNW_1 */
+	uint_t	*ch_vers;	/* Top versions, as indices of o_versions */
+	uint_t	ch_n;
+} chain_t;
+
+static int
+cmp_chain(const void *a, const void *b)
+{
+	const chain_t *l = a;
+	const chain_t *r = b;
+
+	return (strcmp(l->ch_family, r->ch_family));
+}
+
+/*
+ * Numbered public versions have the form
+ *
+ *	<prefix>major.minor[.micro]
+ *
+ * We expect these versions to use inheritance, so there should only be one
+ * top version for each prefix and major number. It is possible, though rare,
+ * to have more than one top version if the major numbers differ. Multiple
+ * top versions with the same prefix and major number usually mean a version
+ * is missing an inheritance.
+ *
+ * As with the rest of the version checks, only versions with symbols are
+ * considered. Families are reported in sorted order, and the versions within
+ * a family in the order they appear in the object, matching the perl version.
+ */
+static void
+check_inheritance_chains(obj_t *obj)
+{
+	uint_t		n = obj->o_nversions;
+	chain_t		*chains = xcalloc(n, sizeof (chain_t));
+	uint_t		nchains = 0;
+	custr_t		*list = fcustr_alloc();
+
+	for (uint_t i = 0; i < n; i++) {
+		version_t	*v = &obj->o_versions[i];
+		size_t		famlen = v->v_cat.c_famlen;
+		chain_t		*ch = NULL;
+
+		if (v->v_nsyms == 0 || v->v_cat.c_type != CT_NUMBERED ||
+		    !v->v_top) {
+			continue;
+		}
+
+		for (uint_t j = 0; j < nchains; j++) {
+			if (strlen(chains[j].ch_family) == famlen &&
+			    strncmp(chains[j].ch_family, v->v_name,
+			    famlen) == 0) {
+				ch = &chains[j];
+				break;
+			}
+		}
+
+		if (ch == NULL) {
+			ch = &chains[nchains++];
+			ch->ch_family = zalloc(famlen + 1);
+			(void) memcpy(ch->ch_family, v->v_name, famlen);
+			ch->ch_vers = xcalloc(n, sizeof (uint_t));
+		}
+
+		ch->ch_vers[ch->ch_n++] = i;
+	}
+
+	qsort(chains, nchains, sizeof (chain_t), cmp_chain);
+
+	for (uint_t i = 0; i < nchains; i++) {
+		chain_t *ch = &chains[i];
+
+		if (ch->ch_n > 1) {
+			custr_reset(list);
+
+			for (uint_t j = 0; j < ch->ch_n; j++) {
+				if (j > 0)
+					fcustr_append(list, ", ");
+				fcustr_append(list,
+				    obj->o_versions[ch->ch_vers[j]].v_name);
+			}
+
+			errmsg(obj, "multiple %s inheritance chains (missing "
+			    "inheritance?): %s", ch->ch_family,
+			    custr_cstr(list));
+		}
+
+		strfree(ch->ch_family);
+		arrayfree(ch->ch_vers, n, sizeof (uint_t));
+	}
+
+	custr_free(list);
+	arrayfree(chains, n, sizeof (chain_t));
 }
 
 /*

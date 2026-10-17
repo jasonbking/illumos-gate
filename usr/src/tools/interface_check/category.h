@@ -17,6 +17,7 @@
 #define	_CATEGORY_H
 
 #include <inttypes.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,6 +37,12 @@ typedef struct category {
 	/* These are only used with CT_NUMBERED */
 	uint_t		c_num;
 	uint_t		c_ver[3];
+	/*
+	 * Length of the leading <prefix><major> portion of the version name
+	 * (e.g. 'SUNW_1' for SUNW_1.23). Versions with the same family are
+	 * expected to form a single inheritance chain.
+	 */
+	size_t		c_famlen;
 } category_t;
 
 void category_init(void);
