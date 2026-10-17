@@ -873,7 +873,6 @@ extern int zone_ncpus_online_get(zone_t *);
  * Returns true if the named pool/dataset is visible in the current zone.
  */
 extern int zone_dataset_visible(const char *, int *, boolean_t);
-extern int zone_dataset_visible(const char *, int *, boolean_t);
 extern int zone_dataset_visible_inzone(zone_t *, const char *, int *,
     boolean_t);
 

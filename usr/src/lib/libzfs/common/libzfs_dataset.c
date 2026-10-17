@@ -221,7 +221,7 @@ zfs_name_valid(const char *name, zfs_type_t type)
 int
 zfs_alias_valid(const char *alias)
 {
-	return (zfs_component_namecheck(alias, NULL, NULL));
+	return (zfs_component_namecheck(alias, NULL, NULL) == 0);
 }
 
 /*

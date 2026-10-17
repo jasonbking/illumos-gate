@@ -3440,7 +3440,7 @@ get_rctls(zlog_t *zlogp, char **bufp, size_t *bufsizep)
 	int rproc, rlwp;
 
 	*bufp = NULL;
-	bufsizep = 0;
+	*bufsizep = 0;
 
 	if ((handle = zonecfg_init_handle()) == NULL) {
 		zerror(zlogp, B_TRUE, "getting zone configuration handle");
@@ -3582,7 +3582,7 @@ get_rctls(zlog_t *zlogp, char **bufp, size_t *bufsizep)
 		goto out;
 	}
 
-	if (!znvlist_pack(zlogp, nvl, bufp, bufsizep)) {
+	if (znvlist_pack(zlogp, nvl, bufp, bufsizep) != 0) {
 		*bufp = NULL;
 		*bufsizep = 0;
 		goto out;
@@ -3663,11 +3663,6 @@ get_datasets(zlog_t *zlogp, nvlist_t *nvl)
 		zerror(zlogp, B_FALSE, "invalid configuration");
 		zonecfg_fini_handle(handle);
 		return (-1);
-	}
-
-	if (zonecfg_setdsent(handle) != Z_OK) {
-		zerror(zlogp, B_FALSE, "%s failed", "zonecfg_setdsent");
-		goto out;
 	}
 
 	if (zonecfg_setdsent(handle) != Z_OK) {

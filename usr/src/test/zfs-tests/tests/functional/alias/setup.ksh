@@ -17,6 +17,8 @@
 
 . $STF_SUITE/include/libtest.shlib
 
+verify_runnable "global"
+
 DISK=${DISKS%% *}
 
 default_setup $DISK

@@ -4677,12 +4677,14 @@ zone_create(const char *zone_name, const char *zone_root,
 	zone->zone_rctls = NULL;
 
 	if ((error = parse_rctls(rctlbuf, rctlbufsz, &rctls)) != 0) {
+		zone_free(zone);
 		return (zone_create_error(error, 0, extended_error));
 	}
 
 	if ((error = parse_zfs(zfsbuf, zfsbufsz, zone)) != 0) {
 		zone_free(zone);
-		return (error);
+		nvlist_free(rctls);
+		return (set_errno(error));
 	}
 
 	/*

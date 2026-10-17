@@ -6395,7 +6395,7 @@ verify_func(cmd_t *cmd)
 		}
 
 		if (strlen(dstab.zone_dataset_alias) > 0 &&
-		    zfs_alias_valid(dstab.zone_dataset_alias)) {
+		    !zfs_alias_valid(dstab.zone_dataset_alias)) {
 			zerr("%s: %s '%s' %s", rt_to_str(RT_DATASET),
 			    pt_to_str(PT_ALIAS), dstab.zone_dataset_alias,
 			    gettext("invalid"));
