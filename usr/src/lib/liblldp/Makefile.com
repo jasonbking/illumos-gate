@@ -29,6 +29,8 @@ LIBS =		$(DYNLIB)
 
 LDLIBS +=	-lc
 
+CSTD +=		$(CSTD_GNU99)
+
 .KEEP_STATE:
 
 all: $(LIBS)

@@ -2262,15 +2262,15 @@ agent_init(void)
 	TRACE_RETURN(log);
 }
 
-#define	STR(x) case x: return (#x)
+#define	MKSTR(x) case x: return (#x)
 static const char *
 tx_statestr(tx_state_t st)
 {
 	switch (st) {
-	STR(TX_LLDP_INITIALIZE);
-	STR(TX_IDLE);
-	STR(TX_SHUTDOWN_FRAME);
-	STR(TX_INFO_FRAME);
+	MKSTR(TX_LLDP_INITIALIZE);
+	MKSTR(TX_IDLE);
+	MKSTR(TX_SHUTDOWN_FRAME);
+	MKSTR(TX_INFO_FRAME);
 	}
 	panic("invalid state");
 }
@@ -2279,13 +2279,13 @@ static const char *
 rx_statestr(rx_state_t st)
 {
 	switch (st) {
-	STR(LLDP_WAIT_PORT_OPERATIONAL);
-	STR(DELETE_AGED_INFO);
-	STR(RX_LLDP_INITIALIZE);
-	STR(RX_WAIT_FOR_FRAME);
-	STR(RX_FRAME);
-	STR(DELETE_INFO);
-	STR(UPDATE_INFO);
+	MKSTR(LLDP_WAIT_PORT_OPERATIONAL);
+	MKSTR(DELETE_AGED_INFO);
+	MKSTR(RX_LLDP_INITIALIZE);
+	MKSTR(RX_WAIT_FOR_FRAME);
+	MKSTR(RX_FRAME);
+	MKSTR(DELETE_INFO);
+	MKSTR(UPDATE_INFO);
 	}
 	panic("invalid state");
 }
@@ -2294,13 +2294,13 @@ static const char *
 ttr_statestr(ttr_state_t st)
 {
 	switch (st) {
-	STR(TX_TIMER_INITIALIZE);
-	STR(TX_TIMER_IDLE);
-	STR(TX_TIMER_EXPIRES);
-	STR(SIGNAL_TX);
-	STR(TX_TICK);
-	STR(TX_FAST_START);
+	MKSTR(TX_TIMER_INITIALIZE);
+	MKSTR(TX_TIMER_IDLE);
+	MKSTR(TX_TIMER_EXPIRES);
+	MKSTR(SIGNAL_TX);
+	MKSTR(TX_TICK);
+	MKSTR(TX_FAST_START);
 	}
 	panic("invalid state");
 }
-#undef STR
+#undef MKSTR
