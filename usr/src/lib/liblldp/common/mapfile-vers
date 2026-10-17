@@ -36,6 +36,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_cap_str;
 	lldp_caps_str;
 	lldp_chassis_str;
+	lldp_chassis_typedesc;
 	lldp_chassis_typestr;
 	lldp_ether_media_to_mau;
 	lldp_get_neighbors;
@@ -44,6 +45,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_mau_mode_str;
 	lldp_mau_str;
 	lldp_mgmt_addr_str;
+	lldp_mgmt_af_str;
 	lldp_mgmt_iftype_str;
 	lldp_neighbors_free;
 	lldp_oui_8023		{ ASSERT = { TYPE = OBJECT; SIZE = 3; }; };
@@ -51,6 +53,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_pdu_free;
 	lldp_pdu_parse;
 	lldp_port_str;
+	lldp_port_typedesc;
 	lldp_port_typestr;
 	lldp_stats_free;
 	lldp_str_print;

@@ -284,8 +284,26 @@ const char *lldp_tlv_type_str(lldp_tlv_type_t);
 #define	LLDP_MAU_UNKNOWN	0
 uint16_t lldp_ether_media_to_mau(mac_ether_media_t);
 const char *lldp_admin_status_str(lldp_admin_status_t);
-const char *lldp_chassis_typestr(lldp_chassis_type_t);
-const char *lldp_port_typestr(lldp_port_type_t);
+
+/*
+ * Chassis ID and Port ID subtype names: *_typestr() returns a short token
+ * (e.g. "macaddr"), *_typedesc() a localized description (e.g. "MAC
+ * address"). For a reserved subtype, the token is its number and the
+ * description "subtype N", written to the buffer (LLDP_TYPESTR_LEN is
+ * enough). Either way the result is never NULL.
+ */
+#define	LLDP_TYPESTR_LEN	32
+const char *lldp_chassis_typestr(lldp_chassis_type_t, char *, size_t);
+const char *lldp_chassis_typedesc(lldp_chassis_type_t, char *, size_t);
+const char *lldp_port_typestr(lldp_port_type_t, char *, size_t);
+const char *lldp_port_typedesc(lldp_port_type_t, char *, size_t);
+
+/*
+ * The IANA address family of a management address (lma_af), e.g. "IPv4",
+ * or "address family N" (in the buffer) if it isn't known.
+ */
+const char *lldp_mgmt_af_str(uint8_t, char *, size_t);
+
 /* Note only one cap may be set for this */
 const char *lldp_cap_str(lldp_cap_t);
 

@@ -13,6 +13,7 @@
  * Copyright 2026 Jason King
  */
 
+#include <libintl.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -111,49 +112,146 @@ lldp_admin_status_str(lldp_admin_status_t s)
 	}
 }
 
-const char *
-lldp_chassis_typestr(lldp_chassis_type_t t)
+/*
+ * Chassis ID and Port ID subtypes have two names: a short token (as used in
+ * parsable output and logs) and a (localized) description for people. Both
+ * are set here so they stay in sync. Returns false for an unknown subtype.
+ */
+static bool
+chassis_type_names(lldp_chassis_type_t t, const char **token,
+    const char **desc)
 {
 	switch (t) {
 	case LLDP_CHASSIS_COMPONENT:
-		return ("component");
+		*token = "component";
+		*desc = dgettext(TEXT_DOMAIN, "chassis component");
+		return (true);
 	case LLDP_CHASSIS_IFALIAS:
-		return ("ifAlias");
+		*token = "ifAlias";
+		*desc = dgettext(TEXT_DOMAIN, "interface alias");
+		return (true);
 	case LLDP_CHASSIS_PORT:
-		return ("port");
+		*token = "port";
+		*desc = dgettext(TEXT_DOMAIN, "port component");
+		return (true);
 	case LLDP_CHASSIS_MACADDR:
-		return ("macaddr");
+		*token = "macaddr";
+		*desc = dgettext(TEXT_DOMAIN, "MAC address");
+		return (true);
 	case LLDP_CHASSIS_NETADDR:
-		return ("netaddr");
+		*token = "netaddr";
+		*desc = dgettext(TEXT_DOMAIN, "network address");
+		return (true);
 	case LLDP_CHASSIS_IFNAME:
-		return ("ifName");
+		*token = "ifName";
+		*desc = dgettext(TEXT_DOMAIN, "interface name");
+		return (true);
 	case LLDP_CHASSIS_LOCAL:
-		return ("local");
+		*token = "local";
+		*desc = dgettext(TEXT_DOMAIN, "locally assigned");
+		return (true);
 	default:
-		return ("unknown");
+		return (false);
 	}
 }
 
-const char *
-lldp_port_typestr(lldp_port_type_t t)
+static bool
+port_type_names(lldp_port_type_t t, const char **token, const char **desc)
 {
 	switch (t) {
 	case LLDP_PORT_IFALIAS:
-		return ("ifAlias");
+		*token = "ifAlias";
+		*desc = dgettext(TEXT_DOMAIN, "interface alias");
+		return (true);
 	case LLDP_PORT_COMPONENT:
-		return ("component");
+		*token = "component";
+		*desc = dgettext(TEXT_DOMAIN, "port component");
+		return (true);
 	case LLDP_PORT_MACADDR:
-		return ("macaddr");
+		*token = "macaddr";
+		*desc = dgettext(TEXT_DOMAIN, "MAC address");
+		return (true);
 	case LLDP_PORT_NETADDR:
-		return ("netaddr");
+		*token = "netaddr";
+		*desc = dgettext(TEXT_DOMAIN, "network address");
+		return (true);
 	case LLDP_PORT_IFNAME:
-		return ("ifName");
+		*token = "ifName";
+		*desc = dgettext(TEXT_DOMAIN, "interface name");
+		return (true);
 	case LLDP_PORT_CIRCUIT_ID:
-		return ("circuitId");
+		*token = "circuitId";
+		*desc = dgettext(TEXT_DOMAIN, "agent circuit ID");
+		return (true);
 	case LLDP_PORT_LOCAL:
-		return ("local");
+		*token = "local";
+		*desc = dgettext(TEXT_DOMAIN, "locally assigned");
+		return (true);
 	default:
-		return ("unknown");
+		return (false);
+	}
+}
+
+/* An unknown (reserved) subtype's token is its number */
+const char *
+lldp_chassis_typestr(lldp_chassis_type_t t, char *buf, size_t buflen)
+{
+	const char *token, *desc;
+
+	if (chassis_type_names(t, &token, &desc))
+		return (token);
+	(void) snprintf(buf, buflen, "%u", t);
+	return (buf);
+}
+
+const char *
+lldp_chassis_typedesc(lldp_chassis_type_t t, char *buf, size_t buflen)
+{
+	const char *token, *desc;
+
+	if (chassis_type_names(t, &token, &desc))
+		return (desc);
+	(void) snprintf(buf, buflen, dgettext(TEXT_DOMAIN, "subtype %u"), t);
+	return (buf);
+}
+
+const char *
+lldp_port_typestr(lldp_port_type_t t, char *buf, size_t buflen)
+{
+	const char *token, *desc;
+
+	if (port_type_names(t, &token, &desc))
+		return (token);
+	(void) snprintf(buf, buflen, "%u", t);
+	return (buf);
+}
+
+const char *
+lldp_port_typedesc(lldp_port_type_t t, char *buf, size_t buflen)
+{
+	const char *token, *desc;
+
+	if (port_type_names(t, &token, &desc))
+		return (desc);
+	(void) snprintf(buf, buflen, dgettext(TEXT_DOMAIN, "subtype %u"), t);
+	return (buf);
+}
+
+/* The IANA address family of a management (or network) address */
+const char *
+lldp_mgmt_af_str(uint8_t af, char *buf, size_t buflen)
+{
+	switch (af) {
+	case IANA_AF_IPV4:
+		return ("IPv4");
+	case IANA_AF_IPV6:
+		return ("IPv6");
+	case IANA_AF_802:
+		return (dgettext(TEXT_DOMAIN, "MAC"));
+	default:
+		(void) snprintf(buf, buflen,
+		    dgettext(TEXT_DOMAIN, "address family %u"), af);
+		return (buf);
 	}
 }
 

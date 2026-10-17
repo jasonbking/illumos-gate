@@ -238,6 +238,7 @@ nbr_ofmt_cb(ofmt_arg_t *arg, char *buf, uint_t buflen)
 	const nbr_t		*n = arg->ofmt_cbarg;
 	const lldp_pdu_t	*pdu = n->n_pdu;
 	const char		*s;
+	char			t[LLDP_TYPESTR_LEN];
 
 	buf[0] = '\0';
 
@@ -271,15 +272,15 @@ nbr_ofmt_cb(ofmt_arg_t *arg, char *buf, uint_t buflen)
 		(void) lldp_chassis_str(&pdu->lp_chassis, buf, buflen);
 		break;
 	case NF_CHASSIS_TYPE:
-		(void) strlcpy(buf,
-		    lldp_chassis_typestr(pdu->lp_chassis.llc_type), buflen);
+		(void) strlcpy(buf, lldp_chassis_typestr(
+		    pdu->lp_chassis.llc_type, t, sizeof (t)), buflen);
 		break;
 	case NF_PORT:
 		(void) lldp_port_str(&pdu->lp_port, buf, buflen);
 		break;
 	case NF_PORT_TYPE:
-		(void) strlcpy(buf, lldp_port_typestr(pdu->lp_port.llp_type),
-		    buflen);
+		(void) strlcpy(buf, lldp_port_typestr(pdu->lp_port.llp_type,
+		    t, sizeof (t)), buflen);
 		break;
 	case NF_PORTDESC:
 		if (pdu->lp_present & LLDP_PDU_PORT_DESC)
@@ -418,71 +419,6 @@ static void
 vsection(int indent, const char *label)
 {
 	(void) printf("%*s%s:\n", indent, "", label);
-}
-
-static const char *
-chassis_type_desc(lldp_chassis_type_t t, char *buf, size_t buflen)
-{
-	switch (t) {
-	case LLDP_CHASSIS_COMPONENT:
-		return (gettext("chassis component"));
-	case LLDP_CHASSIS_IFALIAS:
-		return (gettext("interface alias"));
-	case LLDP_CHASSIS_PORT:
-		return (gettext("port component"));
-	case LLDP_CHASSIS_MACADDR:
-		return (gettext("MAC address"));
-	case LLDP_CHASSIS_NETADDR:
-		return (gettext("network address"));
-	case LLDP_CHASSIS_IFNAME:
-		return (gettext("interface name"));
-	case LLDP_CHASSIS_LOCAL:
-		return (gettext("locally assigned"));
-	default:
-		(void) snprintf(buf, buflen, gettext("subtype %u"), t);
-		return (buf);
-	}
-}
-
-static const char *
-port_type_desc(lldp_port_type_t t, char *buf, size_t buflen)
-{
-	switch (t) {
-	case LLDP_PORT_IFALIAS:
-		return (gettext("interface alias"));
-	case LLDP_PORT_COMPONENT:
-		return (gettext("port component"));
-	case LLDP_PORT_MACADDR:
-		return (gettext("MAC address"));
-	case LLDP_PORT_NETADDR:
-		return (gettext("network address"));
-	case LLDP_PORT_IFNAME:
-		return (gettext("interface name"));
-	case LLDP_PORT_CIRCUIT_ID:
-		return (gettext("agent circuit ID"));
-	case LLDP_PORT_LOCAL:
-		return (gettext("locally assigned"));
-	default:
-		(void) snprintf(buf, buflen, gettext("subtype %u"), t);
-		return (buf);
-	}
-}
-
-/* IANA address family numbers of management addresses */
-static const char *
-af_desc(uint8_t af, char *buf, size_t buflen)
-{
-	switch (af) {
-	case 1:
-		return ("IPv4");
-	case 2:
-		return ("IPv6");
-	case 6:
-		return (gettext("MAC"));
-	default:
-		(void) snprintf(buf, buflen, gettext("address family %u"), af);
-		return (buf);
-	}
 }
 
 /*
@@ -743,12 +679,12 @@ nbr_print_verbose(const nbr_t *n)
 
 	(void) lldp_chassis_str(&pdu->lp_chassis, s, sizeof (s));
 	(void) snprintf(buf, sizeof (buf), "%s (%s)", s,
-	    chassis_type_desc(pdu->lp_chassis.llc_type, t, sizeof (t)));
+	    lldp_chassis_typedesc(pdu->lp_chassis.llc_type, t, sizeof (t)));
 	vline(TOP_INDENT, gettext("Chassis ID"), buf);
 
 	(void) lldp_port_str(&pdu->lp_port, s, sizeof (s));
 	(void) snprintf(buf, sizeof (buf), "%s (%s)", s,
-	    port_type_desc(pdu->lp_port.llp_type, t, sizeof (t)));
+	    lldp_port_typedesc(pdu->lp_port.llp_type, t, sizeof (t)));
 	vline(TOP_INDENT, gettext("Port ID"), buf);
 
 	if (pdu->lp_present & LLDP_PDU_PORT_DESC) {
@@ -790,12 +726,12 @@ nbr_print_verbose(const nbr_t *n)
 		if (ma->lma_iftype == LLDP_MGMT_IFINDEX ||
 		    ma->lma_iftype == LLDP_MGMT_SYSPORT) {
 			(void) snprintf(buf, sizeof (buf), "%s (%s, %s %u)", s,
-			    af_desc(ma->lma_af, t, sizeof (t)),
+			    lldp_mgmt_af_str(ma->lma_af, t, sizeof (t)),
 			    lldp_mgmt_iftype_str(ma->lma_iftype),
 			    ma->lma_ifnum);
 		} else {
 			(void) snprintf(buf, sizeof (buf), "%s (%s)", s,
-			    af_desc(ma->lma_af, t, sizeof (t)));
+			    lldp_mgmt_af_str(ma->lma_af, t, sizeof (t)));
 		}
 		vline(TOP_INDENT, label, buf);
 

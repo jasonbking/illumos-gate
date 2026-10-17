@@ -330,6 +330,7 @@ MSGSUBDIRS=		\
 	libipmp		\
 	libipsecutil	\
 	libldap5	\
+	liblldp		\
 	libnsl		\
 	libnwam		\
 	libofmt		\

@@ -21,6 +21,9 @@ HDRDIR =	common
 SUBDIRS = $(MACH)
 $(BUILD64)SUBDIRS += $(MACH64)
 
+POFILE =	liblldp.po
+MSGFILES =	common/lldp.c
+
 all :=		TARGET = all
 clean :=	TARGET = clean
 clobber :=	TARGET = clobber
@@ -36,9 +39,14 @@ install_h: $(ROOTHDRS)
 
 check: $(CHECKHDRS)
 
+$(POFILE):	pofile_MSGFILES
+
+_msg:		$(MSGDOMAINPOFILE)
+
 $(SUBDIRS): FRC
 	@cd $@; pwd; $(MAKE) $(TARGET)
 
 FRC:
 
+include $(SRC)/Makefile.msg.targ
 include $(SRC)/lib/Makefile.targ

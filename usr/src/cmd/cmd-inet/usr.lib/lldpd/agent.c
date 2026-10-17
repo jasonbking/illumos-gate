@@ -1347,6 +1347,7 @@ agent_port_update(agent_t *a, bool staged)
 	char		*desc;
 	char		oldstr[LLDP_PORT_MAX * 3 + 64];
 	char		newstr[LLDP_PORT_MAX * 3 + 64];
+	char		typestr[LLDP_TYPESTR_LEN];
 
 	ASSERT(MUTEX_HELD(&a->a_lock));
 
@@ -1369,7 +1370,7 @@ agent_port_update(agent_t *a, bool staged)
 		log_info(a->a_log, "port id",
 		    LOG_T_STRING, "port_id", newstr,
 		    LOG_T_STRING, "port_id_type",
-		    lldp_port_typestr(port.llp_type),
+		    lldp_port_typestr(port.llp_type, typestr, sizeof (typestr)),
 		    LOG_T_END);
 		return;
 	}
@@ -1383,7 +1384,8 @@ agent_port_update(agent_t *a, bool staged)
 	log_info(a->a_log, "port id changing",
 	    LOG_T_STRING, "old_port_id", oldstr,
 	    LOG_T_STRING, "new_port_id", newstr,
-	    LOG_T_STRING, "port_id_type", lldp_port_typestr(port.llp_type),
+	    LOG_T_STRING, "port_id_type",
+	    lldp_port_typestr(port.llp_type, typestr, sizeof (typestr)),
 	    LOG_T_END);
 
 	a->a_new_port = port;
