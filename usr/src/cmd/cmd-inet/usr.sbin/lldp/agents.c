@@ -314,7 +314,8 @@ agent_print_verbose(const agt_t *g)
 			    sizeof (t)));
 			vline(TOP_INDENT, gettext("Port ID"), buf);
 		}
-		if (ai->lai_state == LLDP_AGENT_CHANGING) {
+		if (ai->lai_state == LLDP_AGENT_CHANGING &&
+		    ai->lai_new_port.llp_len > 0) {
 			(void) lldp_port_str(&ai->lai_new_port, s, sizeof (s));
 			(void) snprintf(buf, sizeof (buf), "%s (%s)", s,
 			    lldp_port_typedesc(ai->lai_new_port.llp_type, t,
@@ -447,6 +448,11 @@ agent_print_verbose(const agt_t *g)
 
 	if ((note = state_note(ai)) != NULL)
 		vline(TOP_INDENT, gettext("Note"), note);
+	if (ai->lai_state == LLDP_AGENT_CHANGING &&
+	    ai->lai_new_port.llp_len == 0) {
+		vline(TOP_INDENT, gettext("Note"), gettext("the chassis ID is "
+		    "changing (see show-system)"));
+	}
 	if (agent_rx(ai) && ai->lai_too_many) {
 		vline(TOP_INDENT, gettext("Note"), gettext("too many "
 		    "neighbors (neighbor_max); new neighbors are being "

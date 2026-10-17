@@ -272,6 +272,108 @@
 				</description>
 				<cardinality min='1' max='1' />
 			</prop_pattern>
+			<prop_pattern name='chassis_id_type' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Chassis ID type
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						What the Chassis ID TLV
+						contains. If it is unavailable,
+						auto is used.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<values>
+					<value name='auto'>
+						<description>
+							<loctext xml:lang='C'>
+								The first
+								available of the
+								others
+							</loctext>
+						</description>
+					</value>
+					<value name='topo'>
+						<description>
+							<loctext xml:lang='C'>
+								Topo's
+								chassis-id
+							</loctext>
+						</description>
+					</value>
+					<value name='uuid'>
+						<description>
+							<loctext xml:lang='C'>
+								The SMBIOS
+								system UUID
+							</loctext>
+						</description>
+					</value>
+					<value name='serial'>
+						<description>
+							<loctext xml:lang='C'>
+								An SMBIOS serial
+								number
+							</loctext>
+						</description>
+					</value>
+					<value name='macaddr'>
+						<description>
+							<loctext xml:lang='C'>
+								The lowest
+								primary MAC
+								address
+							</loctext>
+						</description>
+					</value>
+					<value name='hostid'>
+						<description>
+							<loctext xml:lang='C'>
+								The hostid
+							</loctext>
+						</description>
+					</value>
+					<value name='local'>
+						<description>
+							<loctext xml:lang='C'>
+								The chassis_id
+								property
+							</loctext>
+						</description>
+					</value>
+				</values>
+				<constraints>
+					<value name='auto' />
+					<value name='topo' />
+					<value name='uuid' />
+					<value name='serial' />
+					<value name='macaddr' />
+					<value name='hostid' />
+					<value name='local' />
+				</constraints>
+				<choices>
+					<include_values type='values' />
+				</choices>
+			</prop_pattern>
+			<prop_pattern name='chassis_id' type='astring'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Chassis ID
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The Chassis ID sent when
+						chassis_id_type is local.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+			</prop_pattern>
 		</pg_pattern>
 		<pg_pattern name='default' type='application' target='all'
 		    required='false'>

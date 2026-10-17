@@ -44,6 +44,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_get_agents;
 	lldp_get_neighbors;
 	lldp_get_stats;
+	lldp_get_system;
 	lldp_link_notify;
 	lldp_mau_mode_str;
 	lldp_mau_str;

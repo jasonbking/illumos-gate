@@ -36,6 +36,7 @@
 #include <lldp_door.h>
 
 #include "agent.h"
+#include "config.h"
 #include "door.h"
 #include "log.h"
 #include "neighbor.h"
@@ -331,6 +332,58 @@ door_agents_rec(agent_t *a, void *arg)
 }
 
 /*
+ * LLDP_DOOR_CMD_SYSTEM. Returns the size of the reply.
+ */
+static size_t
+door_system(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
+{
+	lldp_door_reply_t	*rep = (lldp_door_reply_t *)buf;
+	lldp_system_info_t	*si;
+	lldp_agent_info_t	ai;
+
+	CTASSERT(LLDP_DOOR_REC_OFF + sizeof (*si) <= LLDP_DOOR_REPLY_MAX);
+	VERIFY3U(buflen, >=, LLDP_DOOR_REC_OFF + sizeof (*si));
+
+	if (req->ldrq_link[0] != '\0') {
+		rep->ldrp_error = EINVAL;
+		return (sizeof (*rep));
+	}
+
+	si = (lldp_system_info_t *)(buf + LLDP_DOOR_REC_OFF);
+	(void) memset(si, '\0', sizeof (*si));
+
+	mutex_enter(&lldp_config_lock);
+	si->lsi_chassis = lldp_config->lcfg_chassis;
+	si->lsi_chassis_type = lldp_config->lcfg_chassis_type;
+	si->lsi_chassis_src = lldp_config->lcfg_chassis_src;
+	if (lldp_config->lcfg_sysname != NULL) {
+		(void) strlcpy(si->lsi_sysname, lldp_config->lcfg_sysname,
+		    sizeof (si->lsi_sysname));
+	}
+	if (lldp_config->lcfg_sysdesc != NULL) {
+		(void) strlcpy(si->lsi_sysdesc, lldp_config->lcfg_sysdesc,
+		    sizeof (si->lsi_sysdesc));
+	}
+	si->lsi_syscap = lldp_config->lcfg_syscap;
+	si->lsi_encap = lldp_config->lcfg_encap;
+	mutex_exit(&lldp_config_lock);
+
+	mutex_enter(&agent_list_lock);
+	for (agent_t *a = uu_list_first(agent_list); a != NULL;
+	    a = uu_list_next(agent_list, a)) {
+		agent_get_info(a, &ai);
+		si->lsi_agents++;
+		if (ai.lai_state == LLDP_AGENT_ACTIVE)
+			si->lsi_active++;
+		si->lsi_neighbors += ai.lai_neighbors;
+	}
+	mutex_exit(&agent_list_lock);
+
+	rep->ldrp_count = 1;
+	return (LLDP_DOOR_REC_OFF + sizeof (*si));
+}
+
+/*
  * The link commands change what lldpd is doing (and are only meant for the
  * lldp RCM module, which runs in rcm_daemon), so the caller must be in our
  * zone and be allowed to configure datalinks. The read-only commands are
@@ -452,6 +505,9 @@ lldp_door_server(void *cookie __unused, char *argp, size_t argsz,
 		len = door_agent_records(&req, door_reply_buf,
 		    LLDP_DOOR_REPLY_MAX, sizeof (lldp_door_stats_t),
 		    door_stats_rec);
+		break;
+	case LLDP_DOOR_CMD_SYSTEM:
+		len = door_system(&req, door_reply_buf, LLDP_DOOR_REPLY_MAX);
 		break;
 	case LLDP_DOOR_CMD_AGENTS:
 		len = door_agent_records(&req, door_reply_buf,

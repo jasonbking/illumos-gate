@@ -445,6 +445,31 @@ lldp_agents_free(lldp_agent_info_t *agents, uint_t num __unused)
 	free(agents);
 }
 
+static int
+system_page(const char *data, size_t len, uint32_t count, void *arg)
+{
+	lldp_system_info_t *si = arg;
+
+	if (count != 1 || len < sizeof (*si))
+		return (EPROTO);
+
+	(void) memcpy(si, data, sizeof (*si));
+	si->lsi_sysname[sizeof (si->lsi_sysname) - 1] = '\0';
+	si->lsi_sysdesc[sizeof (si->lsi_sysdesc) - 1] = '\0';
+	return (0);
+}
+
+int
+lldp_get_system(lldp_system_info_t *si)
+{
+	if (si == NULL)
+		return (EINVAL);
+
+	(void) memset(si, '\0', sizeof (*si));
+	return (lldp_door_request(LLDP_DOOR_CMD_SYSTEM, NULL, 0, system_page,
+	    si));
+}
+
 int
 lldp_link_notify(lldp_link_event_t ev, uint32_t linkid)
 {

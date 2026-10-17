@@ -76,6 +76,14 @@
  *
  *	Errors: ENOENT (no agent for ldrq_link), EINVAL (malformed request).
  *
+ * LLDP_DOOR_CMD_SYSTEM
+ *
+ *	Returns what lldpd advertises for the system as a whole: a single
+ *	lldp_system_info_t. ldrq_link must be empty, and there's never more
+ *	than one page.
+ *
+ *	Errors: EINVAL (malformed request).
+ *
  * LLDP_DOOR_CMD_LINK_OFFLINE, LLDP_DOOR_CMD_LINK_ONLINE,
  * LLDP_DOOR_CMD_LINK_REMOVE
  *
@@ -110,7 +118,7 @@ extern "C" {
 /* If set, overrides LLDP_DOOR_PATH (for both lldpd and liblldp) */
 #define	LLDP_DOOR_ENV		"LLDP_DOOR"
 
-#define	LLDP_DOOR_VERSION	3
+#define	LLDP_DOOR_VERSION	4
 
 /*
  * Maximum size of a reply. This is large enough for a record with the
@@ -126,6 +134,7 @@ typedef enum lldp_door_cmd {
 	LLDP_DOOR_CMD_LINK_ONLINE = 4,
 	LLDP_DOOR_CMD_LINK_REMOVE = 5,
 	LLDP_DOOR_CMD_AGENTS = 6,
+	LLDP_DOOR_CMD_SYSTEM = 7,
 } lldp_door_cmd_t;
 
 /*

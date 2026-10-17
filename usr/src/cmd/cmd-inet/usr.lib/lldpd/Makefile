@@ -18,6 +18,7 @@ MANIFEST =	lldpd.xml
 
 OBJS =		agent.o		\
 		buf.o		\
+		chassis.o	\
 		config.o	\
 		door.o		\
 		lldpd.o		\
@@ -59,6 +60,7 @@ LDLIBS +=	-lcustr		\
 		-llldp		\
 		-lnvpair	\
 		-lscf		\
+		-lsmbios	\
 		-lsysevent	\
 		-ltopo		\
 		-lumem		\

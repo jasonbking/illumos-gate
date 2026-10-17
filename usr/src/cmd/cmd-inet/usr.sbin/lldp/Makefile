@@ -26,7 +26,8 @@ LDLIBS +=	-ldladm -llldp -lofmt
 OBJS =		agents.o	\
 		lldp.o		\
 		neighbors.o	\
-		output.o
+		output.o	\
+		system.o
 SRCS =		$(OBJS:%.o=%.c)
 
 # One message catalog for all of the sources

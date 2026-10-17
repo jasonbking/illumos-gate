@@ -67,6 +67,7 @@ void link_name(const char *, char *, size_t);
 
 int do_show_neighbors(int, char **);
 int do_show_agent(int, char **);
+int do_show_system(int, char **);
 
 #ifdef __cplusplus
 }

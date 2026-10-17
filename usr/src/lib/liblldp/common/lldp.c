@@ -103,6 +103,17 @@ typedef struct prop_name {
 	uint_t		pn_val;
 } prop_name_t;
 
+static const prop_name_t chassis_id_src_names[] = {
+	{ "auto",	LLDP_CHASSIS_ID_SRC_AUTO },
+	{ "topo",	LLDP_CHASSIS_ID_SRC_TOPO },
+	{ "uuid",	LLDP_CHASSIS_ID_SRC_UUID },
+	{ "serial",	LLDP_CHASSIS_ID_SRC_SERIAL },
+	{ "macaddr",	LLDP_CHASSIS_ID_SRC_MACADDR },
+	{ "hostid",	LLDP_CHASSIS_ID_SRC_HOSTID },
+	{ "local",	LLDP_CHASSIS_ID_SRC_LOCAL },
+	{ NULL,		0 }
+};
+
 static const prop_name_t admin_status_names[] = {
 	{ "disabled",	LLDP_LINK_DISABLED },
 	{ "tx",		LLDP_LINK_TX },
@@ -147,6 +158,8 @@ static const prop_name_t *
 prop_names(lldp_prop_t prop)
 {
 	switch (prop) {
+	case LLDP_PROP_CHASSIS_ID_TYPE:
+		return (chassis_id_src_names);
 	case LLDP_PROP_ADMIN_STATUS:
 		return (admin_status_names);
 	case LLDP_PROP_PORT_ID_TYPE:

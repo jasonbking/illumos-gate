@@ -52,7 +52,7 @@ static bool get_tlv(log_t *, buf_t *, tlv_t *);
 static bool get_tlv_expect(log_t *, buf_t *, lldp_tlv_type_t, tlv_t *);
 
 static bool write_end(buf_t *);
-static bool write_chassis_id(buf_t *);
+static bool write_chassis_id(agent_t *, buf_t *);
 static bool write_port_id(agent_t *, buf_t *);
 static bool write_ttl(buf_t *, uint16_t);
 
@@ -133,7 +133,7 @@ make_pdu(agent_t *a, buf_t *buf)
 	cfg = &a->a_cfg;
 
 	/* The mandatory TLVs, plus room for the End TLV */
-	if (!write_chassis_id(&w) || !write_port_id(a, &w) ||
+	if (!write_chassis_id(a, &w) || !write_port_id(a, &w) ||
 	    !write_ttl(&w, a->a_tx.tx_ttl) || buf_len(&w) < 2) {
 		mutex_exit(&lldp_config_lock);
 		return (false);
@@ -186,10 +186,8 @@ make_shutdown_pdu(agent_t *a, buf_t *buf)
 
 	ASSERT(MUTEX_HELD(&a->a_lock));
 
-	mutex_enter(&lldp_config_lock);
-	ok = write_chassis_id(&w) && write_port_id(a, &w) &&
+	ok = write_chassis_id(a, &w) && write_port_id(a, &w) &&
 	    write_ttl(&w, 0) && write_end(&w);
-	mutex_exit(&lldp_config_lock);
 
 	if (!ok)
 		return (false);
@@ -516,13 +514,14 @@ write_end(buf_t *w)
 	return (buf_put16(w, tv));
 }
 
+/* The chassis id this agent advertises (see agent_chassis_update()) */
 static bool
-write_chassis_id(buf_t *w)
+write_chassis_id(agent_t *a, buf_t *w)
 {
-	lldp_chassis_t *chassis = &lldp_config->lcfg_chassis;
+	const lldp_chassis_t *chassis = &a->a_chassis;
 	uint16_t tv;
 
-	VERIFY(MUTEX_HELD(&lldp_config_lock));
+	VERIFY(MUTEX_HELD(&a->a_lock));
 	tv = make_tlv(LLDP_TLV_CHASSIS_ID, chassis->llc_len + 1);
 
 	if (!buf_put16(w, tv))

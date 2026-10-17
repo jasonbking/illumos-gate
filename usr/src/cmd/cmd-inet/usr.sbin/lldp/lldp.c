@@ -53,6 +53,8 @@ static const lldp_cmd_t lldp_cmds[] = {
 	    "show-neighbors [-v | -x | [-p] -o field[,...]] [link]" },
 	{ "show-agent", do_show_agent,
 	    "show-agent [-v | [-p] -o field[,...]] [link]" },
+	{ "show-system", do_show_system,
+	    "show-system [-v | [-p] -o field[,...]]" },
 	{ "stats", do_stats, "stats [[-p] -o field[,...]] [link ...]" },
 };
 

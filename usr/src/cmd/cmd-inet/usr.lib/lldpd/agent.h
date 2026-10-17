@@ -238,6 +238,15 @@ typedef struct agent {
 	bool			a_port_change;
 	char			*a_port_desc;
 
+	/*
+	 * The system's chassis id (lldp_config), as this agent advertises
+	 * it. When the configured chassis id changes, it's staged and
+	 * switched to just as for the port id.
+	 */
+	lldp_chassis_t		a_chassis;
+	lldp_chassis_t		a_new_chassis;
+	bool			a_chassis_change;
+
 	uu_list_t		*a_neighbors;
 
 	lldp_clock_t		a_clk;

@@ -252,6 +252,13 @@ lldp_init(void)
 
 	log_info(log, "startup...", LOG_T_END);
 
+	/* Before config_init(), which uses it to find a chassis id */
+	dlret = dladm_open(&dl_handle);
+	if (dlret != DLADM_STATUS_OK) {
+		log_fatal_dladm_err(log, "failed to create dlmgt handle",
+		    dlret);
+	}
+
 	config_init();
 	lldp_timers_sysinit();
 	neighbor_init();
@@ -276,12 +283,6 @@ lldp_init(void)
 	block_signals(NULL);
 
 	lldp_create_door(NULL);
-
-	dlret = dladm_open(&dl_handle);
-	if (dlret != DLADM_STATUS_OK) {
-		log_fatal_dladm_err(log, "failed to create dlmgt handle",
-		    dlret);
-	}
 
 	/*
 	 * Subscribe before looking for links, so a link that appears in

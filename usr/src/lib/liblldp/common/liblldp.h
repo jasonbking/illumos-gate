@@ -180,6 +180,8 @@ typedef enum lldp_tx_8023_tlv {
 
 typedef struct lldp_config {
 	lldp_chassis_t	lcfg_chassis;
+	uint_t		lcfg_chassis_type;	/* chassis_id_type */
+	uint_t		lcfg_chassis_src;	/* Source used */
 	char		*lcfg_sysname;
 	char		*lcfg_sysdesc;
 	uint16_t	lcfg_syscap;
@@ -270,13 +272,29 @@ typedef enum lldp_port_id_src {
 } lldp_port_id_src_t;
 
 /*
- * The names of the values of lldpd's SMF agent properties, as set with
+ * Where the system's Chassis ID comes from (lldpd's chassis_id_type
+ * property). With LLDP_CHASSIS_ID_SRC_AUTO, lldpd uses the first of topo,
+ * uuid, serial, macaddr, and hostid that's available.
+ */
+typedef enum lldp_chassis_id_src {
+	LLDP_CHASSIS_ID_SRC_AUTO =	0,
+	LLDP_CHASSIS_ID_SRC_TOPO =	1,	/* topo's chassis-id */
+	LLDP_CHASSIS_ID_SRC_UUID =	2,	/* SMBIOS system UUID */
+	LLDP_CHASSIS_ID_SRC_SERIAL =	3,	/* SMBIOS serial number */
+	LLDP_CHASSIS_ID_SRC_MACADDR =	4,	/* Lowest primary MAC address */
+	LLDP_CHASSIS_ID_SRC_HOSTID =	5,	/* hostid(1) */
+	LLDP_CHASSIS_ID_SRC_LOCAL =	6,	/* chassis_id property */
+} lldp_chassis_id_src_t;
+
+/*
+ * The names of the values of lldpd's SMF properties, as set with
  * svccfg. lldp_prop_val() looks up a name, and lldp_prop_name() a value
  * ("unknown" if there's no such value). For the TLV properties, each
  * value is a flag, and lldp_prop_flags_str() lists the names of those set
  * in flags, separated by commas (or "none").
  */
 typedef enum lldp_prop {
+	LLDP_PROP_CHASSIS_ID_TYPE,	/* chassis_id_type (config) */
 	LLDP_PROP_ADMIN_STATUS,		/* admin_status */
 	LLDP_PROP_PORT_ID_TYPE,		/* port_id_type */
 	LLDP_PROP_TX_TLVS,		/* tx_tlvs */
@@ -297,7 +315,7 @@ typedef enum lldp_agent_state {
 	LLDP_AGENT_OFFLINE =	2,	/* Link offlined (e.g. for DR) */
 	LLDP_AGENT_FAILED =	3,	/* Link couldn't be opened */
 	LLDP_AGENT_DOWN =	4,	/* Link is down */
-	LLDP_AGENT_CHANGING =	5,	/* Port ID is changing */
+	LLDP_AGENT_CHANGING =	5,	/* Port or chassis ID is changing */
 	LLDP_AGENT_ACTIVE =	6,	/* Running */
 } lldp_agent_state_t;
 
@@ -319,7 +337,7 @@ typedef struct lldp_agent_info {
 	uint32_t	lai_port_id_src;	/* lldp_port_id_src_t */
 
 	lldp_port_t	lai_port;		/* Port ID sent */
-	lldp_port_t	lai_new_port;		/* Port ID switching to */
+	lldp_port_t	lai_new_port;		/* Port ID changing to */
 	char		lai_port_desc[LLDP_PORT_DESC_MAX + 1];
 
 	/* The MAC address used for the port id (if it's the factory one) */
@@ -370,6 +388,30 @@ typedef struct lldp_agent_info {
  */
 int lldp_get_agents(const char *, lldp_agent_info_t **, uint_t *);
 void lldp_agents_free(lldp_agent_info_t *, uint_t);
+
+/*
+ * What lldpd advertises for the system as a whole (on every link), as
+ * returned by lldp_get_system(). Like lldp_agent_info_t, this is also used
+ * in lldpd's door replies.
+ */
+typedef struct lldp_system_info {
+	lldp_chassis_t	lsi_chassis;		/* Chassis ID sent */
+	uint32_t	lsi_chassis_type;	/* chassis_id_type */
+	uint32_t	lsi_chassis_src;	/* Source used */
+	char		lsi_sysname[LLDP_SYS_NAME_MAX + 1];
+	char		lsi_sysdesc[LLDP_SYS_DESC_MAX + 1];
+	uint16_t	lsi_syscap;		/* lldp_cap_t: supported */
+	uint16_t	lsi_encap;		/* ... and enabled */
+	uint32_t	lsi_agents;		/* Agents */
+	uint32_t	lsi_active;		/* ... that are active */
+	uint32_t	lsi_neighbors;		/* Neighbors (of all agents) */
+} lldp_system_info_t;
+
+/*
+ * Retrieve what lldpd advertises for the system. Returns 0 or an errno
+ * value (ECONNREFUSED if lldpd isn't running).
+ */
+int lldp_get_system(lldp_system_info_t *);
 
 /*
  * For the lldp RCM module: tell lldpd that the link with the given datalink

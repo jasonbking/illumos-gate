@@ -76,6 +76,7 @@ static bool tx_frame(dlpi_handle_t, buf_t *, log_t *);
 static void tx_send(agent_t *, bool);
 static void agent_send_shutdown(agent_t *);
 static void agent_port_update(agent_t *, bool);
+static void agent_chassis_update(agent_t *, bool);
 static void agent_port_switch(agent_t *);
 static bool agent_port_open(agent_t *);
 static void agent_port_close(agent_t *);
@@ -169,6 +170,10 @@ agent_create(const char *name, const char *linkname, datalink_id_t linkid)
 	 * agent-specific configuration in SMF.
 	 */
 	config_agent_init(a);
+
+	mutex_enter(&a->a_lock);
+	agent_chassis_update(a, false);
+	mutex_exit(&a->a_lock);
 
 	a->a_dl_cb.fc_fn = recv_frame;
 	a->a_dl_cb.fc_arg = a;
@@ -356,8 +361,9 @@ agent_set_cfg(agent_t *a, agent_cfg_t *cfg)
 	if (a->a_ttr.ttr_tx_credit > cur->ac_tx_credit_max)
 		a->a_ttr.ttr_tx_credit = cur->ac_tx_credit_max;
 
-	/* The port id or its source may have changed */
+	/* The port id or its source, or the chassis id, may have changed */
 	agent_port_update(a, true);
+	agent_chassis_update(a, true);
 
 	if (old.ac_status != cur->ac_status) {
 		log_info(a->a_log, "agent admin status change",
@@ -515,8 +521,9 @@ agent_thread(void *arg)
 				break;
 
 			/*
-			 * Before anything is sent with a new port id, tell
-			 * neighbors to discard what we sent with the old one.
+			 * Before anything is sent with a new port or chassis
+			 * id, tell neighbors to discard what we sent with the
+			 * old one.
 			 */
 			agent_port_switch(a);
 
@@ -1394,6 +1401,61 @@ agent_port_update(agent_t *a, bool staged)
 	a->a_port_change = true;
 }
 
+static bool
+chassis_same(const lldp_chassis_t *l, const lldp_chassis_t *r)
+{
+	return (l->llc_type == r->llc_type && l->llc_len == r->llc_len &&
+	    memcmp(l->llc_id, r->llc_id, l->llc_len) == 0);
+}
+
+/*
+ * Pick up the system's chassis id (lldp_config). As for the port id (see
+ * agent_port_update()), if it has changed and staged is set, the new id is
+ * staged for the agent's thread to switch to; otherwise it takes effect
+ * immediately.
+ */
+static void
+agent_chassis_update(agent_t *a, bool staged)
+{
+	lldp_chassis_t		chassis;
+	const lldp_chassis_t	*target;
+	char			oldstr[LLDP_CHASSIS_MAX * 4 + 1];
+	char			newstr[LLDP_CHASSIS_MAX * 4 + 1];
+
+	ASSERT(MUTEX_HELD(&a->a_lock));
+
+	mutex_enter(&lldp_config_lock);
+	chassis = lldp_config->lcfg_chassis;
+	mutex_exit(&lldp_config_lock);
+
+	/* What we're advertising, or are about to */
+	target = a->a_chassis_change ? &a->a_new_chassis : &a->a_chassis;
+	if (chassis_same(&chassis, target))
+		return;
+
+	if (!staged || a->a_chassis.llc_len == 0) {
+		a->a_chassis = chassis;
+		a->a_chassis_change = false;
+		return;
+	}
+
+	if (chassis_same(&chassis, &a->a_chassis)) {
+		/* Changed back before the agent switched */
+		a->a_chassis_change = false;
+		return;
+	}
+
+	(void) lldp_chassis_str(&a->a_chassis, oldstr, sizeof (oldstr));
+	(void) lldp_chassis_str(&chassis, newstr, sizeof (newstr));
+	log_info(a->a_log, "chassis id changing",
+	    LOG_T_STRING, "old_chassis_id", oldstr,
+	    LOG_T_STRING, "new_chassis_id", newstr,
+	    LOG_T_END);
+
+	a->a_new_chassis = chassis;
+	a->a_chassis_change = true;
+}
+
 /*
  * Switch to a staged port id. Our neighbors identify the information we
  * send by our chassis id and port id, so a new port id looks like a new
@@ -1406,13 +1468,17 @@ agent_port_switch(agent_t *a)
 	ASSERT(MUTEX_HELD(&a->a_lock));
 	ASSERT(IS_AGENT_THREAD(a));
 
-	if (!a->a_port_change)
+	if (!a->a_port_change && !a->a_chassis_change)
 		return;
 
+	/* With the old ids */
 	agent_send_shutdown(a);
 
-	a->a_port = a->a_new_port;
-	a->a_port_change = false;
+	if (a->a_port_change)
+		a->a_port = a->a_new_port;
+	if (a->a_chassis_change)
+		a->a_chassis = a->a_new_chassis;
+	a->a_port_change = a->a_chassis_change = false;
 	a->a_local_changes = true;
 }
 
@@ -2236,7 +2302,7 @@ agent_state(const agent_t *a)
 		return (LLDP_AGENT_FAILED);
 	if (!a->a_port_enabled)
 		return (LLDP_AGENT_DOWN);
-	if (a->a_port_change)
+	if (a->a_port_change || a->a_chassis_change)
 		return (LLDP_AGENT_CHANGING);
 	return (LLDP_AGENT_ACTIVE);
 }

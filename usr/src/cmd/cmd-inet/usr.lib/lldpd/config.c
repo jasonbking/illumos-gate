@@ -24,7 +24,16 @@
  * All configuration is read from properties on our SMF instance (composed
  * with the service, using the running snapshot).
  *
- * System-wide configuration is read from the 'config' property group.
+ * System-wide configuration is read from the 'config' property group:
+ *
+ *	sysname			astring	System Name TLV (default: the hostname)
+ *	sysdesc			astring	System Description TLV (default: from
+ *					uname)
+ *	chassis_id_type		astring	What the Chassis ID TLV contains: auto
+ *					(the default), topo, uuid, serial,
+ *					macaddr, hostid, or local (see
+ *					chassis.c)
+ *	chassis_id		astring	Chassis ID for chassis_id_type 'local'
  *
  * Agent configuration is built in layers:
  *
@@ -116,6 +125,7 @@
 #include <sys/utsname.h>
 
 #include "agent.h"
+#include "chassis.h"
 #include "config.h"
 #include "lldpd.h"
 #include "log.h"
@@ -127,6 +137,8 @@
 #define	CONFIG_PG	"config"
 #define	CONFIG_SYSNAME	"sysname"
 #define	CONFIG_SYSDESC	"sysdesc"
+#define	CONFIG_CHASSIS_ID_TYPE	"chassis_id_type"
+#define	CONFIG_CHASSIS_ID	"chassis_id"
 #define	CONFIG_MGMTIF	"mgmtif"
 
 #define	AGENT_DEFAULT_PG	"default"
@@ -223,12 +235,12 @@ static scf_iter_t	*scf_iter;
 topo_hdl_t		*topo_hdl;
 
 static void config_free(lldp_config_t *);
-static bool config_get_defaults(lldp_config_t *);
+static void config_get_defaults(lldp_config_t *);
 static void config_get_hostname(log_t *, lldp_config_t *,
     scf_propertygroup_t *);
 static void config_get_sysdesc(log_t *, lldp_config_t *, scf_propertygroup_t *);
-static void set_chassis_id(lldp_chassis_t *, lldp_chassis_type_t,
-    const uint8_t *, uint8_t);
+static void config_get_chassis(log_t *, lldp_config_t *,
+    const scf_propertygroup_t *);
 
 static void config_daemon_read(void);
 static void config_agent_defaults(agent_cfg_t *);
@@ -339,18 +351,22 @@ config_init(void)
 	/* Set the log level as early as possible */
 	config_daemon_read();
 
+	/*
+	 * Without topo, we lose the topo chassis id and the labels and
+	 * locations of ports, but can manage without them (e.g. in a zone).
+	 */
 	topo_hdl = topo_open(TOPO_VERSION, NULL, &e);
 	if (topo_hdl == NULL) {
-		log_fatal(SMF_EXIT_ERR_FATAL, log,
-		    "failed to obtain topo handle",
+		log_warn(log, "failed to obtain topo handle; continuing "
+		    "without topo information",
 		    LOG_T_STRING, "errmsg", topo_strerror(e),
 		    LOG_T_END);
 	}
 
-	if (!config_get_defaults(&lldp_default_config)) {
-		log_fatal(SMF_EXIT_ERR_FATAL, log,
-		    "failed to obtain default configuration", LOG_T_END);
-	}
+	config_get_defaults(&lldp_default_config);
+
+	/* The other chassis id candidates (topo's is found above) */
+	chassis_init(log, dl_handle);
 
 	config_agent_default_read();
 	(void) config_read();
@@ -365,10 +381,7 @@ config_new(void)
 
 	cfg = umem_zalloc(sizeof (*cfg), UMEM_NOFAIL);
 
-	/* Populate with defaults */
-	(void) memcpy(&cfg->lcfg_chassis, &lldp_default_config.lcfg_chassis,
-	    sizeof (cfg->lcfg_chassis));
-
+	/* Populate with defaults (the chassis id is chosen in config_read()) */
 	cfg->lcfg_sysname = xstrdup(lldp_default_config.lcfg_sysname);
 	cfg->lcfg_sysdesc = xstrdup(lldp_default_config.lcfg_sysdesc);
 	cfg->lcfg_syscap = lldp_default_config.lcfg_syscap;
@@ -377,6 +390,24 @@ config_new(void)
 	/* TODO: management interfaces */
 
 	return (cfg);
+}
+
+/* Is cfg's chassis id different from the current configuration's? */
+static bool
+old_chassis_differs(const lldp_config_t *cfg)
+{
+	const lldp_chassis_t	*n = &cfg->lcfg_chassis;
+	const lldp_chassis_t	*o;
+	bool			ret = true;
+
+	mutex_enter(&lldp_config_lock);
+	if (lldp_config != NULL) {
+		o = &lldp_config->lcfg_chassis;
+		ret = o->llc_type != n->llc_type || o->llc_len != n->llc_len ||
+		    memcmp(o->llc_id, n->llc_id, n->llc_len) != 0;
+	}
+	mutex_exit(&lldp_config_lock);
+	return (ret);
 }
 
 bool
@@ -394,6 +425,23 @@ config_read(void)
 	if (config_get_pg(log, CONFIG_PG, scf_pg)) {
 		config_get_hostname(log, cfg, scf_pg);
 		config_get_sysdesc(log, cfg, scf_pg);
+		config_get_chassis(log, cfg, scf_pg);
+	} else {
+		config_get_chassis(log, cfg, NULL);
+	}
+
+	if (old_chassis_differs(cfg)) {
+		char buf[LLDP_CHASSIS_MAX * 4 + 1];
+		char t[LLDP_TYPESTR_LEN];
+
+		(void) lldp_chassis_str(&cfg->lcfg_chassis, buf, sizeof (buf));
+		log_info(log, "chassis id",
+		    LOG_T_STRING, "chassis_id", buf,
+		    LOG_T_STRING, "subtype", lldp_chassis_typestr(
+		    cfg->lcfg_chassis.llc_type, t, sizeof (t)),
+		    LOG_T_STRING, "chassis_id_type", lldp_prop_name(
+		    LLDP_PROP_CHASSIS_ID_TYPE, cfg->lcfg_chassis_src),
+		    LOG_T_END);
 	}
 
 	mutex_enter(&lldp_config_lock);
@@ -417,25 +465,21 @@ static void
 topo_do_root(topo_hdl_t *th, tnode_t *np, struct topo_arg *arg)
 {
 	char		*cid;
-	size_t		cidlen;
 	int		e;
 
+	arg->ta_root = false;
+
+	/* One of the candidates for our chassis id (see chassis.c) */
 	if (topo_prop_get_string(np, FM_FMRI_AUTHORITY, FM_FMRI_AUTH_CHASSIS,
 	    &cid, &e) != 0) {
-		log_fatal(SMF_EXIT_ERR_FATAL, arg->ta_log,
-		    "failed to get chassis id",
+		log_debug(arg->ta_log, "topo has no chassis id",
 		    LOG_T_STRING, "errmsg", topo_strerror(e),
 		    LOG_T_END);
+		return;
 	}
 
-	cidlen = strlen(cid);
-
-	set_chassis_id(&arg->ta_cfg->lcfg_chassis, LLDP_CHASSIS_COMPONENT,
-	    (const uint8_t *)cid,
-	    MIN(cidlen, sizeof (arg->ta_cfg->lcfg_chassis.llc_id)));
-
+	chassis_set_topo(cid);
 	topo_hdl_strfree(th, cid);
-	arg->ta_root = false;
 }
 
 static void
@@ -535,6 +579,9 @@ topo_cb(topo_hdl_t *th, tnode_t *np, void *argp)
 static bool
 config_get_topo(lldp_config_t *cfg)
 {
+	if (topo_hdl == NULL)
+		return (false);
+
 	topo_walk_t	*wp;
 	int		e;
 	struct topo_arg	arg = {
@@ -616,18 +663,18 @@ config_get_def_mgmtaddr(lldp_config_t *cfg __unused)
 	/* TODO */
 }
 
-static bool
+static void
 config_get_defaults(lldp_config_t *cfg)
 {
-	if (!config_get_topo(cfg))
-		return (false);
+	if (!config_get_topo(cfg)) {
+		log_warn(log, "failed to walk topo; continuing without topo "
+		    "information", LOG_T_END);
+	}
 
 	config_get_def_hostname(cfg);
 	config_get_def_sysdesc(cfg);
 	config_get_def_syscap(cfg);
 	config_get_def_mgmtaddr(cfg);
-
-	return (true);
 }
 
 static void
@@ -1183,20 +1230,6 @@ config_refresh(void)
 }
 
 static void
-set_chassis_id(lldp_chassis_t *c, lldp_chassis_type_t type,
-    const uint8_t *val, uint8_t len)
-{
-	c->llc_type = type;
-	c->llc_len = len;
-	(void) memcpy(c->llc_id, val, len);
-
-	/* For easy of observability, make sure any unused space is NUL */
-	if (len < sizeof (c->llc_id)) {
-		(void) memset(c->llc_id + len, '\0', sizeof (c->llc_id) - len);
-	}
-}
-
-static void
 config_get_hostname(log_t *l, lldp_config_t *cfg, scf_propertygroup_t *pg)
 {
 	char *name;
@@ -1230,4 +1263,37 @@ config_get_sysdesc(log_t *l, lldp_config_t *cfg, scf_propertygroup_t *pg)
 
 	free(cfg->lcfg_sysdesc);
 	cfg->lcfg_sysdesc = desc;
+}
+
+/*
+ * Choose the chassis id (see chassis.c), from the chassis_id_type and
+ * chassis_id properties of pg (if it isn't NULL).
+ */
+static void
+config_get_chassis(log_t *l, lldp_config_t *cfg, const scf_propertygroup_t *pg)
+{
+	lldp_chassis_id_src_t	want = LLDP_CHASSIS_ID_SRC_AUTO;
+	char			*local = NULL;
+	char			*s;
+	uint_t			v;
+
+	if (pg != NULL && pg_get_string(l, pg, CONFIG_CHASSIS_ID_TYPE, &s)) {
+		if (lldp_prop_val(LLDP_PROP_CHASSIS_ID_TYPE, s, &v)) {
+			want = (lldp_chassis_id_src_t)v;
+		} else {
+			prop_warn(l, pg, CONFIG_CHASSIS_ID_TYPE,
+			    "invalid chassis id type (must be auto, topo, "
+			    "uuid, serial, macaddr, hostid, or local); "
+			    "using auto", s);
+		}
+		free(s);
+	}
+
+	if (pg != NULL)
+		(void) pg_get_string(l, pg, CONFIG_CHASSIS_ID, &local);
+
+	cfg->lcfg_chassis_type = want;
+	cfg->lcfg_chassis_src = chassis_select(l, want, local,
+	    &cfg->lcfg_chassis);
+	free(local);
 }
