@@ -6453,6 +6453,25 @@ zonecfg_notify_unbind(void *handle)
 	free(handle);
 }
 
+/*
+ * Fetch a dataset's alias.  The attribute is optional: configurations
+ * written before aliases existed, and resources added in this session that
+ * have not yet been saved and re-read, may not have it.  Treat a missing
+ * attribute as an empty alias.
+ */
+static int
+fetch_ds_alias(xmlNodePtr cur, char *dst, size_t dstsize)
+{
+	int err;
+
+	err = fetchprop(cur, DTD_ATTR_ALIAS, dst, dstsize);
+	if (err == Z_BAD_PROPERTY) {
+		dst[0] = '\0';
+		err = Z_OK;
+	}
+	return (err);
+}
+
 static int
 zonecfg_add_ds_core(zone_dochandle_t handle, struct zone_dstab *tabptr)
 {
@@ -6492,6 +6511,7 @@ static int
 zonecfg_delete_ds_core(zone_dochandle_t handle, struct zone_dstab *tabptr)
 {
 	xmlNodePtr cur = handle->zone_dh_cur;
+	char alias[MAXNAMELEN];
 
 	for (cur = cur->xmlChildrenNode; cur != NULL; cur = cur->next) {
 		if (xmlStrcmp(cur->name, DTD_ELEM_DATASET))
@@ -6499,8 +6519,8 @@ zonecfg_delete_ds_core(zone_dochandle_t handle, struct zone_dstab *tabptr)
 
 		if (match_prop(cur, DTD_ATTR_NAME,
 		    tabptr->zone_dataset_name) &&
-		    match_prop(cur, DTD_ATTR_ALIAS,
-		    tabptr->zone_dataset_alias)) {
+		    fetch_ds_alias(cur, alias, sizeof (alias)) == Z_OK &&
+		    strcmp(alias, tabptr->zone_dataset_alias) == 0) {
 			xmlUnlinkNode(cur);
 			xmlFreeNode(cur);
 			return (Z_OK);
@@ -6563,41 +6583,30 @@ zonecfg_lookup_ds(zone_dochandle_t handle, struct zone_dstab *tabptr)
 	if ((err = operation_prep(handle)) != Z_OK)
 		return (err);
 
+	if (strlen(tabptr->zone_dataset_name) == 0 &&
+	    strlen(tabptr->zone_dataset_alias) == 0)
+		return (Z_NO_RESOURCE_ID);
+
+	/*
+	 * Every property given must match on the same resource.
+	 */
 	cur = handle->zone_dh_cur;
 	firstmatch = NULL;
 	for (cur = cur->xmlChildrenNode; cur != NULL; cur = cur->next) {
 		if (xmlStrcmp(cur->name, DTD_ELEM_DATASET))
 			continue;
-		if (strlen(tabptr->zone_dataset_name) > 0) {
-			if ((fetchprop(cur, DTD_ATTR_NAME, dataset,
-			    sizeof (dataset)) == Z_OK) &&
-			    (strcmp(tabptr->zone_dataset_name,
-			    dataset) == 0)) {
-				if (firstmatch == NULL)
-					firstmatch = cur;
-				else
-					return (Z_INSUFFICIENT_SPEC);
-			}
-		}
-		if (strlen(tabptr->zone_dataset_alias) > 0) {
-			if ((fetchprop(cur, DTD_ATTR_ALIAS, alias,
-			    sizeof (alias)) == Z_OK)) {
-				if (strcmp(tabptr->zone_dataset_alias,
-				    alias) == 0) {
-					if (firstmatch == NULL)
-						firstmatch = cur;
-					else if (firstmatch != cur)
-						return (Z_INSUFFICIENT_SPEC);
-				} else {
-					/*
-					 * If another property matched but this
-					 * one doesn't then reset firstmatch.
-					 */
-					if (firstmatch == cur)
-						firstmatch = NULL;
-				}
-			}
-		}
+		if (strlen(tabptr->zone_dataset_name) > 0 &&
+		    (fetchprop(cur, DTD_ATTR_NAME, dataset,
+		    sizeof (dataset)) != Z_OK ||
+		    strcmp(tabptr->zone_dataset_name, dataset) != 0))
+			continue;
+		if (strlen(tabptr->zone_dataset_alias) > 0 &&
+		    (fetch_ds_alias(cur, alias, sizeof (alias)) != Z_OK ||
+		    strcmp(tabptr->zone_dataset_alias, alias) != 0))
+			continue;
+		if (firstmatch != NULL)
+			return (Z_INSUFFICIENT_SPEC);
+		firstmatch = cur;
 	}
 	if (firstmatch == NULL)
 		return (Z_NO_RESOURCE_ID);
@@ -6607,7 +6616,7 @@ zonecfg_lookup_ds(zone_dochandle_t handle, struct zone_dstab *tabptr)
 	if ((err = fetchprop(cur, DTD_ATTR_NAME, tabptr->zone_dataset_name,
 	    sizeof (tabptr->zone_dataset_name))) != Z_OK)
 		return (err);
-	if ((err = fetchprop(cur, DTD_ATTR_ALIAS, tabptr->zone_dataset_alias,
+	if ((err = fetch_ds_alias(cur, tabptr->zone_dataset_alias,
 	    sizeof (tabptr->zone_dataset_alias))) != Z_OK)
 		return (err);
 
@@ -6645,7 +6654,7 @@ zonecfg_getdsent(zone_dochandle_t handle, struct zone_dstab *tabptr)
 		handle->zone_dh_cur = handle->zone_dh_top;
 		return (err);
 	}
-	if ((err = fetchprop(cur, DTD_ATTR_ALIAS, tabptr->zone_dataset_alias,
+	if ((err = fetch_ds_alias(cur, tabptr->zone_dataset_alias,
 	    sizeof (tabptr->zone_dataset_alias))) != Z_OK) {
 		handle->zone_dh_cur = handle->zone_dh_top;
 		return (err);

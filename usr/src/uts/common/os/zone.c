@@ -4454,6 +4454,58 @@ parse_dataset(const char *dataset, nvlist_t *nvl, zone_dataset_t **zdp)
 	return (0);
 }
 
+static boolean_t
+zfs_toplevel_is(const char *name, const char *alias)
+{
+	const char *p = strchr(name, '/');
+	size_t len = (p != NULL) ? (size_t)(p - name) : strlen(name);
+
+	return (strlen(alias) == len && strncmp(name, alias, len) == 0);
+}
+
+static boolean_t
+zfs_is_descendant(const char *child, const char *parent)
+{
+	size_t len = strlen(parent);
+
+	return (strncmp(child, parent, len) == 0 &&
+	    (child[len] == '\0' || child[len] == '/'));
+}
+
+/*
+ * Within a zone, a dataset alias is presented as a top-level (pool) name.
+ * Return B_TRUE if aliasing would make a delegated dataset visible under
+ * more than one name, or two delegated datasets visible under the same
+ * top-level name (which would make aliasing and unaliasing ambiguous).
+ * Nested delegations without any aliases are permitted.
+ */
+static boolean_t
+zone_datasets_conflict(zone_t *zone)
+{
+	list_t *l = &zone->zone_datasets;
+	zone_dataset_t *a, *b;
+
+	for (a = list_head(l); a != NULL; a = list_next(l, a)) {
+		for (b = list_next(l, a); b != NULL; b = list_next(l, b)) {
+			if (a->zd_alias == NULL && b->zd_alias == NULL)
+				continue;
+			if (a->zd_alias != NULL && b->zd_alias != NULL &&
+			    strcmp(a->zd_alias, b->zd_alias) == 0)
+				return (B_TRUE);
+			if (a->zd_alias != NULL && b->zd_alias == NULL &&
+			    zfs_toplevel_is(b->zd_dataset, a->zd_alias))
+				return (B_TRUE);
+			if (b->zd_alias != NULL && a->zd_alias == NULL &&
+			    zfs_toplevel_is(a->zd_dataset, b->zd_alias))
+				return (B_TRUE);
+			if (zfs_is_descendant(a->zd_dataset, b->zd_dataset) ||
+			    zfs_is_descendant(b->zd_dataset, a->zd_dataset))
+				return (B_TRUE);
+		}
+	}
+	return (B_FALSE);
+}
+
 static int
 parse_zfs(caddr_t ubuf, size_t buflen, zone_t *zone)
 {
@@ -4497,6 +4549,9 @@ parse_zfs(caddr_t ubuf, size_t buflen, zone_t *zone)
 
 		list_insert_head(&zone->zone_datasets, zd);
 	}
+
+	if (zone_datasets_conflict(zone))
+		ret = EINVAL;
 
 done:
 	nvlist_free(nvl);
@@ -4696,12 +4751,14 @@ zone_create(const char *zone_name, const char *zone_root,
 		/* Fail if requested to set doi to anything but system's doi */
 		if (doi != 0 && doi != default_doi) {
 			zone_free(zone);
+			nvlist_free(rctls);
 			return (set_errno(EINVAL));
 		}
 		/* Always apply system's doi to the zone */
 		error = zone_set_label(zone, label, default_doi);
 		if (error != 0) {
 			zone_free(zone);
+			nvlist_free(rctls);
 			return (set_errno(error));
 		}
 		insert_label_hash = B_TRUE;

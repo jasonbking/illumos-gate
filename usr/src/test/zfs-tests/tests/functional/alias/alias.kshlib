@@ -1,0 +1,162 @@
+#
+# This file and its contents are supplied under the terms of the
+# Common Development and Distribution License ("CDDL"), version 1.0.
+# You may only use this file in accordance with the terms of version
+# 1.0 of the CDDL.
+#
+# A full copy of the text of the CDDL should have accompanied this
+# source.  A copy of the CDDL is also available via the Internet at
+# http://www.illumos.org/license/CDDL.
+#
+
+#
+# Copyright 2026 Jason King
+#
+
+. $STF_SUITE/include/libtest.shlib
+. $STF_SUITE/tests/functional/alias/alias.cfg
+
+#
+# Returns success if $TESTZONE is configured.
+#
+function alias_zone_exists
+{
+	zoneadm list -c | grep -qx "$TESTZONE"
+}
+
+#
+# Remove the test zone configuration (if any) and scratch files.
+#
+function alias_zone_cleanup
+{
+	if alias_zone_exists; then
+		log_must zonecfg -z $TESTZONE delete -F
+	fi
+	rm -f $ALIAS_CMDFILE $ALIAS_OUTFILE
+}
+
+#
+# Start a new zonecfg command file that creates $TESTZONE.
+#
+function alias_cmd_create
+{
+	print "create" > $ALIAS_CMDFILE
+	print "set zonepath=$ZONEPATH" >> $ALIAS_CMDFILE
+}
+
+#
+# Start a new (empty) zonecfg command file, for modifying an existing zone.
+#
+function alias_cmd_begin
+{
+	: > $ALIAS_CMDFILE
+}
+
+#
+# Append arbitrary zonecfg commands (one per argument) to the command file.
+#
+function alias_cmd
+{
+	typeset line
+
+	for line in "$@"; do
+		print -r -- "$line" >> $ALIAS_CMDFILE
+	done
+}
+
+#
+# Append an 'add dataset' resource.
+#	$1	dataset name
+#	$2	alias (optional)
+#
+function alias_cmd_add_ds
+{
+	typeset name=$1
+	typeset alias=$2
+
+	alias_cmd "add dataset" "set name=$name"
+	[[ -n $alias ]] && alias_cmd "set alias=\"$alias\""
+	alias_cmd "end"
+}
+
+#
+# Run zonecfg against $TESTZONE with the current command file.  Combined
+# stdout/stderr is saved in $ALIAS_OUTFILE.  Returns the zonecfg exit status.
+#
+function alias_zonecfg_run
+{
+	typeset -i ret
+
+	zonecfg -z $TESTZONE -f $ALIAS_CMDFILE > $ALIAS_OUTFILE 2>&1
+	ret=$?
+	if ((ret != 0)); then
+		log_note "zonecfg exited $ret, commands:"
+		cat $ALIAS_CMDFILE
+		log_note "zonecfg output:"
+		cat $ALIAS_OUTFILE
+	fi
+	return $ret
+}
+
+#
+# Print the number of dataset resources configured for $TESTZONE.
+# Optional arguments are passed through as property filters,
+# e.g. 'alias_ds_count alias=foo'.
+#
+function alias_ds_count
+{
+	zonecfg -z $TESTZONE info dataset "$@" | grep -c '^dataset:'
+}
+
+#
+# Print the alias configured for the dataset named $1 (empty if none).
+#
+function alias_ds_alias
+{
+	zonecfg -z $TESTZONE info dataset name=$1 | \
+	    nawk '$1 == "alias:" { sub(/^[ \t]*alias: /, ""); print }' | \
+	    sed -e 's/^"//' -e 's/"$//'
+}
+
+#
+# Print the name of the dataset whose alias is $1 (empty if none).
+#
+function alias_ds_name
+{
+	zonecfg -z $TESTZONE info dataset alias="$1" | \
+	    nawk '$1 == "name:" { print $2 }'
+}
+
+#
+# Verify the dataset named $1 has alias $2 (or no alias if $2 is empty).
+#
+function alias_verify_ds
+{
+	typeset name=$1
+	typeset expected=$2
+	typeset actual
+
+	actual=$(alias_ds_alias $name)
+	if [[ "$actual" != "$expected" ]]; then
+		zonecfg -z $TESTZONE info dataset
+		log_fail "dataset $name: expected alias '$expected'," \
+		    "got '$actual'"
+	fi
+
+	if [[ -z $expected ]]; then
+		zonecfg -z $TESTZONE info dataset name=$name | \
+		    grep -q 'alias not specified' || \
+		    log_fail "dataset $name: 'alias not specified' not shown"
+	fi
+}
+
+#
+# Verify $ALIAS_OUTFILE mentions the given (invalid) alias.
+#
+function alias_verify_invalid_msg
+{
+	typeset alias=$1
+
+	grep -F "alias '$alias' invalid" $ALIAS_OUTFILE > /dev/null || \
+	    log_fail "expected 'alias '$alias' invalid' in zonecfg output"
+}

@@ -57,6 +57,12 @@ tests = ['zfs_acl_chmod_001_pos', 'zfs_acl_compress_001_pos',
     'zfs_acl_aclmode_restricted_001_pos']
 tags = ['functional', 'acl', 'trivial']
 
+[tests/functional/alias]
+tests = ['alias_zonecfg_001_pos', 'alias_zonecfg_002_pos',
+    'alias_zonecfg_003_pos', 'alias_zonecfg_004_pos', 'alias_zonecfg_005_neg',
+    'alias_zonecfg_006_neg', 'alias_zonecfg_007_pos', 'alias_zonecfg_008_neg']
+tags = ['functional', 'alias']
+
 [tests/functional/alloc_class]
 tests = ['alloc_class_001_pos', 'alloc_class_002_neg', 'alloc_class_003_pos',
     'alloc_class_004_pos', 'alloc_class_005_pos', 'alloc_class_006_pos',

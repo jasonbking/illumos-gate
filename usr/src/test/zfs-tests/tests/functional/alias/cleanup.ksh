@@ -15,6 +15,7 @@
 # Copyright 2022 Jason King
 #
 
-. $STF_SUITE/include/libtest.shlib
+. $STF_SUITE/tests/functional/alias/alias.kshlib
 
+alias_zone_cleanup
 default_cleanup

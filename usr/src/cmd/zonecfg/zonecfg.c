@@ -2957,8 +2957,14 @@ fill_in_dstab(cmd_t *cmd, struct zone_dstab *dstab, boolean_t fill_in_only)
 			    sizeof (dstab->zone_dataset_name));
 			break;
 		case PT_ALIAS:
-			(void) strlcpy(dstab->zone_dataset_alias, pp->pv_simple,
-			    sizeof (dstab->zone_dataset_alias));
+			if (strlcpy(dstab->zone_dataset_alias, pp->pv_simple,
+			    sizeof (dstab->zone_dataset_alias)) >=
+			    sizeof (dstab->zone_dataset_alias)) {
+				zerr(gettext("%s: %s is too long"),
+				    rt_to_str(RT_DATASET), pt_to_str(PT_ALIAS));
+				saw_error = B_TRUE;
+				return (Z_TOO_BIG);
+			}
 			break;
 		default:
 			zone_perror(pt_to_str(cmd->cmd_prop_name[i]),
@@ -4769,6 +4775,13 @@ set_func(cmd_t *cmd)
 			    sizeof (in_progress_dstab.zone_dataset_name));
 			return;
 		case PT_ALIAS:
+			if (strlen(prop_id) >=
+			    sizeof (in_progress_dstab.zone_dataset_alias)) {
+				zerr(gettext("%s: %s is too long"),
+				    rt_to_str(RT_DATASET), pt_to_str(PT_ALIAS));
+				saw_error = B_TRUE;
+				return;
+			}
 			(void) strlcpy(in_progress_dstab.zone_dataset_alias,
 			    prop_id,
 			    sizeof (in_progress_dstab.zone_dataset_alias));
@@ -6103,6 +6116,108 @@ verify_secflags(struct zone_secflagstab *tab)
 	return (ret);
 }
 
+/* Is the first component of 'name' equal to 'alias'? */
+static boolean_t
+ds_toplevel_is(const char *name, const char *alias)
+{
+	size_t len = strcspn(name, "/");
+
+	return (strlen(alias) == len && strncmp(name, alias, len) == 0);
+}
+
+/* Is 'child' the same as, or a descendant of, 'parent'? */
+static boolean_t
+ds_is_descendant(const char *child, const char *parent)
+{
+	size_t len = strlen(parent);
+
+	return (strncmp(child, parent, len) == 0 &&
+	    (child[len] == '\0' || child[len] == '/'));
+}
+
+/*
+ * Within a zone, a dataset alias is presented as a top-level (pool) name.
+ * Reject configurations where a delegated dataset would be visible under
+ * more than one name, or two delegated datasets would be visible under the
+ * same top-level name:
+ *	- two datasets with the same alias
+ *	- an alias equal to the pool of a dataset without an alias
+ *	- an aliased dataset nested within (or containing) another delegated
+ *	  dataset
+ * Nested delegations where neither dataset is aliased remain allowed.
+ */
+static int
+verify_ds_aliases(void)
+{
+	struct zone_dstab dstab, *ds = NULL, *tmp;
+	size_t n = 0, i, j;
+	int err, ret = Z_OK;
+
+	if ((err = zonecfg_setdsent(handle)) != Z_OK) {
+		zone_perror(zone, err, B_TRUE);
+		return (err);
+	}
+	while (zonecfg_getdsent(handle, &dstab) == Z_OK) {
+		if ((tmp = reallocarray(ds, n + 1, sizeof (*ds))) == NULL) {
+			zone_perror(zone, Z_NOMEM, B_TRUE);
+			(void) zonecfg_enddsent(handle);
+			free(ds);
+			return (Z_NOMEM);
+		}
+		ds = tmp;
+		ds[n++] = dstab;
+	}
+	(void) zonecfg_enddsent(handle);
+
+	for (i = 0; i < n; i++) {
+		for (j = i + 1; j < n; j++) {
+			struct zone_dstab *a = &ds[i], *b = &ds[j];
+			boolean_t aa = a->zone_dataset_alias[0] != '\0';
+			boolean_t ba = b->zone_dataset_alias[0] != '\0';
+
+			if (!aa && !ba)
+				continue;
+
+			if (aa && ba && strcmp(a->zone_dataset_alias,
+			    b->zone_dataset_alias) == 0) {
+				zerr(gettext("%s: %s '%s' is used more than "
+				    "once"), rt_to_str(RT_DATASET),
+				    pt_to_str(PT_ALIAS), a->zone_dataset_alias);
+				ret = Z_BAD_PROPERTY;
+			} else if (aa && !ba && ds_toplevel_is(
+			    b->zone_dataset_name, a->zone_dataset_alias)) {
+				zerr(gettext("%s: %s '%s' conflicts with the "
+				    "pool of %s '%s'"), rt_to_str(RT_DATASET),
+				    pt_to_str(PT_ALIAS), a->zone_dataset_alias,
+				    pt_to_str(PT_NAME), b->zone_dataset_name);
+				ret = Z_BAD_PROPERTY;
+			} else if (ba && !aa && ds_toplevel_is(
+			    a->zone_dataset_name, b->zone_dataset_alias)) {
+				zerr(gettext("%s: %s '%s' conflicts with the "
+				    "pool of %s '%s'"), rt_to_str(RT_DATASET),
+				    pt_to_str(PT_ALIAS), b->zone_dataset_alias,
+				    pt_to_str(PT_NAME), a->zone_dataset_name);
+				ret = Z_BAD_PROPERTY;
+			}
+
+			if (ds_is_descendant(a->zone_dataset_name,
+			    b->zone_dataset_name) ||
+			    ds_is_descendant(b->zone_dataset_name,
+			    a->zone_dataset_name)) {
+				zerr(gettext("%s: '%s' and '%s' are nested; "
+				    "nested datasets cannot have an %s"),
+				    rt_to_str(RT_DATASET),
+				    a->zone_dataset_name, b->zone_dataset_name,
+				    pt_to_str(PT_ALIAS));
+				ret = Z_BAD_PROPERTY;
+			}
+		}
+	}
+
+	free(ds);
+	return (ret);
+}
+
 /*
  * See the DTD for which attributes are required for which resources.
  *
@@ -6405,6 +6520,12 @@ verify_func(cmd_t *cmd)
 		}
 	}
 	(void) zonecfg_enddsent(handle);
+
+	if (verify_ds_aliases() != Z_OK) {
+		saw_error = B_TRUE;
+		if (ret_val == Z_OK)
+			ret_val = Z_BAD_PROPERTY;
+	}
 
 	if ((err = zonecfg_setadminent(handle)) != Z_OK) {
 		zone_perror(zone, err, B_TRUE);

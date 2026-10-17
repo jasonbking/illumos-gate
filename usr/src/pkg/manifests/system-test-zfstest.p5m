@@ -208,6 +208,15 @@ file path=opt/zfs-tests/tests/functional/acl/trivial/zfs_acl_tar_002_neg \
     mode=0555
 dir  path=opt/zfs-tests/tests/functional/alias
 file path=opt/zfs-tests/tests/functional/alias/alias.cfg mode=0444
+file path=opt/zfs-tests/tests/functional/alias/alias.kshlib mode=0444
+file path=opt/zfs-tests/tests/functional/alias/alias_zonecfg_001_pos mode=0555
+file path=opt/zfs-tests/tests/functional/alias/alias_zonecfg_002_pos mode=0555
+file path=opt/zfs-tests/tests/functional/alias/alias_zonecfg_003_pos mode=0555
+file path=opt/zfs-tests/tests/functional/alias/alias_zonecfg_004_pos mode=0555
+file path=opt/zfs-tests/tests/functional/alias/alias_zonecfg_005_neg mode=0555
+file path=opt/zfs-tests/tests/functional/alias/alias_zonecfg_006_neg mode=0555
+file path=opt/zfs-tests/tests/functional/alias/alias_zonecfg_007_pos mode=0555
+file path=opt/zfs-tests/tests/functional/alias/alias_zonecfg_008_neg mode=0555
 file path=opt/zfs-tests/tests/functional/alias/cleanup mode=0555
 file path=opt/zfs-tests/tests/functional/alias/setup mode=0555
 dir  path=opt/zfs-tests/tests/functional/alloc_class
