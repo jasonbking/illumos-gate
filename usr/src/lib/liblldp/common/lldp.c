@@ -15,6 +15,7 @@
 
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <libcustr.h>
@@ -79,15 +80,18 @@ lldp_hex_str(const uint8_t *v, size_t vlen, char *buf, size_t buflen,
 
 /*
  * Write a (not necessarily NUL-terminated) text id into buf, with
- * snprintf() semantics.
+ * snprintf() semantics. It came from the network, so anything that isn't
+ * printable is escaped (see lldp_str_print()).
  */
 static size_t
 lldp_text_str(const uint8_t *v, size_t vlen, char *buf, size_t buflen)
 {
-	int n;
+	lldp_str_t s = {
+		.ls_data = v,
+		.ls_len = (uint16_t)MIN(vlen, UINT16_MAX),
+	};
 
-	n = snprintf(buf, buflen, "%.*s", (int)vlen, (const char *)v);
-	return ((n < 0) ? 0 : (size_t)n);
+	return (lldp_str_print(&s, buf, buflen, 0));
 }
 
 const char *
@@ -401,25 +405,25 @@ lldp_tlv_type_str(lldp_tlv_type_t type)
 	case LLDP_TLV_END:
 		return ("End");
 	case LLDP_TLV_CHASSIS_ID:
-		return ("Chassis Id");
+		return ("Chassis ID");
 	case LLDP_TLV_PORT_ID:
-		return ("Port Id");
+		return ("Port ID");
 	case LLDP_TLV_TTL:
-		return ("ttl");
+		return ("TTL");
 	case LLDP_TLV_PORT_DESC:
 		return ("Port Description");
 	case LLDP_TLV_SYS_NAME:
 		return ("System Name");
 	case LLDP_TLV_SYS_DESC:
-		return ("System description");
+		return ("System Description");
 	case LLDP_TLV_SYS_CAP:
-		return ("System capabilities");
+		return ("System Capabilities");
 	case LLDP_TLV_MGMT_ADDR:
-		return ("Management addresses");
+		return ("Management Address");
 	case LLDP_TLV_ORG_SPEC:
-		return ("Organization specific");
+		return ("Organizationally Specific");
 	default:
-		return ("Unknown");
+		return ("Reserved");
 	}
 }
 

@@ -21,14 +21,35 @@ include		$(SRC)/cmd/Makefile.cmd.64
 include		$(SRC)/cmd/Makefile.ctf
 
 CSTD =		$(CSTD_GNU99)
-LDLIBS +=	-llldp -lofmt
+LDLIBS +=	-ldladm -llldp -lofmt
+
+OBJS =		lldp.o		\
+		neighbors.o
+SRCS =		$(OBJS:%.o=%.c)
+
+# One message catalog for all of the sources
+POFILES =	$(OBJS:%.o=%.po)
+POFILE =	$(PROG)_all.po
 
 .KEEP_STATE:
 
 all:		$(PROG)
 
+$(PROG):	$(OBJS)
+		$(LINK.c) -o $@ $(OBJS) $(LDLIBS)
+		$(POST_PROCESS)
+
+%.o:		%.c
+		$(COMPILE.c) $<
+		$(POST_PROCESS_O)
+
 install:	all $(ROOTUSRSBINPROG)
 
+$(POFILE):	$(POFILES)
+		$(RM) $@
+		$(CAT) $(POFILES) > $@
+
 clean:
+		$(RM) $(OBJS) $(POFILES)
 
 include		$(SRC)/cmd/Makefile.targ

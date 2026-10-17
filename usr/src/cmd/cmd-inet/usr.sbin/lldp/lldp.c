@@ -38,38 +38,25 @@
 #include <sys/ccompile.h>
 #include <liblldp.h>
 
-#define	EXIT_USAGE	2
+#include "lldp.h"
 
 #if !defined(TEXT_DOMAIN)
 #define	TEXT_DOMAIN	"SYS_TEST"
 #endif
 
-typedef struct lldp_cmd {
-	const char	*lc_name;
-	int		(*lc_func)(int, char **);
-	const char	*lc_usage;
-} lldp_cmd_t;
-
 static int do_help(int, char **);
-static int do_show_neighbors(int, char **);
 static int do_show_agent(int, char **);
 static int do_stats(int, char **);
 
 static const lldp_cmd_t lldp_cmds[] = {
 	{ "help", do_help, "help" },
 	{ "show-neighbors", do_show_neighbors,
-	    "show-neighbors [[-p] -o field[,...]] [link]" },
+	    "show-neighbors [-v | -x | [-p] -o field[,...]] [link]" },
 	{ "show-agent", do_show_agent, "show-agent [link]" },
 	{ "stats", do_stats, "stats [[-p] -o field[,...]] [link ...]" },
 };
 
 #define	NCMDS	(sizeof (lldp_cmds) / sizeof (lldp_cmds[0]))
-
-/* Output options common to the subcommands that use libofmt */
-typedef struct lldp_ofmt_opts {
-	bool		loo_parsable;	/* -p */
-	const char	*loo_fields;	/* -o; NULL for the default fields */
-} lldp_ofmt_opts_t;
 
 static void
 usage(FILE *f)
@@ -80,9 +67,19 @@ usage(FILE *f)
 	    "show-neighbors");
 	for (size_t i = 0; i < NCMDS; i++)
 		(void) fprintf(f, "\t%s\n", lldp_cmds[i].lc_usage);
+
+	/* The key for the CAPS field of show-neighbors (only for 'help') */
+	if (f == stdout) {
+		(void) fprintf(f, gettext("\nshow-neighbors CAPS (enabled "
+		    "capabilities):\n"
+		    "\tB bridge, R router, W WLAN access point, T telephone,\n"
+		    "\tD DOCSIS cable device, S station, r repeater, O other,\n"
+		    "\tC C-VLAN component, s S-VLAN component, t two-port MAC "
+		    "relay\n"));
+	}
 }
 
-static void __NORETURN
+void __NORETURN
 cmd_usage(const lldp_cmd_t *cmd)
 {
 	(void) fprintf(stderr, gettext("Usage: %s %s\n"), getprogname(),
@@ -90,7 +87,7 @@ cmd_usage(const lldp_cmd_t *cmd)
 	exit(EXIT_USAGE);
 }
 
-static const lldp_cmd_t *
+const lldp_cmd_t *
 cmd_lookup(const char *name)
 {
 	for (size_t i = 0; i < NCMDS; i++) {
@@ -153,7 +150,7 @@ cmd_link_arg(const lldp_cmd_t *cmd, int argc, char **argv,
  * Report a failure from liblldp. If link is non-NULL, ENOENT means there's
  * no agent for it.
  */
-static void
+void
 lldp_warn(int err, const char *link, const char *what)
 {
 	if (err == ENOENT && link != NULL)
@@ -187,7 +184,7 @@ ofmt_warn(const char *msg, ...)
  * Create the ofmt handle for a subcommand's output. Exits on failure (any
  * failure, in parsable mode). In parsable mode, -o is required.
  */
-static ofmt_handle_t
+ofmt_handle_t
 lldp_ofmt_open(const lldp_ofmt_opts_t *opts, const ofmt_field_t *fields,
     uint_t flags)
 {
@@ -207,77 +204,6 @@ static int
 do_help(int argc __unused, char **argv __unused)
 {
 	usage(stdout);
-	return (EXIT_SUCCESS);
-}
-
-/*
- * The fields of 'lldp show-neighbors'. Field names (like subcommand names)
- * are not translated.
- *
- * TODO: decode the PDUs (chassis id, port id, system name, ...). For now,
- * just list what was received.
- */
-typedef enum nbr_field {
-	NBR_LINK,
-	NBR_TTL,
-	NBR_PDU_LEN,
-} nbr_field_t;
-
-static boolean_t
-nbr_ofmt_cb(ofmt_arg_t *arg, char *buf, uint_t buflen)
-{
-	const lldp_neighbor_t *nb = arg->ofmt_cbarg;
-
-	switch (arg->ofmt_id) {
-	case NBR_LINK:
-		(void) strlcpy(buf, nb->ln_link, buflen);
-		break;
-	case NBR_TTL:
-		(void) snprintf(buf, buflen, "%u", nb->ln_ttl);
-		break;
-	case NBR_PDU_LEN:
-		(void) snprintf(buf, buflen, "%zu", nb->ln_pdu_len);
-		break;
-	default:
-		return (B_FALSE);
-	}
-
-	return (B_TRUE);
-}
-
-static const ofmt_field_t nbr_fields[] = {
-	{ "LINK",	17,	NBR_LINK,	nbr_ofmt_cb },
-	{ "TTL",	7,	NBR_TTL,	nbr_ofmt_cb },
-	{ "PDU-LEN",	8,	NBR_PDU_LEN,	nbr_ofmt_cb },
-	{ NULL,		0,	0,		NULL }
-};
-
-static int
-do_show_neighbors(int argc, char **argv)
-{
-	const lldp_cmd_t	*cmd = cmd_lookup("show-neighbors");
-	lldp_ofmt_opts_t	opts = { 0 };
-	const char		*link = cmd_link_arg(cmd, argc, argv, &opts);
-	ofmt_handle_t		ofmt;
-	lldp_neighbor_t		*nbrs = NULL;
-	uint_t			n = 0;
-	int			ret;
-
-	/* Check the options before talking to lldpd */
-	ofmt = lldp_ofmt_open(&opts, nbr_fields, 0);
-
-	ret = lldp_get_neighbors(link, &nbrs, &n);
-	if (ret != 0) {
-		lldp_warn(ret, link, gettext("neighbors"));
-		ofmt_close(ofmt);
-		return (EXIT_FAILURE);
-	}
-
-	for (uint_t i = 0; i < n; i++)
-		ofmt_print(ofmt, &nbrs[i]);
-
-	ofmt_close(ofmt);
-	lldp_neighbors_free(nbrs, n);
 	return (EXIT_SUCCESS);
 }
 
