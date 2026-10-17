@@ -14,6 +14,7 @@
  */
 
 #include <sys/types.h>
+#include <string.h>
 #include <time.h>
 #include "header.h"
 
@@ -37,22 +38,29 @@ static const char cddl[] =
     "# CDDL HEADER END\n"
     "#\n";
 
+/*
+ * Write the header comment. As with the perl version, the command is
+ * recorded using the basename of the program followed by all of its
+ * arguments.
+ */
 void
 print_header(FILE *f, int argc, char **argv)
 {
+	const char *prog = argv[0];
+	const char *slash = strrchr(prog, '/');
 	time_t now;
+
+	if (slash != NULL)
+		prog = slash + 1;
 
 	now = time(NULL);
 
 	(void) fwrite(cddl, sizeof (cddl) - 1, 1, f);
 	(void) fputc('\n', f);
 	(void) fprintf(f, "# Date:    %s", ctime(&now));
-	(void) fprintf(f, "# Command: ");
-	for (int i = 0; i < argc; i++) {
-		if (i > 0)
-			(void) fputc(' ', f);
-		(void) fprintf(f, "%s", argv[i]);
-	}
+	(void) fprintf(f, "# Command: %s", prog);
+	for (int i = 1; i < argc; i++)
+		(void) fprintf(f, " %s", argv[i]);
 	(void) fputc('\n', f);
 
 	(void) fputc('\n', f);

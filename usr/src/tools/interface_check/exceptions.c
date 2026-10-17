@@ -13,12 +13,15 @@
  * Copyright 2024 Jason King
  */
 
+#include <ctype.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <regex.h>
 #include <libcustr.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <umem.h>
 #include <sys/debug.h>
 #include <sys/types.h>
@@ -31,6 +34,10 @@
 /*
  * Read in the exceptions file. Each entry is of the form
  *    VERB REGEX
+ *
+ * where VERB is matched case-insensitively and REGEX is the remainder of
+ * the line (after the whitespace following VERB). Regular expressions are
+ * POSIX extended regular expressions.
  *
  * We compile the file into an array of regexes for each VERB that can
  * be tested in succession. The original perl script would instead join
@@ -48,10 +55,14 @@ static const char *mach_exp = "(/amd64|/sparcv9)?";
 exception_t *
 get_exception(exceptions_t *exs, const char *verb)
 {
-	exception_t *e = exs->es_exceptions;
+	exception_t *e;
 
+	if (exs == NULL)
+		return (NULL);
+
+	e = exs->es_exceptions;
 	for (uint_t i = 0; i < exs->es_n; i++, e++) {
-		if (strcmp(e->e_verb, verb) == 0)
+		if (strcasecmp(e->e_verb, verb) == 0)
 			return (e);
 	}
 	return (NULL);
@@ -111,12 +122,13 @@ add_exception(exceptions_t *exs, const char *verb, const char *re)
 		e->e_sz = newsz;
 	}
 
-	e->e_patterns[e->e_n] = xstrdup(re);
-	rep = &e->e_regexes[e->e_n++];
-
-	ret = regcomp(rep, re, REG_EXTENDED);
-	if (ret == 0)
+	rep = &e->e_regexes[e->e_n];
+	ret = regcomp(rep, re, REG_EXTENDED | REG_NOSUB);
+	if (ret == 0) {
+		/* Only count the entry once it has successfully compiled */
+		e->e_patterns[e->e_n++] = xstrdup(re);
 		return (NULL);
+	}
 
 	char *emsg = NULL;
 	size_t emsg_len = regerror(ret, rep, NULL, 0) + 1;
@@ -128,7 +140,7 @@ add_exception(exceptions_t *exs, const char *verb, const char *re)
 
 /*
  * Create the regex string from the exception regex. This will expand the
- * MACH(xxx) macro as appropriate.
+ * first MACH(xxx) macro (as the perl version did).
  */
 #define	MACH_STR "MACH("
 
@@ -146,13 +158,13 @@ create_regex_str(const char *s, custr_t *cus)
 		return;
 	}
 
-	/* Find the closing parenthesis */
-	mpend = strchr(mp + 1, ')');
-	if (mpend == NULL) {
-		/*
-		 * The original perl script didn't error on this and treats
-		 * it as a literal instead. We do the same.
-		 */
+	/*
+	 * Find the closing parenthesis. The perl version required at least
+	 * one character between the parenthesis, otherwise it treated the
+	 * text as a literal. We do the same.
+	 */
+	mpend = strchr(mp + sizeof (MACH_STR) - 1, ')');
+	if (mpend == NULL || mpend == mp + sizeof (MACH_STR) - 1) {
 		fcustr_append(cus, s);
 		return;
 	}
@@ -175,34 +187,87 @@ create_regex_str(const char *s, custr_t *cus)
 		fcustr_append(cus, s);
 }
 
+static bool
+is_file(const char *path)
+{
+	struct stat sb;
+
+	return (stat(path, &sb) == 0 && S_ISREG(sb.st_mode));
+}
+
+/*
+ * Locate the exception file for the given tool, in the same order as the
+ * perl implementation:
+ *
+ *  1. $CODEMGR_WS/exception_lists/<name> in an activated workspace
+ *  2. <bindir>/../etc/exception_lists/<name>, relative to the installed
+ *     onbld tool. execdir is the (absolute) directory containing this
+ *     binary, which lives in bin/$(MACH), so this is
+ *     <execdir>/../../etc/exception_lists/<name>.
+ *
+ * Returns NULL if no exception file was found, which is not an error.
+ */
 char *
-find_exception_file(int dirfd, const char *name)
+find_exception_file(const char *execdir, const char *name)
 {
 	const char	*ws = getenv("CODEMGR_WS");
 	char		*out = NULL;
-	struct stat	sb = { 0 };
 
 	if (ws != NULL) {
 		if (asprintf(&out, "%s/exception_lists/%s", ws, name) < 0)
-			return (NULL);
+			nomem_callback();
 
-		if (fstatat(dirfd, out, &sb, 0) == 0 && S_ISREG(sb.st_mode))
+		if (is_file(out))
 			return (out);
 
 		free(out);
 		out = NULL;
 	}
 
-	if (asprintf(&out, "../etc/exception_lists/%s", name) < 0)
+	if (execdir == NULL)
 		return (NULL);
 
-	if (fstatat(dirfd, out, &sb, 0) == 0 && S_ISREG(sb.st_mode))
+	if (asprintf(&out, "%s/../../etc/exception_lists/%s", execdir,
+	    name) < 0) {
+		nomem_callback();
+	}
+
+	if (is_file(out))
 		return (out);
 
 	free(out);
 	return (NULL);
 }
 
+/*
+ * Split the line into the verb and the regex (the rest of the line).
+ * Modifies line in place. Returns false if either is missing.
+ */
+static bool
+split_entry(char *line, char **verbp, char **rep)
+{
+	char *p = line;
+
+	while (isspace((unsigned char)*p))
+		p++;
+	if (*p == '\0')
+		return (false);
+
+	*verbp = p;
+	while (*p != '\0' && !isspace((unsigned char)*p))
+		p++;
+	if (*p == '\0')
+		return (false);
+	*p++ = '\0';
+
+	while (isspace((unsigned char)*p))
+		p++;
+	if (*p == '\0')
+		return (false);
+
+	*rep = p;
+	return (true);
+}
 
 exceptions_t *
 load_exceptions(FILE *f, const char *filename)
@@ -213,7 +278,7 @@ load_exceptions(FILE *f, const char *filename)
 	char		*re_err = NULL;
 	uint_t		linenum;
 
-	exs = zalloc(sizeof *exs);
+	exs = zalloc(sizeof (*exs));
 	line = fcustr_alloc();
 	regex_str = fcustr_alloc();
 
@@ -223,9 +288,7 @@ load_exceptions(FILE *f, const char *filename)
 
 		copy = xstrdup(custr_cstr(line));
 
-		verb = strtok(copy, " \t\n");
-		re = strtok(NULL, " \t\n");
-		if (verb == NULL || re == NULL) {
+		if (!split_entry(copy, &verb, &re)) {
 			(void) fprintf(stderr, "%s: %s invalid exception entry "
 			    "at line %u\n", getprogname(), filename, linenum);
 			strfree(copy);
@@ -241,10 +304,20 @@ load_exceptions(FILE *f, const char *filename)
 			    "regex '%s' at line %u: %s\n",
 			    getprogname(), filename, re, linenum, re_err);
 			strfree(re_err);
+			strfree(copy);
 			exceptions_free(exs);
 			exs = NULL;
 			goto done;
 		}
+
+		strfree(copy);
+	}
+
+	if (ferror(f)) {
+		(void) fprintf(stderr, "%s: error reading %s\n", getprogname(),
+		    filename);
+		exceptions_free(exs);
+		exs = NULL;
 	}
 
 done:
@@ -264,10 +337,13 @@ exceptions_free(exceptions_t *exs)
 
 		strfree(e->e_verb);
 
-		for (uint_t j = 0; j < e->e_n; j++)
+		for (uint_t j = 0; j < e->e_n; j++) {
 			regfree(&e->e_regexes[j]);
+			strfree(e->e_patterns[j]);
+		}
 
 		arrayfree(e->e_regexes, e->e_sz, sizeof (regex_t));
+		arrayfree(e->e_patterns, e->e_sz, sizeof (char *));
 	}
 	arrayfree(exs->es_exceptions, exs->es_size, sizeof (exception_t));
 	umem_free(exs, sizeof (*exs));

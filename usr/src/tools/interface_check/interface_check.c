@@ -13,20 +13,51 @@
  * Copyright 2024 Jason King
  */
 
+/*
+ * Check versioning information.
+ *
+ * This is a replacement for the original perl interface_check script. It
+ * inspects ELF shared objects (as listed by find_elf) for version
+ * definitions, verifies that the common versioning rules have been
+ * followed, and optionally writes an interface description of each object
+ * (see interface_check(1ONBLD)).
+ *
+ * Where the perl script ran pvs(1), we read the ELF data directly, but
+ * apply the same rules pvs does so that the results match:
+ *
+ *  - A symbol belongs to the version definition whose vd_ndx matches the
+ *    symbol's versym entry, using the symbol table the versym section is
+ *    linked to. The absolute symbol each version defines for its own name
+ *    is not counted (pvs only shows it with -v).
+ *
+ *  - Weak versions are treated like any other version (pvs only shows the
+ *    WEAK attribute with -v; it does not hide weak versions).
+ *
+ *  - The 'top' versions are those left after pvs -n normalization: every
+ *    version inherited by a non-weak version (directly or indirectly) is
+ *    removed, a version inherited by a weak version is removed only if it
+ *    is itself weak, and the base version is always removed.
+ */
+
 #include <ctype.h>
 #include <err.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <gelf.h>
 #include <libcustr.h>
+#include <limits.h>
 #include <regex.h>
+#include <spawn.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <umem.h>
 #include <unistd.h>
 #include <sys/debug.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include "category.h"
 #include "find_elf.h"
@@ -34,37 +65,40 @@
 #include "exceptions.h"
 #include "util.h"
 
+extern char **environ;
+
 typedef struct scn_info {
 	Elf_Scn	*si_scn;
 	size_t	si_nent;
-	uint_t	si_stridx;
+	uint_t	si_link;	/* sh_link of the section */
 } scn_info_t;
 
 typedef struct version {
 	GElf_Verdef	*v_verdef;
+	const char	*v_name;
 	category_t	v_cat;
-	uint_t		v_ancestors;
-	uint_t		v_weak_ancestors;
+	uint_t		v_nsyms;	/* Symbols assigned to this version */
+	bool		v_top;		/* Survives pvs -n normalization */
 } version_t;
 
 typedef struct dsym {
-	size_t		ds_name;	/* Index into string table */
+	const char	*ds_name;
 	uint_t		ds_version;	/* Index of obj->o_versions */
 } dsym_t;
 
 typedef struct obj {
 	const char	*o_prefix;
 	int		o_dirfd;
+	int		o_fd;
 	elf_obj_t	*o_elfobj;
 	Elf		*o_elf;
 	scn_info_t	o_verdef;
 	scn_info_t	o_versym;
-	scn_info_t	o_dynsym;
 	scn_info_t	o_dyn;
-	size_t		o_soname_idx;
+	const char	*o_soname;
 	uint_t		o_errcnt;
 	version_t	*o_versions;
-	uint_t		o_npubvers;
+	uint_t		o_nversions;
 	dsym_t		*o_dsyms;
 	uint_t		o_ndsyms;
 	uint_t		o_dsyms_alloc;
@@ -74,7 +108,7 @@ static void load_find_elf(const char *);
 static void run_find_elf(int, char **);
 static void process_object(int, const char *, elf_obj_t *);
 static void errmsg(obj_t *, const char *, ...);
-static FILE *fopenat(int, const char *, const char *);
+static FILE *fopen_mode(const char *, const char *);
 
 static void check_path(obj_t *);
 static bool has_versions(obj_t *, bool);
@@ -84,22 +118,19 @@ static bool check_version_names(obj_t *);
 static void print_symbols(obj_t *);
 
 static void get_symbols(obj_t *);
-static void add_sym(obj_t *, uint_t, GElf_Sym *);
-static int cmp_dsym(const void *, const void *, void *);
-
-static void print_version(obj_t *, GElf_Verdef *, bool);
+static void add_sym(obj_t *, uint_t, const char *);
+static int cmp_dsym(const void *, const void *);
 
 static exceptions_t *exceptions;
 static elf_objs_t **elf_objs;
 static uint_t n_objs;
 
 static bool do_header = true;
-static const char *errfname = "(stdout)";
-static FILE *errf = stdout;
+static FILE *errf;
 static FILE *intf;
+static uint_t intf_objcnt;	/* Number of OBJECTs written to intf */
 static bool expand_inheritance;
 static bool one_liner;
-static int filedir = AT_FDCWD;
 
 static inline const char *
 obj_path(const obj_t *obj)
@@ -108,10 +139,11 @@ obj_path(const obj_t *obj)
 }
 
 static inline const char *
-obj_soname(obj_t *obj)
+path_basename(const char *path)
 {
-	return (elf_strptr(obj->o_elf, obj->o_dyn.si_stridx,
-	    obj->o_soname_idx));
+	const char *p = strrchr(path, '/');
+
+	return ((p == NULL) ? path : p + 1);
 }
 
 static inline GElf_Verdef *
@@ -138,48 +170,74 @@ vaux_next(GElf_Verdaux *aux)
 static inline const char *
 vaux_name(obj_t *obj, GElf_Verdaux *vaux)
 {
-	return (elf_strptr(obj->o_elf, obj->o_verdef.si_stridx,
+	return (elf_strptr(obj->o_elf, obj->o_verdef.si_link,
 	    vaux->vda_name));
 }
 
-static inline const char *
-verdef_name(obj_t *obj, GElf_Verdef *verdef)
+static inline bool
+version_is_weak(const version_t *v)
 {
-	GElf_Verdaux *vaux = verdef_aux(verdef);
-	return (vaux_name(obj, vaux));
-}
-
-static inline size_t
-num_versions(obj_t *obj)
-{
-	return (obj->o_verdef.si_nent);
-}
-
-static inline const char *
-dsym_name(obj_t *obj, const dsym_t *dsym)
-{
-	return (elf_strptr(obj->o_elf, obj->o_dynsym.si_stridx, dsym->ds_name));
+	return ((v->v_verdef->vd_flags & VER_FLG_WEAK) != 0);
 }
 
 static void __NORETURN
 usage(const char *name)
 {
 	(void) fprintf(stderr,
-	    "Usage: %s [-hIo] [-c vtype_mod] [-E errfile] [-e exfile]\n",
-	    "\t\t[-f listfile] [-i intffile] [-w outdir] file | dir, ...\n"
+	    "Usage: %s [-hIo] [-E errfile] [-e exfile] [-f listfile]\n"
+	    "\t\t[-i intffile] [-w outdir] file | dir, ...\n"
 	    "\n"
-	    "\t[-c vtype_mod]\tsupply alternative version category module\n"
 	    "\t[-E errfile]\tdirect error output to file\n"
 	    "\t[-e exfile]\texceptions file\n"
 	    "\t[-f listfile]\tuse file list produced by find_elf -r\n"
 	    "\t[-h]\t\tdo not produce a CDDL/Copyright header comment\n"
 	    "\t[-I]\t\tExpand inheritance in -i output (debugging)\n"
 	    "\t[-i intffile]\tcreate interface description output file\n"
+	    "\t\t\t('-' writes it to stdout)\n"
 	    "\t[-o]\t\tproduce one-liner output (prefixed with pathname)\n"
 	    "\t[-w outdir]\tinterpret all files relative to given directory\n",
 	    name);
 
 	exit(EXIT_FAILURE);
+}
+
+/*
+ * The absolute path of the directory containing this binary, used to
+ * locate the exception file installed alongside it. This has to be
+ * determined before any -w chdir, as getexecname() may be relative.
+ */
+static char *
+get_execdir(void)
+{
+	const char	*exe = getexecname();
+	char		*path, *slash;
+
+	if (exe == NULL || (path = realpath(exe, NULL)) == NULL)
+		return (NULL);
+
+	slash = strrchr(path, '/');
+	if (slash == NULL) {
+		free(path);
+		return (NULL);
+	}
+	*slash = '\0';
+	return (path);
+}
+
+static void
+close_output(FILE *f, const char *name)
+{
+	if (f == NULL)
+		return;
+
+	if (f == stdout) {
+		if (fflush(f) != 0 || ferror(f))
+			err(EXIT_FAILURE, "error writing %s", name);
+		return;
+	}
+
+	if (ferror(f) || fclose(f) != 0)
+		err(EXIT_FAILURE, "error writing %s", name);
 }
 
 int
@@ -189,17 +247,19 @@ main(int argc, char **argv)
 	const char *errfile = NULL;
 	const char *elffile = NULL;
 	const char *exfile = NULL;
-	const char *wfile = NULL;
+	const char *wdir = NULL;
+	char *execdir;
 	int c;
+
+	umem_nofail_callback(nomem_callback);
+
+	errf = stdout;
 
 	if (elf_version(EV_CURRENT) == EV_NONE)
 		errx(EXIT_FAILURE, "elf library is out of date");
 
-	while ((c = getopt(argc, argv, "c:E:e:f:hIi:ow:")) != -1) {
+	while ((c = getopt(argc, argv, ":E:e:f:hIi:ow:")) != -1) {
 		switch (c) {
-		case 'c':
-			// TODO
-			break;
 		case 'E':
 			errfile = optarg;
 			break;
@@ -222,10 +282,15 @@ main(int argc, char **argv)
 			one_liner = true;
 			break;
 		case 'w':
-			wfile = optarg;
+			wdir = optarg;
 			break;
+		case ':':
+			(void) fprintf(stderr, "%s: option -%c requires an "
+			    "argument\n", getprogname(), optopt);
+			usage(argv[0]);
 		case '?':
-			(void) fprintf(stderr, "Unknown option -%c\n", optopt);
+			(void) fprintf(stderr, "%s: unknown option -%c\n",
+			    getprogname(), optopt);
 			usage(argv[0]);
 		}
 	}
@@ -235,150 +300,210 @@ main(int argc, char **argv)
 
 	category_init();
 
-	if (wfile != NULL) {
-		int fd;
+	execdir = get_execdir();
 
-		fd = open(wfile, O_RDONLY|O_DIRECTORY);
-		if (fd == -1)
-			err(EXIT_FAILURE, "failed to open %s", wfile);
-		filedir = fd;
-	}
+	/*
+	 * As with the perl version, -w changes the working directory, and
+	 * every other path (including the arguments) is relative to it.
+	 */
+	if (wdir != NULL && chdir(wdir) != 0)
+		err(EXIT_FAILURE, "can't cd to %s", wdir);
 
 	if (errfile != NULL) {
-		errf = fopenat(filedir, errfile, "w");
+		errf = fopen_mode(errfile, "w");
 		if (errf == NULL)
-			err(EXIT_FAILURE, "Failed to open %s", errfile);
-
-		errfname = errfile;
+			err(EXIT_FAILURE, "failed to open %s", errfile);
 	}
 
-	if (exfile != NULL) {
-		FILE *f;
+	if (exfile == NULL) {
+		char *fname = find_exception_file(execdir, "interface_check");
 
-		f = fopenat(filedir, exfile, "r");
+		/* As with the perl version, no exception file is fine */
+		if (fname == NULL) {
+			exceptions = zalloc(sizeof (*exceptions));
+		} else {
+			FILE *f = fopen_mode(fname, "r");
+
+			if (f == NULL)
+				err(EXIT_FAILURE, "failed to open %s", fname);
+
+			exceptions = load_exceptions(f, fname);
+			(void) fclose(f);
+			if (exceptions == NULL)
+				errx(EXIT_FAILURE, "failed to load %s", fname);
+			free(fname);
+		}
+	} else {
+		FILE *f = fopen_mode(exfile, "r");
+
 		if (f == NULL)
-			err(EXIT_FAILURE, "Failed to open %s", exfile);
+			err(EXIT_FAILURE, "failed to open %s", exfile);
 
 		exceptions = load_exceptions(f, exfile);
-		VERIFY0(fclose(f));
-	} else {
-		char *fname;
-		FILE *f;
-
-		fname = find_exception_file(filedir, "interface_check");
-		if (fname == NULL)
-			errx(EXIT_FAILURE, "failed to find exception file");
-
-		f = fopenat(filedir, fname, "r");
-		exceptions = load_exceptions(f, fname);
-		VERIFY0(fclose(f));
-		free(fname);
+		(void) fclose(f);
+		if (exceptions == NULL)
+			errx(EXIT_FAILURE, "failed to load %s", exfile);
 	}
+
+	free(execdir);
 
 	if (intfile != NULL) {
 		if (strcmp(intfile, "-") == 0) {
 			intf = stdout;
 		} else {
-			intf = fopenat(filedir, intfile, "w");
+			intf = fopen_mode(intfile, "w");
 			if (intf == NULL)
-				err(EXIT_FAILURE, "Unable to open %s", intfile);
+				err(EXIT_FAILURE, "unable to open %s", intfile);
 		}
+
+		if (do_header)
+			print_header(intf, argc, argv);
 	}
 
-	if (do_header && intf != NULL)
-		print_header(intf, argc, argv);
-
-	if (elffile != NULL) {
+	if (elffile != NULL)
 		load_find_elf(elffile);
-	} else {
+
+	/*
+	 * Process each argument. The perl version processed both -f and
+	 * any arguments, so we do as well.
+	 */
+	if (argc > optind)
 		run_find_elf(argc - optind, argv + optind);
-	}
 
 	for (uint_t i = 0; i < n_objs; i++) {
 		elf_objs_t *objs = elf_objs[i];
-		elf_obj_t *obj;
-		int prefixfd = -1;
+		int prefixfd;
 
-		prefixfd = openat(filedir, objs->eos_prefix,
-		    O_RDONLY|O_DIRECTORY);
+		if (objs == NULL)
+			continue;
+
+		prefixfd = open(objs->eos_prefix, O_RDONLY|O_DIRECTORY);
 		if (prefixfd == -1) {
 			err(EXIT_FAILURE, "failed to open %s",
 			    objs->eos_prefix);
 		}
 
-		for (obj = avl_first(&objs->eos_objs); obj != NULL;
-		    obj = AVL_NEXT(&objs->eos_objs, obj)) {
-			process_object(prefixfd, objs->eos_prefix, obj);
-		}
+		/* Process objects in the order find_elf listed them */
+		for (size_t j = 0; j < objs->eos_n; j++)
+			process_object(prefixfd, objs->eos_prefix,
+			    objs->eos_order[j]);
 
 		VERIFY0(close(prefixfd));
 
 		elf_objs_free(objs);
 		elf_objs[i] = NULL;
 	}
+	arrayfree(elf_objs, n_objs, sizeof (elf_objs_t *));
 
-	if (errf != stdout)
-		VERIFY0(fclose(errf));
-	if (intf != NULL && intf != stdout)
-		VERIFY0(fclose(intf));
-	if (filedir != AT_FDCWD)
-		VERIFY0(close(filedir));
+	close_output(intf, intfile);
+	close_output(errf, (errfile != NULL) ? errfile : "(stdout)");
 
 	exceptions_free(exceptions);
 	return (EXIT_SUCCESS);
 }
 
 static void
-load_find_elf(const char *filename)
+add_elf_objs(elf_objs_t *objs)
 {
-	FILE *f;
-
-	elf_objs = xcalloc(1, sizeof (elf_objs_t *));
-	n_objs = 1;
-
-	f = fopenat(filedir, filename, "r");
-	if (f == NULL)
-		err(EXIT_FAILURE, "Unable to open %s", filename);
-
-	elf_objs[0] = read_find_elf(f, filename);
-	VERIFY0(fclose(f));
-
-	if (elf_objs[0] == NULL)
-		errx(EXIT_FAILURE, "error reading %s", filename);
+	elf_objs = xcreallocarray(elf_objs, n_objs, n_objs + 1,
+	    sizeof (elf_objs_t *));
+	elf_objs[n_objs++] = objs;
 }
 
 static void
+load_find_elf(const char *filename)
+{
+	elf_objs_t *objs;
+	FILE *f;
+
+	f = fopen_mode(filename, "r");
+	if (f == NULL)
+		err(EXIT_FAILURE, "unable to open %s", filename);
+
+	objs = read_find_elf(f, filename);
+	(void) fclose(f);
+
+	if (objs == NULL)
+		errx(EXIT_FAILURE, "error reading %s", filename);
+
+	add_elf_objs(objs);
+}
+
+/*
+ * Run 'find_elf -frs [-a] path' for each argument. If the argument is not
+ * a directory, alias processing is disabled (-a) so that the file is
+ * processed whether or not it is a symlink. find_elf is run directly
+ * (not via a shell) so that paths need no quoting.
+ */
+static void
 run_find_elf(int argc, char **argv)
 {
-	elf_objs = xcalloc(argc, sizeof (elf_objs_t *));
-	n_objs = argc;
+	for (int i = 0; i < argc; i++) {
+		posix_spawn_file_actions_t	fa;
+		struct stat	sb;
+		char		*fargv[5];
+		int		fargc = 0;
+		int		pfd[2];
+		int		ret, status;
+		pid_t		pid;
+		FILE		*pipe_f;
+		elf_objs_t	*objs;
+		bool		is_dir;
 
-	for (uint_t i = 0; i < argc; i++) {
-		FILE		*pipe;
-		char		*cmd;
-		struct stat	sb = { 0 };
-		bool		is_dir = false;
+		is_dir = (stat(argv[i], &sb) == 0 && S_ISDIR(sb.st_mode));
 
-		if (stat(argv[i], &sb) < 0)
-			err(EXIT_FAILURE, "Failed to stat %s", argv[i]);
+		fargv[fargc++] = "find_elf";
+		fargv[fargc++] = "-frs";
+		if (!is_dir)
+			fargv[fargc++] = "-a";
+		fargv[fargc++] = argv[i];
+		fargv[fargc] = NULL;
 
-		if (S_ISDIR(sb.st_mode))
-			is_dir = true;
+		if (pipe(pfd) != 0)
+			err(EXIT_FAILURE, "pipe failed");
 
-		if (asprintf(&cmd, "find_elf -frs%s %s", is_dir ? " -a" : "",
-		    argv[i]) < 0) {
-			err(EXIT_FAILURE, "asprintf failed");
+		if ((ret = posix_spawn_file_actions_init(&fa)) != 0 ||
+		    (ret = posix_spawn_file_actions_addclose(&fa,
+		    pfd[0])) != 0 ||
+		    (ret = posix_spawn_file_actions_adddup2(&fa, pfd[1],
+		    STDOUT_FILENO)) != 0 ||
+		    (ret = posix_spawn_file_actions_addclose(&fa,
+		    pfd[1])) != 0) {
+			errno = ret;
+			err(EXIT_FAILURE, "failed to set up find_elf");
 		}
 
-		pipe = popen(cmd, "r");
-		if (pipe == NULL)
-			err(EXIT_FAILURE, "Failed to run '%s'", cmd);
+		ret = posix_spawnp(&pid, fargv[0], &fa, NULL, fargv, environ);
+		if (ret != 0) {
+			errno = ret;
+			err(EXIT_FAILURE, "failed to run find_elf");
+		}
 
-		elf_objs[i] = read_find_elf(pipe, argv[i]);
-		if (elf_objs[i] == NULL)
-			errx(EXIT_FAILURE, "error reading output of '%s'", cmd);
+		VERIFY0(posix_spawn_file_actions_destroy(&fa));
+		VERIFY0(close(pfd[1]));
 
-		free(cmd);
+		pipe_f = fdopen(pfd[0], "r");
+		if (pipe_f == NULL)
+			err(EXIT_FAILURE, "fdopen failed");
+
+		objs = read_find_elf(pipe_f, argv[i]);
+		(void) fclose(pipe_f);
+
+		while (waitpid(pid, &status, 0) == -1) {
+			if (errno != EINTR)
+				err(EXIT_FAILURE, "waitpid failed");
+		}
+
+		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+			errx(EXIT_FAILURE, "find_elf failed for %s "
+			    "(status 0x%x)", argv[i], status);
+		}
+
+		if (objs == NULL)
+			errx(EXIT_FAILURE, "error reading find_elf output "
+			    "for %s", argv[i]);
+
+		add_elf_objs(objs);
 	}
 }
 
@@ -388,10 +513,12 @@ process_object(int dirfd, const char *prefix, elf_obj_t *eobj)
 	obj_t obj = {
 		.o_prefix = prefix,
 		.o_dirfd = dirfd,
+		.o_fd = -1,
 		.o_elfobj = eobj,
 	};
 	bool is_plugin;
 
+	/* We are only interested in sharable objects */
 	if (eobj->eo_type != ET_DYN)
 		return;
 
@@ -406,14 +533,9 @@ process_object(int dirfd, const char *prefix, elf_obj_t *eobj)
 	if (!open_obj(&obj))
 		return;
 
-	if (!check_version_names(&obj))
-		goto done;
+	if (check_version_names(&obj))
+		print_symbols(&obj);
 
-	// TODO more of the tests
-
-	print_symbols(&obj);
-
-done:
 	obj_close(&obj);
 }
 
@@ -425,10 +547,12 @@ check_path(obj_t *obj)
 	struct stat sb;
 
 	/*
-	 * The check here is pretty simple -- it must contain '.so.' if
-	 * the path is not a symlink.
+	 * The check here is pretty simple -- the file name must contain
+	 * '.so.' if the path is not a symlink. Note that it can only be a
+	 * symlink if a single file was given on the command line, as find_elf
+	 * otherwise reports symlinks as aliases.
 	 */
-	if (strstr(path, ".so.") != NULL)
+	if (strstr(path_basename(path), ".so.") != NULL)
 		return;
 
 	if (fstatat(obj->o_dirfd, path, &sb, AT_SYMLINK_NOFOLLOW) < 0) {
@@ -448,10 +572,90 @@ has_versions(obj_t *obj, bool is_plugin)
 	if (obj->o_elfobj->eo_has_verdef)
 		return (true);
 
+	/*
+	 * Report the lack of versioning, unless the object is a known
+	 * plugin, or is explicitly exempt.
+	 */
 	if (!is_plugin && !is_exception(obj_path(obj), "NOVERDEF", exceptions))
 		errmsg(obj, "no versions found");
 
 	return (false);
+}
+
+/* Find the index into o_versions of the version with the given name. */
+static bool
+vername_to_idx(obj_t *obj, const char *name, uint_t *idxp)
+{
+	if (name == NULL)
+		return (false);
+
+	for (uint_t i = 0; i < obj->o_nversions; i++) {
+		if (strcmp(obj->o_versions[i].v_name, name) == 0) {
+			*idxp = i;
+			return (true);
+		}
+	}
+	return (false);
+}
+
+/*
+ * Mirror pvs's gvers_derefer(): if the head of the inheritance list is
+ * weak, only weak versions are removed, otherwise every inherited version
+ * is removed. 'seen' guards against revisiting a version (and against
+ * cycles in a malformed object).
+ */
+static void
+derefer(obj_t *obj, uint_t idx, bool weak, bool *seen)
+{
+	version_t	*v = &obj->o_versions[idx];
+	GElf_Verdaux	*vaux;
+	uint_t		dep;
+
+	if (seen[idx])
+		return;
+	seen[idx] = true;
+
+	if (!weak || version_is_weak(v))
+		v->v_top = false;
+
+	vaux = verdef_aux(v->v_verdef);
+	for (uint_t i = 1; i < v->v_verdef->vd_cnt; i++) {
+		vaux = vaux_next(vaux);
+		if (vername_to_idx(obj, vaux_name(obj, vaux), &dep))
+			derefer(obj, dep, weak, seen);
+	}
+}
+
+static void
+find_top_versions(obj_t *obj)
+{
+	uint_t	n = obj->o_nversions;
+	bool	*seen = xcalloc(n, sizeof (bool));
+
+	for (uint_t i = 0; i < n; i++)
+		obj->o_versions[i].v_top = true;
+
+	for (uint_t i = 0; i < n; i++) {
+		version_t	*v = &obj->o_versions[i];
+		bool		weak = version_is_weak(v);
+		GElf_Verdaux	*vaux = verdef_aux(v->v_verdef);
+		uint_t		dep;
+
+		for (uint_t j = 1; j < v->v_verdef->vd_cnt; j++) {
+			vaux = vaux_next(vaux);
+			if (!vername_to_idx(obj, vaux_name(obj, vaux), &dep))
+				continue;
+
+			(void) memset(seen, 0, n * sizeof (bool));
+			derefer(obj, dep, weak, seen);
+		}
+
+		/* The base version is never a top version */
+		if (v->v_verdef->vd_ndx == VER_NDX_GLOBAL)
+			v->v_top = false;
+	}
+
+	arrayfree(seen, n, sizeof (bool));
 }
 
 /* Wrapper around elf_begin(3ELF) */
@@ -462,173 +666,125 @@ open_obj(obj_t *obj)
 	Elf_Scn		*scn;
 	Elf_Data	*data;
 	GElf_Verdef	*verdef;
-	GElf_Ehdr	ehdr;
-	GElf_Dyn	dyn;
-	int		fd;
-	bool		has_soname;
+	uintptr_t	vd_end;
 
-	fd = openat(obj->o_dirfd, obj_path(obj), O_RDONLY);
-	if (fd < 0) {
+	obj->o_fd = openat(obj->o_dirfd, path, O_RDONLY);
+	if (obj->o_fd < 0) {
 		warn("failed to open %s/%s", obj->o_prefix, path);
 		return (false);
 	}
 
-	obj->o_elf = elf_begin(fd, ELF_C_READ, NULL);
-	if (obj->o_elf == NULL) {
-		int e = elf_errno();
-
+	obj->o_elf = elf_begin(obj->o_fd, ELF_C_READ, NULL);
+	if (obj->o_elf == NULL || elf_kind(obj->o_elf) != ELF_K_ELF) {
 		warnx("elf_begin on %s/%s failed: %s", obj->o_prefix, path,
-		    elf_errmsg(e));
-		return (false);
+		    elf_errmsg(-1));
+		goto fail;
 	}
 
 	/* Cache sections we're interested in */
-	if (gelf_getehdr(obj->o_elf, &ehdr) == NULL)
-		goto fail;
-
 	scn = NULL;
 	while ((scn = elf_nextscn(obj->o_elf, scn)) != NULL) {
 		GElf_Shdr shdr = { 0 };
 
 		if (gelf_getshdr(scn, &shdr) == NULL)
-			goto fail;
+			goto elffail;
 
 		switch (shdr.sh_type) {
 		case SHT_SUNW_verdef:
 			obj->o_verdef.si_scn = scn;
 			obj->o_verdef.si_nent = shdr.sh_info;
-			obj->o_verdef.si_stridx = shdr.sh_link;
+			obj->o_verdef.si_link = shdr.sh_link;
 			break;
 		case SHT_SUNW_versym:
 			obj->o_versym.si_scn = scn;
-			obj->o_versym.si_nent = shdr.sh_size / shdr.sh_entsize;
-			obj->o_versym.si_stridx = shdr.sh_link;
+			obj->o_versym.si_nent = (shdr.sh_entsize == 0) ? 0 :
+			    shdr.sh_size / shdr.sh_entsize;
+			obj->o_versym.si_link = shdr.sh_link;
 			break;
 		case SHT_DYNAMIC:
 			obj->o_dyn.si_scn = scn;
-			obj->o_dyn.si_nent = shdr.sh_size / shdr.sh_entsize;
-			obj->o_dyn.si_stridx = shdr.sh_link;
-			break;
-		case SHT_DYNSYM:
-			obj->o_dynsym.si_scn = scn;
-			obj->o_dynsym.si_nent = shdr.sh_size / shdr.sh_entsize;
-			obj->o_dynsym.si_stridx = shdr.sh_link;
+			obj->o_dyn.si_nent = (shdr.sh_entsize == 0) ? 0 :
+			    shdr.sh_size / shdr.sh_entsize;
+			obj->o_dyn.si_link = shdr.sh_link;
 			break;
 		}
+	}
+
+	if (obj->o_verdef.si_scn == NULL || obj->o_verdef.si_nent == 0) {
+		warnx("%s/%s: no version definition section", obj->o_prefix,
+		    path);
+		goto fail;
 	}
 
 	/* Cache all of the GElf_Verdef (ELF version) objects */
-	obj->o_versions = xcalloc(num_versions(obj), sizeof (version_t));
 	data = elf_getdata(obj->o_verdef.si_scn, NULL);
-	if (data == NULL)
-		goto fail;
+	if (data == NULL || data->d_buf == NULL)
+		goto elffail;
+
+	obj->o_nversions = obj->o_verdef.si_nent;
+	obj->o_versions = xcalloc(obj->o_nversions, sizeof (version_t));
 
 	verdef = (GElf_Verdef *)data->d_buf;
-	for (uint_t i = 0; i < num_versions(obj); i++) {
+	vd_end = (uintptr_t)data->d_buf + data->d_size;
+	for (uint_t i = 0; i < obj->o_nversions; i++) {
 		version_t	*v = &obj->o_versions[i];
 
+		if ((uintptr_t)verdef + sizeof (*verdef) > vd_end ||
+		    verdef->vd_cnt == 0) {
+			warnx("%s/%s: malformed version definition section",
+			    obj->o_prefix, path);
+			goto fail;
+		}
+
 		v->v_verdef = verdef;
+		v->v_name = vaux_name(obj, verdef_aux(verdef));
+		if (v->v_name == NULL)
+			goto elffail;
+
 		verdef = verdef_next(verdef);
 	}
 
+	find_top_versions(obj);
+
 	/*
-	 * The way versions are linked/inherited is the additional
-	 * verdaux entries (the first verdaux is for the current entry)
-	 * list the version names this verdef inherits. However, to determine
-	 * which versions are 'top' versions (i.e. they are not inherited by
-	 * any other version), we have to walk all of the inheritance chains
-	 * and mark all of the entries that are inherited.
-	 *
+	 * Determine the name used for the base version. It should match the
+	 * soname if the object has one, and the object basename otherwise.
 	 */
-	for (uint_t i = 0; i < num_versions(obj); i++) {
-		GElf_Verdaux	*vaux, *vancestor;
-		bool		is_weak = false;
+	if (obj->o_dyn.si_scn != NULL &&
+	    (data = elf_getdata(obj->o_dyn.si_scn, NULL)) != NULL) {
+		for (uint_t i = 0; i < obj->o_dyn.si_nent; i++) {
+			GElf_Dyn dyn;
 
-		verdef = obj->o_versions[i].v_verdef;
+			if (gelf_getdyn(data, i, &dyn) == NULL)
+				goto elffail;
 
-		if ((verdef->vd_flags & VER_FLG_WEAK) != 0)
-			is_weak = true;
+			if (dyn.d_tag == DT_NULL)
+				break;
 
-		/*
-		 * Iterate through all of the ancestors. The first entry
-		 * is 'this' version, so we ignore it.
-		 */
-		vancestor = verdef_aux(verdef);
-
-		for (uint_t j = 1; j < verdef->vd_cnt; j++) {
-			vancestor = vaux_next(vancestor);
-
-			/* Find the verdef of this ancestor */
-			for (uint_t k = 0; k < num_versions(obj); k++) {
-				if (k == i)
-					continue;
-
-				vaux = verdef_aux(obj->o_versions[k].v_verdef);
-
-				if (vancestor->vda_name == vaux->vda_name) {
-					version_t *v = &obj->o_versions[k];
-
-					if (is_weak)
-						v->v_weak_ancestors++;
-					v->v_ancestors++;
-				}
+			if (dyn.d_tag == DT_SONAME) {
+				obj->o_soname = elf_strptr(obj->o_elf,
+				    obj->o_dyn.si_link, dyn.d_un.d_val);
+				break;
 			}
 		}
 	}
 
-	/* Get the string index of the soname (if it exists) */
-	data = elf_getdata(obj->o_dyn.si_scn, NULL);
-	if (data == NULL)
-		goto fail;
+	if (obj->o_soname == NULL || obj->o_soname[0] == '\0')
+		obj->o_soname = path_basename(path);
 
-	has_soname = false;
-	for (uint_t i = 0; i < obj->o_dyn.si_nent; i++) {
-		if (gelf_getdyn(data, i, &dyn) == NULL)
-			goto fail;
+	/* We can't categorize the versions until we have the soname */
+	for (uint_t i = 0; i < obj->o_nversions; i++) {
+		version_t *v = &obj->o_versions[i];
 
-		if (dyn.d_tag == DT_SONAME) {
-			obj->o_soname_idx = dyn.d_un.d_ptr;
-			has_soname = true;
-			break;
-		}
-	}
-
-	/*
-	 * If there isn't a soname, we use the base version (which should
-	 * be the name of the library) instead.
-	 */
-	if (!has_soname) {
-		for (uint_t i = 0; i < num_versions(obj); i++) {
-			verdef = obj->o_versions[i].v_verdef;
-			if ((verdef->vd_flags & VER_FLG_BASE) != 0) {
-				GElf_Verdaux *vaux;
-
-				vaux = verdef_aux(verdef);
-				obj->o_soname_idx = vaux->vda_name;
-			}
-		}
-	}
-
-	/* We can't categorize the version until we have the soname */
-	for (uint_t i = 0; i < num_versions(obj); i++) {
-		version_t	*v = &obj->o_versions[i];
-		const char	*vname, *soname;
-
-		vname = verdef_name(obj, v->v_verdef);
-		soname = obj_soname(obj);
-		parse_category(vname, soname, &v->v_cat);
-
-		/* Count the number of non-private versions */
-		if (v->v_cat.c_type != CT_SONAME &&
-		    v->v_cat.c_type != CT_PRIVATE) {
-			obj->o_npubvers++;
-		}
+		parse_category(v->v_name, obj->o_soname, &v->v_cat);
 	}
 
 	get_symbols(obj);
 
 	return (true);
 
+elffail:
+	warnx("%s/%s: %s", obj->o_prefix, path, elf_errmsg(-1));
 fail:
 	obj_close(obj);
 	return (false);
@@ -638,10 +794,20 @@ static void
 obj_close(obj_t *obj)
 {
 	arrayfree(obj->o_dsyms, obj->o_dsyms_alloc, sizeof (dsym_t));
+	obj->o_dsyms = NULL;
+	obj->o_dsyms_alloc = obj->o_ndsyms = 0;
+
+	arrayfree(obj->o_versions, obj->o_nversions, sizeof (version_t));
+	obj->o_versions = NULL;
+	obj->o_nversions = 0;
 
 	if (obj->o_elf != NULL)
-		VERIFY0(elf_end(obj->o_elf));
+		(void) elf_end(obj->o_elf);
 	obj->o_elf = NULL;
+
+	if (obj->o_fd >= 0)
+		VERIFY0(close(obj->o_fd));
+	obj->o_fd = -1;
 }
 
 /*
@@ -649,46 +815,46 @@ obj_close(obj_t *obj)
  * (or is an exception).
  *
  * Currently, allowed version names are:
- *	ILLUMOS_x.y.[.z]
- *	SUNW_x.y.[z]
- *	ILLUMOS_private(_nnn)
- *	SUNW_private(_nnn)
+ *	ILLUMOS_x.y[.z]
+ *	SUNW_x.y[.z]
+ *	ILLUMOSprivate[_nnn]
+ *	SUNWprivate[_nnn]
  *	SYSVABI_1.2
- *	SYSVAVI_1.3
- *	SISCD_2.3[ab*]
+ *	SYSVABI_1.3
+ *	SISCD_2.3[ab...]
+ *	the object's soname (the base version)
  *
  * See category.c for the explicit regexes used to test the version names.
+ *
+ * As with the perl version (which used 'pvs -dos'), only versions that
+ * offer interfaces (i.e. have symbols) are considered.
  */
 static bool
 check_version_names(obj_t *obj)
 {
-	size_t		vercnt;
+	size_t vercnt = 0;
 
-	vercnt = 0;
-	for (uint_t i = 0; i < num_versions(obj); i++) {
+	for (uint_t i = 0; i < obj->o_nversions; i++) {
 		version_t *v = &obj->o_versions[i];
 
-		/*
-		 * Ignore weak versions. This should match the behavior
-		 * of pvs without the -v option (e.g. pvs -v shows weak
-		 * versions, omits them without it). The original script
-		 * did not check version names of weak versions, so we don't
-		 * as well.
-		 */
-		if ((v->v_verdef->vd_flags & VER_FLG_WEAK) != 0)
+		if (v->v_nsyms == 0)
 			continue;
 
-		/* Count non-weak versions */
 		vercnt++;
 
 		if (v->v_cat.c_type == CT_UNKNOWN &&
 		    !is_exception(obj_path(obj), "NONSTD_VERNAME",
 		    exceptions)) {
-			const char *vname = verdef_name(obj, v->v_verdef);
-			errmsg(obj, "non-standard version name: %s", vname);
+			errmsg(obj, "non-standard version name: %s",
+			    v->v_name);
 		}
 	}
 
+	/*
+	 * If this file has been scoped, but not versioned (i.e., a mapfile
+	 * was used to demote symbols but no version name was applied to the
+	 * global interfaces) then it's another non-standard case.
+	 */
 	if (vercnt == 0) {
 		errmsg(obj, "scoped object contains no versions");
 		return (false);
@@ -697,63 +863,78 @@ check_version_names(obj_t *obj)
 	return (true);
 }
 
+/*
+ * Collect the symbols for each version, following the same rules as
+ * 'pvs -ds'. If there is no versym section, no symbols are assigned to any
+ * version.
+ */
 static void
 get_symbols(obj_t *obj)
 {
-	Elf_Data *data;
-	Elf_Data *vdata;
-	GElf_Versym *vsym;
+	Elf_Scn		*symscn;
+	Elf_Data	*data, *vdata;
+	GElf_Shdr	shdr;
+	GElf_Versym	*vsym;
+	size_t		nsyms, strndx;
 
-	data = elf_getdata(obj->o_dynsym.si_scn, NULL);
-	VERIFY3P(data, !=, NULL);
+	if (obj->o_versym.si_scn == NULL)
+		return;
 
 	vdata = elf_getdata(obj->o_versym.si_scn, NULL);
-	VERIFY3P(data, !=, NULL);
+	symscn = elf_getscn(obj->o_elf, obj->o_versym.si_link);
+	if (vdata == NULL || vdata->d_buf == NULL || symscn == NULL ||
+	    gelf_getshdr(symscn, &shdr) == NULL ||
+	    (data = elf_getdata(symscn, NULL)) == NULL) {
+		warnx("%s/%s: unable to read versioned symbols: %s",
+		    obj->o_prefix, obj_path(obj), elf_errmsg(-1));
+		return;
+	}
+
+	strndx = shdr.sh_link;
+	nsyms = (shdr.sh_entsize == 0) ? 0 : shdr.sh_size / shdr.sh_entsize;
+	if (nsyms > obj->o_versym.si_nent)
+		nsyms = obj->o_versym.si_nent;
+	if (nsyms > vdata->d_size / sizeof (GElf_Versym))
+		nsyms = vdata->d_size / sizeof (GElf_Versym);
 
 	vsym = (GElf_Versym *)vdata->d_buf;
-	for (uint_t i = 0; i < obj->o_dynsym.si_nent; i++, vsym++) {
-		GElf_Sym sym;
+	for (size_t i = 0; i < nsyms; i++) {
+		GElf_Sym	sym;
+		version_t	*v = NULL;
+		const char	*symname;
+		uint_t		vidx;
 
-		(void) gelf_getsym(data, i, &sym);
+		/* Find the version definition this symbol belongs to */
+		for (vidx = 0; vidx < obj->o_nversions; vidx++) {
+			if (obj->o_versions[vidx].v_verdef->vd_ndx == vsym[i]) {
+				v = &obj->o_versions[vidx];
+				break;
+			}
+		}
 
-		if (sym.st_shndx == 0 || *vsym == 0)
+		/* Local (0), or a version requirement rather than a verdef */
+		if (v == NULL)
 			continue;
 
-		version_t *v;
-		const char *vername;
-		const char *symname;
+		if (gelf_getsym(data, i, &sym) == NULL)
+			continue;
 
-		v = &obj->o_versions[(*vsym) - 1];
-		vername = verdef_name(obj, v->v_verdef);
-		symname = elf_strptr(obj->o_elf, obj->o_dynsym.si_stridx,
-		    sym.st_name);
+		symname = elf_strptr(obj->o_elf, strndx, sym.st_name);
+		if (symname == NULL)
+			continue;
 
 		/*
-		 * The version name appears in the dynamic symbol table as
-		 * symbol. We don't want to include it.
+		 * Each version defines an absolute symbol of the same name.
+		 * pvs only displays it with -v, so we skip it.
 		 */
-		if (strcmp(vername, symname) == 0)
+		if (sym.st_shndx == SHN_ABS && strcmp(v->v_name, symname) == 0)
 			continue;
 
-		add_sym(obj, (*vsym) - 1, &sym);
+		add_sym(obj, vidx, symname);
+		v->v_nsyms++;
 	}
 
-	qsort_r(obj->o_dsyms, obj->o_ndsyms, sizeof (dsym_t), cmp_dsym, obj);
-}
-
-static bool
-vername_to_idx(obj_t *obj, uint_t name, uint_t *idxp)
-{
-	for (uint_t i = 0; i < num_versions(obj); i++) {
-		version_t	*v = &obj->o_versions[i];
-		GElf_Verdaux	*vaux = verdef_aux(v->v_verdef);
-
-		if (vaux->vda_name == name) {
-			*idxp = i;
-			return (true);
-		}
-	}
-	return (false);
+	qsort(obj->o_dsyms, obj->o_ndsyms, sizeof (dsym_t), cmp_dsym);
 }
 
 static void
@@ -763,31 +944,46 @@ traverse_versions(obj_t *obj, uint_t vidx, bool *encountered)
 	GElf_Verdaux	*vaux = verdef_aux(v->v_verdef);
 	uint_t		idx;
 
+	if (encountered[vidx])
+		return;
 	encountered[vidx] = true;
 
 	for (uint_t i = 1; i < v->v_verdef->vd_cnt; i++) {
 		vaux = vaux_next(vaux);
-		VERIFY(vername_to_idx(obj, vaux->vda_name, &idx));
-		traverse_versions(obj, idx, encountered);
+		if (vername_to_idx(obj, vaux_name(obj, vaux), &idx))
+			traverse_versions(obj, idx, encountered);
 	}
 }
 
-static void
-print_symbols(obj_t *obj)
+/* Returns true if name ends in .so.<digits> */
+static bool
+has_so_suffix(const char *name)
 {
-	elf_obj_t	*eo = obj->o_elfobj;
-	bool		*do_version;
+	const char	*p = strstr(name, ".so.");
+	const char	*q;
 
-	if (intf == NULL)
-		return;
+	while (p != NULL) {
+		q = p + 4;
+		if (*q != '\0') {
+			while (isdigit((unsigned char)*q))
+				q++;
+			if (*q == '\0')
+				return (true);
+		}
+		p = strstr(p + 1, ".so.");
+	}
+	return (false);
+}
 
-	/* Only output objects that include public versions */
-	if (obj->o_npubvers == 0)
-		return;
+static void
+print_object_header(obj_t *obj)
+{
+	elf_obj_t *eo = obj->o_elfobj;
 
-	do_version = xcalloc(num_versions(obj), sizeof (bool));
-
-	/* Start with the header */
+	/* As with the perl version, -h also omits the blank separator */
+	if (do_header && intf_objcnt > 0)
+		(void) fputc('\n', intf);
+	intf_objcnt++;
 
 	(void) fprintf(intf,
 	    "OBJECT\t%s\n"
@@ -796,22 +992,71 @@ print_symbols(obj_t *obj)
 	    elf_type_str(eo->eo_type));
 	for (size_t i = 0; i < eo->eo_nalias; i++)
 		(void) fprintf(intf, "ALIAS\t%s\n", eo->eo_aliases[i]);
+}
 
-	for (uint_t i = 0; i < num_versions(obj); i++) {
+static void
+print_version(obj_t *obj, version_t *v)
+{
+	GElf_Verdef	*verdef = v->v_verdef;
+	GElf_Verdaux	*vaux;
+
+	(void) fprintf(intf, "%sVERSION\t%s", v->v_top ? "TOP_" : "",
+	    v->v_name);
+
+	/* Formatted the same as 'pvs -v' lists inherited versions */
+	if (verdef->vd_cnt > 1) {
+		vaux = verdef_aux(verdef);
+		(void) fprintf(intf, "\t{");
+		for (uint_t i = 1; i < verdef->vd_cnt; i++) {
+			vaux = vaux_next(vaux);
+			(void) fprintf(intf, "%s%s", (i > 1) ? ", " : "",
+			    vaux_name(obj, vaux));
+		}
+		(void) fputc('}', intf);
+	}
+	(void) fputc('\n', intf);
+}
+
+/*
+ * Produce an interface description for the object. For each version,
+ * generate a VERSION declaration of the form:
+ *
+ *	[TOP_]VERSION  version  [{inherited, ...}]
+ *		SYMBOL	symname1
+ *		SYMBOL	symname2
+ *		...
+ *
+ * We suppress base and private versions from this output. If an object
+ * only has base or private versions, we do not produce an interface
+ * description for that object.
+ */
+static void
+print_symbols(obj_t *obj)
+{
+	bool	*do_version;
+	bool	header_done = false;
+
+	if (intf == NULL)
+		return;
+
+	do_version = xcalloc(obj->o_nversions, sizeof (bool));
+
+	for (uint_t i = 0; i < obj->o_nversions; i++) {
 		version_t	*v = &obj->o_versions[i];
 		dsym_t		*ds = obj->o_dsyms;
 		const char	*symlabel = "SYMBOL";
-		const char	*inherit = "INHERIT";
-		bool		is_top;
+		const char	*prev = NULL;
 
-		if (v->v_cat.c_type == CT_SONAME ||
-		    v->v_cat.c_type == CT_PRIVATE)
+		if ((v->v_verdef->vd_flags & VER_FLG_BASE) != 0 ||
+		    v->v_cat.c_type == CT_SONAME ||
+		    v->v_cat.c_type == CT_PRIVATE ||
+		    has_so_suffix(v->v_name)) {
 			continue;
+		}
 
 		(void) memset(do_version, '\0',
-		    num_versions(obj) * sizeof (bool));
+		    obj->o_nversions * sizeof (bool));
 
-		do_version[i] = true;
 		if (expand_inheritance) {
 			/*
 			 * Walk the inheritance tree and mark each
@@ -819,67 +1064,33 @@ print_symbols(obj_t *obj)
 			 */
 			symlabel = "NEW";
 			traverse_versions(obj, i, do_version);
-		}
-
-		if (v->v_ancestors == 0) {
-			is_top = true;
 		} else {
-			is_top = false;
+			do_version[i] = true;
 		}
 
-#if 0
-		if (v->v_ancestors > 0 && v->v_ancestors != v->v_weak_ancestors)
-			is_top = false;
-		else
-			is_top = true;
-
-		if (is_top && (v->v_verdef->vd_flags & VER_FLG_WEAK) != 0) {
+		if (!header_done) {
+			print_object_header(obj);
+			header_done = true;
 		}
-#endif
 
-		print_version(obj, v->v_verdef, is_top);
+		print_version(obj, v);
 
 		for (uint_t j = 0; j < obj->o_ndsyms; j++) {
 			if (!do_version[ds[j].ds_version])
 				continue;
 
+			/* Thin out any duplicate names, as perl did */
+			if (prev != NULL && strcmp(prev, ds[j].ds_name) == 0)
+				continue;
+			prev = ds[j].ds_name;
+
 			(void) fprintf(intf, "\t%s\t%s\n",
-			    (i == ds[j].ds_version) ? symlabel : inherit,
-			    dsym_name(obj, &ds[j]));
-}
-	}
-
-	(void) fputc('\n', intf);
-	arrayfree(do_version, num_versions(obj), sizeof (bool));
-}
-
-static void
-print_version(obj_t *obj, GElf_Verdef *verdef, bool top)
-{
-	GElf_Verdaux *vaux;
-
-	if (intf == NULL)
-		return;
-
-	if (top)
-		(void) fprintf(intf, "TOP_");
-
-	vaux = verdef_aux(verdef);
-	(void) fprintf(intf, "VERSION\t%s", vaux_name(obj, vaux));
-
-	if (verdef->vd_cnt > 1) {
-		vaux = vaux_next(vaux);
-
-		(void) fprintf(intf, "\t{");
-		for (uint_t i = 1; i < verdef->vd_cnt; i++) {
-			if (i > 1)
-				(void) fputc(',', intf);
-			(void) fprintf(intf, "%s", vaux_name(obj, vaux));
-			vaux = vaux_next(vaux);
+			    (i == ds[j].ds_version) ? symlabel : "INHERIT",
+			    ds[j].ds_name);
 		}
-		(void) fputc('}', intf);
 	}
-	(void) fputc('\n', intf);
+
+	arrayfree(do_version, obj->o_nversions, sizeof (bool));
 }
 
 static void
@@ -906,7 +1117,7 @@ errmsg(obj_t *obj, const char *fmt, ...)
 }
 
 static FILE *
-fopenat(int dirfd, const char *path, const char *mode)
+fopen_mode(const char *path, const char *mode)
 {
 	int fd;
 	int flag = 0;
@@ -923,18 +1134,22 @@ fopenat(int dirfd, const char *path, const char *mode)
 	case 'a':
 		flag = O_WRONLY | O_APPEND | O_CREAT;
 		break;
+	default:
+		errno = EINVAL;
+		return (NULL);
 	}
 
-	fd = openat(dirfd, path, flag);
+	/* Created files get the usual 0666 (less umask) */
+	fd = open(path, flag, 0666);
 	if (fd == -1)
 		return (NULL);
 
 	return (fdopen(fd, mode));
 }
 
-#define	SYM_CHUNK 8
+#define	SYM_CHUNK 64
 static void
-add_sym(obj_t *obj, uint_t idx, GElf_Sym *sym)
+add_sym(obj_t *obj, uint_t idx, const char *name)
 {
 	if (obj->o_ndsyms == obj->o_dsyms_alloc) {
 		size_t newsz = obj->o_dsyms_alloc + SYM_CHUNK;
@@ -946,21 +1161,15 @@ add_sym(obj_t *obj, uint_t idx, GElf_Sym *sym)
 
 	dsym_t *ds = &obj->o_dsyms[obj->o_ndsyms++];
 
-	ds->ds_name = sym->st_name;
+	ds->ds_name = name;
 	ds->ds_version = idx;
 }
 
 static int
-cmp_dsym(const void *a, const void *b, void *arg)
+cmp_dsym(const void *a, const void *b)
 {
-	obj_t *obj = arg;
-
 	const dsym_t *l = a;
 	const dsym_t *r = b;
-	const char *ln = elf_strptr(obj->o_elf, obj->o_dynsym.si_stridx,
-	    l->ds_name);
-	const char *rn = elf_strptr(obj->o_elf, obj->o_dynsym.si_stridx,
-	    r->ds_name);
 
-	return (strcmp(ln, rn));
+	return (strcmp(l->ds_name, r->ds_name));
 }

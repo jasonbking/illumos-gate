@@ -13,6 +13,7 @@
  * Copyright 2024 Jason King
  */
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,8 +34,13 @@ elf_obj_cmp(const void *a, const void *b)
 {
 	const elf_obj_t *l = a;
 	const elf_obj_t *r = b;
+	int ret = strcmp(l->eo_relpath, r->eo_relpath);
 
-	return (strcmp(l->eo_relpath, r->eo_relpath));
+	if (ret < 0)
+		return (-1);
+	if (ret > 0)
+		return (1);
+	return (0);
 }
 
 static void
@@ -44,12 +50,9 @@ elf_obj_free(elf_obj_t *obj)
 		return;
 
 	strfree(obj->eo_relpath);
-	if (obj->eo_aliases_sz > 0) {
-		for (uint_t i = 0; obj->eo_aliases[i] != NULL; i++) {
-			strfree(obj->eo_aliases[i]);
-		}
-		arrayfree(obj->eo_aliases, obj->eo_aliases_sz, sizeof (char *));
-	}
+	for (size_t i = 0; i < obj->eo_nalias; i++)
+		strfree(obj->eo_aliases[i]);
+	arrayfree(obj->eo_aliases, obj->eo_aliases_sz, sizeof (char *));
 	umem_free(obj, sizeof (*obj));
 }
 
@@ -63,6 +66,13 @@ elf_obj_get(elf_objs_t *objs, const char *path, avl_index_t *where)
 	return (avl_find(&objs->eos_objs, &cmp, where));
 }
 
+#define	OBJ_ORDER_CHUNK	64
+
+/*
+ * Add an object. On failure, returns false with errno set: EEXIST for a
+ * duplicate path, EINVAL for an unrecognized field (a message describing
+ * which field has already been printed).
+ */
 static bool
 elf_obj_add(elf_objs_t *objs, const char *cls_str, const char *et_str,
     const char *vd_str, const char *path)
@@ -72,7 +82,7 @@ elf_obj_add(elf_objs_t *objs, const char *cls_str, const char *et_str,
 
 	if (elf_obj_get(objs, path, &where) != NULL) {
 		errno = EEXIST;
-		return (NULL);
+		return (false);
 	}
 
 	obj = zalloc(sizeof (*obj));
@@ -87,6 +97,7 @@ elf_obj_add(elf_objs_t *objs, const char *cls_str, const char *et_str,
 		(void) fprintf(stderr, "invalid class '%s' for %s\n", cls_str,
 		    path);
 		elf_obj_free(obj);
+		errno = EINVAL;
 		return (false);
 	}
 
@@ -100,6 +111,7 @@ elf_obj_add(elf_objs_t *objs, const char *cls_str, const char *et_str,
 		(void) fprintf(stderr, "invalid type '%s' for %s\n", et_str,
 		    path);
 		elf_obj_free(obj);
+		errno = EINVAL;
 		return (false);
 	}
 
@@ -111,13 +123,24 @@ elf_obj_add(elf_objs_t *objs, const char *cls_str, const char *et_str,
 		(void) fprintf(stderr, "invalid version flag '%s' for %s\n",
 		    vd_str, path);
 		elf_obj_free(obj);
+		errno = EINVAL;
 		return (false);
 	}
 
 	avl_insert(&objs->eos_objs, obj, where);
+
+	/* Remember the order find_elf reported objects in */
+	if (objs->eos_n == objs->eos_order_sz) {
+		size_t newsz = objs->eos_order_sz + OBJ_ORDER_CHUNK;
+
+		objs->eos_order = xcreallocarray(objs->eos_order,
+		    objs->eos_order_sz, newsz, sizeof (elf_obj_t *));
+		objs->eos_order_sz = newsz;
+	}
+	objs->eos_order[objs->eos_n++] = obj;
+
 	return (true);
 }
-
 
 #define	OBJ_ALIAS_CHUNK	8
 
@@ -132,33 +155,61 @@ add_alias(elf_objs_t *objs, const char *name, const char *alias)
 		return (false);
 	}
 
-	if (obj->eo_aliases == NULL) {
-		VERIFY0(obj->eo_aliases_sz);
-		obj->eo_aliases = xcalloc(OBJ_ALIAS_CHUNK, sizeof (char *));
-		obj->eo_aliases_sz = OBJ_ALIAS_CHUNK;
-	}
+	if (obj->eo_nalias == obj->eo_aliases_sz) {
+		size_t newsz = obj->eo_aliases_sz + OBJ_ALIAS_CHUNK;
 
-	if (obj->eo_nalias + 2 >= obj->eo_aliases_sz) {
-		size_t newsz;
-
-		newsz = obj->eo_aliases_sz + OBJ_ALIAS_CHUNK;
 		obj->eo_aliases = xcreallocarray(obj->eo_aliases,
 		    obj->eo_aliases_sz, newsz, sizeof (char *));
-
 		obj->eo_aliases_sz = newsz;
 	}
 
-	obj->eo_aliases[obj->eo_nalias] = xstrdup(alias);
-	obj->eo_nalias++;
-
-	/*
-	 * We should always be NULL terminated by virtue of calloc+reallocarray,
-	 * but out of an abundance of caution, we'll explicitly terminate the
-	 * list.
-	 */
-	obj->eo_aliases[obj->eo_nalias] = NULL;
-
+	obj->eo_aliases[obj->eo_nalias++] = xstrdup(alias);
 	return (true);
+}
+
+/*
+ * Return the next whitespace delimited field of *pp (NUL terminating it)
+ * and advance *pp past it, or NULL if there are no more fields.
+ */
+static char *
+next_field(char **pp)
+{
+	char *p = *pp;
+	char *start;
+
+	while (isspace((unsigned char)*p))
+		p++;
+	if (*p == '\0') {
+		*pp = p;
+		return (NULL);
+	}
+
+	start = p;
+	while (*p != '\0' && !isspace((unsigned char)*p))
+		p++;
+	if (*p != '\0')
+		*p++ = '\0';
+
+	*pp = p;
+	return (start);
+}
+
+/*
+ * Return the remainder of *pp after any leading whitespace, or NULL if
+ * nothing remains. This mirrors the perl version's use of split() with
+ * a limit, so the last field may contain whitespace. Trailing whitespace
+ * has already been removed by cgetline().
+ */
+static char *
+rest_field(char **pp)
+{
+	char *p = *pp;
+
+	while (isspace((unsigned char)*p))
+		p++;
+	*pp = p + strlen(p);
+
+	return ((*p == '\0') ? NULL : p);
 }
 
 elf_objs_t *
@@ -179,58 +230,65 @@ read_find_elf(FILE *f, const char *filename)
 
 	linenum = 0;
 	while (cgetline(f, cus, &linenum)) {
-		char *line, *word;
+		char *line, *p, *word;
 
 		line = xstrdup(custr_cstr(cus));
+		p = line;
 
-		word = strtok(line, " \t\n");
+		word = next_field(&p);
 		if (word == NULL) {
 			strfree(line);
 			continue;
 		}
 
-		if (strcmp(word, "PREFIX") == 0) {
-			word = strtok(NULL, " \t\n");
-			if (word == NULL) {
-				(void) fprintf(stderr, "%s: %s missing PREFIX "
-				    "value at line %u\n", getprogname(),
-				     filename, linenum);
-				strfree(line);
-				goto fail;
-			}
+		/*
+		 * The first entry must be PREFIX, which requires find_elf
+		 * to have been run with -r.
+		 */
+		if (objs->eos_prefix == NULL) {
+			char *prefix;
 
-			if (objs->eos_prefix != NULL) {
-				(void) fprintf(stderr, "%s: %s duplicate "
-				    "PREFIX entry at line %u\n", getprogname(),
+			if (strcmp(word, "PREFIX") != 0) {
+				(void) fprintf(stderr, "%s: %s: PREFIX "
+				    "expected on line %u\n", getprogname(),
 				    filename, linenum);
 				strfree(line);
 				goto fail;
 			}
 
-			objs->eos_prefix = xstrdup(word);
+			prefix = rest_field(&p);
+			if (prefix == NULL) {
+				(void) fprintf(stderr, "%s: %s: missing PREFIX "
+				    "value at line %u\n", getprogname(),
+				    filename, linenum);
+				strfree(line);
+				goto fail;
+			}
+
+			objs->eos_prefix = xstrdup(prefix);
 			strfree(line);
 			continue;
+		}
+
+		if (strcmp(word, "PREFIX") == 0) {
+			(void) fprintf(stderr, "%s: %s: duplicate "
+			    "PREFIX entry at line %u\n", getprogname(),
+			    filename, linenum);
+			strfree(line);
+			goto fail;
 		}
 
 		if (strcmp(word, "OBJECT") == 0) {
 			char *bits, *type, *verdef, *path;
 
-			if (objs->eos_prefix == NULL) {
-				(void) fprintf(stderr, "%s: %s PREFIX line is"
-				    "not first entry\n", getprogname(),
-				    filename);
-				strfree(line);
-				goto fail;
-			}
-
-			bits = strtok(NULL, " \t\n");
-			type = strtok(NULL, " \t\n");
-			verdef = strtok(NULL, " \t\n");
-			path = strtok(NULL, " \t\n");
+			bits = next_field(&p);
+			type = next_field(&p);
+			verdef = next_field(&p);
+			path = rest_field(&p);
 
 			if (bits == NULL || type == NULL || verdef == NULL ||
 			    path == NULL) {
-				(void) fprintf(stderr, "%s: %s: misformed "
+				(void) fprintf(stderr, "%s: %s: malformed "
 				    "OBJECT entry at line %u\n",
 				    getprogname(), filename, linenum);
 				strfree(line);
@@ -238,7 +296,7 @@ read_find_elf(FILE *f, const char *filename)
 			}
 
 			if (!elf_obj_add(objs, bits, type, verdef, path)) {
-				(void) fprintf(stderr, "%s: %s failed to add "
+				(void) fprintf(stderr, "%s: %s: failed to add "
 				    "entry on line %u: %s\n", getprogname(),
 				    filename, linenum, strerror(errno));
 				strfree(line);
@@ -249,11 +307,11 @@ read_find_elf(FILE *f, const char *filename)
 		}
 
 		if (strcmp(word, "ALIAS") == 0) {
-			char *path = strtok(NULL, " \t\n");
-			char *alias = strtok(NULL, " \t\n");
+			char *path = next_field(&p);
+			char *alias = rest_field(&p);
 
 			if (path == NULL || alias == NULL) {
-				(void) fprintf(stderr, "%s: %s invalid ALIAS "
+				(void) fprintf(stderr, "%s: %s: invalid ALIAS "
 				    "entry on line %u\n", getprogname(),
 				    filename, linenum);
 				strfree(line);
@@ -261,7 +319,7 @@ read_find_elf(FILE *f, const char *filename)
 			}
 
 			if (!add_alias(objs, path, alias)) {
-				(void) fprintf(stderr, "%s: %s failed to add "
+				(void) fprintf(stderr, "%s: %s: failed to add "
 				    "ALIAS on line %u: %s\n",
 				    getprogname(), filename, linenum,
 				    strerror(errno));
@@ -272,13 +330,23 @@ read_find_elf(FILE *f, const char *filename)
 			continue;
 		}
 
-		if (strlen(line) > 0) {
-			(void) fprintf(stderr, "%s: WARNING: unrecognized "
-			    "entry '%s' on line %u\n", getprogname(), word,
-			    linenum);
-		}
+		(void) fprintf(stderr, "%s: WARNING: %s: unrecognized "
+		    "entry '%s' on line %u\n", getprogname(), filename, word,
+		    linenum);
 
 		strfree(line);
+	}
+
+	if (ferror(f)) {
+		(void) fprintf(stderr, "%s: error reading %s\n", getprogname(),
+		    filename);
+		goto fail;
+	}
+
+	if (objs->eos_prefix == NULL) {
+		(void) fprintf(stderr, "%s: %s: no PREFIX entry (was find_elf "
+		    "run with -r?)\n", getprogname(), filename);
+		goto fail;
 	}
 
 	custr_free(cus);
@@ -305,7 +373,9 @@ elf_objs_free(elf_objs_t *objs)
 	while ((obj = avl_destroy_nodes(&objs->eos_objs, &c)) != NULL) {
 		elf_obj_free(obj);
 	}
+	avl_destroy(&objs->eos_objs);
 
+	arrayfree(objs->eos_order, objs->eos_order_sz, sizeof (elf_obj_t *));
 	umem_free(objs, sizeof (*objs));
 }
 

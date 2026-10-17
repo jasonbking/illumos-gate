@@ -26,6 +26,9 @@ bool __builtin_mul_overflow(size_t, size_t, size_t *);
 #endif
 
 /*
+ * Registered via umem_nofail_callback() in main, and also called directly
+ * when other allocations (e.g. asprintf) fail.
+ *
  * Once we feel that the oldest supported snapshot of illumos for
  * building contains upanic(2), it would probably be useful to update
  * this to utilize it. For now, we just use abort.
@@ -41,7 +44,7 @@ nomem_callback(void)
 	 * Technically we should never get here, but keep the compilers
 	 * happy.
 	 */
-	return(UMEM_CALLBACK_EXIT(EXIT_FAILURE));
+	return (UMEM_CALLBACK_EXIT(EXIT_FAILURE));
 }
 
 void *

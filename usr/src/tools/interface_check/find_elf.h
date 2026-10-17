@@ -18,17 +18,12 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <sys/avl.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef struct elf_objs {
-	char		*eos_name;
-	char		*eos_prefix;
-	avl_tree_t	eos_objs;
-} elf_objs_t;
 
 typedef struct elf_obj {
 	avl_node_t	eo_node;
@@ -40,6 +35,15 @@ typedef struct elf_obj {
 	uint16_t	eo_type;
 	bool		eo_has_verdef;
 } elf_obj_t;
+
+typedef struct elf_objs {
+	char		*eos_name;
+	char		*eos_prefix;
+	avl_tree_t	eos_objs;	/* By path, for ALIAS lookups */
+	elf_obj_t	**eos_order;	/* In the order find_elf listed them */
+	size_t		eos_n;
+	size_t		eos_order_sz;
+} elf_objs_t;
 
 elf_objs_t *read_find_elf(FILE *, const char *);
 void elf_objs_free(elf_objs_t *);

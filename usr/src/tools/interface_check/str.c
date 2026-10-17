@@ -23,96 +23,150 @@
 
 #include "str.h"
 
+/*
+ * Strip any trailing whitespace from buf (in place), returning the new length.
+ */
+static size_t
+rtrim(char *buf, size_t len)
+{
+	while (len > 0 && isspace((unsigned char)buf[len - 1]))
+		buf[--len] = '\0';
+	return (len);
+}
+
+/*
+ * Read the next logical line from f into cus. This follows the same rules
+ * as onbld_elfmod::GetLine() in the original perl implementation:
+ *
+ *  - A backslash at the end of a line indicates the following line is a
+ *    continuation of this line if the backslash is the only character on
+ *    the line, or if it is preceded by whitespace. Continued lines are
+ *    joined with a single space. Backslashes anywhere else are left alone
+ *    (they are significant in regular expressions).
+ *
+ *  - The '#' character starts a comment if it is the first character on
+ *    the line, or if it is preceded by whitespace.
+ *
+ *  - Leading and trailing whitespace is removed, and empty lines are
+ *    skipped.
+ *
+ * *linenp is incremented for every physical line read. Returns false at
+ * EOF (or on a read error) when no further logical line is available.
+ */
 bool
 cgetline(FILE *f, custr_t *cus, uint_t *linenp)
 {
-	const char	*p, *cp;
-	int		c;
-	bool		lnext;
-
-again:
-	if (feof(f))
-		return (false);
+	char	*buf = NULL;
+	size_t	bufsz = 0;
+	ssize_t	n;
+	bool	cont = true;
 
 	custr_reset(cus);
 
-	lnext = false;
-	while ((c = fgetc(f)) != -1) {
-		if (!lnext && c == '\\') {
-			lnext = true;
+	while (cont && (n = getline(&buf, &bufsz, f)) >= 0) {
+		size_t	len = (size_t)n;
+		char	*p;
+
+		(*linenp)++;
+
+		/* chomp */
+		if (len > 0 && buf[len - 1] == '\n')
+			buf[--len] = '\0';
+
+		/* A lone backslash: keep reading with cont unchanged. */
+		if (strcmp(buf, "\\") == 0)
+			continue;
+
+		/* A trailing backslash preceded by whitespace continues. */
+		cont = false;
+		if (len >= 2 && buf[len - 1] == '\\' &&
+		    isspace((unsigned char)buf[len - 2])) {
+			buf[--len] = '\0';
+			len = rtrim(buf, len);
+			cont = true;
+		}
+
+		/* Lines starting with '#' are comments. */
+		if (buf[0] == '#') {
+			cont = true;
 			continue;
 		}
 
-		fcustr_appendc(cus, c);
-
-		if (c == '\n') {
-			(*linenp)++;
-
-			if (!lnext) {
-				/* remove the trailing \n */
-				fcustr_rtrunc(cus, 0);
+		/* Strip a comment that is preceded by whitespace. */
+		for (p = buf; *p != '\0'; p++) {
+			if (*p == '#' && p > buf &&
+			    isspace((unsigned char)p[-1])) {
+				*p = '\0';
+				len = (size_t)(p - buf);
 				break;
 			}
 		}
 
-		lnext = false;
+		len = rtrim(buf, len);
+
+		if (len > 0) {
+			p = buf;
+			while (isspace((unsigned char)*p))
+				p++;
+
+			if (custr_len(cus) > 0)
+				fcustr_appendc(cus, ' ');
+			fcustr_append(cus, p);
+		}
+
+		/*
+		 * If the result is still empty, act as if a continuation is
+		 * present and read another line.
+		 */
+		if (custr_len(cus) == 0)
+			cont = true;
 	}
 
-	/* Handle a corner case == a \ as the very last character of the file */
-	if (feof(f) && c == '\\') {
-		fcustr_appendc(cus, c);
-		(*linenp)++;
-	}
+	free(buf);
 
 	if (ferror(f))
 		return (false);
 
-	/* Strip comments (i.e. everything starting at '#') */
-	p = custr_cstr(cus);
-	cp = strchr(p, '#');
-	if (cp != NULL) {
-		size_t idx;
-
-		idx = (size_t)(uintptr_t)(cp - p);
-		fcustr_trunc(cus, idx);
-	}
-
-	trimws(cus);
-
-	/* Empty line */
-	if (custr_len(cus) == 0)
-		goto again;
-
-	return (true);
+	return (custr_len(cus) > 0);
 }
 
+/*
+ * Remove leading and trailing whitespace from cus.
+ */
 void
 trimws(custr_t *cus)
 {
 	const char	*p = custr_cstr(cus);
-	size_t		len;
-	size_t		n;
+	size_t		len = custr_len(cus);
+	size_t		start, end;
+	char		*copy;
 
-	/* Trailing whitespace */
-	n = 0;
-	len = custr_len(cus);
 	if (len == 0)
 		return;
 
-	while (len > 0 && isspace(p[--len])) {
-		n++;
-	}
-	if (n > 0)
-		fcustr_rtrunc(cus, n);
+	start = 0;
+	while (start < len && isspace((unsigned char)p[start]))
+		start++;
 
-	/* Leading whitespace */
-	n = 0;
-	len = custr_len(cus);
-	while (n < len && isspace(p[n])) {
-		n++;
+	end = len;
+	while (end > start && isspace((unsigned char)p[end - 1]))
+		end--;
+
+	if (start == 0 && end == len)
+		return;
+
+	if (start == end) {
+		custr_reset(cus);
+		return;
 	}
-	if (n > 0)
-		fcustr_trunc(cus, n);
+
+	copy = umem_alloc(end - start + 1, UMEM_NOFAIL);
+	(void) memcpy(copy, p + start, end - start);
+	copy[end - start] = '\0';
+
+	custr_reset(cus);
+	fcustr_append(cus, copy);
+	umem_free(copy, end - start + 1);
 }
 
 custr_t *

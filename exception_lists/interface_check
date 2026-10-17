@@ -24,9 +24,10 @@
 # Copyright 2021 OmniOS Community Edition (OmniOSce) Association.
 
 # This file provides exceptions to the usual rules applied to shared
-# objects by interface_check. All strings are Perl regular expressions
-# that are compared to file names. In addition to the standard Perl
-# syntax, there is one extension:
+# objects by interface_check. All strings are POSIX extended regular
+# expressions (see regex(7)) that are compared to file names. Perl-only
+# constructs such as \d, \s, (?:...) or non-greedy quantifiers are not
+# supported. In addition to the standard syntax, there is one extension:
 #
 #	MACH(dir)
 #
@@ -73,7 +74,7 @@ PLUGIN		^usr/lib/dtrace/64/libdtrace_forceload\.so$
 # Objects that are not expected to contain versioning information.
 # Note that PLUGIN objects are automatically exempt from this,
 # so these directives are generally applied to non-plugin objects
-NOVERDEF	^usr/MACH(lib)/0\@0\.so\.1$
+NOVERDEF	^usr/MACH(lib)/0@0\.so\.1$
 NOVERDEF	^usr/lib/MACH(abi)/apptrace\.so\.1$
 NOVERDEF	^usr/MACH(lib)/libfru.*\.so\.1$
 NOVERDEF	^usr/MACH(lib)/libkrb5\.so\.1$

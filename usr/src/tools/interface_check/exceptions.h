@@ -17,6 +17,7 @@
 #define	_EXCEPTIONS_H
 
 #include <stdio.h>
+#include <stdbool.h>
 #include <regex.h>
 #include <inttypes.h>
 
@@ -41,11 +42,11 @@ typedef struct exceptions {
 exception_t *get_exception(exceptions_t *, const char *);
 bool is_exception(const char *, const char *, exceptions_t *);
 exceptions_t *load_exceptions(FILE *, const char *);
-char *find_exception_file(int, const char *);
+char *find_exception_file(const char *, const char *);
 void exceptions_free(exceptions_t *);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* _EXCEPTIONS_H*/
+#endif /* _EXCEPTIONS_H */
