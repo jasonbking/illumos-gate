@@ -63,6 +63,7 @@ typedef enum sys_field {
 	SF_AGENTS,
 	SF_ACTIVE,
 	SF_NBRS,
+	SF_CHANGED,
 } sys_field_t;
 
 static boolean_t
@@ -110,6 +111,12 @@ sys_ofmt_cb(ofmt_arg_t *arg, char *buf, uint_t buflen)
 	case SF_NBRS:
 		(void) snprintf(buf, buflen, "%u", si->lsi_neighbors);
 		break;
+	case SF_CHANGED:
+		if (si->lsi_change_age != LLDP_NO_CHANGE) {
+			(void) snprintf(buf, buflen, "%u",
+			    si->lsi_change_age);
+		}
+		break;
 	default:
 		return (B_FALSE);
 	}
@@ -129,6 +136,7 @@ static const ofmt_field_t sys_fields[] = {
 	{ "AGENTS",		7,	SF_AGENTS,		sys_ofmt_cb },
 	{ "ACTIVE",		7,	SF_ACTIVE,		sys_ofmt_cb },
 	{ "NBRS",		6,	SF_NBRS,		sys_ofmt_cb },
+	{ "CHANGED",		8,	SF_CHANGED,		sys_ofmt_cb },
 	{ NULL,			0,	0,			NULL }
 };
 
@@ -178,6 +186,9 @@ sys_print(const lldp_system_info_t *si)
 
 	(void) snprintf(buf, sizeof (buf), "%u", si->lsi_neighbors);
 	vline(0, gettext("Neighbors"), buf);
+
+	age_str(si->lsi_change_age, buf, sizeof (buf));
+	vline(0, gettext("Last change"), buf);
 }
 
 int

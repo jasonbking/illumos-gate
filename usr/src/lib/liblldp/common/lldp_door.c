@@ -171,17 +171,15 @@ process_reply(const char *data, size_t len, lldp_door_page_f func,
  * id linkid), following the cursor until every page has been passed to
  * func (which may be NULL if cmd returns no records).
  */
+static int lldp_door_request_req(lldp_door_req_t *, lldp_door_page_f,
+    void *);
+
 static int
 lldp_door_request(lldp_door_cmd_t cmd, const char *link, uint32_t linkid,
     lldp_door_page_f func, void *arg)
 {
 	lldp_door_req_t		req = { 0 };
-	char			*rbuf = NULL;
-	int			fd = -1;
-	int			ret;
-	bool			more;
 
-	req.ldrq_version = LLDP_DOOR_VERSION;
 	req.ldrq_cmd = cmd;
 	req.ldrq_linkid = linkid;
 	if (link != NULL &&
@@ -189,6 +187,22 @@ lldp_door_request(lldp_door_cmd_t cmd, const char *link, uint32_t linkid,
 	    sizeof (req.ldrq_link)) {
 		return (ENAMETOOLONG);
 	}
+
+	return (lldp_door_request_req(&req, func, arg));
+}
+
+/* As for lldp_door_request(), with the rest of the request already set */
+static int
+lldp_door_request_req(lldp_door_req_t *reqp, lldp_door_page_f func,
+    void *arg)
+{
+	lldp_door_req_t		req = *reqp;
+	char			*rbuf = NULL;
+	int			fd = -1;
+	int			ret;
+	bool			more;
+
+	req.ldrq_version = LLDP_DOOR_VERSION;
 
 	rbuf = malloc(LLDP_DOOR_REPLY_MAX);
 	if (rbuf == NULL)
@@ -468,6 +482,41 @@ lldp_get_system(lldp_system_info_t *si)
 	(void) memset(si, '\0', sizeof (*si));
 	return (lldp_door_request(LLDP_DOOR_CMD_SYSTEM, NULL, 0, system_page,
 	    si));
+}
+
+static int
+gen_page(const char *data, size_t len, uint32_t count, void *arg)
+{
+	lldp_door_gen_t rec;
+
+	if (count != 1 || len < sizeof (rec))
+		return (EPROTO);
+
+	(void) memcpy(&rec, data, sizeof (rec));
+	*(uint32_t *)arg = rec.ldg_gen;
+	return (0);
+}
+
+int
+lldp_wait_change(uint32_t *genp, uint_t timeout)
+{
+	lldp_door_req_t	req = { 0 };
+	uint32_t	gen;
+	int		ret;
+
+	if (genp == NULL)
+		return (EINVAL);
+
+	req.ldrq_cmd = LLDP_DOOR_CMD_WAIT;
+	req.ldrq_gen = *genp;
+	req.ldrq_timeout = MIN(timeout, LLDP_WAIT_MAX);
+
+	ret = lldp_door_request_req(&req, gen_page, &gen);
+	if (ret == ESHUTDOWN)
+		ret = ECONNREFUSED;
+	if (ret == 0)
+		*genp = gen;
+	return (ret);
 }
 
 int

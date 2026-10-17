@@ -22,6 +22,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <ofmt.h>
 #include <sys/ccompile.h>
 
@@ -64,6 +65,7 @@ void vline(int, const char *, const char *);
 void vsection(int, const char *);
 
 void link_name(const char *, char *, size_t);
+void age_str(uint32_t, char *, size_t);
 
 int do_show_neighbors(int, char **);
 int do_show_agent(int, char **);

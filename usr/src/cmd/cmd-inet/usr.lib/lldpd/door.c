@@ -40,6 +40,7 @@
 #include "door.h"
 #include "log.h"
 #include "neighbor.h"
+#include "notify.h"
 #include "timer.h"
 #include "tlv.h"
 #include "util.h"
@@ -368,6 +369,8 @@ door_system(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
 	si->lsi_encap = lldp_config->lcfg_encap;
 	mutex_exit(&lldp_config_lock);
 
+	si->lsi_change_age = LLDP_NO_CHANGE;
+
 	mutex_enter(&agent_list_lock);
 	for (agent_t *a = uu_list_first(agent_list); a != NULL;
 	    a = uu_list_next(agent_list, a)) {
@@ -376,11 +379,43 @@ door_system(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
 		if (ai.lai_state == LLDP_AGENT_ACTIVE)
 			si->lsi_active++;
 		si->lsi_neighbors += ai.lai_neighbors;
+		si->lsi_change_age = MIN(si->lsi_change_age,
+		    ai.lai_change_age);
 	}
 	mutex_exit(&agent_list_lock);
 
 	rep->ldrp_count = 1;
 	return (LLDP_DOOR_REC_OFF + sizeof (*si));
+}
+
+/*
+ * LLDP_DOOR_CMD_WAIT. This may block (holding a door server thread) for up
+ * to LLDP_WAIT_MAX seconds; notify_wait() limits how many do so at once.
+ * Returns the size of the reply.
+ */
+static size_t
+door_wait(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
+{
+	lldp_door_reply_t	*rep = (lldp_door_reply_t *)buf;
+	lldp_door_gen_t		rec = { 0 };
+	int			ret;
+
+	VERIFY3U(buflen, >=, LLDP_DOOR_REC_OFF + sizeof (rec));
+
+	if (req->ldrq_link[0] != '\0') {
+		rep->ldrp_error = EINVAL;
+		return (sizeof (*rep));
+	}
+
+	ret = notify_wait(req->ldrq_gen, req->ldrq_timeout, &rec.ldg_gen);
+	if (ret != 0) {
+		rep->ldrp_error = ret;
+		return (sizeof (*rep));
+	}
+
+	(void) memcpy(buf + LLDP_DOOR_REC_OFF, &rec, sizeof (rec));
+	rep->ldrp_count = 1;
+	return (LLDP_DOOR_REC_OFF + sizeof (rec));
 }
 
 /*
@@ -508,6 +543,9 @@ lldp_door_server(void *cookie __unused, char *argp, size_t argsz,
 		break;
 	case LLDP_DOOR_CMD_SYSTEM:
 		len = door_system(&req, door_reply_buf, LLDP_DOOR_REPLY_MAX);
+		break;
+	case LLDP_DOOR_CMD_WAIT:
+		len = door_wait(&req, door_reply_buf, LLDP_DOOR_REPLY_MAX);
 		break;
 	case LLDP_DOOR_CMD_AGENTS:
 		len = door_agent_records(&req, door_reply_buf,

@@ -17,6 +17,7 @@
  * Output helpers shared by the lldp(8) subcommands.
  */
 
+#include <libintl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +27,7 @@
 #include <sys/termios.h>
 #include <libdladm.h>
 #include <libdllink.h>
+#include <liblldp.h>
 
 #include "lldp.h"
 
@@ -133,4 +135,27 @@ void
 vsection(int indent, const char *label)
 {
 	(void) printf("%*s%s:\n", indent, "", label);
+}
+
+/*
+ * How long ago something happened, given its age in seconds: "never" (for
+ * LLDP_NO_CHANGE), "45s ago", "3m12s ago", "2h05m ago", or "6d04h ago".
+ */
+void
+age_str(uint32_t age, char *buf, size_t buflen)
+{
+	if (age == LLDP_NO_CHANGE) {
+		(void) strlcpy(buf, gettext("never"), buflen);
+	} else if (age < 60) {
+		(void) snprintf(buf, buflen, gettext("%us ago"), age);
+	} else if (age < 3600) {
+		(void) snprintf(buf, buflen, gettext("%um%02us ago"),
+		    age / 60, age % 60);
+	} else if (age < 86400) {
+		(void) snprintf(buf, buflen, gettext("%uh%02um ago"),
+		    age / 3600, (age % 3600) / 60);
+	} else {
+		(void) snprintf(buf, buflen, gettext("%ud%02uh ago"),
+		    age / 86400, (age % 86400) / 3600);
+	}
 }

@@ -74,6 +74,8 @@ int		neighbor_cmp_msap(const neighbor_t *, const neighbor_t *);
 int		neighbor_cmp_msap_raw(const neighbor_t *, const uint8_t *,
     uint16_t, const uint8_t *, uint16_t);
 bool		neighbor_same(const neighbor_t *, const neighbor_t *);
+void		neighbor_diff(const neighbor_t *, const neighbor_t *, char *,
+    size_t);
 
 #ifdef __cplusplus
 }

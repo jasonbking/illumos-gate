@@ -1398,6 +1398,7 @@ file path=usr/include/sys/sysevent/dr.h
 file path=usr/include/sys/sysevent/env.h
 file path=usr/include/sys/sysevent/eventdefs.h
 file path=usr/include/sys/sysevent/ipmp.h
+file path=usr/include/sys/sysevent/lldp.h
 file path=usr/include/sys/sysevent/pwrctl.h
 file path=usr/include/sys/sysevent/vrrp.h
 file path=usr/include/sys/sysevent_impl.h

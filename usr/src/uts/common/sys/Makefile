@@ -1031,6 +1031,7 @@ SYSEVENTHDRS=		\
 	env.h           \
 	eventdefs.h	\
 	ipmp.h		\
+	lldp.h		\
 	pwrctl.h	\
 	vrrp.h
 

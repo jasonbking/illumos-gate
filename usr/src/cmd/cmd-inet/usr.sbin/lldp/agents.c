@@ -149,6 +149,7 @@ typedef enum agent_field {
 	AF_TTL,
 	AF_NEXT_TX,
 	AF_TLVS,
+	AF_CHANGED,
 } agent_field_t;
 
 static boolean_t
@@ -235,6 +236,13 @@ agent_ofmt_cb(ofmt_arg_t *arg, char *buf, uint_t buflen)
 		if (agent_tx(ai))
 			tlvs_print(ai, buf, buflen);
 		break;
+	case AF_CHANGED:
+		/* Seconds since the neighbors last changed */
+		if (agent_rx(ai) && ai->lai_change_age != LLDP_NO_CHANGE) {
+			(void) snprintf(buf, buflen, "%u",
+			    ai->lai_change_age);
+		}
+		break;
 	default:
 		return (B_FALSE);
 	}
@@ -261,6 +269,7 @@ static const ofmt_field_t agent_fields[] = {
 	{ "TTL",		6,	AF_TTL,		agent_ofmt_cb },
 	{ "NEXT-TX",		8,	AF_NEXT_TX,	agent_ofmt_cb },
 	{ "TLVS",		32,	AF_TLVS,	agent_ofmt_cb },
+	{ "CHANGED",		8,	AF_CHANGED,	agent_ofmt_cb },
 	{ NULL,			0,	0,		NULL }
 };
 
@@ -421,6 +430,18 @@ agent_print_verbose(const agt_t *g)
 		(void) snprintf(buf, sizeof (buf), gettext("%u (max %u)"),
 		    ai->lai_neighbors, ai->lai_neighbor_max);
 		vline(TOP_INDENT, gettext("Neighbors"), buf);
+
+		age_str(ai->lai_change_age, buf, sizeof (buf));
+		vline(TOP_INDENT, gettext("Last change"), buf);
+
+		if (ai->lai_notify) {
+			(void) snprintf(buf, sizeof (buf),
+			    gettext("at most every %us"),
+			    ai->lai_notify_interval);
+		} else {
+			(void) strlcpy(buf, gettext("disabled"), sizeof (buf));
+		}
+		vline(TOP_INDENT, gettext("Change events"), buf);
 	}
 
 	if (ai->lai_label[0] != '\0' || ai->lai_devname[0] != '\0' ||

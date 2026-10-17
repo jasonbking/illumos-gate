@@ -20,6 +20,7 @@
 #include <sys/param.h>
 #include <sys/mac_ether.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -217,6 +218,9 @@ typedef struct lldp_agent_stats {
 	uint64_t	las_unknown_tlvs; /* TLVs with a reserved type */
 	uint64_t	las_length_errs; /* TX TLVs that didn't fit the PDU */
 	uint64_t	las_rem_drops;	/* New neighbors dropped (too many) */
+	uint64_t	las_rem_inserts; /* Neighbors added */
+	uint64_t	las_rem_updates; /* Neighbors whose info changed */
+	uint64_t	las_rem_deletes; /* Neighbors removed (incl. ageouts) */
 } lldp_agent_stats_t;
 
 /*
@@ -372,6 +376,16 @@ typedef struct lldp_agent_info {
 	uint32_t	lai_tx_8021_tlvs;	/* lldp_tx_8021_tlv_t */
 	uint32_t	lai_tx_8023_tlvs;	/* lldp_tx_8023_tlv_t */
 
+	/*
+	 * Seconds since its neighbors last changed (LLDP_NO_CHANGE if they
+	 * haven't since the agent was created), and its change
+	 * notifications (see sys/sysevent/lldp.h).
+	 */
+	uint32_t	lai_change_age;
+	uint16_t	lai_notify_interval;
+	uint8_t		lai_notify;		/* boolean */
+	uint8_t		lai_pad3;
+
 	/* Where the port is (from topo), if known: empty, or UINT32_MAX */
 	char		lai_label[LLDP_PORT_DESC_MAX + 1];
 	char		lai_devname[MAXPATHLEN];
@@ -389,6 +403,22 @@ typedef struct lldp_agent_info {
 int lldp_get_agents(const char *, lldp_agent_info_t **, uint_t *);
 void lldp_agents_free(lldp_agent_info_t *, uint_t);
 
+/* lai_change_age, lsi_change_age: no change since lldpd started */
+#define	LLDP_NO_CHANGE		UINT32_MAX
+
+/*
+ * Wait for lldpd's neighbor information to change. lldpd counts changes
+ * (to any agent's neighbors, and agents being added or removed) with a
+ * generation number. If *genp is 0, returns the current generation in
+ * *genp immediately. Otherwise, waits until the generation differs from
+ * *genp, or for timeout seconds (at most LLDP_WAIT_MAX), and sets *genp to
+ * the generation at that point (so a timeout leaves it unchanged). Returns 0
+ * or an errno value: ECONNREFUSED if lldpd isn't running (or exits while
+ * waiting), EAGAIN if too many callers are already waiting.
+ */
+#define	LLDP_WAIT_MAX		60
+int lldp_wait_change(uint32_t *, uint_t);
+
 /*
  * What lldpd advertises for the system as a whole (on every link), as
  * returned by lldp_get_system(). Like lldp_agent_info_t, this is also used
@@ -405,6 +435,7 @@ typedef struct lldp_system_info {
 	uint32_t	lsi_agents;		/* Agents */
 	uint32_t	lsi_active;		/* ... that are active */
 	uint32_t	lsi_neighbors;		/* Neighbors (of all agents) */
+	uint32_t	lsi_change_age;		/* Of any agent's neighbors */
 } lldp_system_info_t;
 
 /*

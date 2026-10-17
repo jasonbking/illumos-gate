@@ -24,6 +24,7 @@ OBJS =		agent.o		\
 		lldpd.o		\
 		log.o		\
 		neighbor.o	\
+		notify.o	\
 		pdu.o		\
 		timer.o		\
 		tlv.o		\

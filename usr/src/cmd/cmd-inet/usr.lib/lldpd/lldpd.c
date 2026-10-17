@@ -55,6 +55,7 @@
 #include "lldpd.h"
 #include "log.h"
 #include "neighbor.h"
+#include "notify.h"
 #include "timer.h"
 #include "util.h"
 
@@ -292,6 +293,9 @@ lldp_init(void)
 	 */
 	lldp_sysevent_init();
 
+	/* Likewise, binding the event channel we publish changes on */
+	notify_init();
+
 	lldp_create_agents();
 
 	/* Everything that needs privileges has been done */
@@ -329,7 +333,8 @@ lldp_init(void)
  *
  * The syseventd(8) subscription for new links must be made as root, so
  * that's done before dropping privileges too (the subscription's door
- * remains usable afterwards).
+ * remains usable afterwards), as is binding the event channel neighbor
+ * changes are published on (see notify.c).
  */
 static void
 lldp_drop_privs(void)
@@ -497,6 +502,7 @@ lldp_fini(void)
 	 * thread (which is done processing events).
 	 */
 	lldp_sysevent_fini();
+	notify_fini();
 	lldp_destroy_door();
 	lldp_tasks_drain();
 
@@ -598,6 +604,7 @@ lldp_agent_add(datalink_id_t did)
 	VERIFY3P(uu_list_find(agent_list, a, NULL, &idx), ==, NULL);
 	uu_list_insert(agent_list, a, idx);
 	mutex_exit(&agent_list_lock);
+	notify_change();
 
 	log_debug(log, "created agent",
 	    LOG_T_STRING, "agent", dpa.dp_dev,
@@ -815,6 +822,7 @@ task_link_remove(lldp_task_t *t)
 	mutex_enter(&agent_list_lock);
 	uu_list_remove(agent_list, a);
 	mutex_exit(&agent_list_lock);
+	notify_change();
 
 	/* The link has (normally) already been offlined and closed */
 	agent_destroy(a);

@@ -67,6 +67,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_tlv_iter_init;
 	lldp_tlv_iter_next;
 	lldp_tlv_type_str;
+	lldp_wait_change;
     local:
 	*;
 };

@@ -276,3 +276,149 @@ neighbor_fini(void)
 	log_trace(log, "destroying neighbor list pool", LOG_T_END);
 	uu_list_pool_destroy(nb_pool);
 }
+
+/*
+ * Describe which TLVs differ between two LLDPDUs from the same neighbor,
+ * for logging (e.g. "Port Description, IEEE 802.1/3"). TLVs are compared
+ * by kind (their type, plus the OUI and subtype of organizationally
+ * specific ones): a kind differs if the values of its TLVs, in order, do.
+ * The TTL isn't compared (it isn't a change in what's advertised).
+ *
+ * Neighbors control what they send, so this is bounded: PDUs with more
+ * than DIFF_MAX_TLVS TLVs aren't compared.
+ */
+#define	DIFF_MAX_TLVS	256
+
+typedef struct diff_tlv {
+	uint64_t	dt_key;
+	const uint8_t	*dt_val;
+	uint16_t	dt_len;
+} diff_tlv_t;
+
+/* Returns the number of TLVs, or DIFF_MAX_TLVS + 1 if there are too many */
+static uint_t
+diff_collect(const neighbor_t *nb, diff_tlv_t *v)
+{
+	lldp_tlv_iter_t	it;
+	lldp_tlv_t	t;
+	uint_t		n = 0;
+
+	lldp_tlv_iter_init(&it, nb->nb_pdu, nb->nb_pdu_len);
+	while (lldp_tlv_iter_next(&it, &t) == 1) {
+		if (t.lt_type == LLDP_TLV_END)
+			break;
+		if (t.lt_type == LLDP_TLV_TTL)
+			continue;
+		if (n == DIFF_MAX_TLVS)
+			return (DIFF_MAX_TLVS + 1);
+
+		v[n].dt_key = (uint64_t)t.lt_type << 32;
+		if (t.lt_org)
+			v[n].dt_key |= ((uint64_t)t.lt_oui << 8) | t.lt_subtype;
+		v[n].dt_val = t.lt_value;
+		v[n].dt_len = t.lt_len;
+		n++;
+	}
+	return (n);
+}
+
+/* Do a and b have the same TLVs of kind key (in the same order)? */
+static bool
+diff_key_same(uint64_t key, const diff_tlv_t *a, uint_t na,
+    const diff_tlv_t *b, uint_t nb)
+{
+	uint_t i = 0, j = 0;
+
+	for (;;) {
+		while (i < na && a[i].dt_key != key)
+			i++;
+		while (j < nb && b[j].dt_key != key)
+			j++;
+		if (i == na || j == nb)
+			return (i == na && j == nb);
+		if (a[i].dt_len != b[j].dt_len ||
+		    memcmp(a[i].dt_val, b[j].dt_val, a[i].dt_len) != 0) {
+			return (false);
+		}
+		i++;
+		j++;
+	}
+}
+
+static bool
+diff_key_seen(uint64_t key, const diff_tlv_t *v, uint_t n)
+{
+	for (uint_t i = 0; i < n; i++) {
+		if (v[i].dt_key == key)
+			return (true);
+	}
+	return (false);
+}
+
+static void
+diff_name(uint64_t key, char *buf, size_t buflen)
+{
+	uint8_t		type = key >> 32;
+	uint32_t	oui = (key >> 8) & 0xffffff;
+	uint8_t		subtype = key & 0xff;
+	const char	*s;
+
+	if (type == LLDP_TLV_ORG_SPEC) {
+		if ((s = lldp_oui_str(oui)) != NULL) {
+			(void) snprintf(buf, buflen, "%s/%u", s, subtype);
+		} else {
+			(void) snprintf(buf, buflen, "OUI %02x:%02x:%02x/%u",
+			    oui >> 16, (oui >> 8) & 0xff, oui & 0xff, subtype);
+		}
+	} else if (type > LLDP_TLV_MGMT_ADDR) {
+		(void) snprintf(buf, buflen, "TLV type %u", type);
+	} else {
+		(void) strlcpy(buf, lldp_tlv_type_str(type), buflen);
+	}
+}
+
+void
+neighbor_diff(const neighbor_t *old, const neighbor_t *new, char *buf,
+    size_t buflen)
+{
+	const size_t	sz = (DIFF_MAX_TLVS + 1) * sizeof (diff_tlv_t);
+	diff_tlv_t	*a = umem_alloc(sz, UMEM_NOFAIL);
+	diff_tlv_t	*b = umem_alloc(sz, UMEM_NOFAIL);
+	uint_t		na = diff_collect(old, a);
+	uint_t		nb = diff_collect(new, b);
+	char		name[64];
+
+	(void) strlcpy(buf, "", buflen);
+
+	if (na > DIFF_MAX_TLVS || nb > DIFF_MAX_TLVS) {
+		(void) strlcpy(buf, "(too many TLVs to compare)", buflen);
+		goto done;
+	}
+
+	/* Each kind once: those in the new PDU, then those only in the old */
+	for (uint_t i = 0; i < nb + na; i++) {
+		uint64_t key = (i < nb) ? b[i].dt_key : a[i - nb].dt_key;
+
+		if (i < nb && diff_key_seen(key, b, i))
+			continue;
+		if (i >= nb && (diff_key_seen(key, b, nb) ||
+		    diff_key_seen(key, a, i - nb))) {
+			continue;
+		}
+		if (diff_key_same(key, a, na, b, nb))
+			continue;
+
+		diff_name(key, name, sizeof (name));
+		if (buf[0] != '\0')
+			(void) strlcat(buf, ", ", buflen);
+		(void) strlcat(buf, name, buflen);
+	}
+
+	/* E.g. only the order of TLVs of different kinds changed */
+	if (buf[0] == '\0')
+		(void) strlcpy(buf, "(TLV order)", buflen);
+
+done:
+	umem_free(a, sz);
+	umem_free(b, sz);
+}

@@ -101,6 +101,9 @@
  *	tx_fast_interval	count	msgFastTx
  *	tx_fast_init		count	txFastInit
  *	neighbor_max		count	Max number of neighbors per agent
+ *	notify			boolean	Publish an event when the agent's
+ *					neighbors change (see notify.c)
+ *	notification_interval	count	The least time between those events
  *
  * The SMF handles and config state here are only used from the main thread.
  */
@@ -151,6 +154,7 @@
 #define	AGENT_PROP_TX_TLVS	"tx_tlvs"
 #define	AGENT_PROP_TX_8021_TLVS	"tx_8021_tlvs"
 #define	AGENT_PROP_TX_8023_TLVS	"tx_8023_tlvs"
+#define	AGENT_PROP_NOTIFY	"notify"
 
 /* Value of a multi-valued TLV property that explicitly selects nothing */
 #define	AGENT_TLV_NONE		"none"
@@ -161,6 +165,7 @@
 	(LLDP_TX_PORTDESC | LLDP_TX_SYSNAME | LLDP_TX_SYSDESC | LLDP_TX_SYSCAP)
 #define	DEFAULT_TX_8021_TLVS	LLDP_TX_X1_NONE
 #define	DEFAULT_TX_8023_TLVS	0
+#define	DEFAULT_NOTIFY		true
 
 /*
  * The numeric (uint16_t) agent properties. The defaults and ranges are
@@ -190,6 +195,8 @@ static const agent_count_prop_t agent_count_props[] = {
 	ACP("tx_fast_interval",	ac_tx_fast_msg,		1, 1, 3600),
 	ACP("tx_fast_init",	ac_tx_fast_init,	4, 1, 8),
 	ACP("neighbor_max",	ac_neighbor_max,	32, 1, UINT16_MAX),
+	/* lldpV2NotificationInterval */
+	ACP("notification_interval", ac_notify_interval, 30, 1, 3600),
 };
 
 #undef ACP
@@ -853,6 +860,25 @@ pg_get_count(log_t *l, const scf_propertygroup_t *pg,
 	return (true);
 }
 
+static bool
+pg_get_boolean(log_t *l, const scf_propertygroup_t *pg, const char *name,
+    bool *vp)
+{
+	uint8_t v;
+
+	if (!config_get_prop(l, pg, name, scf_val))
+		return (false);
+
+	if (scf_value_get_boolean(scf_val, &v) != 0) {
+		prop_scferr(l, pg, name,
+		    "SMF property is not a boolean; ignoring");
+		return (false);
+	}
+
+	*vp = (v != 0);
+	return (true);
+}
+
 /*
  * Retrieve a multi-valued astring property where each value is the name of
  * a flag of prop (see lldp_prop_val()), and OR the corresponding flags
@@ -924,6 +950,7 @@ config_agent_defaults(agent_cfg_t *cfg)
 	cfg->ac_tx_tlvs = DEFAULT_TX_TLVS;
 	cfg->ac_tx_8021_tlvs = DEFAULT_TX_8021_TLVS;
 	cfg->ac_tx_8023_tlvs = DEFAULT_TX_8023_TLVS;
+	cfg->ac_notify = DEFAULT_NOTIFY;
 
 	for (size_t i = 0; i < ARRAY_SIZE(agent_count_props); i++) {
 		const agent_count_prop_t *p = &agent_count_props[i];
@@ -998,6 +1025,8 @@ config_agent_apply_pg(log_t *l, agent_cfg_t *cfg,
 		cfg->ac_tx_8023_tlvs = (lldp_tx_8023_tlv_t)v;
 	}
 
+	(void) pg_get_boolean(l, pg, AGENT_PROP_NOTIFY, &cfg->ac_notify);
+
 	for (size_t i = 0; i < ARRAY_SIZE(agent_count_props); i++) {
 		const agent_count_prop_t *p = &agent_count_props[i];
 		uint16_t *fp = (uint16_t *)((char *)cfg + p->acp_off);
@@ -1053,6 +1082,9 @@ config_agent_log(log_t *l, const char *msg, const agent_cfg_t *cfg)
 	    LOG_T_UINT32, "tx_fast_interval", (uint32_t)cfg->ac_tx_fast_msg,
 	    LOG_T_UINT32, "tx_fast_init", (uint32_t)cfg->ac_tx_fast_init,
 	    LOG_T_UINT32, "neighbor_max", (uint32_t)cfg->ac_neighbor_max,
+	    LOG_T_BOOLEAN, "notify", cfg->ac_notify,
+	    LOG_T_UINT32, "notification_interval",
+	    (uint32_t)cfg->ac_notify_interval,
 	    LOG_T_END);
 }
 

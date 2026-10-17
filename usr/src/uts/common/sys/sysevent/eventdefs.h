@@ -56,6 +56,7 @@ extern "C" {
 #define	EC_DATALINK	"EC_datalink"	/* datalink event */
 #define	EC_VRRP		"EC_vrrp"	/* VRRP event */
 #define	EC_PCIE		"EC_pcie"	/* PCIe event */
+#define	EC_LLDP		"EC_lldp"	/* LLDP event */
 
 /*
  * The following event class is reserved for exclusive use
@@ -222,6 +223,12 @@ extern "C" {
  * sys/sysevent/pcie.h.
  */
 #define	ESC_PCIE_LINK_STATE	"ESC_pcie_link_state"
+
+/*
+ * LLDP subclass definitions. Supporting attributes (name/value pairs), and
+ * the event channel they're published on, are found in sys/sysevent/lldp.h.
+ */
+#define	ESC_LLDP_REMOTE_CHANGE	"ESC_lldp_remote_change" /* neighbors */
 
 #ifdef	__cplusplus
 }

@@ -14,7 +14,7 @@
  */
 
 /*
- * lldp show-neighbors [-v | -x | [-p] -o field[,...]] [link]
+ * lldp show-neighbors [-w] [-v | -x | [-p] -o field[,...]] [link]
  *
  * Shows the neighbors lldpd has learned on each link, in one of three
  * forms:
@@ -23,6 +23,8 @@
  *			for the other datalink tools).
  *	-v		Every TLV of each neighbor's LLDPDU, decoded.
  *	-x		Each TLV of each neighbor's LLDPDU, in hex.
+ *
+ * With -w, they're shown again (in the same form) whenever they change.
  *
  * Everything in an LLDPDU comes from the network, so every string from a
  * PDU is displayed via liblldp, which escapes anything that isn't
@@ -37,6 +39,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/sysmacros.h>
 #include <liblldp.h>
@@ -748,75 +751,41 @@ nbr_print_raw(const nbr_t *n)
 	}
 }
 
-int
-do_show_neighbors(int argc, char **argv)
+/* How to show the neighbors */
+typedef struct nbr_view {
+	lldp_ofmt_opts_t	nv_opts;	/* Default view */
+	bool			nv_verbose;	/* -v */
+	bool			nv_raw;		/* -x */
+} nbr_view_t;
+
+/* Have the neighbors (other than how long until they expire) changed? */
+static bool
+nbrs_differ(const lldp_neighbor_t *a, uint_t na, const lldp_neighbor_t *b,
+    uint_t nb)
 {
-	const lldp_cmd_t	*cmd = cmd_lookup("show-neighbors");
-	lldp_ofmt_opts_t	opts = { 0 };
-	bool			verbose = false, raw = false;
-	const char		*link = NULL;
-	ofmt_handle_t		ofmt = NULL;
-	lldp_neighbor_t		*nbrs = NULL;
-	nbr_t			*ns;
-	uint_t			n = 0;
-	int			c, ret;
+	if (na != nb)
+		return (true);
 
-	optind = 1;
-	while ((c = getopt(argc, argv, ":po:vx")) != -1) {
-		switch (c) {
-		case 'p':
-			opts.loo_parsable = true;
-			break;
-		case 'o':
-			opts.loo_fields = optarg;
-			break;
-		case 'v':
-			verbose = true;
-			break;
-		case 'x':
-			raw = true;
-			break;
-		case ':':
-			warnx(gettext("option -%c requires an argument"),
-			    optopt);
-			cmd_usage(cmd);
-		case '?':
-			warnx(gettext("unknown option -%c"), optopt);
-			cmd_usage(cmd);
+	for (uint_t i = 0; i < na; i++) {
+		if (strcmp(a[i].ln_link, b[i].ln_link) != 0 ||
+		    a[i].ln_pdu_len != b[i].ln_pdu_len ||
+		    memcmp(a[i].ln_pdu, b[i].ln_pdu, a[i].ln_pdu_len) != 0) {
+			return (true);
 		}
 	}
+	return (false);
+}
 
-	if (verbose && raw) {
-		warnx(gettext("-v and -x can't be used together"));
-		cmd_usage(cmd);
-	}
-	if ((verbose || raw) && (opts.loo_parsable || opts.loo_fields)) {
-		warnx(gettext("-%c can't be used with -p or -o"),
-		    verbose ? 'v' : 'x');
-		cmd_usage(cmd);
-	}
+static void
+nbrs_print(const nbr_view_t *v, lldp_neighbor_t *nbrs, uint_t n)
+{
+	ofmt_handle_t	ofmt = NULL;
+	nbr_t		*ns;
+	int		ret;
 
-	if (argc - optind > 1)
-		cmd_usage(cmd);
-	if (argc - optind == 1)
-		link = argv[optind];
-
-	/* Check the options before talking to lldpd */
-	if (!verbose && !raw) {
-		if (opts.loo_fields == NULL && !opts.loo_parsable) {
-			opts.loo_fields = NBR_DEFAULT_FIELDS;
-			short_sysname = true;
-		}
-		ofmt = lldp_ofmt_open(&opts, nbr_fields, 0);
-	}
-
-	ret = lldp_get_neighbors(link, &nbrs, &n);
-	if (ret != 0) {
-		lldp_warn(ret, link, gettext("neighbors"));
-		if (ofmt != NULL)
-			ofmt_close(ofmt);
-		return (EXIT_FAILURE);
-	}
+	/* A new handle each time, so a table is printed with its header */
+	if (!v->nv_verbose && !v->nv_raw)
+		ofmt = lldp_ofmt_open(&v->nv_opts, nbr_fields, 0);
 
 	if ((ns = calloc(MAX(n, 1), sizeof (nbr_t))) == NULL)
 		err(EXIT_FAILURE, gettext("failed to allocate memory"));
@@ -826,7 +795,7 @@ do_show_neighbors(int argc, char **argv)
 		link_name(nbrs[i].ln_link, ns[i].n_link, sizeof (ns[i].n_link));
 
 		/* The raw view doesn't need it decoded */
-		if (raw)
+		if (v->nv_raw)
 			continue;
 
 		ret = lldp_pdu_parse(nbrs[i].ln_pdu, nbrs[i].ln_pdu_len,
@@ -838,15 +807,12 @@ do_show_neighbors(int argc, char **argv)
 		/* Otherwise (EBADMSG), the neighbor is shown as malformed */
 	}
 
-	if (verbose)
-		vline_init();
-
 	for (uint_t i = 0; i < n; i++) {
-		if (verbose) {
+		if (v->nv_verbose) {
 			if (i > 0)
 				(void) putchar('\n');
 			nbr_print_verbose(&ns[i]);
-		} else if (raw) {
+		} else if (v->nv_raw) {
 			if (i > 0)
 				(void) putchar('\n');
 			nbr_print_raw(&ns[i]);
@@ -860,6 +826,164 @@ do_show_neighbors(int argc, char **argv)
 	for (uint_t i = 0; i < n; i++)
 		lldp_pdu_free(ns[i].n_pdu);
 	free(ns);
+}
+
+/*
+ * -w: show the neighbors again whenever they change, until interrupted (or
+ * lldpd goes away). With a link, only changes to its neighbors count.
+ * Except in parsable mode, each update starts with the time.
+ */
+static int
+nbrs_watch(const char *link, const nbr_view_t *v, lldp_neighbor_t *nbrs,
+    uint_t n)
+{
+	uint32_t	gen = 0;
+	bool		missing = false;
+	int		ret;
+
+	if ((ret = lldp_wait_change(&gen, 0)) != 0) {
+		lldp_warn(ret, NULL, gettext("neighbor changes"));
+		lldp_neighbors_free(nbrs, n);
+		return (EXIT_FAILURE);
+	}
+
+	for (;;) {
+		lldp_neighbor_t	*cur = NULL;
+		uint_t		cn = 0;
+		uint32_t	prev = gen;
+
+		(void) fflush(stdout);
+
+		ret = lldp_wait_change(&gen, LLDP_WAIT_MAX);
+		if (ret != 0) {
+			lldp_warn(ret, NULL, gettext("neighbor changes"));
+			break;
+		}
+		if (gen == prev)
+			continue;	/* Timed out; wait again */
+
+		ret = lldp_get_neighbors(link, &cur, &cn);
+		if (ret == ENOENT && link != NULL) {
+			/* The link's agent went away (it may come back) */
+			if (!missing)
+				lldp_warn(ret, link, NULL);
+			missing = true;
+			lldp_neighbors_free(nbrs, n);
+			nbrs = NULL;
+			n = 0;
+			continue;
+		}
+		if (ret != 0) {
+			lldp_warn(ret, link, gettext("neighbors"));
+			break;
+		}
+
+		if (!missing && !nbrs_differ(nbrs, n, cur, cn)) {
+			lldp_neighbors_free(cur, cn);
+			continue;
+		}
+		missing = false;
+
+		if (!v->nv_opts.loo_parsable) {
+			char		when[64];
+			time_t		now = time(NULL);
+			struct tm	tm;
+
+			(void) strftime(when, sizeof (when), "%F %T",
+			    localtime_r(&now, &tm));
+			(void) printf("\n%s\n", when);
+		}
+		nbrs_print(v, cur, cn);
+
+		lldp_neighbors_free(nbrs, n);
+		nbrs = cur;
+		n = cn;
+	}
+
+	lldp_neighbors_free(nbrs, n);
+	return (EXIT_FAILURE);
+}
+
+int
+do_show_neighbors(int argc, char **argv)
+{
+	const lldp_cmd_t	*cmd = cmd_lookup("show-neighbors");
+	nbr_view_t		v = { 0 };
+	lldp_ofmt_opts_t	*opts = &v.nv_opts;
+	bool			watch = false;
+	const char		*link = NULL;
+	lldp_neighbor_t		*nbrs = NULL;
+	uint_t			n = 0;
+	int			c, ret;
+
+	optind = 1;
+	while ((c = getopt(argc, argv, ":po:vwx")) != -1) {
+		switch (c) {
+		case 'p':
+			opts->loo_parsable = true;
+			break;
+		case 'o':
+			opts->loo_fields = optarg;
+			break;
+		case 'v':
+			v.nv_verbose = true;
+			break;
+		case 'w':
+			watch = true;
+			break;
+		case 'x':
+			v.nv_raw = true;
+			break;
+		case ':':
+			warnx(gettext("option -%c requires an argument"),
+			    optopt);
+			cmd_usage(cmd);
+		case '?':
+			warnx(gettext("unknown option -%c"), optopt);
+			cmd_usage(cmd);
+		}
+	}
+
+	if (v.nv_verbose && v.nv_raw) {
+		warnx(gettext("-v and -x can't be used together"));
+		cmd_usage(cmd);
+	}
+	if ((v.nv_verbose || v.nv_raw) &&
+	    (opts->loo_parsable || opts->loo_fields)) {
+		warnx(gettext("-%c can't be used with -p or -o"),
+		    v.nv_verbose ? 'v' : 'x');
+		cmd_usage(cmd);
+	}
+
+	if (argc - optind > 1) {
+		warnx(gettext("only one link may be given"));
+		cmd_usage(cmd);
+	}
+	if (argc - optind == 1)
+		link = argv[optind];
+
+	/* Check the options before talking to lldpd */
+	if (!v.nv_verbose && !v.nv_raw) {
+		if (opts->loo_fields == NULL && !opts->loo_parsable) {
+			opts->loo_fields = NBR_DEFAULT_FIELDS;
+			short_sysname = true;
+		}
+		ofmt_close(lldp_ofmt_open(opts, nbr_fields, 0));
+	}
+	if (v.nv_verbose)
+		vline_init();
+
+	ret = lldp_get_neighbors(link, &nbrs, &n);
+	if (ret != 0) {
+		lldp_warn(ret, link, gettext("neighbors"));
+		return (EXIT_FAILURE);
+	}
+
+	nbrs_print(&v, nbrs, n);
+
+	if (watch)
+		return (nbrs_watch(link, &v, nbrs, n));
+
 	lldp_neighbors_free(nbrs, n);
 	return (EXIT_SUCCESS);
 }

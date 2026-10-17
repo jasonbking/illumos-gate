@@ -852,6 +852,44 @@
 					<range min='1' max='65535' />
 				</constraints>
 			</prop_pattern>
+			<prop_pattern name='notify' type='boolean'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Change notifications
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Whether to publish an event (on
+						the org.illumos:lldp:events
+						event channel) when the agent's
+						neighbors change.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+			</prop_pattern>
+			<prop_pattern name='notification_interval'
+			    type='count' required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Notification interval
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The least time, in seconds,
+						between change notifications
+						for the agent. Changes in
+						between are covered by the next
+						notification.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='3600' />
+				</constraints>
+			</prop_pattern>
 		</pg_pattern>
 		<pg_pattern type='agent' target='all'
 		    required='false'>
@@ -1344,6 +1382,44 @@
 				<cardinality min='1' max='1' />
 				<constraints>
 					<range min='1' max='65535' />
+				</constraints>
+			</prop_pattern>
+			<prop_pattern name='notify' type='boolean'
+			    required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Change notifications
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						Whether to publish an event (on
+						the org.illumos:lldp:events
+						event channel) when the agent's
+						neighbors change.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+			</prop_pattern>
+			<prop_pattern name='notification_interval'
+			    type='count' required='false'>
+				<common_name>
+					<loctext xml:lang='C'>
+						Notification interval
+					</loctext>
+				</common_name>
+				<description>
+					<loctext xml:lang='C'>
+						The least time, in seconds,
+						between change notifications
+						for the agent. Changes in
+						between are covered by the next
+						notification.
+					</loctext>
+				</description>
+				<cardinality min='1' max='1' />
+				<constraints>
+					<range min='1' max='3600' />
 				</constraints>
 			</prop_pattern>
 		</pg_pattern>

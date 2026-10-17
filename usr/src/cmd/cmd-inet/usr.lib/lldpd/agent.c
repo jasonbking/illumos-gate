@@ -32,11 +32,13 @@
 #include <sys/mac_ether.h>
 #include <sys/ethernet.h>
 #include <sys/sysmacros.h>
+#include <sys/time.h>
 
 #include "agent.h"
 #include "config.h"
 #include "log.h"
 #include "neighbor.h"
+#include "notify.h"
 #include "pdu.h"
 #include "timer.h"
 #include "util.h"
@@ -49,7 +51,8 @@ static void recv_frame(int, void *);
 static void tx_initialize(agent_t *);
 static void rx_init_lldp(agent_t *);
 static void update_objects(agent_t *);
-static void delete_objects(agent_t *);
+static uint32_t delete_objects(agent_t *);
+static void agent_notify(agent_t *);
 static void tx_add_credit(agent_t *);
 static void something_changed_remote(agent_t *);
 
@@ -162,6 +165,8 @@ agent_create(const char *name, const char *linkname, datalink_id_t linkid)
 	tx_init(a);
 	rx_init(a);
 	ttr_init(a);
+	lldp_timer_init(&a->a_clk, &a->a_notify_timer, "notifyInterval", a,
+	    a->a_log, "notifyExpired", &a->a_notify_expired);
 
 	a->a_neighbors = neighbor_list_new(a);
 
@@ -309,6 +314,7 @@ agent_destroy(agent_t *a)
 	a->a_rx.rx_neighbor = NULL;
 	a->a_rx.rx_curr_neighbor = NULL;
 
+	lldp_timer_fini(&a->a_notify_timer);
 	ttr_fini(&a->a_ttr);
 	tx_fini(&a->a_tx);
 	rx_fini(&a->a_rx);
@@ -528,6 +534,12 @@ agent_thread(void *arg)
 			agent_port_switch(a);
 
 			(void) lldp_clock_advance(&a->a_clk);
+
+			/* An event held back by the notification interval */
+			if (a->a_notify_expired) {
+				a->a_notify_expired = false;
+				agent_notify(a);
+			}
 
 			run_tx = tx_next_state(&a->a_tx);
 			run_rx = rx_next_state(a);
@@ -871,9 +883,9 @@ rx_machine(agent_t *a)
 		rx->rx_curr_neighbor = NULL;
 		break;
 	case DELETE_AGED_INFO:
-		delete_objects(a);
+		if (delete_objects(a) > 0)
+			something_changed_remote(a);
 		rx->rx_info_age = false;
-		something_changed_remote(a);
 		break;
 	case RX_LLDP_INITIALIZE:
 		/* rx_init_lldp() also discards any queued frames */
@@ -888,8 +900,8 @@ rx_machine(agent_t *a)
 		rx_process_frame(a);
 		break;
 	case DELETE_INFO:
-		delete_objects(a);
-		something_changed_remote(a);
+		if (delete_objects(a) > 0)
+			something_changed_remote(a);
 		break;
 	case UPDATE_INFO:
 		update_objects(a);
@@ -1082,6 +1094,7 @@ rx_init_lldp(agent_t *a)
 	rx_t		*rx = &a->a_rx;
 	void		*cookie = NULL;
 	neighbor_t	*nb;
+	uint32_t	count = 0;
 
 	rx_queue_flush(rx);
 
@@ -1092,8 +1105,19 @@ rx_init_lldp(agent_t *a)
 	rx->rx_neighbor = NULL;
 	rx->rx_curr_neighbor = NULL;
 
-	while ((nb = uu_list_teardown(a->a_neighbors, &cookie)) != NULL)
+	/* E.g. the link came back up: start afresh */
+	while ((nb = uu_list_teardown(a->a_neighbors, &cookie)) != NULL) {
 		neighbor_free(nb);
+		a->a_stats.las_rem_deletes++;
+		count++;
+	}
+
+	if (count > 0) {
+		log_info(rx->rx_log, "discarded neighbors",
+		    LOG_T_UINT32, "count", count,
+		    LOG_T_END);
+		something_changed_remote(a);
+	}
 }
 
 /*
@@ -1114,8 +1138,23 @@ update_objects(agent_t *a)
 	ASSERT(old_nb == NULL || !neighbor_same(old_nb, nb));
 
 	if (old_nb != NULL) {
+		char changed[256];
+
+		/* What the neighbor now says differently */
+		neighbor_diff(old_nb, nb, changed, sizeof (changed));
+		log_info(rx->rx_log, "neighbor changed",
+		    LOG_T_CHASSIS, "chassis",
+		    tlv_list_get(&nb->nb_core_tlvs, NB_TLV_CHASSIS),
+		    LOG_T_PORT, "port",
+		    tlv_list_get(&nb->nb_core_tlvs, NB_TLV_PORT),
+		    LOG_T_STRING, "changed", changed,
+		    LOG_T_END);
+
 		uu_list_remove(a->a_neighbors, old_nb);
 		neighbor_free(old_nb);
+		a->a_stats.las_rem_updates++;
+	} else {
+		a->a_stats.las_rem_inserts++;
 	}
 
 	lldp_timer_init(&a->a_clk, &nb->nb_timer, "rxInfoAge", nb,
@@ -1146,13 +1185,14 @@ update_objects(agent_t *a)
 	rx->rx_curr_neighbor = NULL;
 }
 
-static void
+/* Returns the number of neighbors deleted */
+static uint32_t
 delete_objects(agent_t *a)
 {
 	neighbor_t	*nb;
 	uu_list_walk_t	*wk;
 	log_t		*l = a->a_rx.rx_log;
-	uint32_t	count;
+	uint32_t	count, deleted = 0;
 
 	/*
 	 * A shutdown PDU (TTL 0) for a known MSAP: rx_process_frame() leaves
@@ -1170,6 +1210,8 @@ delete_objects(agent_t *a)
 		uu_list_remove(a->a_neighbors, nb);
 		neighbor_free(nb);
 		a->a_rx.rx_curr_neighbor = NULL;
+		a->a_stats.las_rem_deletes++;
+		deleted++;
 	}
 
 	log_debug(l, "ageing out neighbors", LOG_T_END);
@@ -1196,14 +1238,18 @@ delete_objects(agent_t *a)
 		uu_list_remove(a->a_neighbors, nb);
 		neighbor_free(nb);
 		a->a_stats.las_ageouts++;
+		a->a_stats.las_rem_deletes++;
 		count++;
 	}
 
-	log_info(l, "ageing out complete",
-	    LOG_T_UINT32, "num_aged", count,
-	    LOG_T_END);
+	if (count > 0) {
+		log_info(l, "ageing out complete",
+		    LOG_T_UINT32, "num_aged", count,
+		    LOG_T_END);
+	}
 
 	uu_list_walk_end(wk);
+	return (deleted + count);
 }
 
 void
@@ -1221,10 +1267,48 @@ something_changed_local(agent_t *a, bool locked)
 		mutex_exit(&a->a_lock);
 }
 
+/*
+ * The agent's neighbors (its remote systems data) have changed
+ * (somethingChangedRemote in 802.1AB). Record when, wake anyone waiting for
+ * a change, and (rate limited) publish an event.
+ */
 static void
 something_changed_remote(agent_t *a)
 {
-	/* TODO */
+	ASSERT(MUTEX_HELD(&a->a_lock));
+
+	a->a_rem_change = gethrtime();
+	notify_change();
+
+	if (a->a_cfg.ac_notify) {
+		a->a_notify_pending = true;
+		agent_notify(a);
+	}
+}
+
+/*
+ * Publish a change event if one is pending, unless one was published
+ * within the last notification_interval seconds (a_notify_timer is still
+ * running). In that case, it's published when the timer expires
+ * (a_notify_expired), so every change is covered by an event that follows
+ * it, but there's at most one event per interval (as for
+ * lldpV2NotificationInterval).
+ */
+static void
+agent_notify(agent_t *a)
+{
+	ASSERT(MUTEX_HELD(&a->a_lock));
+
+	if (!a->a_notify_pending || lldp_timer_val(&a->a_notify_timer) > 0)
+		return;
+
+	a->a_notify_pending = false;
+	if (!a->a_cfg.ac_notify)
+		return;
+
+	notify_publish(a->a_log, a->a_name, a->a_linkid,
+	    MIN(uu_list_numnodes(a->a_neighbors), UINT32_MAX), &a->a_stats);
+	lldp_timer_set(&a->a_notify_timer, a->a_cfg.ac_notify_interval);
 }
 
 static void
@@ -2366,6 +2450,15 @@ agent_get_info(agent_t *a, lldp_agent_info_t *ai)
 	ai->lai_tx_tlvs = cfg->ac_tx_tlvs;
 	ai->lai_tx_8021_tlvs = cfg->ac_tx_8021_tlvs;
 	ai->lai_tx_8023_tlvs = cfg->ac_tx_8023_tlvs;
+
+	if (a->a_rem_change == 0) {
+		ai->lai_change_age = LLDP_NO_CHANGE;
+	} else {
+		ai->lai_change_age = MIN((gethrtime() - a->a_rem_change) /
+		    NANOSEC, LLDP_NO_CHANGE - 1);
+	}
+	ai->lai_notify = cfg->ac_notify;
+	ai->lai_notify_interval = cfg->ac_notify_interval;
 
 	if (cfg->ac_label != NULL) {
 		(void) strlcpy(ai->lai_label, cfg->ac_label,

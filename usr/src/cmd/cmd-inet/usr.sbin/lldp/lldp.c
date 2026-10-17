@@ -50,7 +50,7 @@ static int do_stats(int, char **);
 static const lldp_cmd_t lldp_cmds[] = {
 	{ "help", do_help, "help" },
 	{ "show-neighbors", do_show_neighbors,
-	    "show-neighbors [-v | -x | [-p] -o field[,...]] [link]" },
+	    "show-neighbors [-w] [-v | -x | [-p] -o field[,...]] [link]" },
 	{ "show-agent", do_show_agent,
 	    "show-agent [-v | [-p] -o field[,...]] [link]" },
 	{ "show-system", do_show_system,
@@ -237,8 +237,15 @@ static const ofmt_field_t stats_fields[] = {
 	STATS_FIELD("REMDROP",	8,	las_rem_drops),
 	STATS_FIELD("TX",	9,	las_out_frames),
 	STATS_FIELD("TXLENERR",	9,	las_length_errs),
+	STATS_FIELD("INSERTS",	8,	las_rem_inserts),
+	STATS_FIELD("UPDATES",	8,	las_rem_updates),
+	STATS_FIELD("DELETES",	8,	las_rem_deletes),
 	{ NULL, 0, 0, NULL }
 };
+
+/* The neighbor change counters (INSERTS, ...) only with -o: it's wide enough */
+#define	STATS_DEFAULT_FIELDS	\
+	"link,rx,rxerr,rxdisc,tlvdisc,tlvunk,ageout,remdrop,tx,txlenerr"
 
 static int
 do_stats(int argc, char **argv)
@@ -252,6 +259,8 @@ do_stats(int argc, char **argv)
 	int			status = EXIT_SUCCESS;
 	int			ret;
 
+	if (opts.loo_fields == NULL && !opts.loo_parsable)
+		opts.loo_fields = STATS_DEFAULT_FIELDS;
 	ofmt = lldp_ofmt_open(&opts, stats_fields, OFMT_RIGHTJUST);
 
 	if (i == argc) {

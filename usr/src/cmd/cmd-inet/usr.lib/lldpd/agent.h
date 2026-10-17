@@ -167,6 +167,9 @@ typedef struct agent_cfg {
 	uint16_t		ac_tx_fast_init;
 
 	uint16_t		ac_neighbor_max;
+
+	bool			ac_notify;	/* Publish change events */
+	uint16_t		ac_notify_interval;
 } agent_cfg_t;
 
 typedef struct agent {
@@ -256,6 +259,16 @@ typedef struct agent {
 
 	bool			a_local_changes;
 	bool			a_new_neighbor;
+
+	/*
+	 * When the neighbors last changed (gethrtime(), or 0 if they
+	 * haven't), and the rate limiting of change events (see
+	 * agent_notify()).
+	 */
+	hrtime_t		a_rem_change;
+	lldp_timer_t		a_notify_timer;
+	bool			a_notify_expired;
+	bool			a_notify_pending;
 
 	lldp_agent_stats_t	a_stats;
 } agent_t;

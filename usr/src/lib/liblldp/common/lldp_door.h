@@ -84,6 +84,18 @@
  *
  *	Errors: EINVAL (malformed request).
  *
+ * LLDP_DOOR_CMD_WAIT
+ *
+ *	Waits for the neighbor information to change (see
+ *	lldp_wait_change()). If ldrq_gen is 0, returns immediately; otherwise
+ *	waits until the change generation differs from ldrq_gen, or for
+ *	ldrq_timeout seconds (at most LLDP_WAIT_MAX). Either way, a single
+ *	lldp_door_gen_t record gives the current generation. ldrq_link must
+ *	be empty. At most LLDP_DOOR_WAITERS calls wait at once.
+ *
+ *	Errors: EINVAL (malformed request), EAGAIN (too many waiting),
+ *	ESHUTDOWN (lldpd is exiting).
+ *
  * LLDP_DOOR_CMD_LINK_OFFLINE, LLDP_DOOR_CMD_LINK_ONLINE,
  * LLDP_DOOR_CMD_LINK_REMOVE
  *
@@ -118,7 +130,7 @@ extern "C" {
 /* If set, overrides LLDP_DOOR_PATH (for both lldpd and liblldp) */
 #define	LLDP_DOOR_ENV		"LLDP_DOOR"
 
-#define	LLDP_DOOR_VERSION	4
+#define	LLDP_DOOR_VERSION	5
 
 /*
  * Maximum size of a reply. This is large enough for a record with the
@@ -135,7 +147,11 @@ typedef enum lldp_door_cmd {
 	LLDP_DOOR_CMD_LINK_REMOVE = 5,
 	LLDP_DOOR_CMD_AGENTS = 6,
 	LLDP_DOOR_CMD_SYSTEM = 7,
+	LLDP_DOOR_CMD_WAIT = 8,
 } lldp_door_cmd_t;
+
+/* The most LLDP_DOOR_CMD_WAIT calls (each holds a door thread) at once */
+#define	LLDP_DOOR_WAITERS	32
 
 /*
  * Position within the neighbor list. ldc_link is the agent of the last
@@ -157,6 +173,8 @@ typedef struct lldp_door_req {
 	uint32_t		ldrq_cmd;	/* lldp_door_cmd_t */
 	char			ldrq_link[MAXLINKNAMELEN];
 	uint32_t		ldrq_linkid;	/* LLDP_DOOR_CMD_LINK_* */
+	uint32_t		ldrq_gen;	/* LLDP_DOOR_CMD_WAIT */
+	uint32_t		ldrq_timeout;	/* LLDP_DOOR_CMD_WAIT */
 	uint32_t		ldrq_pad;
 	lldp_door_cursor_t	ldrq_cursor;
 } lldp_door_req_t;
@@ -195,6 +213,12 @@ typedef struct lldp_door_stats {
 
 /* Records are fixed size, so this keeps every one 8-byte aligned */
 CTASSERT(sizeof (lldp_door_stats_t) % 8 == 0);
+
+/* LLDP_DOOR_CMD_WAIT */
+typedef struct lldp_door_gen {
+	uint32_t		ldg_gen;
+	uint32_t		ldg_pad;
+} lldp_door_gen_t;
 
 /* LLDP_DOOR_CMD_AGENTS records are padded to keep them 8-byte aligned */
 #define	LLDP_DOOR_AGENT_RECLEN	P2ROUNDUP(sizeof (lldp_agent_info_t), 8)
