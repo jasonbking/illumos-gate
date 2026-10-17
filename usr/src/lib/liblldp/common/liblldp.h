@@ -259,6 +259,119 @@ int lldp_get_stats(const char *, lldp_stats_t **, uint_t *);
 void lldp_stats_free(lldp_stats_t *, uint_t);
 
 /*
+ * Where an agent's Port ID comes from (lldpd's port_id_type property).
+ */
+typedef enum lldp_port_id_src {
+	LLDP_PORT_ID_SRC_IFNAME =	0,	/* Datalink name */
+	LLDP_PORT_ID_SRC_HWNAME =	1,	/* Hardware name */
+	LLDP_PORT_ID_SRC_MACADDR =	2,	/* Factory MAC address */
+	LLDP_PORT_ID_SRC_LABEL =	3,	/* topo label */
+	LLDP_PORT_ID_SRC_LOCAL =	4,	/* port_id property */
+} lldp_port_id_src_t;
+
+/*
+ * The names of the values of lldpd's SMF agent properties, as set with
+ * svccfg. lldp_prop_val() looks up a name, and lldp_prop_name() a value
+ * ("unknown" if there's no such value). For the TLV properties, each
+ * value is a flag, and lldp_prop_flags_str() lists the names of those set
+ * in flags, separated by commas (or "none").
+ */
+typedef enum lldp_prop {
+	LLDP_PROP_ADMIN_STATUS,		/* admin_status */
+	LLDP_PROP_PORT_ID_TYPE,		/* port_id_type */
+	LLDP_PROP_TX_TLVS,		/* tx_tlvs */
+	LLDP_PROP_TX_8021_TLVS,		/* tx_8021_tlvs */
+	LLDP_PROP_TX_8023_TLVS,		/* tx_8023_tlvs */
+} lldp_prop_t;
+
+bool lldp_prop_val(lldp_prop_t, const char *, uint_t *);
+const char *lldp_prop_name(lldp_prop_t, uint_t);
+size_t lldp_prop_flags_str(lldp_prop_t, uint_t, char *, size_t);
+
+/*
+ * What an agent is doing (as opposed to its admin status, which is what it
+ * has been configured to do). In order of precedence:
+ */
+typedef enum lldp_agent_state {
+	LLDP_AGENT_DISABLED =	1,	/* Admin status is disabled */
+	LLDP_AGENT_OFFLINE =	2,	/* Link offlined (e.g. for DR) */
+	LLDP_AGENT_FAILED =	3,	/* Link couldn't be opened */
+	LLDP_AGENT_DOWN =	4,	/* Link is down */
+	LLDP_AGENT_CHANGING =	5,	/* Port ID is changing */
+	LLDP_AGENT_ACTIVE =	6,	/* Running */
+} lldp_agent_state_t;
+
+/* A short name for the state (e.g. "active"), as for lldp_admin_status_str */
+const char *lldp_agent_state_str(lldp_agent_state_t);
+
+#define	LLDP_MACADDR_MAX	64	/* DLPI_PHYSADDR_MAX */
+
+/*
+ * One of lldpd's agents, as returned by lldp_get_agents(). This only uses
+ * fixed-size types (and no 64-bit ones), as lldpd also uses it in its door
+ * replies.
+ */
+typedef struct lldp_agent_info {
+	char		lai_link[MAXLINKNAMELEN];	/* Agent's hw link */
+	uint32_t	lai_linkid;		/* Its datalink id */
+	uint32_t	lai_status;		/* lldp_admin_status_t */
+	uint32_t	lai_state;		/* lldp_agent_state_t */
+	uint32_t	lai_port_id_src;	/* lldp_port_id_src_t */
+
+	lldp_port_t	lai_port;		/* Port ID sent */
+	lldp_port_t	lai_new_port;		/* Port ID switching to */
+	char		lai_port_desc[LLDP_PORT_DESC_MAX + 1];
+
+	/* The MAC address used for the port id (if it's the factory one) */
+	uint8_t		lai_macaddr[LLDP_MACADDR_MAX];
+	uint8_t		lai_macaddr_len;
+	uint8_t		lai_mac_factory;	/* boolean */
+
+	/* Operational MAU type, and auto-negotiation */
+	uint8_t		lai_autoneg_sup;	/* boolean */
+	uint8_t		lai_autoneg_en;		/* boolean */
+	uint16_t	lai_autoneg_caps;	/* LLDP_AUTONEG_CAP() bits */
+	uint16_t	lai_mau;
+
+	uint16_t	lai_neighbors;		/* Current neighbors */
+	uint16_t	lai_neighbor_max;
+	uint8_t		lai_too_many;		/* Neighbors being dropped */
+	uint8_t		lai_pad;
+
+	/* Transmit parameters and state (seconds or LLDPDUs) */
+	uint16_t	lai_tx_interval;
+	uint16_t	lai_tx_hold;
+	uint16_t	lai_ttl;		/* TTL sent */
+	uint16_t	lai_tx_fast_msg;	/* Interval during fast start */
+	uint16_t	lai_tx_fast_init;	/* LLDPDUs sent in fast start */
+	uint16_t	lai_tx_fast;		/* ... still to be sent */
+	uint16_t	lai_tx_credit;
+	uint16_t	lai_tx_credit_max;
+	uint16_t	lai_reinit_delay;
+	uint16_t	lai_next_tx;		/* Seconds to the next LLDPDU */
+
+	uint32_t	lai_tx_tlvs;		/* lldp_tx_core_tlv_t */
+	uint32_t	lai_tx_8021_tlvs;	/* lldp_tx_8021_tlv_t */
+	uint32_t	lai_tx_8023_tlvs;	/* lldp_tx_8023_tlv_t */
+
+	/* Where the port is (from topo), if known: empty, or UINT32_MAX */
+	char		lai_label[LLDP_PORT_DESC_MAX + 1];
+	char		lai_devname[MAXPATHLEN];
+	uint32_t	lai_portnum;
+	uint32_t	lai_pad2;
+} lldp_agent_info_t;
+
+/*
+ * Retrieve the agent for the given link (by hardware or datalink name, as
+ * with lldp_get_neighbors()), or every agent if link is NULL, ordered by
+ * lai_link. On success, returns 0 and sets *agentsp to an array of *nump
+ * entries, which must be freed with lldp_agents_free(). On failure,
+ * returns an errno value (as for lldp_get_neighbors()).
+ */
+int lldp_get_agents(const char *, lldp_agent_info_t **, uint_t *);
+void lldp_agents_free(lldp_agent_info_t *, uint_t);
+
+/*
  * For the lldp RCM module: tell lldpd that the link with the given datalink
  * id is being offlined (lldpd releases it), that the offline has been
  * undone or the link is back online (lldpd reopens it), or that it has been

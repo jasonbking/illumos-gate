@@ -95,18 +95,143 @@ lldp_text_str(const uint8_t *v, size_t vlen, char *buf, size_t buflen)
 	return (lldp_str_print(&s, buf, buflen, 0));
 }
 
+/*
+ * The names of lldpd's SMF property values (see lldp_prop_val()).
+ */
+typedef struct prop_name {
+	const char	*pn_name;
+	uint_t		pn_val;
+} prop_name_t;
+
+static const prop_name_t admin_status_names[] = {
+	{ "disabled",	LLDP_LINK_DISABLED },
+	{ "tx",		LLDP_LINK_TX },
+	{ "rx",		LLDP_LINK_RX },
+	{ "txrx",	LLDP_LINK_TXRX },
+	{ NULL,		0 }
+};
+
+static const prop_name_t port_id_src_names[] = {
+	{ "ifname",	LLDP_PORT_ID_SRC_IFNAME },
+	{ "hwname",	LLDP_PORT_ID_SRC_HWNAME },
+	{ "macaddr",	LLDP_PORT_ID_SRC_MACADDR },
+	{ "label",	LLDP_PORT_ID_SRC_LABEL },
+	{ "local",	LLDP_PORT_ID_SRC_LOCAL },
+	{ NULL,		0 }
+};
+
+static const prop_name_t tx_tlv_names[] = {
+	{ "port-desc",	LLDP_TX_PORTDESC },
+	{ "sys-name",	LLDP_TX_SYSNAME },
+	{ "sys-desc",	LLDP_TX_SYSDESC },
+	{ "sys-cap",	LLDP_TX_SYSCAP },
+	{ "mgmt-addr",	LLDP_TX_MGMTADDR },
+	{ NULL,		0 }
+};
+
+static const prop_name_t tx_8021_tlv_names[] = {
+	{ "native-vlan",	LLDP_TX_X1_NATIVE_VLAN },
+	{ "vlans",		LLDP_TX_X1_VLANS },
+	{ "vlan-name",		LLDP_TX_X1_VLAN_NAME },
+	{ "mgmt-vlan",		LLDP_TX_X2_MGMT_VLAN },
+	{ NULL,			0 }
+};
+
+static const prop_name_t tx_8023_tlv_names[] = {
+	{ "phy-cfg",	LLDP_TX_X3_PHYCFG },
+	{ "mtu",	LLDP_TX_X3_MTU },
+	{ NULL,		0 }
+};
+
+static const prop_name_t *
+prop_names(lldp_prop_t prop)
+{
+	switch (prop) {
+	case LLDP_PROP_ADMIN_STATUS:
+		return (admin_status_names);
+	case LLDP_PROP_PORT_ID_TYPE:
+		return (port_id_src_names);
+	case LLDP_PROP_TX_TLVS:
+		return (tx_tlv_names);
+	case LLDP_PROP_TX_8021_TLVS:
+		return (tx_8021_tlv_names);
+	case LLDP_PROP_TX_8023_TLVS:
+		return (tx_8023_tlv_names);
+	default:
+		return (NULL);
+	}
+}
+
+bool
+lldp_prop_val(lldp_prop_t prop, const char *name, uint_t *vp)
+{
+	const prop_name_t *pn = prop_names(prop);
+
+	for (; pn != NULL && pn->pn_name != NULL; pn++) {
+		if (strcmp(pn->pn_name, name) == 0) {
+			*vp = pn->pn_val;
+			return (true);
+		}
+	}
+	return (false);
+}
+
+const char *
+lldp_prop_name(lldp_prop_t prop, uint_t val)
+{
+	const prop_name_t *pn = prop_names(prop);
+
+	for (; pn != NULL && pn->pn_name != NULL; pn++) {
+		if (pn->pn_val == val)
+			return (pn->pn_name);
+	}
+	return ("unknown");
+}
+
+size_t
+lldp_prop_flags_str(lldp_prop_t prop, uint_t flags, char *buf, size_t buflen)
+{
+	const prop_name_t	*pn = prop_names(prop);
+	size_t			len = 0;
+
+	if (buflen > 0)
+		buf[0] = '\0';
+
+	for (; pn != NULL && pn->pn_name != NULL; pn++) {
+		if ((flags & pn->pn_val) == 0)
+			continue;
+		if (len > 0)
+			len = strlcat(buf, ",", buflen);
+		len = strlcat(buf, pn->pn_name, buflen);
+	}
+
+	if (len == 0)
+		len = strlcpy(buf, "none", buflen);
+	return (len);
+}
+
 const char *
 lldp_admin_status_str(lldp_admin_status_t s)
 {
+	return (lldp_prop_name(LLDP_PROP_ADMIN_STATUS, s));
+}
+
+const char *
+lldp_agent_state_str(lldp_agent_state_t s)
+{
 	switch (s) {
-	case LLDP_LINK_DISABLED:
+	case LLDP_AGENT_DISABLED:
 		return ("disabled");
-	case LLDP_LINK_TX:
-		return ("tx");
-	case LLDP_LINK_RX:
-		return ("rx");
-	case LLDP_LINK_TXRX:
-		return ("txrx");
+	case LLDP_AGENT_OFFLINE:
+		return ("offline");
+	case LLDP_AGENT_FAILED:
+		return ("failed");
+	case LLDP_AGENT_DOWN:
+		return ("down");
+	case LLDP_AGENT_CHANGING:
+		return ("changing");
+	case LLDP_AGENT_ACTIVE:
+		return ("active");
 	default:
 		return ("unknown");
 	}

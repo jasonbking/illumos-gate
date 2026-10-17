@@ -23,8 +23,10 @@ include		$(SRC)/cmd/Makefile.ctf
 CSTD =		$(CSTD_GNU99)
 LDLIBS +=	-ldladm -llldp -lofmt
 
-OBJS =		lldp.o		\
-		neighbors.o
+OBJS =		agents.o	\
+		lldp.o		\
+		neighbors.o	\
+		output.o
 SRCS =		$(OBJS:%.o=%.c)
 
 # One message catalog for all of the sources

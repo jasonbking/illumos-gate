@@ -379,6 +379,72 @@ lldp_stats_free(lldp_stats_t *stats, uint_t num __unused)
 	free(stats);
 }
 
+typedef struct agents_arg {
+	lldp_agent_info_t	*aa_agents;
+	uint_t			aa_num;
+	uint_t			aa_alloc;
+} agents_arg_t;
+
+static int
+agents_page(const char *data, size_t len, uint32_t count, void *arg)
+{
+	agents_arg_t *aa = arg;
+	int ret;
+
+	if (count > len / LLDP_DOOR_AGENT_RECLEN)
+		return (EPROTO);
+
+	for (uint32_t i = 0; i < count; i++) {
+		lldp_agent_info_t *ai;
+
+		ret = array_grow(&aa->aa_agents, &aa->aa_num, &aa->aa_alloc,
+		    sizeof (lldp_agent_info_t));
+		if (ret != 0)
+			return (ret);
+
+		ai = &aa->aa_agents[aa->aa_num++];
+		(void) memcpy(ai, data + i * LLDP_DOOR_AGENT_RECLEN,
+		    sizeof (*ai));
+
+		/* Don't trust the strings to be terminated */
+		ai->lai_link[sizeof (ai->lai_link) - 1] = '\0';
+		ai->lai_port_desc[sizeof (ai->lai_port_desc) - 1] = '\0';
+		ai->lai_label[sizeof (ai->lai_label) - 1] = '\0';
+		ai->lai_devname[sizeof (ai->lai_devname) - 1] = '\0';
+		if (ai->lai_macaddr_len > sizeof (ai->lai_macaddr))
+			return (EPROTO);
+	}
+
+	return (0);
+}
+
+int
+lldp_get_agents(const char *link, lldp_agent_info_t **agentsp, uint_t *nump)
+{
+	agents_arg_t	aa = { 0 };
+	int		ret;
+
+	if (agentsp == NULL || nump == NULL)
+		return (EINVAL);
+
+	ret = lldp_door_request(LLDP_DOOR_CMD_AGENTS, link, 0, agents_page,
+	    &aa);
+	if (ret != 0) {
+		lldp_agents_free(aa.aa_agents, aa.aa_num);
+		return (ret);
+	}
+
+	*agentsp = aa.aa_agents;
+	*nump = aa.aa_num;
+	return (0);
+}
+
+void
+lldp_agents_free(lldp_agent_info_t *agents, uint_t num __unused)
+{
+	free(agents);
+}
+
 int
 lldp_link_notify(lldp_link_event_t ev, uint32_t linkid)
 {

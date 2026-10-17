@@ -230,16 +230,28 @@ done:
 }
 
 /*
- * LLDP_DOOR_CMD_STATS. Returns the size of the reply.
+ * Fills in an agent's record (of a command with one fixed-size record per
+ * agent) at rec, which is zeroed and 8-byte aligned.
+ */
+typedef void (*door_agent_rec_f)(agent_t *, void *rec);
+
+/*
+ * A command returning one fixed-size record (reclen bytes, a multiple of 8)
+ * per agent: every agent's (or just ldrq_link's), ordered by agent name,
+ * resuming after the agent named by the cursor. Returns the size of the
+ * reply.
  */
 static size_t
-door_stats(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
+door_agent_records(const lldp_door_req_t *req, uint8_t *buf, size_t buflen,
+    size_t reclen, door_agent_rec_f fill)
 {
 	lldp_door_reply_t		*rep = (lldp_door_reply_t *)buf;
 	const lldp_door_cursor_t	*cur = &req->ldrq_cursor;
 	size_t				off = LLDP_DOOR_REC_OFF;
 	agent_t				*a;
 	bool				one;
+
+	VERIFY0(reclen % 8);
 
 	if (strnlen(cur->ldc_link, sizeof (cur->ldc_link)) ==
 	    sizeof (cur->ldc_link) || cur->ldc_chassis_len != 0 ||
@@ -276,21 +288,14 @@ door_stats(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
 	}
 
 	while (a != NULL) {
-		lldp_door_stats_t rec = { 0 };
-
-		if (off + sizeof (rec) > buflen) {
+		if (off + reclen > buflen) {
 			rep->ldrp_flags |= LLDP_DOOR_F_MORE;
 			break;
 		}
 
-		(void) strlcpy(rec.lds_link, a->a_name, sizeof (rec.lds_link));
-		rec.lds_linkid = a->a_linkid;
-		mutex_enter(&a->a_lock);
-		rec.lds_stats = a->a_stats;
-		mutex_exit(&a->a_lock);
-
-		(void) memcpy(buf + off, &rec, sizeof (rec));
-		off += sizeof (rec);
+		(void) memset(buf + off, '\0', reclen);
+		fill(a, buf + off);
+		off += reclen;
 		rep->ldrp_count++;
 
 		(void) memset(&rep->ldrp_next, '\0', sizeof (rep->ldrp_next));
@@ -303,6 +308,26 @@ door_stats(const lldp_door_req_t *req, uint8_t *buf, size_t buflen)
 done:
 	mutex_exit(&agent_list_lock);
 	return (off);
+}
+
+/* LLDP_DOOR_CMD_STATS */
+static void
+door_stats_rec(agent_t *a, void *arg)
+{
+	lldp_door_stats_t *rec = arg;
+
+	(void) strlcpy(rec->lds_link, a->a_name, sizeof (rec->lds_link));
+	rec->lds_linkid = a->a_linkid;
+	mutex_enter(&a->a_lock);
+	rec->lds_stats = a->a_stats;
+	mutex_exit(&a->a_lock);
+}
+
+/* LLDP_DOOR_CMD_AGENTS */
+static void
+door_agents_rec(agent_t *a, void *arg)
+{
+	agent_get_info(a, arg);
 }
 
 /*
@@ -424,7 +449,14 @@ lldp_door_server(void *cookie __unused, char *argp, size_t argsz,
 		len = door_neighbors(&req, door_reply_buf, LLDP_DOOR_REPLY_MAX);
 		break;
 	case LLDP_DOOR_CMD_STATS:
-		len = door_stats(&req, door_reply_buf, LLDP_DOOR_REPLY_MAX);
+		len = door_agent_records(&req, door_reply_buf,
+		    LLDP_DOOR_REPLY_MAX, sizeof (lldp_door_stats_t),
+		    door_stats_rec);
+		break;
+	case LLDP_DOOR_CMD_AGENTS:
+		len = door_agent_records(&req, door_reply_buf,
+		    LLDP_DOOR_REPLY_MAX, LLDP_DOOR_AGENT_RECLEN,
+		    door_agents_rec);
 		break;
 	case LLDP_DOOR_CMD_LINK_OFFLINE:
 	case LLDP_DOOR_CMD_LINK_ONLINE:

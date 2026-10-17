@@ -343,6 +343,7 @@ agent_set_cfg(agent_t *a, agent_cfg_t *cfg)
 	cfg->ac_label = old.ac_label;
 	cfg->ac_devname = old.ac_devname;
 	cfg->ac_portnum = old.ac_portnum;
+	cfg->ac_has_portnum = old.ac_has_portnum;
 	cfg->ac_mtu = old.ac_mtu;
 	old.ac_label = old.ac_devname = NULL;
 
@@ -1255,7 +1256,7 @@ static void
 agent_port_build(agent_t *a, lldp_port_t *port, char **descp)
 {
 	const agent_cfg_t	*cfg = &a->a_cfg;
-	port_id_src_t		src = cfg->ac_port_id_src;
+	lldp_port_id_src_t	src = cfg->ac_port_id_src;
 	const char		*why = NULL;
 	char			desc[LLDP_PORT_DESC_MAX + 1] = "";
 	size_t			len;
@@ -1263,12 +1264,12 @@ agent_port_build(agent_t *a, lldp_port_t *port, char **descp)
 	ASSERT(MUTEX_HELD(&a->a_lock));
 
 	switch (src) {
-	case PORT_ID_IFNAME:
+	case LLDP_PORT_ID_SRC_IFNAME:
 		break;
-	case PORT_ID_HWNAME:
+	case LLDP_PORT_ID_SRC_HWNAME:
 		port_set(port, LLDP_PORT_IFNAME, a->a_name, strlen(a->a_name));
 		break;
-	case PORT_ID_MACADDR:
+	case LLDP_PORT_ID_SRC_MACADDR:
 		if (a->a_macaddrlen == 0) {
 			why = "link has no MAC address";
 			break;
@@ -1276,7 +1277,7 @@ agent_port_build(agent_t *a, lldp_port_t *port, char **descp)
 		port_set(port, LLDP_PORT_MACADDR, a->a_macaddr,
 		    a->a_macaddrlen);
 		break;
-	case PORT_ID_LABEL:
+	case LLDP_PORT_ID_SRC_LABEL:
 		if (cfg->ac_label == NULL || *cfg->ac_label == '\0') {
 			why = "port has no topo label";
 			break;
@@ -1284,7 +1285,7 @@ agent_port_build(agent_t *a, lldp_port_t *port, char **descp)
 		port_set(port, LLDP_PORT_LOCAL, cfg->ac_label,
 		    strlen(cfg->ac_label));
 		break;
-	case PORT_ID_LOCAL:
+	case LLDP_PORT_ID_SRC_LOCAL:
 		if (cfg->ac_port_id == NULL || *cfg->ac_port_id == '\0') {
 			why = "port_id property is not set";
 			break;
@@ -1297,19 +1298,20 @@ agent_port_build(agent_t *a, lldp_port_t *port, char **descp)
 	if (why != NULL) {
 		log_warn(a->a_log, "port id type unavailable; using the "
 		    "datalink name",
-		    LOG_T_STRING, "port_id_type", config_port_id_src_str(src),
+		    LOG_T_STRING, "port_id_type",
+		    lldp_prop_name(LLDP_PROP_PORT_ID_TYPE, src),
 		    LOG_T_STRING, "reason", why,
 		    LOG_T_END);
-		src = PORT_ID_IFNAME;
+		src = LLDP_PORT_ID_SRC_IFNAME;
 	}
 
-	if (src == PORT_ID_IFNAME) {
+	if (src == LLDP_PORT_ID_SRC_IFNAME) {
 		port_set(port, LLDP_PORT_IFNAME, a->a_linkname,
 		    strlen(a->a_linkname));
 	}
 
-	len = (src == PORT_ID_LOCAL) ? strlen(cfg->ac_port_id) :
-	    (src == PORT_ID_LABEL) ? strlen(cfg->ac_label) : 0;
+	len = (src == LLDP_PORT_ID_SRC_LOCAL) ? strlen(cfg->ac_port_id) :
+	    (src == LLDP_PORT_ID_SRC_LABEL) ? strlen(cfg->ac_label) : 0;
 	if (len > LLDP_PORT_MAX) {
 		log_warn(a->a_log, "port id is too long; truncating",
 		    LOG_T_UINT32, "len", (uint32_t)len,
@@ -1321,11 +1323,11 @@ agent_port_build(agent_t *a, lldp_port_t *port, char **descp)
 	 * The datalink name is omitted if the port id is the datalink name,
 	 * or the hardware name of a link that hasn't been renamed.
 	 */
-	if (src != PORT_ID_IFNAME && (src != PORT_ID_HWNAME ||
+	if (src != LLDP_PORT_ID_SRC_IFNAME && (src != LLDP_PORT_ID_SRC_HWNAME ||
 	    strcmp(a->a_name, a->a_linkname) != 0)) {
 		desc_add(desc, sizeof (desc), a->a_linkname);
 	}
-	if (src != PORT_ID_LABEL)
+	if (src != LLDP_PORT_ID_SRC_LABEL)
 		desc_add(desc, sizeof (desc), cfg->ac_label);
 	desc_add(desc, sizeof (desc), cfg->ac_devname);
 
@@ -2215,6 +2217,101 @@ agent_find_linkid(datalink_id_t linkid)
 			return (a);
 	}
 	return (NULL);
+}
+
+/*
+ * What the agent is doing, from its admin status and the state of its link
+ * (see lldp_agent_state_t).
+ */
+static lldp_agent_state_t
+agent_state(const agent_t *a)
+{
+	ASSERT(MUTEX_HELD(&a->a_lock));
+
+	if (a->a_cfg.ac_status == LLDP_LINK_DISABLED)
+		return (LLDP_AGENT_DISABLED);
+	if (a->a_offline)
+		return (LLDP_AGENT_OFFLINE);
+	if (a->a_dlh == NULL)
+		return (LLDP_AGENT_FAILED);
+	if (!a->a_port_enabled)
+		return (LLDP_AGENT_DOWN);
+	if (a->a_port_change)
+		return (LLDP_AGENT_CHANGING);
+	return (LLDP_AGENT_ACTIVE);
+}
+
+/*
+ * A snapshot of the agent's configuration and state, for
+ * LLDP_DOOR_CMD_AGENTS.
+ */
+void
+agent_get_info(agent_t *a, lldp_agent_info_t *ai)
+{
+	const agent_cfg_t	*cfg = &a->a_cfg;
+	const char		*desc;
+
+	(void) memset(ai, '\0', sizeof (*ai));
+
+	mutex_enter(&a->a_lock);
+
+	(void) strlcpy(ai->lai_link, a->a_name, sizeof (ai->lai_link));
+	ai->lai_linkid = a->a_linkid;
+	ai->lai_status = cfg->ac_status;
+	ai->lai_state = agent_state(a);
+	ai->lai_port_id_src = cfg->ac_port_id_src;
+
+	ai->lai_port = a->a_port;
+	if (a->a_port_change)
+		ai->lai_new_port = a->a_new_port;
+
+	/* As write_portdesc() sends it */
+	desc = (cfg->ac_desc != NULL) ? cfg->ac_desc : a->a_port_desc;
+	if (desc != NULL) {
+		(void) strlcpy(ai->lai_port_desc, desc,
+		    sizeof (ai->lai_port_desc));
+	}
+
+	CTASSERT(sizeof (ai->lai_macaddr) >= sizeof (a->a_macaddr));
+	(void) memcpy(ai->lai_macaddr, a->a_macaddr, a->a_macaddrlen);
+	ai->lai_macaddr_len = a->a_macaddrlen;
+	ai->lai_mac_factory = a->a_mac_factory;
+
+	ai->lai_autoneg_sup = a->a_phy.ap_autoneg_sup;
+	ai->lai_autoneg_en = a->a_phy.ap_autoneg_en;
+	ai->lai_autoneg_caps = a->a_phy.ap_adv_caps;
+	ai->lai_mau = a->a_phy.ap_mau;
+
+	ai->lai_neighbors = MIN(uu_list_numnodes(a->a_neighbors), UINT16_MAX);
+	ai->lai_neighbor_max = cfg->ac_neighbor_max;
+	ai->lai_too_many = a->a_rx.rx_too_many_neighbors;
+
+	ai->lai_tx_interval = cfg->ac_tx_interval;
+	ai->lai_tx_hold = cfg->ac_tx_hold;
+	ai->lai_ttl = tx_ttl(a);
+	ai->lai_tx_fast_msg = cfg->ac_tx_fast_msg;
+	ai->lai_tx_fast_init = cfg->ac_tx_fast_init;
+	ai->lai_tx_fast = a->a_ttr.ttr_tx_fast;
+	ai->lai_tx_credit = a->a_ttr.ttr_tx_credit;
+	ai->lai_tx_credit_max = cfg->ac_tx_credit_max;
+	ai->lai_reinit_delay = cfg->ac_reinit_delay;
+	ai->lai_next_tx = lldp_timer_val(&a->a_ttr.ttr_timer);
+
+	ai->lai_tx_tlvs = cfg->ac_tx_tlvs;
+	ai->lai_tx_8021_tlvs = cfg->ac_tx_8021_tlvs;
+	ai->lai_tx_8023_tlvs = cfg->ac_tx_8023_tlvs;
+
+	if (cfg->ac_label != NULL) {
+		(void) strlcpy(ai->lai_label, cfg->ac_label,
+		    sizeof (ai->lai_label));
+	}
+	if (cfg->ac_devname != NULL) {
+		(void) strlcpy(ai->lai_devname, cfg->ac_devname,
+		    sizeof (ai->lai_devname));
+	}
+	ai->lai_portnum = cfg->ac_has_portnum ? cfg->ac_portnum : UINT32_MAX;
+
+	mutex_exit(&a->a_lock);
 }
 
 static int

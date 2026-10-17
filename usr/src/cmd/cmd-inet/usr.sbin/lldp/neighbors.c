@@ -39,9 +39,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/sysmacros.h>
-#include <sys/termios.h>
-#include <libdladm.h>
-#include <libdllink.h>
 #include <liblldp.h>
 
 #include "lldp.h"
@@ -58,38 +55,6 @@ typedef struct nbr {
 
 /* In the default (summary) view, only the host part of the system name */
 static bool short_sysname;
-
-/* For -v: the terminal width to wrap at (0 means don't wrap) */
-static int wrap_width;
-
-/*
- * The datalink name of an agent's link, given its hardware name (which is
- * what lldpd reports). If the link hasn't been renamed, they're the same.
- */
-static void
-nbr_linkname(const char *hwname, char *buf, size_t buflen)
-{
-	static dladm_handle_t	dlh;
-	static bool		tried;
-	datalink_id_t		linkid;
-	char			name[MAXLINKNAMELEN];
-
-	(void) strlcpy(buf, hwname, buflen);
-
-	if (!tried) {
-		tried = true;
-		if (dladm_open(&dlh) != DLADM_STATUS_OK)
-			dlh = NULL;
-	}
-	if (dlh == NULL)
-		return;
-
-	if (dladm_dev2linkid(dlh, hwname, &linkid) == DLADM_STATUS_OK &&
-	    dladm_datalink_id2info(dlh, linkid, NULL, NULL, NULL, name,
-	    sizeof (name)) == DLADM_STATUS_OK) {
-		(void) strlcpy(buf, name, buflen);
-	}
-}
 
 static void
 str_print(const lldp_str_t *s, char *buf, size_t buflen, uint_t flags)
@@ -210,7 +175,7 @@ vlan_list(const lldp_pdu_t *pdu, char *buf, size_t buflen)
  */
 typedef enum nbr_field {
 	NF_LINK,
-	NF_HWLINK,
+	NF_DEVICE,
 	NF_SYSNAME,
 	NF_CHASSIS,
 	NF_CHASSIS_TYPE,
@@ -246,7 +211,7 @@ nbr_ofmt_cb(ofmt_arg_t *arg, char *buf, uint_t buflen)
 	case NF_LINK:
 		(void) strlcpy(buf, n->n_link, buflen);
 		return (B_TRUE);
-	case NF_HWLINK:
+	case NF_DEVICE:
 		(void) strlcpy(buf, n->n_nb->ln_link, buflen);
 		return (B_TRUE);
 	case NF_EXPIRES:
@@ -337,7 +302,7 @@ nbr_ofmt_cb(ofmt_arg_t *arg, char *buf, uint_t buflen)
 
 static const ofmt_field_t nbr_fields[] = {
 	{ "LINK",		10,	NF_LINK,		nbr_ofmt_cb },
-	{ "HWLINK",		10,	NF_HWLINK,		nbr_ofmt_cb },
+	{ "DEVICE",		10,	NF_DEVICE,		nbr_ofmt_cb },
 	{ "SYSNAME",		18,	NF_SYSNAME,		nbr_ofmt_cb },
 	{ "CHASSIS",		19,	NF_CHASSIS,		nbr_ofmt_cb },
 	{ "CHASSIS-TYPE",	13,	NF_CHASSIS_TYPE,	nbr_ofmt_cb },
@@ -357,69 +322,6 @@ static const ofmt_field_t nbr_fields[] = {
 	{ "MAU",		15,	NF_MAU,			nbr_ofmt_cb },
 	{ NULL,			0,	0,			NULL }
 };
-
-/*
- * -v output. Each line is a label and a value, with values aligned at
- * VALUE_COL. Values may span lines (e.g. a multi-line system description),
- * and are wrapped (at spaces, where possible) to the terminal's width.
- */
-#define	VALUE_COL	27
-#define	TOP_INDENT	4
-#define	SUB_INDENT	8
-
-static void
-vline(int indent, const char *label, const char *value)
-{
-	const char	*p = value;
-	int		col;
-
-	if (label != NULL) {
-		col = printf("%*s%s:", indent, "", label);
-	} else {
-		col = 0;
-	}
-
-	do {
-		size_t len = strcspn(p, "\n");
-		size_t avail = (wrap_width > VALUE_COL + 20) ?
-		    (size_t)(wrap_width - VALUE_COL) : SIZE_MAX;
-
-		/*
-		 * Wrap long lines, at a space or after a comma (for lists)
-		 * if there's one.
-		 */
-		while (len > avail) {
-			size_t brk = avail;
-
-			while (brk > avail / 2 && p[brk] != ' ' &&
-			    p[brk - 1] != ',')
-				brk--;
-			if (p[brk] != ' ' && p[brk - 1] != ',')
-				brk = avail;
-
-			(void) printf("%*s%.*s\n", MAX(VALUE_COL - col, 1), "",
-			    (int)brk, p);
-			col = 0;
-			p += brk;
-			len -= brk;
-			while (*p == ' ' && len > 0) {
-				p++;
-				len--;
-			}
-		}
-
-		(void) printf("%*s%.*s\n", MAX(VALUE_COL - col, 1), "",
-		    (int)len, p);
-		col = 0;
-		p += len;
-	} while (*p++ == '\n' && *p != '\0');
-}
-
-static void
-vsection(int indent, const char *label)
-{
-	(void) printf("%*s%s:\n", indent, "", label);
-}
 
 /*
  * Decode a BER encoded OID (as in a management address TLV) into dotted
@@ -921,8 +823,7 @@ do_show_neighbors(int argc, char **argv)
 
 	for (uint_t i = 0; i < n; i++) {
 		ns[i].n_nb = &nbrs[i];
-		nbr_linkname(nbrs[i].ln_link, ns[i].n_link,
-		    sizeof (ns[i].n_link));
+		link_name(nbrs[i].ln_link, ns[i].n_link, sizeof (ns[i].n_link));
 
 		/* The raw view doesn't need it decoded */
 		if (raw)
@@ -937,12 +838,8 @@ do_show_neighbors(int argc, char **argv)
 		/* Otherwise (EBADMSG), the neighbor is shown as malformed */
 	}
 
-	if (verbose && isatty(STDOUT_FILENO)) {
-		struct winsize ws;
-
-		if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0)
-			wrap_width = ws.ws_col;
-	}
+	if (verbose)
+		vline_init();
 
 	for (uint_t i = 0; i < n; i++) {
 		if (verbose) {

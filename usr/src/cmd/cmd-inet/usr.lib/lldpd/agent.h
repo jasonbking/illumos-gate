@@ -143,18 +143,10 @@ typedef struct agent_phy {
  * What the Port ID TLV is built from (the port_id_type SMF property), with
  * the Port ID subtype used for each in parentheses.
  */
-typedef enum port_id_src {
-	PORT_ID_IFNAME,		/* Datalink name (interface name) */
-	PORT_ID_HWNAME,		/* Hardware name (interface name) */
-	PORT_ID_MACADDR,	/* Factory MAC address (MAC address) */
-	PORT_ID_LABEL,		/* topo label (locally assigned) */
-	PORT_ID_LOCAL,		/* port_id property (locally assigned) */
-} port_id_src_t;
-
 typedef struct agent_cfg {
 	lldp_admin_status_t	ac_status;
-	port_id_src_t		ac_port_id_src;
-	char			*ac_port_id;	/* For PORT_ID_LOCAL */
+	lldp_port_id_src_t	ac_port_id_src;
+	char			*ac_port_id;	/* For LLDP_PORT_ID_SRC_LOCAL */
 	lldp_tx_core_tlv_t	ac_tx_tlvs;
 	lldp_tx_8021_tlv_t	ac_tx_8021_tlvs;
 	lldp_tx_8023_tlv_t	ac_tx_8023_tlvs;
@@ -163,6 +155,7 @@ typedef struct agent_cfg {
 	char			*ac_label;
 	char			*ac_devname;
 	uint32_t		ac_portnum;
+	bool			ac_has_portnum;
 
 	uint16_t		ac_mtu;
 
@@ -281,6 +274,7 @@ lldp_admin_status_t	agent_get_status(agent_t *);
 
 void agent_local_change(agent_t *);
 size_t agent_num_neighbors(agent_t *);
+void agent_get_info(agent_t *, lldp_agent_info_t *);
 
 #ifdef __cplusplus
 }

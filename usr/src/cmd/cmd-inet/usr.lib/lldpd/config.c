@@ -144,7 +144,7 @@
 #define	AGENT_TLV_NONE		"none"
 
 #define	DEFAULT_ADMIN_STATUS	LLDP_LINK_TXRX
-#define	DEFAULT_PORT_ID_SRC	PORT_ID_IFNAME
+#define	DEFAULT_PORT_ID_SRC	LLDP_PORT_ID_SRC_IFNAME
 #define	DEFAULT_TX_TLVS		\
 	(LLDP_TX_PORTDESC | LLDP_TX_SYSNAME | LLDP_TX_SYSDESC | LLDP_TX_SYSCAP)
 #define	DEFAULT_TX_8021_TLVS	LLDP_TX_X1_NONE
@@ -181,46 +181,6 @@ static const agent_count_prop_t agent_count_props[] = {
 };
 
 #undef ACP
-
-typedef struct name_val {
-	const char	*nv_name;
-	uint_t		nv_val;
-} name_val_t;
-
-static const name_val_t admin_status_names[] = {
-	{ "disabled",	LLDP_LINK_DISABLED },
-	{ "tx",		LLDP_LINK_TX },
-	{ "rx",		LLDP_LINK_RX },
-	{ "txrx",	LLDP_LINK_TXRX },
-};
-
-static const name_val_t port_id_src_names[] = {
-	{ "ifname",	PORT_ID_IFNAME },
-	{ "hwname",	PORT_ID_HWNAME },
-	{ "macaddr",	PORT_ID_MACADDR },
-	{ "label",	PORT_ID_LABEL },
-	{ "local",	PORT_ID_LOCAL },
-};
-
-static const name_val_t core_tlv_names[] = {
-	{ "port-desc",	LLDP_TX_PORTDESC },
-	{ "sys-name",	LLDP_TX_SYSNAME },
-	{ "sys-desc",	LLDP_TX_SYSDESC },
-	{ "sys-cap",	LLDP_TX_SYSCAP },
-	{ "mgmt-addr",	LLDP_TX_MGMTADDR },
-};
-
-static const name_val_t tlv_8021_names[] = {
-	{ "native-vlan",	LLDP_TX_X1_NATIVE_VLAN },
-	{ "vlans",		LLDP_TX_X1_VLANS },
-	{ "vlan-name",		LLDP_TX_X1_VLAN_NAME },
-	{ "mgmt-vlan",		LLDP_TX_X2_MGMT_VLAN },
-};
-
-static const name_val_t tlv_8023_names[] = {
-	{ "phy-cfg",	LLDP_TX_X3_PHYCFG },
-	{ "mtu",	LLDP_TX_X3_MTU },
-};
 
 /*
  * Per-link information obtained from topo during startup. Agents are
@@ -846,40 +806,16 @@ pg_get_count(log_t *l, const scf_propertygroup_t *pg,
 	return (true);
 }
 
-static bool
-name_lookup(const name_val_t *tbl, size_t n, const char *name, uint_t *vp)
-{
-	for (size_t i = 0; i < n; i++) {
-		if (strcmp(tbl[i].nv_name, name) == 0) {
-			*vp = tbl[i].nv_val;
-			return (true);
-		}
-	}
-	return (false);
-}
-
-/*
- * The name of a port id source, as used for the port_id_type property.
- */
-const char *
-config_port_id_src_str(uint_t src)
-{
-	for (size_t i = 0; i < ARRAY_SIZE(port_id_src_names); i++) {
-		if (port_id_src_names[i].nv_val == src)
-			return (port_id_src_names[i].nv_name);
-	}
-	return ("unknown");
-}
-
 /*
  * Retrieve a multi-valued astring property where each value is the name of
- * a flag in tbl, and OR the corresponding flags together. A property
+ * a flag of prop (see lldp_prop_val()), and OR the corresponding flags
+ * together. A property
  * with no values (or only the value 'none') yields 0. Unknown values are
  * logged and skipped.
  */
 static bool
 pg_get_flags(log_t *l, const scf_propertygroup_t *pg, const char *name,
-    const name_val_t *tbl, size_t n, uint_t *vp)
+    lldp_prop_t prop, uint_t *vp)
 {
 	uint_t	flags = 0;
 	int	ret;
@@ -913,7 +849,7 @@ pg_get_flags(log_t *l, const scf_propertygroup_t *pg, const char *name,
 		if (strcmp(buf, AGENT_TLV_NONE) == 0)
 			continue;
 
-		if (!name_lookup(tbl, n, buf, &v)) {
+		if (!lldp_prop_val(prop, buf, &v)) {
 			prop_warn(l, pg, name,
 			    "unknown SMF property value; ignoring value", buf);
 			continue;
@@ -963,8 +899,7 @@ config_agent_apply_pg(log_t *l, agent_cfg_t *cfg,
 	uint_t	v;
 
 	if (pg_get_string(l, pg, AGENT_PROP_STATUS, &s)) {
-		if (name_lookup(admin_status_names,
-		    ARRAY_SIZE(admin_status_names), s, &v)) {
+		if (lldp_prop_val(LLDP_PROP_ADMIN_STATUS, s, &v)) {
 			cfg->ac_status = (lldp_admin_status_t)v;
 		} else {
 			prop_warn(l, pg, AGENT_PROP_STATUS,
@@ -974,9 +909,8 @@ config_agent_apply_pg(log_t *l, agent_cfg_t *cfg,
 	}
 
 	if (pg_get_string(l, pg, AGENT_PROP_PORTID_TYPE, &s)) {
-		if (name_lookup(port_id_src_names,
-		    ARRAY_SIZE(port_id_src_names), s, &v)) {
-			cfg->ac_port_id_src = (port_id_src_t)v;
+		if (lldp_prop_val(LLDP_PROP_PORT_ID_TYPE, s, &v)) {
+			cfg->ac_port_id_src = (lldp_port_id_src_t)v;
 		} else {
 			prop_warn(l, pg, AGENT_PROP_PORTID_TYPE,
 			    "invalid port id type (must be ifname, hwname, "
@@ -1003,18 +937,17 @@ config_agent_apply_pg(log_t *l, agent_cfg_t *cfg,
 		cfg->ac_desc = s;
 	}
 
-	if (pg_get_flags(l, pg, AGENT_PROP_TX_TLVS, core_tlv_names,
-	    ARRAY_SIZE(core_tlv_names), &v)) {
+	if (pg_get_flags(l, pg, AGENT_PROP_TX_TLVS, LLDP_PROP_TX_TLVS, &v)) {
 		cfg->ac_tx_tlvs = (lldp_tx_core_tlv_t)v;
 	}
 
-	if (pg_get_flags(l, pg, AGENT_PROP_TX_8021_TLVS, tlv_8021_names,
-	    ARRAY_SIZE(tlv_8021_names), &v)) {
+	if (pg_get_flags(l, pg, AGENT_PROP_TX_8021_TLVS,
+	    LLDP_PROP_TX_8021_TLVS, &v)) {
 		cfg->ac_tx_8021_tlvs = (lldp_tx_8021_tlv_t)v;
 	}
 
-	if (pg_get_flags(l, pg, AGENT_PROP_TX_8023_TLVS, tlv_8023_names,
-	    ARRAY_SIZE(tlv_8023_names), &v)) {
+	if (pg_get_flags(l, pg, AGENT_PROP_TX_8023_TLVS,
+	    LLDP_PROP_TX_8023_TLVS, &v)) {
 		cfg->ac_tx_8023_tlvs = (lldp_tx_8023_tlv_t)v;
 	}
 
@@ -1058,7 +991,7 @@ config_agent_log(log_t *l, const char *msg, const agent_cfg_t *cfg)
 	log_debug(l, msg,
 	    LOG_T_STRING, "admin_status", lldp_admin_status_str(cfg->ac_status),
 	    LOG_T_STRING, "port_id_type",
-	    config_port_id_src_str(cfg->ac_port_id_src),
+	    lldp_prop_name(LLDP_PROP_PORT_ID_TYPE, cfg->ac_port_id_src),
 	    LOG_T_STRING, "port_id",
 	    (cfg->ac_port_id != NULL) ? cfg->ac_port_id : "",
 	    LOG_T_STRING, "port_desc",
@@ -1194,8 +1127,10 @@ config_agent_init(agent_t *a)
 	if (tl == NULL)
 		tl = topo_link_find(a->a_name);
 	if (tl != NULL) {
-		if (tl->tl_has_portnum)
+		if (tl->tl_has_portnum) {
 			cfg->ac_portnum = tl->tl_portnum;
+			cfg->ac_has_portnum = true;
+		}
 		if (tl->tl_label != NULL) {
 			free(cfg->ac_label);
 			cfg->ac_label = xstrdup(tl->tl_label);

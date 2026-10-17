@@ -21,6 +21,7 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <ofmt.h>
 #include <sys/ccompile.h>
 
@@ -48,7 +49,24 @@ void lldp_warn(int, const char *, const char *);
 ofmt_handle_t lldp_ofmt_open(const lldp_ofmt_opts_t *, const ofmt_field_t *,
     uint_t);
 
+/*
+ * -v output: "label: value" lines, with the values aligned at VALUE_COL.
+ * Top-level lines are indented by TOP_INDENT, those within a section (see
+ * vsection()) by SUB_INDENT. A NULL label continues the previous line's
+ * value.
+ */
+#define	VALUE_COL	27
+#define	TOP_INDENT	4
+#define	SUB_INDENT	8
+
+void vline_init(void);
+void vline(int, const char *, const char *);
+void vsection(int, const char *);
+
+void link_name(const char *, char *, size_t);
+
 int do_show_neighbors(int, char **);
+int do_show_agent(int, char **);
 
 #ifdef __cplusplus
 }

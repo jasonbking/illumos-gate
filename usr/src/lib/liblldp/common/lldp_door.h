@@ -66,6 +66,16 @@
  *
  *	Errors: ENOENT (no agent for ldrq_link), EINVAL (malformed request).
  *
+ * LLDP_DOOR_CMD_AGENTS
+ *
+ *	Returns the configuration and state of every agent (ldrq_link is
+ *	empty), or of a single agent (named as for LLDP_DOOR_CMD_NEIGHBORS).
+ *	Each record is a lldp_agent_info_t, LLDP_DOOR_AGENT_RECLEN bytes
+ *	apart, ordered by agent name. Pagination works as for
+ *	LLDP_DOOR_CMD_STATS.
+ *
+ *	Errors: ENOENT (no agent for ldrq_link), EINVAL (malformed request).
+ *
  * LLDP_DOOR_CMD_LINK_OFFLINE, LLDP_DOOR_CMD_LINK_ONLINE,
  * LLDP_DOOR_CMD_LINK_REMOVE
  *
@@ -100,7 +110,7 @@ extern "C" {
 /* If set, overrides LLDP_DOOR_PATH (for both lldpd and liblldp) */
 #define	LLDP_DOOR_ENV		"LLDP_DOOR"
 
-#define	LLDP_DOOR_VERSION	2
+#define	LLDP_DOOR_VERSION	3
 
 /*
  * Maximum size of a reply. This is large enough for a record with the
@@ -115,14 +125,15 @@ typedef enum lldp_door_cmd {
 	LLDP_DOOR_CMD_LINK_OFFLINE = 3,
 	LLDP_DOOR_CMD_LINK_ONLINE = 4,
 	LLDP_DOOR_CMD_LINK_REMOVE = 5,
+	LLDP_DOOR_CMD_AGENTS = 6,
 } lldp_door_cmd_t;
 
 /*
  * Position within the neighbor list. ldc_link is the agent of the last
  * neighbor returned, and ldc_chassis / ldc_port are the values (subtype
  * + id) of its Chassis ID and Port ID TLVs. An empty ldc_link means
- * 'start at the beginning'. For LLDP_DOOR_CMD_STATS, only ldc_link is
- * used.
+ * 'start at the beginning'. For LLDP_DOOR_CMD_STATS and
+ * LLDP_DOOR_CMD_AGENTS, only ldc_link is used.
  */
 typedef struct lldp_door_cursor {
 	char		ldc_link[MAXLINKNAMELEN];
@@ -175,6 +186,9 @@ typedef struct lldp_door_stats {
 
 /* Records are fixed size, so this keeps every one 8-byte aligned */
 CTASSERT(sizeof (lldp_door_stats_t) % 8 == 0);
+
+/* LLDP_DOOR_CMD_AGENTS records are padded to keep them 8-byte aligned */
+#define	LLDP_DOOR_AGENT_RECLEN	P2ROUNDUP(sizeof (lldp_agent_info_t), 8)
 
 #ifdef __cplusplus
 }

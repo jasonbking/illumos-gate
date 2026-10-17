@@ -32,6 +32,8 @@ $mapfile_version 2
 SYMBOL_VERSION ILLUMOSprivate {
     global:
 	lldp_admin_status_str;
+	lldp_agent_state_str;
+	lldp_agents_free;
 	lldp_autoneg_caps_str;
 	lldp_cap_str;
 	lldp_caps_str;
@@ -39,6 +41,7 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_chassis_typedesc;
 	lldp_chassis_typestr;
 	lldp_ether_media_to_mau;
+	lldp_get_agents;
 	lldp_get_neighbors;
 	lldp_get_stats;
 	lldp_link_notify;
@@ -55,6 +58,9 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_port_str;
 	lldp_port_typedesc;
 	lldp_port_typestr;
+	lldp_prop_flags_str;
+	lldp_prop_name;
+	lldp_prop_val;
 	lldp_stats_free;
 	lldp_str_print;
 	lldp_tlv_iter_init;

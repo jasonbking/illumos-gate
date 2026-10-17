@@ -45,14 +45,14 @@
 #endif
 
 static int do_help(int, char **);
-static int do_show_agent(int, char **);
 static int do_stats(int, char **);
 
 static const lldp_cmd_t lldp_cmds[] = {
 	{ "help", do_help, "help" },
 	{ "show-neighbors", do_show_neighbors,
 	    "show-neighbors [-v | -x | [-p] -o field[,...]] [link]" },
-	{ "show-agent", do_show_agent, "show-agent [link]" },
+	{ "show-agent", do_show_agent,
+	    "show-agent [-v | [-p] -o field[,...]] [link]" },
 	{ "stats", do_stats, "stats [[-p] -o field[,...]] [link ...]" },
 };
 
@@ -131,22 +131,6 @@ cmd_opts(const lldp_cmd_t *cmd, int argc, char **argv, lldp_ofmt_opts_t *opts)
 }
 
 /*
- * For subcommands that take an optional link name. Returns the link name,
- * or NULL for all links.
- */
-static const char *
-cmd_link_arg(const lldp_cmd_t *cmd, int argc, char **argv,
-    lldp_ofmt_opts_t *opts)
-{
-	int i = cmd_opts(cmd, argc, argv, opts);
-
-	if (argc - i > 1)
-		cmd_usage(cmd);
-
-	return ((argc - i == 1) ? argv[i] : NULL);
-}
-
-/*
  * Report a failure from liblldp. If link is non-NULL, ENOENT means there's
  * no agent for it.
  */
@@ -205,18 +189,6 @@ do_help(int argc __unused, char **argv __unused)
 {
 	usage(stdout);
 	return (EXIT_SUCCESS);
-}
-
-static int
-do_show_agent(int argc, char **argv)
-{
-	const lldp_cmd_t	*cmd = cmd_lookup("show-agent");
-	const char		*link __unused =
-	    cmd_link_arg(cmd, argc, argv, NULL);
-
-	/* TODO: needs an agent query in liblldp/lldpd */
-	warnx(gettext("%s: not yet implemented"), "show-agent");
-	return (EXIT_FAILURE);
 }
 
 /*
