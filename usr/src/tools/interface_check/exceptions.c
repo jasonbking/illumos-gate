@@ -215,7 +215,7 @@ find_exception_file(const char *execdir, const char *name)
 
 	if (ws != NULL) {
 		if (asprintf(&out, "%s/exception_lists/%s", ws, name) < 0)
-			nomem_callback();
+			(void) nomem_callback();
 
 		if (is_file(out))
 			return (out);
@@ -229,7 +229,7 @@ find_exception_file(const char *execdir, const char *name)
 
 	if (asprintf(&out, "%s/../../etc/exception_lists/%s", execdir,
 	    name) < 0) {
-		nomem_callback();
+		(void) nomem_callback();
 	}
 
 	if (is_file(out))
