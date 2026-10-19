@@ -111,15 +111,19 @@ extern "C" {
 #define	ICE_MAX_PKT_DMA_BUFSZ	4096
 
 /*
- * The maximum number of descriptors (including any tx context descriptors)
- * used to transmit a single packet.
+ * The maximum number of data buffers hardware can gather for one packet
+ * transmitted on the wire.
  */
 #define	ICE_TX_MAX_COOKIE	8
 
 /* The smallest supported MSS value when using LSO. */
 #define	ICE_TX_LSO_MIN_MSS	88
 
-#define	ICE_TX_LSO_MAXLEN	(64 * 1024)
+/* The hardware limits a TSO header to 512 bytes. */
+#define	ICE_TX_LSO_MAX_HDRLEN	512
+
+/* mac(9E) and the TX packet state represent lengths in 16 bits. */
+#define	ICE_TX_LSO_MAXLEN	UINT16_MAX
 
 /*
  * Minimum alignment for TX/RX descriptor rings
@@ -246,6 +250,12 @@ typedef enum ice_itr_index {
  * The size of a 'small' packet
  */
 #define	ICE_TX_SMALL_PKT	512
+
+/*
+ * The minimum packet size the transmit DMA engine accepts. Hardware pads
+ * packets to the Ethernet minimum after fetching at least this many bytes.
+ */
+#define	ICE_TX_MIN_PKT_SIZE	17
 
 /* The default minimum size to attempt binding an mblk_t on TX */
 #define	ICE_TX_DMA_THRESH_MIN	0
@@ -477,6 +487,7 @@ typedef struct ice_txq_stat {
 	kstat_named_t		ictxs_drops;
 	kstat_named_t		ictxs_blocked;
 	kstat_named_t		ictxs_badmss;
+	kstat_named_t		ictxs_toosmall;
 	kstat_named_t		ictxs_toobig;
 } ice_txq_stat_t;
 
