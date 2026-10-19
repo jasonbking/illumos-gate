@@ -1954,6 +1954,8 @@ ice_tx_ring_init(ice_t *ice, ice_tx_ring_t *txr, uint_t index)
 	kstat_named_init(&tqs->ictxs_drops, "drops", KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_blocked, "blocked", KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_badmss, "bad_mss", KSTAT_DATA_UINT64);
+	kstat_named_init(&tqs->ictxs_toosmall, "too_small",
+	    KSTAT_DATA_UINT64);
 	kstat_named_init(&tqs->ictxs_toobig, "too_big", KSTAT_DATA_UINT64);
 
 	kstat_install(txr->itxr_kstat);
