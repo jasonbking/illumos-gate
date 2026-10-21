@@ -61,7 +61,11 @@ SYMBOL_VERSION ILLUMOSprivate {
 	lldp_port_typestr;
 	lldp_prop_flags_str;
 	lldp_prop_name;
+	lldp_prop_names_str;
 	lldp_prop_val;
+	lldp_propinfo;
+	lldp_propinfo_default_str;
+	lldp_propinfo_iter;
 	lldp_stats_free;
 	lldp_str_print;
 	lldp_tlv_iter_init;

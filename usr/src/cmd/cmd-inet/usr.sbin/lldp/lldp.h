@@ -65,11 +65,21 @@ void vline(int, const char *, const char *);
 void vsection(int, const char *);
 
 void link_name(const char *, char *, size_t);
+int link_hwname(const char *, char *, size_t);
+void phys_links(char ***, uint_t *);
 void age_str(uint32_t, char *, size_t);
 
 int do_show_neighbors(int, char **);
 int do_show_agent(int, char **);
 int do_show_system(int, char **);
+int do_set_agentprop(int, char **);
+int do_reset_agentprop(int, char **);
+int do_show_agentprop(int, char **);
+int do_enable_agent(int, char **);
+int do_disable_agent(int, char **);
+int do_set_sysprop(int, char **);
+int do_reset_sysprop(int, char **);
+int do_show_sysprop(int, char **);
 
 #ifdef __cplusplus
 }

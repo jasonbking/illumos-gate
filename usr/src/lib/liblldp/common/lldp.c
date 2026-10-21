@@ -103,6 +103,17 @@ typedef struct prop_name {
 	uint_t		pn_val;
 } prop_name_t;
 
+/* As lldpd's log_level_t */
+static const prop_name_t log_level_names[] = {
+	{ "trace",	10 },
+	{ "debug",	20 },
+	{ "info",	30 },
+	{ "warn",	40 },
+	{ "error",	50 },
+	{ "fatal",	60 },
+	{ NULL,		0 }
+};
+
 static const prop_name_t chassis_id_src_names[] = {
 	{ "auto",	LLDP_CHASSIS_ID_SRC_AUTO },
 	{ "topo",	LLDP_CHASSIS_ID_SRC_TOPO },
@@ -158,6 +169,8 @@ static const prop_name_t *
 prop_names(lldp_prop_t prop)
 {
 	switch (prop) {
+	case LLDP_PROP_LOG_LEVEL:
+		return (log_level_names);
 	case LLDP_PROP_CHASSIS_ID_TYPE:
 		return (chassis_id_src_names);
 	case LLDP_PROP_ADMIN_STATUS:
@@ -221,6 +234,125 @@ lldp_prop_flags_str(lldp_prop_t prop, uint_t flags, char *buf, size_t buflen)
 	if (len == 0)
 		len = strlcpy(buf, "none", buflen);
 	return (len);
+}
+
+size_t
+lldp_prop_names_str(lldp_prop_t prop, char *buf, size_t buflen)
+{
+	const prop_name_t	*pn = prop_names(prop);
+	size_t			len = 0;
+
+	if (buflen > 0)
+		buf[0] = '\0';
+
+	for (; pn != NULL && pn->pn_name != NULL; pn++) {
+		if (len > 0)
+			len = strlcat(buf, ",", buflen);
+		len = strlcat(buf, pn->pn_name, buflen);
+	}
+	return (len);
+}
+
+/*
+ * lldpd's SMF properties. The defaults and ranges of the agent properties
+ * are those given in IEEE 802.1AB-2016 (and the LLDP-V2-MIB).
+ */
+#define	PI_SYS(_name, _pg)	\
+	.lpi_name = (_name), .lpi_flags = LLDP_PI_SYSTEM, .lpi_pg = (_pg)
+#define	PI_AGENT(_name)		\
+	.lpi_name = (_name), .lpi_flags = LLDP_PI_AGENT
+#define	PI_COUNT(_def, _min, _max)	\
+	.lpi_type = LLDP_PT_COUNT, .lpi_def = (_def), .lpi_min = (_min), \
+	.lpi_max = (_max)
+#define	PI_ENUM(_names, _def)	\
+	.lpi_type = LLDP_PT_ENUM, .lpi_names = (_names), .lpi_def = (_def)
+#define	PI_FLAGS(_names, _def)	\
+	.lpi_type = LLDP_PT_FLAGS, .lpi_names = (_names), .lpi_def = (_def)
+#define	PI_STRING(_max, _derived)	\
+	.lpi_type = LLDP_PT_STRING, .lpi_max = (_max), .lpi_derived = (_derived)
+
+static const lldp_propinfo_t propinfo[] = {
+	/* System */
+	{ PI_SYS("log_level", LLDP_PG_DAEMON),
+	    PI_ENUM(LLDP_PROP_LOG_LEVEL, 30) },
+	{ PI_SYS("sysname", LLDP_PG_CONFIG),
+	    PI_STRING(LLDP_SYS_NAME_MAX, "the hostname") },
+	{ PI_SYS("sysdesc", LLDP_PG_CONFIG),
+	    PI_STRING(LLDP_SYS_DESC_MAX, "from uname") },
+	{ PI_SYS("chassis_id_type", LLDP_PG_CONFIG),
+	    PI_ENUM(LLDP_PROP_CHASSIS_ID_TYPE, LLDP_CHASSIS_ID_SRC_AUTO) },
+	{ PI_SYS("chassis_id", LLDP_PG_CONFIG),
+	    PI_STRING(LLDP_CHASSIS_MAX, NULL) },
+
+	/* Agents */
+	{ PI_AGENT("admin_status"),
+	    PI_ENUM(LLDP_PROP_ADMIN_STATUS, LLDP_LINK_TXRX) },
+	{ PI_AGENT("port_id_type"),
+	    PI_ENUM(LLDP_PROP_PORT_ID_TYPE, LLDP_PORT_ID_SRC_IFNAME) },
+	{ .lpi_name = "port_id", .lpi_flags = LLDP_PI_AGENT | LLDP_PI_LINK_ONLY,
+	    PI_STRING(LLDP_PORT_MAX, NULL) },
+	{ PI_AGENT("port_desc"),
+	    PI_STRING(LLDP_PORT_DESC_MAX, "derived from the port") },
+	{ PI_AGENT("tx_tlvs"),
+	    PI_FLAGS(LLDP_PROP_TX_TLVS, LLDP_TX_PORTDESC | LLDP_TX_SYSNAME |
+	    LLDP_TX_SYSDESC | LLDP_TX_SYSCAP) },
+	{ PI_AGENT("tx_8021_tlvs"), PI_FLAGS(LLDP_PROP_TX_8021_TLVS, 0) },
+	{ PI_AGENT("tx_8023_tlvs"), PI_FLAGS(LLDP_PROP_TX_8023_TLVS, 0) },
+	{ PI_AGENT("tx_interval"), PI_COUNT(30, 1, 3600) },
+	{ PI_AGENT("tx_hold_multiplier"), PI_COUNT(4, 2, 10) },
+	{ PI_AGENT("reinit_delay"), PI_COUNT(2, 1, 10) },
+	{ PI_AGENT("tx_credit_max"), PI_COUNT(5, 1, 10) },
+	{ PI_AGENT("tx_fast_interval"), PI_COUNT(1, 1, 3600) },
+	{ PI_AGENT("tx_fast_init"), PI_COUNT(4, 1, 8) },
+	{ PI_AGENT("neighbor_max"), PI_COUNT(32, 1, UINT16_MAX) },
+	{ PI_AGENT("notify"), .lpi_type = LLDP_PT_BOOLEAN, .lpi_def = 1 },
+	/* lldpV2NotificationInterval */
+	{ PI_AGENT("notification_interval"), PI_COUNT(30, 1, 3600) },
+};
+
+#undef	PI_SYS
+#undef	PI_AGENT
+#undef	PI_COUNT
+#undef	PI_ENUM
+#undef	PI_FLAGS
+#undef	PI_STRING
+
+const lldp_propinfo_t *
+lldp_propinfo(const char *name)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(propinfo); i++) {
+		if (strcmp(propinfo[i].lpi_name, name) == 0)
+			return (&propinfo[i]);
+	}
+	return (NULL);
+}
+
+const lldp_propinfo_t *
+lldp_propinfo_iter(uint_t i)
+{
+	return ((i < ARRAY_SIZE(propinfo)) ? &propinfo[i] : NULL);
+}
+
+size_t
+lldp_propinfo_default_str(const lldp_propinfo_t *pi, char *buf, size_t buflen)
+{
+	switch (pi->lpi_type) {
+	case LLDP_PT_COUNT:
+		return (snprintf(buf, buflen, "%u", pi->lpi_def));
+	case LLDP_PT_BOOLEAN:
+		return (strlcpy(buf, pi->lpi_def ? "true" : "false", buflen));
+	case LLDP_PT_ENUM:
+		return (strlcpy(buf, lldp_prop_name(pi->lpi_names, pi->lpi_def),
+		    buflen));
+	case LLDP_PT_FLAGS:
+		return (lldp_prop_flags_str(pi->lpi_names, pi->lpi_def, buf,
+		    buflen));
+	case LLDP_PT_STRING:
+	default:
+		if (pi->lpi_derived == NULL)
+			return (strlcpy(buf, "", buflen));
+		return (snprintf(buf, buflen, "(%s)", pi->lpi_derived));
+	}
 }
 
 const char *

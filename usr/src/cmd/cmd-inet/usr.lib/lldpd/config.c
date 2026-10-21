@@ -46,7 +46,7 @@
  *	(default_agent_cfg) is the starting configuration for every agent.
  *
  *   3. When an agent is created (config_agent_init()), it starts with a
- *	copy of default_agent_cfg. If a property group of type 'agent'
+ *	copy of default_agent_cfg. If a property group of type 'application'
  *	whose name matches the hardware name of the agent's link (e.g.
  *	'igb0', even if the datalink has been renamed) exists, any
  *	properties present in that property group replace the corresponding
@@ -62,7 +62,7 @@
  * leaves the existing value in place. For example, with:
  *
  *	default/tx_interval = 60
- *	igb0/tx_hold_multiplier = 2	(igb0 is of type 'agent')
+ *	igb0/tx_hold_multiplier = 2	(igb0 is of type 'application')
  *
  * igb0's agent uses tx_interval=60 and tx_hold_multiplier=2, while every
  * other agent uses tx_interval=60 and the built-in tx_hold_multiplier (4).
@@ -145,7 +145,7 @@
 #define	CONFIG_MGMTIF	"mgmtif"
 
 #define	AGENT_DEFAULT_PG	"default"
-#define	AGENT_PG_TYPE		"agent"
+#define	AGENT_PG_TYPE		SCF_GROUP_APPLICATION
 
 #define	AGENT_PROP_STATUS	"admin_status"
 #define	AGENT_PROP_PORTID_TYPE	"port_id_type"
@@ -159,44 +159,29 @@
 /* Value of a multi-valued TLV property that explicitly selects nothing */
 #define	AGENT_TLV_NONE		"none"
 
-#define	DEFAULT_ADMIN_STATUS	LLDP_LINK_TXRX
-#define	DEFAULT_PORT_ID_SRC	LLDP_PORT_ID_SRC_IFNAME
-#define	DEFAULT_TX_TLVS		\
-	(LLDP_TX_PORTDESC | LLDP_TX_SYSNAME | LLDP_TX_SYSDESC | LLDP_TX_SYSCAP)
-#define	DEFAULT_TX_8021_TLVS	LLDP_TX_X1_NONE
-#define	DEFAULT_TX_8023_TLVS	0
-#define	DEFAULT_NOTIFY		true
-
 /*
- * The numeric (uint16_t) agent properties. The defaults and ranges are
- * those given in IEEE 802.1AB-2016 (and the LLDP-V2-MIB).
+ * The numeric (uint16_t) agent properties. Their defaults and ranges are in
+ * liblldp (lldp_propinfo()), which lldp(8) uses to check values too.
  */
 typedef struct agent_count_prop {
 	const char	*acp_name;
 	size_t		acp_off;
-	uint16_t	acp_def;
-	uint16_t	acp_min;
-	uint16_t	acp_max;
 } agent_count_prop_t;
 
-#define	ACP(_name, _field, _def, _min, _max) {		\
+#define	ACP(_name, _field) {				\
 	.acp_name = (_name),				\
 	.acp_off = offsetof(agent_cfg_t, _field),	\
-	.acp_def = (_def),				\
-	.acp_min = (_min),				\
-	.acp_max = (_max),				\
 }
 
 static const agent_count_prop_t agent_count_props[] = {
-	ACP("tx_interval",	ac_tx_interval,		30, 1, 3600),
-	ACP("tx_hold_multiplier", ac_tx_hold,		4, 2, 10),
-	ACP("reinit_delay",	ac_reinit_delay,	2, 1, 10),
-	ACP("tx_credit_max",	ac_tx_credit_max,	5, 1, 10),
-	ACP("tx_fast_interval",	ac_tx_fast_msg,		1, 1, 3600),
-	ACP("tx_fast_init",	ac_tx_fast_init,	4, 1, 8),
-	ACP("neighbor_max",	ac_neighbor_max,	32, 1, UINT16_MAX),
-	/* lldpV2NotificationInterval */
-	ACP("notification_interval", ac_notify_interval, 30, 1, 3600),
+	ACP("tx_interval",		ac_tx_interval),
+	ACP("tx_hold_multiplier",	ac_tx_hold),
+	ACP("reinit_delay",		ac_reinit_delay),
+	ACP("tx_credit_max",		ac_tx_credit_max),
+	ACP("tx_fast_interval",		ac_tx_fast_msg),
+	ACP("tx_fast_init",		ac_tx_fast_init),
+	ACP("neighbor_max",		ac_neighbor_max),
+	ACP("notification_interval",	ac_notify_interval),
 };
 
 #undef ACP
@@ -831,11 +816,23 @@ pg_get_string(log_t *l, const scf_propertygroup_t *pg, const char *name,
 	return (true);
 }
 
+/* A property's liblldp description (which must exist, and be of type t) */
+static const lldp_propinfo_t *
+propinfo(const char *name, lldp_prop_type_t t)
+{
+	const lldp_propinfo_t *pi = lldp_propinfo(name);
+
+	VERIFY3P(pi, !=, NULL);
+	VERIFY3U(pi->lpi_type, ==, t);
+	return (pi);
+}
+
 static bool
 pg_get_count(log_t *l, const scf_propertygroup_t *pg,
     const agent_count_prop_t *p, uint16_t *vp)
 {
-	uint64_t v;
+	const lldp_propinfo_t	*pi = propinfo(p->acp_name, LLDP_PT_COUNT);
+	uint64_t		v;
 
 	if (!config_get_prop(l, pg, p->acp_name, scf_val))
 		return (false);
@@ -846,11 +843,11 @@ pg_get_count(log_t *l, const scf_propertygroup_t *pg,
 		return (false);
 	}
 
-	if (v < p->acp_min || v > p->acp_max) {
+	if (v < pi->lpi_min || v > pi->lpi_max) {
 		char buf[64];
 
 		(void) snprintf(buf, sizeof (buf), "%" PRIu64
-		    " (valid range %u-%u)", v, p->acp_min, p->acp_max);
+		    " (valid range %u-%u)", v, pi->lpi_min, pi->lpi_max);
 		prop_warn(l, pg, p->acp_name,
 		    "SMF property value out of range; ignoring", buf);
 		return (false);
@@ -945,18 +942,24 @@ config_agent_defaults(agent_cfg_t *cfg)
 {
 	(void) memset(cfg, '\0', sizeof (*cfg));
 
-	cfg->ac_status = DEFAULT_ADMIN_STATUS;
-	cfg->ac_port_id_src = DEFAULT_PORT_ID_SRC;
-	cfg->ac_tx_tlvs = DEFAULT_TX_TLVS;
-	cfg->ac_tx_8021_tlvs = DEFAULT_TX_8021_TLVS;
-	cfg->ac_tx_8023_tlvs = DEFAULT_TX_8023_TLVS;
-	cfg->ac_notify = DEFAULT_NOTIFY;
+	cfg->ac_status = (lldp_admin_status_t)
+	    propinfo(AGENT_PROP_STATUS, LLDP_PT_ENUM)->lpi_def;
+	cfg->ac_port_id_src = (lldp_port_id_src_t)
+	    propinfo(AGENT_PROP_PORTID_TYPE, LLDP_PT_ENUM)->lpi_def;
+	cfg->ac_tx_tlvs = (lldp_tx_core_tlv_t)
+	    propinfo(AGENT_PROP_TX_TLVS, LLDP_PT_FLAGS)->lpi_def;
+	cfg->ac_tx_8021_tlvs = (lldp_tx_8021_tlv_t)
+	    propinfo(AGENT_PROP_TX_8021_TLVS, LLDP_PT_FLAGS)->lpi_def;
+	cfg->ac_tx_8023_tlvs = (lldp_tx_8023_tlv_t)
+	    propinfo(AGENT_PROP_TX_8023_TLVS, LLDP_PT_FLAGS)->lpi_def;
+	cfg->ac_notify =
+	    propinfo(AGENT_PROP_NOTIFY, LLDP_PT_BOOLEAN)->lpi_def != 0;
 
 	for (size_t i = 0; i < ARRAY_SIZE(agent_count_props); i++) {
 		const agent_count_prop_t *p = &agent_count_props[i];
 		uint16_t *fp = (uint16_t *)((char *)cfg + p->acp_off);
 
-		*fp = p->acp_def;
+		*fp = (uint16_t)propinfo(p->acp_name, LLDP_PT_COUNT)->lpi_def;
 	}
 }
 
@@ -1139,7 +1142,8 @@ config_agent_default_read(void)
 /*
  * Build the SMF-derived configuration for an agent: a copy of the default
  * agent configuration, overridden by the contents of a property group of
- * type 'agent' named after the agent's hardware link name (if one exists).
+ * type 'application' named after the agent's hardware link name (if one
+ * exists).
  * Only the SMF-configurable fields of cfg are meaningful; the caller is
  * responsible for any system-derived fields (topo info, etc).
  */

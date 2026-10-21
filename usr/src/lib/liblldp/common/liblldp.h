@@ -298,6 +298,7 @@ typedef enum lldp_chassis_id_src {
  * in flags, separated by commas (or "none").
  */
 typedef enum lldp_prop {
+	LLDP_PROP_LOG_LEVEL,		/* log_level (daemon) */
 	LLDP_PROP_CHASSIS_ID_TYPE,	/* chassis_id_type (config) */
 	LLDP_PROP_ADMIN_STATUS,		/* admin_status */
 	LLDP_PROP_PORT_ID_TYPE,		/* port_id_type */
@@ -309,6 +310,61 @@ typedef enum lldp_prop {
 bool lldp_prop_val(lldp_prop_t, const char *, uint_t *);
 const char *lldp_prop_name(lldp_prop_t, uint_t);
 size_t lldp_prop_flags_str(lldp_prop_t, uint_t, char *, size_t);
+/* The names of a property's values (or flags), comma separated */
+size_t lldp_prop_names_str(lldp_prop_t, char *, size_t);
+
+/*
+ * lldpd's SMF properties (see lldpd.xml): what's valid, and the defaults
+ * lldpd uses for those that aren't set. lldp_propinfo() finds a property by
+ * name; lldp_propinfo_iter() returns each in turn (NULL after the last).
+ *
+ * System properties (LLDP_PI_SYSTEM) are in the property group lpi_pg.
+ * Agent properties (LLDP_PI_AGENT) are in the 'default' property group (for
+ * every agent) or in an agent's own property group (named after its link's
+ * hardware name), except for LLDP_PI_LINK_ONLY ones, which only make sense
+ * for a single agent.
+ */
+/* lldpd's service, and its (only) instance */
+#define	LLDP_SVC		"svc:/network/lldpd"
+#define	LLDP_SVC_FMRI		LLDP_SVC ":default"
+
+typedef enum lldp_prop_type {
+	LLDP_PT_STRING,		/* astring, at most lpi_max bytes */
+	LLDP_PT_COUNT,		/* count, lpi_min to lpi_max */
+	LLDP_PT_BOOLEAN,	/* boolean */
+	LLDP_PT_ENUM,		/* astring: one of the names of lpi_names */
+	LLDP_PT_FLAGS,		/* astring, multi-valued: flags of lpi_names */
+} lldp_prop_type_t;
+
+#define	LLDP_PI_SYSTEM		0x1
+#define	LLDP_PI_AGENT		0x2
+#define	LLDP_PI_LINK_ONLY	0x4
+
+#define	LLDP_PG_DAEMON		"daemon"
+#define	LLDP_PG_CONFIG		"config"
+#define	LLDP_PG_DEFAULT		"default"
+
+typedef struct lldp_propinfo {
+	const char		*lpi_name;
+	lldp_prop_type_t	lpi_type;
+	uint_t			lpi_flags;	/* LLDP_PI_* */
+	const char		*lpi_pg;	/* System properties */
+	lldp_prop_t		lpi_names;	/* ENUM, FLAGS */
+	uint32_t		lpi_min;	/* COUNT */
+	uint32_t		lpi_max;	/* COUNT; STRING: length */
+	uint32_t		lpi_def;	/* Default (not for STRING) */
+	const char		*lpi_derived;	/* STRING: used if unset */
+} lldp_propinfo_t;
+
+const lldp_propinfo_t *lldp_propinfo(const char *);
+const lldp_propinfo_t *lldp_propinfo_iter(uint_t);
+
+/*
+ * The default of a property, as it would be set ("30", "txrx",
+ * "port-desc,sys-name", "true"), or for a string, a description of what's
+ * used instead (e.g. "(the hostname)").
+ */
+size_t lldp_propinfo_default_str(const lldp_propinfo_t *, char *, size_t);
 
 /*
  * What an agent is doing (as opposed to its admin status, which is what it

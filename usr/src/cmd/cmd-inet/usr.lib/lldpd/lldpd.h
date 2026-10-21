@@ -29,15 +29,12 @@
 extern "C" {
 #endif
 
-#define	LLDP_FMRI	"svc:/network/lldpd"
-
 /*
  * Once initialized, lldpd runs as netadm (see lldp_drop_privs()), like other
  * network management daemons.
  */
 #define	LLDPD_UID	UID_NETADM
 #define	LLDPD_GID	GID_NETADM
-#define	LLDP_SVC_FMRI	LLDP_FMRI ":default"
 
 typedef struct fd_cb {
 	void	(*fc_fn)(int, void *);

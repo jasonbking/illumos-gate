@@ -96,11 +96,15 @@
 	<property_group name='daemon' type='application'>
 		<propval name='log_level' type='astring' value='info'
 		  override='true'/>
+		<propval name='modify_authorization' type='astring'
+		  value='solaris.smf.manage.lldp' />
 		<propval name='value_authorization' type='astring'
 		  value='solaris.smf.manage.lldp' />
 	</property_group>
 
 	<property_group name='config' type='application'>
+		<propval name='modify_authorization' type='astring'
+		  value='solaris.smf.manage.lldp' />
 		<propval name='value_authorization' type='astring'
 		  value='solaris.smf.manage.lldp' />
 	</property_group>
@@ -113,11 +117,21 @@
 	    and the result is the configuration used by every agent.
 
 	    To override values for a single link, create a property group of
-	    type 'agent' named after the link, e.g.:
+	    type 'application' named after the link's hardware name, e.g.:
 
-		svccfg -s network/lldpd addpg igb0 agent
+		svccfg -s network/lldpd addpg igb0 application
 		svccfg -s network/lldpd setprop igb0/admin_status = rx
 		svcadm refresh network/lldpd
+
+	    or, equivalently (lldp(8) also maps a datalink name to the
+	    hardware name, and validates the values):
+
+		lldp set-agentprop -p admin_status=rx net0
+
+	    Creating the property group requires the
+	    solaris.smf.modify.application authorization; lldp(8) adds
+	    modify_authorization and value_authorization properties to it,
+	    so after that, solaris.smf.manage.lldp is enough to change it.
 
 	    Any property not set in a link's property group retains its
 	    default value (from this property group, or built-in).
@@ -126,6 +140,8 @@
 	    templates below; see 'svccfg -s network/lldpd describe -v'.
 	-->
 	<property_group name='default' type='application'>
+		<propval name='modify_authorization' type='astring'
+		  value='solaris.smf.manage.lldp' />
 		<propval name='value_authorization' type='astring'
 		  value='solaris.smf.manage.lldp' />
 	</property_group>
@@ -143,7 +159,7 @@
 			<manpage title='lldpd' section='8'
 			    manpath='/usr/share/man' />
 		</documentation>
-		<pg_pattern name='daemon' type='application' target='all'
+		<pg_pattern name='daemon' type='application' target='this'
 		    required='false'>
 			<common_name>
 				<loctext xml:lang='C'>
@@ -226,7 +242,7 @@
 				</choices>
 			</prop_pattern>
 		</pg_pattern>
-		<pg_pattern name='config' type='application' target='all'
+		<pg_pattern name='config' type='application' target='this'
 		    required='false'>
 			<common_name>
 				<loctext xml:lang='C'>
@@ -375,7 +391,7 @@
 				<cardinality min='1' max='1' />
 			</prop_pattern>
 		</pg_pattern>
-		<pg_pattern name='default' type='application' target='all'
+		<pg_pattern name='default' type='application' target='this'
 		    required='false'>
 			<common_name>
 				<loctext xml:lang='C'>
@@ -891,7 +907,7 @@
 				</constraints>
 			</prop_pattern>
 		</pg_pattern>
-		<pg_pattern type='agent' target='all'
+		<pg_pattern type='application' target='this'
 		    required='false'>
 			<common_name>
 				<loctext xml:lang='C'>

@@ -56,6 +56,21 @@ static const lldp_cmd_t lldp_cmds[] = {
 	{ "show-system", do_show_system,
 	    "show-system [-v | [-p] -o field[,...]]" },
 	{ "stats", do_stats, "stats [[-p] -o field[,...]] [link ...]" },
+	{ "set-agentprop", do_set_agentprop,
+	    "set-agentprop -p prop=value[,...] [-p ...] link|default" },
+	{ "reset-agentprop", do_reset_agentprop,
+	    "reset-agentprop -p prop[,...] link|default" },
+	{ "show-agentprop", do_show_agentprop,
+	    "show-agentprop [-c] [-o field[,...]] [-p prop[,...]] "
+	    "[link|default ...]" },
+	{ "enable-agent", do_enable_agent,
+	    "enable-agent [-m tx|rx|txrx] link|default ..." },
+	{ "disable-agent", do_disable_agent, "disable-agent link|default ..." },
+	{ "set-sysprop", do_set_sysprop,
+	    "set-sysprop -p prop=value[,...] [-p ...]" },
+	{ "reset-sysprop", do_reset_sysprop, "reset-sysprop -p prop[,...]" },
+	{ "show-sysprop", do_show_sysprop,
+	    "show-sysprop [-c] [-o field[,...]] [-p prop[,...]]" },
 };
 
 #define	NCMDS	(sizeof (lldp_cmds) / sizeof (lldp_cmds[0]))

@@ -21,12 +21,14 @@ include		$(SRC)/cmd/Makefile.cmd.64
 include		$(SRC)/cmd/Makefile.ctf
 
 CSTD =		$(CSTD_GNU99)
-LDLIBS +=	-ldladm -llldp -lofmt
+LDLIBS +=	-ldladm -llldp -lofmt -lscf
 
 OBJS =		agents.o	\
 		lldp.o		\
 		neighbors.o	\
 		output.o	\
+		props.o		\
+		smf.o		\
 		system.o
 SRCS =		$(OBJS:%.o=%.c)
 
