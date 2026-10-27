@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2024 Racktop Systems, Inc.
+ * Copyright 2024-2026 RackTop Systems Inc.
  */
 
 #ifndef	_MFI_H
@@ -295,7 +295,9 @@ union mfi_cap {
 		uint32_t mc_support_security_protocol_cmds_fw:1;
 		uint32_t mc_support_ext_queue_depth:1;
 		uint32_t mc_support_ext_io_size:1;
-		uint32_t mc_reserved:23;
+		uint32_t mc_reserved1:4;
+		uint32_t mc_support_64bit_mode:1;
+		uint32_t mc_reserved2:18;
 	};
 	uint32_t	mc_reg;
 };

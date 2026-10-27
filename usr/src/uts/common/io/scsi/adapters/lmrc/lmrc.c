@@ -1529,8 +1529,8 @@ lmrc_adapter_init(lmrc_t *lmrc)
 	    (LMRC_EXT_CHAIN_SIZE_SUPPORT(reg) ? LMRC_1MB_IO : LMRC_256K_IO);
 
 	/*
-	 * Check whether the controller supports DMA to the full 64bit address
-	 * space.
+	 * Check whether firmware supports internal DMA buffers above 4GB.
+	 * Data buffers use wide IEEE SGEs independently of this capability.
 	 */
 	lmrc->l_64bit_dma_support = LMRC_64BIT_DMA_SUPPORT(reg);
 
@@ -1653,6 +1653,7 @@ lmrc_ioc_init(lmrc_t *lmrc)
 	hdr->mh_drv_opts.mc_support_ndrive_r1_lb = 1;
 	hdr->mh_drv_opts.mc_support_security_protocol_cmds_fw = 1;
 	hdr->mh_drv_opts.mc_support_ext_io_size = 1;
+	hdr->mh_drv_opts.mc_support_64bit_mode = lmrc->l_64bit_dma_support;
 
 	hdr->mh_data_xfer_len = lmrc_dma_get_size(&dma);
 

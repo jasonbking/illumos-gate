@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2024 Racktop Systems, Inc.
+ * Copyright 2024-2026 RackTop Systems Inc.
  */
 
 /*
@@ -259,7 +259,8 @@ lmrc_mfi_ioctl(lmrc_t *lmrc, mfi_ioctl_t *ioc, int mode)
 	mfi_hdr->mh_cmd = ioc_hdr->mh_cmd;
 	mfi_hdr->mh_sense_len = ioc_hdr->mh_sense_len;
 	mfi_hdr->mh_drv_opts = ioc_hdr->mh_drv_opts;
-	mfi_hdr->mh_flags = ioc_hdr->mh_flags & ~MFI_FRAME_SGL64;
+	mfi_hdr->mh_flags = ioc_hdr->mh_flags &
+	    ~(MFI_FRAME_SGL64 | MFI_FRAME_SENSE64);
 	mfi_hdr->mh_timeout = ioc_hdr->mh_timeout;
 	mfi_hdr->mh_data_xfer_len = ioc_hdr->mh_data_xfer_len;
 
@@ -355,6 +356,9 @@ lmrc_mfi_ioctl(lmrc_t *lmrc, mfi_ioctl_t *ioc, int mode)
 		}
 
 		lmrc_dma_set_addr64(&sense, mfi_senseaddr);
+		/* Use the kernel's DMA policy, not the userspace sense flag. */
+		if (lmrc->l_64bit_dma_support)
+			mfi_hdr->mh_flags |= MFI_FRAME_SENSE64;
 	}
 
 	mutex_enter(&mfi->mfi_lock);

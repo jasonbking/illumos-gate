@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2024 Racktop Systems, Inc.
+ * Copyright 2024-2026 RackTop Systems Inc.
  */
 #ifndef _LMRC_H
 #define	_LMRC_H
@@ -252,6 +252,7 @@ struct lmrc {
 	taskq_t			*l_taskq;
 
 	ddi_dma_attr_t		l_dma_attr;
+	ddi_dma_attr_t		l_data_dma_attr;
 	ddi_dma_attr_t		l_dma_attr_32;
 	ddi_device_acc_attr_t	l_acc_attr;
 	caddr_t			l_regmap;

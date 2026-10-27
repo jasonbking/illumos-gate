@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2024 Racktop Systems, Inc.
+ * Copyright 2024-2026 RackTop Systems Inc.
  */
 
 /*
@@ -90,14 +90,14 @@ lmrc_getcap(struct scsi_address *sa, char *cap, int whom)
 		return (sizeof (((Mpi25SCSIIORequest_t *)NULL)->CDB.CDB32));
 
 	case SCSI_CAP_DMA_MAX:
-		if (lmrc->l_dma_attr.dma_attr_maxxfer > INT_MAX)
+		if (lmrc->l_data_dma_attr.dma_attr_maxxfer > INT_MAX)
 			return (INT_MAX);
-		return (lmrc->l_dma_attr.dma_attr_maxxfer);
+		return (lmrc->l_data_dma_attr.dma_attr_maxxfer);
 
 	case SCSI_CAP_SECTOR_SIZE:
-		if (lmrc->l_dma_attr.dma_attr_granular > INT_MAX)
+		if (lmrc->l_data_dma_attr.dma_attr_granular > INT_MAX)
 			return (INT_MAX);
-		return (lmrc->l_dma_attr.dma_attr_granular);
+		return (lmrc->l_data_dma_attr.dma_attr_granular);
 
 	case SCSI_CAP_INTERCONNECT_TYPE: {
 		uint8_t interconnect_type;
@@ -145,7 +145,7 @@ lmrc_setcap(struct scsi_address *sa, char *cap, int value, int whom)
 
 	switch (index) {
 	case SCSI_CAP_DMA_MAX:
-		if (value <= lmrc->l_dma_attr.dma_attr_maxxfer)
+		if (value <= lmrc->l_data_dma_attr.dma_attr_maxxfer)
 			return (1);
 		else
 			return (0);
@@ -727,7 +727,7 @@ int
 lmrc_hba_attach(lmrc_t *lmrc)
 {
 	scsi_hba_tran_t	*tran;
-	ddi_dma_attr_t tran_attr = lmrc->l_dma_attr_32;
+	ddi_dma_attr_t tran_attr = lmrc->l_data_dma_attr;
 
 	tran = scsi_hba_tran_alloc(lmrc->l_dip, SCSI_HBA_CANSLEEP);
 	if (tran == NULL) {

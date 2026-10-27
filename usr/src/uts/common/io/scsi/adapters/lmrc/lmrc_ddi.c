@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2024-2026 Racktop Systems, Inc.
+ * Copyright 2024-2026 RackTop Systems Inc.
  */
 
 /*
@@ -151,14 +151,16 @@
  * DMA considerations:
  * -------------------
  *
- * Most of the MPT structures can hold a 64bit physical address for DMA, but
- * some don't. Additionally, the hardware may indicate that it doesn't handle
- * 64bit DMA, even though the structures could hold an address this wide.
+ * Data buffers use 64bit IEEE SGEs with DMA addresses limited to 63 bits,
+ * independently of the firmware's support for wide internal DMA addresses.
+ * Internal buffers use the same limit only when scratchpad 1 advertises that
+ * support; otherwise they must remain below 4GB. Normal SCSI sense buffers
+ * always remain below 4GB because IOC init leaves SenseBufferAddressHigh zero.
  *
- * Consequently, the driver keeps two sets of DMA attributes in its soft state,
- * one decidedly for 32bit DMA and another one for all other uses which could
- * potentially support 64bit DMA. The latter will be modified to fit what the
- * hardware actually supports.
+ * The driver keeps separate DMA attributes for data buffers, internal buffers,
+ * and buffers that always require 32bit addresses. Internal allocations use a
+ * single cookie and a 4GB segment boundary so their upper 32 bits cannot change
+ * within an allocation.
  *
  *
  * Interrupt considerations:
@@ -260,7 +262,7 @@ void *lmrc_state;
 static const ddi_dma_attr_t lmrc_dma_attr = {
 	.dma_attr_version =		DMA_ATTR_V0,
 	.dma_attr_addr_lo =		0x00000000,
-	.dma_attr_addr_hi =		0xFFFFFFFFFFFFFFFF,
+	.dma_attr_addr_hi =		0x7FFFFFFFFFFFFFFF,
 	.dma_attr_count_max =		0xFFFFFFFF,
 	.dma_attr_align =		8,
 	.dma_attr_burstsizes =		0x7,
@@ -328,6 +330,7 @@ lmrc_ctrl_attach(dev_info_t *dip)
 
 	lmrc->l_acc_attr = lmrc_acc_attr;
 	lmrc->l_dma_attr = lmrc_dma_attr;
+	lmrc->l_data_dma_attr = lmrc_dma_attr;
 	lmrc->l_dma_attr_32 = lmrc_dma_attr;
 
 	lmrc_fm_init(lmrc);
@@ -342,7 +345,7 @@ lmrc_ctrl_attach(dev_info_t *dip)
 
 	lmrc->l_dma_attr_32.dma_attr_addr_hi = 0xFFFFFFFF;
 
-	/* Restrict all DMA to the lower 32bit address space if necessary. */
+	/* Restrict internal DMA to 32bit addresses if firmware requires it. */
 	if (!lmrc->l_64bit_dma_support)
 		lmrc->l_dma_attr.dma_attr_addr_hi = 0xFFFFFFFF;
 
@@ -860,6 +863,7 @@ lmrc_fm_init(lmrc_t *lmrc)
 		return;
 
 	lmrc->l_dma_attr.dma_attr_flags = DDI_DMA_FLAGERR;
+	lmrc->l_data_dma_attr.dma_attr_flags = DDI_DMA_FLAGERR;
 	lmrc->l_dma_attr_32.dma_attr_flags = DDI_DMA_FLAGERR;
 	lmrc->l_acc_attr.devacc_attr_access = DDI_FLAGERR_ACC;
 
