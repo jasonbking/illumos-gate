@@ -351,6 +351,7 @@ ice_tcb_free(ice_tx_ctrl_block_t *tcb)
 
 	tcb->itcb_type = ITCB_NOT_USED;
 	tcb->itcb_len = 0;
+	tcb->itcb_source = NULL;
 	if (tcb->itcb_mp != NULL) {
 		freemsg(tcb->itcb_mp);
 		tcb->itcb_mp = NULL;
@@ -976,6 +977,7 @@ ice_tx_bind_fragment(ice_tx_pkt_t *pkt, ice_tx_ctrl_block_t *tcb, mblk_t **mpp,
 	}
 
 	tcb->itcb_len = amt;
+	tcb->itcb_source = src;
 
 	/*
 	 * We always bind the remainder of this segment, so we always
@@ -1898,6 +1900,7 @@ ice_ring_tx(void *arg, mblk_t *mp)
 	if (posted) {
 		mutex_enter(&txr->itxr_lock);
 		ice_reg_write(ice, ice_qtx_tail(txr), txr->itxr_tail);
+		txr->itxr_doorbell = txr->itxr_tail;
 		mutex_exit(&txr->itxr_lock);
 	}
 
@@ -2173,6 +2176,7 @@ ice_ring_tx_start(mac_ring_driver_t mri, uint64_t gen)
 	// TODO anything else?
 
 	txr->itxr_head = txr->itxr_tail = 0;
+	txr->itxr_doorbell = 0;
 	txr->itxr_avail = txr->itxr_size;
 	txr->itxr_quiesce = false;
 
@@ -2310,4 +2314,99 @@ ice_tx_fini(void)
 	kmem_cache_destroy(ice_tx_pkt_cache);
 
 	ice_tx_pkt_cache = NULL;
+}
+
+static void
+ice_tx_mal_packet(ice_tx_ring_t *txr, ice_mal_packet_t *p,
+    ice_tx_ctrl_block_t *tcb)
+{
+	for (uint_t ntcb = 0; tcb != NULL &&
+	    ntcb < txr->itxr_size;
+	    ntcb++, tcb = tcb->itcb_next) {
+		const void *src = ice_tcb_is_copy(tcb) ?
+		    tcb->itcb_buf->idb_va : tcb->itcb_source;
+		uint_t len = MIN(tcb->itcb_len,
+		    ICE_MAL_NBYTE - p->imp_nbyte);
+		p->imp_len += tcb->itcb_len;
+		if (tcb->itcb_mp != NULL)
+			p->imp_mp = (uintptr_t)tcb->itcb_mp;
+		if (src != NULL && len != 0) {
+			bcopy(src, p->imp_bytes + p->imp_nbyte, len);
+			p->imp_nbyte += len;
+		}
+	}
+}
+
+/*
+ * Global MDET queues are absolute; BAR queue registers are PF-relative.
+ * Snapshot candidates before acknowledgement, without retaining buffers.
+ * The software head is a reclaim cursor, not a hardware fault descriptor.
+ */
+void
+ice_tx_mal(ice_t *ice, uint32_t raw, uint32_t pfraw, uint32_t source)
+{
+	uint32_t q = source ? ICE_GL_MDET_TX_PQM_QNUM(raw) :
+	    ICE_GL_MDET_QNUM(raw);
+	uint32_t pf = source ? ICE_GL_MDET_TX_PQM_PF_NUM(raw) :
+	    ICE_GL_MDET_PF_NUM(raw);
+	ice_tx_ring_t *txr;
+	ice_mal_snapshot_t *s;
+	uint_t n, i;
+
+	if (pf != ice->ice_pci_func || q < ice->ice_first_txq ||
+	    q - ice->ice_first_txq >= ice->ice_num_txq ||
+	    ice->ice_txr == NULL) {
+		ice_error(ice, "MDET raw=0x%x PFraw=0x%x: queue %u "
+		    "not mapped (PF=%u base=%u count=%u)", raw, pfraw, q,
+		    ice->ice_pci_func, ice->ice_first_txq, ice->ice_num_txq);
+		return;
+	}
+	txr = &ice->ice_txr[q - ice->ice_first_txq];
+	mutex_enter(&txr->itxr_lock);
+	s = &txr->itxr_mal;
+	if (s->ims_count == 0) {
+		s->ims_raw = raw;
+		s->ims_pfraw = pfraw;
+		s->ims_source = source;
+		s->ims_time = gethrtime();
+		s->ims_head = txr->itxr_head;
+		s->ims_tail = txr->itxr_tail;
+		s->ims_size = txr->itxr_size;
+		s->ims_avail = txr->itxr_avail;
+		s->ims_doorbell = txr->itxr_doorbell;
+		n = txr->itxr_size - txr->itxr_avail;
+		if (n != 0 && txr->itxr_descs != NULL &&
+		    txr->itxr_tcbs != NULL) {
+			s->ims_sync_failed = !ice_dma_sync_ring(ice,
+			    &txr->itxr_dma, txr->itxr_head, n,
+			    sizeof (ice_tx_desc_t), txr->itxr_size,
+			    DDI_DMA_SYNC_FORKERNEL);
+			for (i = 0; i < MIN(n, ICE_MAL_NDESC); i++) {
+				uint_t idx =
+				    (txr->itxr_head + i) % txr->itxr_size;
+				ice_tx_ctrl_block_t *tcb = txr->itxr_tcbs[idx];
+				ice_mal_packet_t *p;
+				s->ims_desc[s->ims_ndesc++] =
+				    txr->itxr_descs[idx];
+				if (tcb == NULL || s->ims_npkt == ICE_MAL_NPKT)
+					continue;
+				p = &s->ims_pkt[s->ims_npkt++];
+				p->imp_end = idx;
+				p->imp_tcb = (uintptr_t)tcb;
+				ice_tx_mal_packet(txr, p, tcb);
+			}
+		}
+		/* Publish only after all first-event evidence is copied. */
+		membar_producer();
+		s->ims_count = 1;
+	} else if (s->ims_count != UINT32_MAX) {
+		s->ims_count++;
+	}
+	ice_error(ice, "MDET raw=0x%x PFraw=0x%x base=%u ring=%u "
+	    "txr=%p head=%u tail=%u posted=%u outstanding=%u; "
+	    "saved candidates: %p::ice_mal (events=%u)", raw, pfraw,
+	    ice->ice_first_txq, txr->itxr_index, (void *)txr,
+	    txr->itxr_head, txr->itxr_tail, txr->itxr_doorbell,
+	    txr->itxr_size - txr->itxr_avail, (void *)txr, s->ims_count);
+	mutex_exit(&txr->itxr_lock);
 }

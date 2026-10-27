@@ -1296,7 +1296,7 @@ typedef struct ice_tx_desc {
 #define	ICE_TX_DESC_DTYPE_FILTER	0x8
 #define	ICE_TX_DESC_DTYPE_DONE		0xf
 
-#define	ICE_TX_DESC_CMD(v)		ice_bitx64(15, 4)
+#define	ICE_TX_DESC_CMD(v)		ice_bitx64(v, 15, 4)
 #define	ICE_TX_DESC_SET_CMD(r, v)	ice_bitset64(r, 15, 4, v)
 #define	ICE_TX_DESC_CMD_EOP			(1ULL << 0)
 #define	ICE_TX_DESC_CMD_RS			(1Ull << 1)

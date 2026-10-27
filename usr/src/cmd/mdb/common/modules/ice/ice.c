@@ -198,6 +198,7 @@ ice_walk_txrxq_fini(mdb_walk_state_t *wsp)
 }
 
 typedef struct mdb_ice_tx_ring_t {
+	uintptr_t	itxr_ice;
 	uint32_t	itxr_index;
 	uint16_t	itxr_size;
 	uint16_t	itxr_avail;
@@ -224,7 +225,11 @@ ice_txq_cb(uintptr_t addr, const void *ignored __unused, void *arg)
 		return (DCMD_OK);
 	}
 
-	mdb_printf("%p %4u %5u %5u", addr, txr.itxr_index,
+	mdb_ice_t ice = { 0 };
+	if (mdb_ctf_vread(&ice, "ice_t", "mdb_ice_t", txr.itxr_ice, 0) != 0)
+		return (DCMD_ERR);
+	mdb_printf("%p %4u %5u %5u %5u %5u %5u", addr, txr.itxr_index,
+	    ice.ice_first_txq + txr.itxr_index, txr.itxr_head, txr.itxr_tail,
 	    txr.itxr_size - txr.itxr_avail, txr.itxr_size);
 	if (txr.itxr_blocked)
 		mdb_printf(" BLOCKED");
@@ -242,8 +247,8 @@ ice_txqs(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	}
 
 	if (DCMD_HDRSPEC(flags)) {
-		mdb_printf("%<u>%-?s %4s %5s %5s%</u>\n",
-		    "ADDR", "IDX", "INUSE", "SIZE");
+		mdb_printf("%<u>%-?s %4s %5s %5s %5s %5s %5s%</u>\n",
+		    "ADDR", "IDX", "ABS", "HEAD", "TAIL", "INUSE", "SIZE");
 	}
 
 	return (mdb_pwalk("ice_txq", ice_txq_cb, &flags, addr));
@@ -266,7 +271,7 @@ ice_txq_dtype_str(ice_tx_desc_t *desc, char *buf, size_t buflen)
 		(void) strlcpy(buf, "DONE", buflen);
 		break;
 	default:
-		(void) mdb_snprintf(buf, buflen, "%s",
+		(void) mdb_snprintf(buf, buflen, "%llu",
 		    ICE_TX_DESC_DTYPE(LE_64(desc->itxd_qw1)));
 		break;
 	}
@@ -278,11 +283,21 @@ ice_txq(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	mdb_ice_tx_ring_t	txr = { 0 };
 	uintptr_t		tcb_base;
 	ssize_t			desc_len;
+	u_longlong_t start = 0, count = 0;
 
 	if (mdb_ctf_vread(&txr, "ice_tx_ring_t", "mdb_ice_tx_ring_t",
 	    addr, 0) != 0) {
 		return (-1);
 	}
+
+	if (mdb_getopts(argc, argv, 's', MDB_OPT_UINT64, &start,
+	    'n', MDB_OPT_UINT64, &count, NULL) != argc)
+		return (DCMD_USAGE);
+	if (txr.itxr_size == 0 || start >= txr.itxr_size ||
+	    count > txr.itxr_size)
+		return (DCMD_USAGE);
+	if (count == 0)
+		count = txr.itxr_size;
 
 	/*
 	 * Since the hardware supports both 16 and 32 byte descriptors
@@ -302,7 +317,8 @@ ice_txq(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		    "INDEX", "TCB", "DESC", "TYPE");
 	}
 
-	for (uint_t i = 0; i < txr.itxr_size; i++) {
+	for (uint_t j = 0; j < count; j++) {
+		uint_t i = (start + j) % txr.itxr_size;
 		uintptr_t	tcb_addr;
 		uintptr_t	desc_addr;
 		ice_tx_desc_t	desc;
@@ -339,7 +355,7 @@ ice_txq(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	return (DCMD_OK);
 }
 
-#define	MASK(h, l)	((1UL << (((h) - (l) + 1UL) - 1UL)) >> (l))
+#define	MASK(h, l)	(((1UL << ((h) - (l) + 1)) - 1) << (l))
 
 static mdb_bitmask_t ice_tctx_cmd_bits[] = {
 	{ "TSO", ICE_TX_CTXD_CMD_TSO, ICE_TX_CTXD_CMD_TSO },
@@ -348,9 +364,9 @@ static mdb_bitmask_t ice_tctx_cmd_bits[] = {
 	{ "IL2TAG2_IL2H", ICE_TX_CTXD_CMD_IL2TAG2_IL2H,
 	    ICE_TX_CTXD_CMD_IL2TAG2_IL2H },
 	{ "SWITCH_NONE", MASK(5, 4), 0 },
-	{ "SWITCH_UPLINK", MASK(5, 4), 1 },
-	{ "SWITCH_LOCAL", MASK(5, 4), 2 },
-	{ "SWITCH_VSI", MASK(5, 4), 3 },
+	{ "SWITCH_UPLINK", MASK(5, 4), 1 << 4 },
+	{ "SWITCH_LOCAL", MASK(5, 4), 2 << 4 },
+	{ "SWITCH_VSI", MASK(5, 4), 3 << 4 },
 	{ NULL, 0, 0 },
 };
 
@@ -367,7 +383,7 @@ ice_tx_desc(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	mdb_printf("%#lr", addr);
 
 	if (flags & DCMD_PIPE_OUT) {
-		mdb_printf("\n", addr);
+		mdb_printf("\n");
 		return (DCMD_OK);
 	}
 
@@ -390,14 +406,21 @@ ice_tx_desc(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		mdb_printf(" qw1=0x%lx\n", desc.itxd_qw1);
 
 		mdb_printf("  %?s %4s", "", "");
+		mdb_printf(" CMD=%#llx EOP=%u RS=%u IIPT=%llu L4T=%llu",
+		    ICE_TX_DESC_CMD(desc.itxd_qw1),
+		    !!(ICE_TX_DESC_CMD(desc.itxd_qw1) & ICE_TX_DESC_CMD_EOP),
+		    !!(ICE_TX_DESC_CMD(desc.itxd_qw1) & ICE_TX_DESC_CMD_RS),
+		    ICE_TX_DESC_CMD_IIPT(ICE_TX_DESC_CMD(desc.itxd_qw1)),
+		    ICE_TX_DESC_CMD_L4T(ICE_TX_DESC_CMD(desc.itxd_qw1)));
 		mdb_printf(" BSIZE=%u", ICE_TX_DESC_BSIZE(desc.itxd_qw1));
 
 		uint64_t offset = ICE_TX_DESC_OFFSET(desc.itxd_qw1);
 
-		mdb_printf(" MACLEN=%u", ICE_TX_DESC_OFFSET_MACLEN(offset));
-		mdb_printf(" IPLEN=%u", ICE_TX_DESC_OFFSET_IPLEN(offset));
-		mdb_printf(" L4LEN=%u", ICE_TX_DESC_OFFSET_L4LEN(offset));
+		mdb_printf(" MACLEN=%u", ICE_TX_DESC_OFFSET_MACLEN(offset) * 2);
+		mdb_printf(" IPLEN=%u", ICE_TX_DESC_OFFSET_IPLEN(offset) * 4);
+		mdb_printf(" L4LEN=%u", ICE_TX_DESC_OFFSET_L4LEN(offset) * 4);
 
+		mdb_printf("\n");
 		break;
 	}
 
@@ -406,8 +429,8 @@ ice_tx_desc(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 		    ICE_TX_CTXD_CMD(desc.itxd_qw1), ice_tctx_cmd_bits);
 
 		mdb_printf(" %s=%#lr",
-		    (ICE_TX_CTXD_CMD(desc.itxd_qw1) == ICE_TX_CTXD_CMD_TSO) ?
-		    "TLEN" : "TSYN_REG");
+		    (ICE_TX_CTXD_CMD(desc.itxd_qw1) & ICE_TX_CTXD_CMD_TSO) ?
+		    "TLEN" : "TSYN_REG", ICE_TX_CTXD_TLEN(desc.itxd_qw1));
 
 		if (ICE_TX_CTXD_CMD(desc.itxd_qw1) & ICE_TX_CTXD_CMD_TSO) {
 			mdb_printf(" MSS");
@@ -428,13 +451,204 @@ ice_tx_desc(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
 	return (DCMD_OK);
 }
 
+
+/* Addresses below refer to the target, never descriptor DMA addresses. */
+static void
+ice_bytes(const uint8_t *buf, uint_t n)
+{
+	for (uint_t i = 0; i < n; i++) {
+		if (i % 16 == 0)
+			mdb_printf("\n  %04x:", i);
+		mdb_printf(" %02x", buf[i]);
+	}
+	mdb_printf("\n");
+}
+
+static int
+ice_mal(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
+{
+	mdb_ctf_id_t type;
+	ulong_t off;
+	ice_mal_snapshot_t s;
+	if (!(flags & DCMD_ADDRSPEC) || argc != 0)
+		return (DCMD_USAGE);
+	if (mdb_ctf_lookup_by_name("ice_tx_ring_t", &type) != 0 ||
+	    mdb_ctf_offsetof(type, "itxr_mal", &off) != 0 ||
+	    mdb_vread(&s, sizeof (s), addr + off / NBBY) != sizeof (s))
+		return (DCMD_ERR);
+	if (s.ims_count == 0) {
+		mdb_printf("No saved malicious event\n");
+		return (DCMD_OK);
+	}
+	mdb_printf("First-event candidates (%s), events=%u time=%lld "
+	    "raw=%#x PFraw=%#x\n", s.ims_source ? "PQM" : "TCLAN",
+	    s.ims_count, s.ims_time, s.ims_raw, s.ims_pfraw);
+	mdb_printf("head=%u tail=%u posted=%u size=%u avail=%u "
+	    "descriptors=%u packets=%u sync-failed=%u\n",
+	    s.ims_head, s.ims_tail, s.ims_doorbell, s.ims_size, s.ims_avail,
+	    s.ims_ndesc, s.ims_npkt, s.ims_sync_failed);
+	if (s.ims_avail > s.ims_size ||
+	    s.ims_ndesc > ICE_MAL_NDESC || s.ims_npkt > ICE_MAL_NPKT ||
+	    s.ims_size == 0)
+		return (DCMD_ERR);
+	for (uint_t i = 0; i < s.ims_ndesc; i++) {
+		uint64_t q = LE_64(s.ims_desc[i].itxd_qw1);
+		mdb_printf("%5u qw0=%016llx qw1=%016llx type=%llu "
+		    "bsize=%llu cmd=%#llx\n", (s.ims_head + i) % s.ims_size,
+		    LE_64(s.ims_desc[i].itxd_qw0), q, ICE_TX_DESC_DTYPE(q),
+		    ICE_TX_DESC_BSIZE(q), ICE_TX_DESC_CMD(q));
+		if (ICE_TX_DESC_DTYPE(q) == ICE_TX_DESC_DTYPE_DATA) {
+			uint64_t o = ICE_TX_DESC_OFFSET(q);
+			mdb_printf("      MACLEN=%llu IPLEN=%llu L4LEN=%llu "
+			    "IIPT=%llu L4T=%llu\n",
+			    ICE_TX_DESC_OFFSET_MACLEN(o) * 2,
+			    ICE_TX_DESC_OFFSET_IPLEN(o) * 4,
+			    ICE_TX_DESC_OFFSET_L4LEN(o) * 4,
+			    ICE_TX_DESC_CMD_IIPT(ICE_TX_DESC_CMD(q)),
+			    ICE_TX_DESC_CMD_L4T(ICE_TX_DESC_CMD(q)));
+		}
+		if (ICE_TX_DESC_DTYPE(q) == ICE_TX_DESC_DTYPE_TCTX)
+			mdb_printf("      TSO=%u TLEN=%llu MSS=%llu\n",
+			    !!(ICE_TX_CTXD_CMD(q) & ICE_TX_CTXD_CMD_TSO),
+			    ICE_TX_CTXD_TLEN(q), ICE_TX_CTXD_MSS(q));
+	}
+	for (uint_t i = 0; i < s.ims_npkt; i++) {
+		ice_mal_packet_t *p = &s.ims_pkt[i];
+		mdb_printf("Candidate ending at %u TCB=%p mblk=%p "
+		    "submitted=%u captured=%u%s\n", p->imp_end, p->imp_tcb,
+		    p->imp_mp, p->imp_len, p->imp_nbyte,
+		    p->imp_nbyte < p->imp_len ? " (truncated)" : "");
+		if (p->imp_nbyte > ICE_MAL_NBYTE)
+			return (DCMD_ERR);
+		ice_bytes(p->imp_bytes, p->imp_nbyte);
+	}
+	if (s.ims_ndesc < s.ims_size - s.ims_avail)
+		mdb_printf("Outstanding descriptor capture truncated\n");
+	mdb_printf("Asynchronous snapshot: "
+	    "software head is not a fault index.\n");
+	return (DCMD_OK);
+}
+
+typedef struct mdb_ice_tcb {
+	uintptr_t itcb_next, itcb_buf, itcb_mp, itcb_source;
+	ice_tcb_type_t itcb_type;
+	uint32_t itcb_len;
+} mdb_ice_tcb_t;
+
+typedef struct mdb_ice_buf {
+	uintptr_t idb_va;
+	size_t idb_len;
+} mdb_ice_buf_t;
+
+static int
+ice_tx_packet(uintptr_t addr, uint_t flags, int argc, const mdb_arg_t *argv)
+{
+	mdb_ice_tx_ring_t r;
+	u_longlong_t index = UINT64_MAX;
+	uint_t end, start, used;
+	uintptr_t tcb = 0;
+	uint8_t bytes[ICE_MAL_NBYTE];
+	uint_t captured = 0;
+	uint64_t total = 0, desc_bytes = 0;
+	bool completed = false;
+
+	if (!(flags & DCMD_ADDRSPEC) ||
+	    mdb_getopts(argc, argv, 'i', MDB_OPT_UINT64, &index, NULL) != argc)
+		return (DCMD_USAGE);
+	if (mdb_ctf_vread(&r, "ice_tx_ring_t", "mdb_ice_tx_ring_t", addr, 0))
+		return (DCMD_ERR);
+	if (index == UINT64_MAX)
+		index = r.itxr_head;
+	if (r.itxr_size == 0 || r.itxr_avail > r.itxr_size ||
+	    index >= r.itxr_size)
+		return (DCMD_USAGE);
+	used = r.itxr_size - r.itxr_avail;
+	start = r.itxr_head;
+	for (uint_t n = 0; n < used; n++) {
+		end = (r.itxr_head + n) % r.itxr_size;
+		if (mdb_vread(&tcb, sizeof (tcb),
+		    r.itxr_tcbs + end * sizeof (uintptr_t)) != sizeof (tcb))
+			return (DCMD_ERR);
+		if (tcb == 0)
+			continue;
+		if ((index + r.itxr_size - start) % r.itxr_size <=
+		    (end + r.itxr_size - start) % r.itxr_size)
+			goto found;
+		start = (end + 1) % r.itxr_size;
+	}
+	mdb_warn("index does not belong to a complete outstanding packet");
+	return (DCMD_ERR);
+found:
+	mdb_printf("Live candidate start=%u end=%u; "
+	    "may change during inspection\n",
+	    start, end);
+	for (uint_t n = 0; n < r.itxr_size; n++) {
+		uint_t i = (start + n) % r.itxr_size;
+		ice_tx_desc_t d;
+		if (mdb_vread(&d, sizeof (d), r.itxr_descs +
+		    i * sizeof (d)) != sizeof (d))
+			return (DCMD_ERR);
+		uint64_t q = LE_64(d.itxd_qw1);
+		if (ICE_TX_DESC_DTYPE(q) == ICE_TX_DESC_DTYPE_DATA)
+			desc_bytes += ICE_TX_DESC_BSIZE(q);
+		if (ICE_TX_DESC_DTYPE(q) == ICE_TX_DESC_DTYPE_DONE)
+			completed = true;
+		if (ice_tx_desc(r.itxr_descs + i * sizeof (ice_tx_desc_t),
+		    DCMD_ADDRSPEC, 0, NULL) != DCMD_OK)
+			return (DCMD_ERR);
+		if (i == end)
+			break;
+	}
+	for (uint_t n = 0; tcb != 0 && n < r.itxr_size; n++) {
+		mdb_ice_tcb_t t;
+		uintptr_t src;
+		uint_t len;
+		if (mdb_ctf_vread(&t, "ice_tx_ctrl_block_t", "mdb_ice_tcb_t",
+		    tcb, 0) != 0)
+			return (DCMD_ERR);
+		src = t.itcb_source;
+		if (t.itcb_type == ITCB_COPY ||
+		    t.itcb_type == ITCB_SMALL_COPY) {
+			mdb_ice_buf_t b;
+			if (mdb_ctf_vread(&b, "ice_dma_buffer_t",
+			    "mdb_ice_buf_t",
+			    t.itcb_buf, 0) != 0 || t.itcb_len > b.idb_len)
+				return (DCMD_ERR);
+			src = b.idb_va;
+		}
+		mdb_printf("TCB=%p type=%u len=%u source=%p mblk=%p\n",
+		    tcb, t.itcb_type, t.itcb_len, src, t.itcb_mp);
+		len = MIN(t.itcb_len, sizeof (bytes) - captured);
+		if (len && (src == 0 ||
+		    mdb_vread(bytes + captured, len, src) != len))
+			return (DCMD_ERR);
+		captured += len;
+		total += t.itcb_len;
+		tcb = t.itcb_next;
+	}
+	if (tcb != 0)
+		return (DCMD_ERR);
+	mdb_printf("Submitted bytes=%llu captured=%u%s\n", total, captured,
+	    total > captured ? " (truncated)" : "");
+	if (!completed && total != desc_bytes)
+		mdb_printf("WARNING: descriptor bytes=%llu "
+		    "differ from TCB bytes\n",
+		    desc_bytes);
+	ice_bytes(bytes, captured);
+	return (DCMD_OK);
+}
+
 static mdb_dcmd_t ice_dcmds[] = {
 	// { name, usage, descr, funcp, help, tab_comp }
 	{ "ice", NULL, "print out the attached ice driver instances",
 	    ice_ice, NULL, NULL },
 	{ "ice_txqs", NULL, "print the TX ring state of the given ice_t",
 	    ice_txqs, NULL, NULL },
-	{ "ice_txq", NULL, "print the contents of the given TX ring", ice_txq,
+	{ "ice_mal", NULL, "show saved TX candidates (ring address)",
+	    ice_mal, NULL, NULL },
+	{ "ice_tx_packet", "[-i index]", "inspect live submitted packet bytes",
+	    ice_tx_packet, NULL, NULL },
+	{ "ice_txq", "[-s index] [-n count]", "print TX ring contents", ice_txq,
 	    NULL, NULL },
 	{ "ice_tx_desc", NULL, "print out a TX descriptor", ice_tx_desc,
 	    NULL, NULL },

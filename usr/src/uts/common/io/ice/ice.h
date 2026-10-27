@@ -437,6 +437,8 @@ typedef struct ice_tx_ctrl_block {
 	struct ice_tx_ctrl_block *itcb_next;
 	ice_tcb_type_t		itcb_type;
 	uint32_t		itcb_len;
+	/* Bound virtual range, valid while this TCB owns the mapping. */
+	const void		*itcb_source;
 	ice_dma_buffer_t	*itcb_buf;
 	mblk_t			*itcb_mp;
 	ddi_dma_handle_t	itcb_dmah;
@@ -491,6 +493,34 @@ typedef struct ice_txq_stat {
 	kstat_named_t		ictxs_toobig;
 } ice_txq_stat_t;
 
+/* Bounded first-event evidence, retained until detach. Protected by TX lock. */
+#define	ICE_MAL_NDESC	64
+#define	ICE_MAL_NPKT	4
+#define	ICE_MAL_NBYTE	256
+
+typedef struct ice_mal_packet {
+	uint16_t imp_end;
+	uint16_t imp_nbyte;
+	uint32_t imp_len;
+	uintptr_t imp_tcb;
+	uintptr_t imp_mp;
+	uint8_t imp_bytes[ICE_MAL_NBYTE];
+} ice_mal_packet_t;
+
+typedef struct ice_mal_snapshot {
+	uint32_t ims_count;
+	uint32_t ims_raw;
+	uint32_t ims_pfraw;
+	uint32_t ims_source; /* 0 = TCLAN, 1 = PQM */
+	hrtime_t ims_time;
+	uint16_t ims_head, ims_tail, ims_size, ims_avail;
+	uint16_t ims_ndesc, ims_npkt;
+	uint16_t ims_doorbell;
+	bool ims_sync_failed;
+	ice_tx_desc_t ims_desc[ICE_MAL_NDESC];
+	ice_mal_packet_t ims_pkt[ICE_MAL_NPKT];
+} ice_mal_snapshot_t;
+
 typedef struct ice_tx_ring {
 	struct ice		*itxr_ice;		/* RO */
 	ice_intr_handler_t	itxr_intr;		/* RO */
@@ -515,6 +545,8 @@ typedef struct ice_tx_ring {
 	uint16_t		itxr_avail;
 	uint16_t		itxr_head;
 	uint16_t		itxr_tail;
+	uint16_t		itxr_doorbell;
+	ice_mal_snapshot_t	itxr_mal;
 
 	kmutex_t		itxr_tcb_lock;
 	ice_tx_ctrl_block_t	**itxr_tcb_free_list;
@@ -1535,6 +1567,7 @@ extern int ice_ring_rx_stat(mac_ring_driver_t, uint_t, uint64_t *);
 extern void ice_rx_interrupt(ice_t *, ice_intr_handler_t *);
 
 extern bool ice_rxq_context_write(ice_t *, ice_hw_rxq_context_t *, uint_t);
+extern void ice_tx_mal(ice_t *, uint32_t, uint32_t, uint32_t);
 extern bool ice_txq_context_write(ice_t *, ice_hw_txq_context_t *, uint8_t *,
     size_t);
 

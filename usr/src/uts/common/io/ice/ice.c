@@ -1137,6 +1137,8 @@ ice_handle_mal(ice_t *ice)
 		    ICE_GL_MDET_VF_NUM(v),
 		    ICE_GL_MDET_QNUM(v));
 
+		ice_tx_mal(ice, v, ice_reg_read(ice, ICE_PF_MDET_TX_TCLAN), 0);
+
 		/* Clear the error if it matches our PF */
 		if (ice->ice_pci_func == ICE_GL_MDET_PF_NUM(v)) {
 			ice_reg_write(ice, ICE_GL_MDET_TX_TCLAN, UINT32_MAX);
@@ -1165,7 +1167,9 @@ ice_handle_mal(ice_t *ice)
 		    ICE_GL_MDET_TX_PQM_VF_NUM(v),
 		    ICE_GL_MDET_TX_PQM_QNUM(v));
 
-		/* Clear the rror if it matches our PF */
+		ice_tx_mal(ice, v, ice_reg_read(ice, ICE_PF_MDET_TX_PQM), 1);
+
+		/* Clear the error if it matches our PF */
 		if (ice->ice_pci_func == ICE_GL_MDET_TX_PQM_PF_NUM(v)) {
 			ice_reg_write(ice, ICE_GL_MDET_TX_PQM, UINT32_MAX);
 		}
