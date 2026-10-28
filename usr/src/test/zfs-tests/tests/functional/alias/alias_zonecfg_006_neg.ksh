@@ -44,7 +44,12 @@ log_assert "long dataset aliases are rejected, not truncated"
 
 function mkalias # length
 {
-	nawk -v n=$1 'BEGIN { s = ""; for (i = 0; i < n; i++) s = s "a"; print s }'
+	nawk -v n=$1 'BEGIN {
+		s = ""
+		for (i = 0; i < n; i++)
+			s = s "a"
+		print s
+	}'
 }
 
 typeset a255=$(mkalias 255)

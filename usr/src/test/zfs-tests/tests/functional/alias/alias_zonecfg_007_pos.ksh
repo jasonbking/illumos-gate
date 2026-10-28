@@ -49,7 +49,8 @@ function strip_xml_aliases
 	sed -e 's/ alias="[^"]*"//g' $ZONEXML > $xmltmp || \
 	    log_fail "sed of $ZONEXML failed"
 	log_must cp $xmltmp $ZONEXML
-	grep -q 'alias=' $ZONEXML && log_fail "alias attribute still in $ZONEXML"
+	grep -q 'alias=' $ZONEXML && \
+	    log_fail "alias attribute still in $ZONEXML"
 }
 
 log_onexit cleanup

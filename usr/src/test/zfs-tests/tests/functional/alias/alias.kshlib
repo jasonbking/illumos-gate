@@ -25,14 +25,218 @@ function alias_zone_exists
 }
 
 #
-# Remove the test zone configuration (if any) and scratch files.
+# Print the state of $TESTZONE (empty if it is not configured).
+#
+function alias_zone_state
+{
+	zoneadm -z $TESTZONE list -p 2>/dev/null | nawk -F: '{ print $3 }'
+}
+
+#
+# Print the zone ID of $TESTZONE ('-' if it is not running).
+#
+function alias_zone_id
+{
+	zoneadm -z $TESTZONE list -p 2>/dev/null | nawk -F: '{ print $1 }'
+}
+
+#
+# Halt $TESTZONE if it is running.
+#
+function alias_zone_halt
+{
+	case $(alias_zone_state) in
+	running|ready|shutting_down|down)
+		log_must zoneadm -z $TESTZONE halt
+		;;
+	esac
+}
+
+#
+# Remove the test zone (halting and uninstalling it as needed) and scratch
+# files.
 #
 function alias_zone_cleanup
 {
 	if alias_zone_exists; then
+		alias_zone_halt
+		if [[ $(alias_zone_state) != configured ]]; then
+			log_must zoneadm -z $TESTZONE uninstall -F
+		fi
 		log_must zonecfg -z $TESTZONE delete -F
 	fi
-	rm -f $ALIAS_CMDFILE $ALIAS_OUTFILE
+	rm -f $ALIAS_CMDFILE $ALIAS_OUTFILE $ALIAS_BOOT_OUT \
+	    $ALIAS_INSTALL_LOG
+}
+
+#
+# Make sure $TESTZONE is installed and halted (see alias.cfg).  If a zone
+# cannot be installed on this system, the calling test is reported as
+# unsupported.
+#
+function alias_zone_install
+{
+	typeset brand
+
+	case $(alias_zone_state) in
+	installed)
+		return 0
+		;;
+	running|ready|shutting_down|down)
+		alias_zone_halt
+		return 0
+		;;
+	esac
+
+	# Not configured, or left configured/incomplete by an earlier run.
+	alias_zone_cleanup
+
+	if ! datasetexists $TESTPOOL/zones; then
+		log_must zfs create -o mountpoint=$ZONEROOT $TESTPOOL/zones
+	fi
+	log_must chmod 700 $ZONEROOT
+
+	alias_cmd_create
+	[[ -n $ALIAS_ZONE_BRAND ]] && alias_cmd "set brand=$ALIAS_ZONE_BRAND"
+	alias_cmd "set autoboot=false" "commit"
+	log_must alias_zonecfg_run
+
+	brand=$(zonecfg -z $TESTZONE info brand | nawk '{ print $2 }')
+	log_note "Installing $TESTZONE (brand $brand); this may take a while"
+	if ! zoneadm -z $TESTZONE install $ALIAS_ZONE_INSTALL_ARGS \
+	    > $ALIAS_INSTALL_LOG 2>&1; then
+		cat $ALIAS_INSTALL_LOG
+		alias_zone_cleanup
+		log_unsupported "Unable to install a $brand zone; set" \
+		    "ALIAS_ZONE_BRAND and/or ALIAS_ZONE_INSTALL_ARGS"
+	fi
+
+	[[ $(alias_zone_state) == installed ]] || \
+	    log_fail "$TESTZONE is not installed after 'zoneadm install'"
+}
+
+#
+# Halt $TESTZONE and remove its dataset resources, leaving it installed for
+# the next test.
+#
+function alias_zone_reset
+{
+	alias_zone_exists || return 0
+	alias_zone_halt
+	if (($(alias_ds_count) > 0)); then
+		log_must zonecfg -z $TESTZONE "remove -F dataset"
+	fi
+}
+
+#
+# Wait until $TESTZONE is running and accepts zlogin(1).  If a zone ID is
+# given, also wait for the zone to have a different ID (i.e. to have been
+# rebooted).
+#
+function alias_zone_wait
+{
+	typeset oldid=$1
+	typeset -i i=0
+
+	while ((i < ALIAS_BOOT_TIMEOUT)); do
+		if [[ $(alias_zone_state) == running &&
+		    $(alias_zone_id) != "$oldid" ]] &&
+		    zlogin $TESTZONE true > /dev/null 2>&1; then
+			return 0
+		fi
+		sleep 1
+		((i += 1))
+	done
+	log_fail "$TESTZONE not up after $ALIAS_BOOT_TIMEOUT seconds"
+}
+
+#
+# Boot $TESTZONE and wait for it to come up.  zoneadm output is saved in
+# $ALIAS_BOOT_OUT.  Returns non-zero if 'zoneadm boot' fails.
+#
+function alias_zone_boot
+{
+	if ! zoneadm -z $TESTZONE boot > $ALIAS_BOOT_OUT 2>&1; then
+		cat $ALIAS_BOOT_OUT
+		return 1
+	fi
+	alias_zone_wait
+}
+
+#
+# Reboot $TESTZONE and wait for it to come back up.
+#
+function alias_zone_reboot
+{
+	typeset oldid=$(alias_zone_id)
+
+	log_must zoneadm -z $TESTZONE reboot
+	alias_zone_wait $oldid
+}
+
+#
+# Print the datasets visible inside $TESTZONE, one per line.
+#
+function alias_zone_datasets
+{
+	zlogin $TESTZONE zfs list -H -o name -t filesystem,volume
+}
+
+#
+# Fail unless each argument is a dataset name visible inside $TESTZONE.
+#
+function alias_zone_visible
+{
+	typeset list ds
+
+	list=$(alias_zone_datasets) || log_fail "zfs list in $TESTZONE failed"
+	for ds in "$@"; do
+		if ! print -r -- "$list" | grep -qx "$ds"; then
+			print -r -- "$list"
+			log_fail "$ds is not visible in $TESTZONE"
+		fi
+	done
+}
+
+#
+# Fail if any argument is a dataset name visible inside $TESTZONE.
+#
+function alias_zone_not_visible
+{
+	typeset list ds
+
+	list=$(alias_zone_datasets) || log_fail "zfs list in $TESTZONE failed"
+	for ds in "$@"; do
+		if print -r -- "$list" | grep -qx "$ds"; then
+			print -r -- "$list"
+			log_fail "$ds is unexpectedly visible in $TESTZONE"
+		fi
+	done
+}
+
+#
+# Create datasets to delegate.  zoneadm refuses to delegate a dataset whose
+# mountpoint is inherited, so each is given a local mountpoint=none.
+#
+function alias_create_datasets
+{
+	typeset ds
+
+	for ds in "$@"; do
+		log_must zfs create -p -o mountpoint=none $ds
+	done
+}
+
+#
+# Destroy datasets (and their descendants) created by alias_create_datasets.
+#
+function alias_destroy_datasets
+{
+	typeset ds
+
+	for ds in "$@"; do
+		datasetexists $ds && log_must zfs destroy -r $ds
+	done
 }
 
 #

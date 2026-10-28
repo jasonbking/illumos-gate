@@ -60,7 +60,9 @@ tags = ['functional', 'acl', 'trivial']
 [tests/functional/alias]
 tests = ['alias_zonecfg_001_pos', 'alias_zonecfg_002_pos',
     'alias_zonecfg_003_pos', 'alias_zonecfg_004_pos', 'alias_zonecfg_005_neg',
-    'alias_zonecfg_006_neg', 'alias_zonecfg_007_pos', 'alias_zonecfg_008_neg']
+    'alias_zonecfg_006_neg', 'alias_zonecfg_007_pos', 'alias_zonecfg_008_neg',
+    'alias_boot_001_pos', 'alias_boot_002_neg', 'alias_boot_003_pos',
+    'alias_boot_004_pos']
 tags = ['functional', 'alias']
 
 [tests/functional/alloc_class]
