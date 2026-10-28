@@ -176,6 +176,15 @@
  * expected that the hardware will support much more queues and interrupt
  * vectors than what the OS gives us by default.
  *
+ * SCSI packet callbacks run on a separate taskq. A target driver may call
+ * tran_reset() from its callback, which waits for a task management reply.
+ * Waiting in the interrupt thread would block interrupts at the same or lower
+ * IPL on that CPU, including the interrupt needed to complete the reset.
+ * Management replies are handled directly by the interrupt handler so they
+ * can wake packet callbacks even when all completion workers are waiting.
+ * The completion taskq is separate from the taskq used for device discovery
+ * and controller events, which can themselves wait for SCSI I/O.
+ *
  *
  * Locking considerations:
  * -----------------------
@@ -415,6 +424,16 @@ lmrc_ctrl_attach(dev_info_t *dip)
 		goto fail;
 	INITLEVEL_SET(lmrc, LMRC_INITLEVEL_FW);
 
+	(void) snprintf(name, sizeof (name), "%s%d_comp",
+	    ddi_driver_name(dip), ddi_get_instance(dip));
+	lmrc->l_comp_taskq = taskq_create(name, lmrc->l_max_reply_queues,
+	    minclsyspri, 0, INT_MAX, TASKQ_PREPOPULATE);
+	if (lmrc->l_comp_taskq == NULL) {
+		dev_err(dip, CE_WARN, "failed to create completion taskq.");
+		goto fail;
+	}
+	INITLEVEL_SET(lmrc, LMRC_INITLEVEL_COMP_TASKQ);
+
 	if (lmrc_hba_attach(lmrc) != DDI_SUCCESS)
 		goto fail;
 	INITLEVEL_SET(lmrc, LMRC_INITLEVEL_HBA);
@@ -498,6 +517,11 @@ lmrc_cleanup(lmrc_t *lmrc, boolean_t failed)
 	if (INITLEVEL_ACTIVE(lmrc, LMRC_INITLEVEL_TASKQ)) {
 		taskq_destroy(lmrc->l_taskq);
 		INITLEVEL_CLEAR(lmrc, LMRC_INITLEVEL_TASKQ);
+	}
+
+	if (INITLEVEL_ACTIVE(lmrc, LMRC_INITLEVEL_COMP_TASKQ)) {
+		taskq_destroy(lmrc->l_comp_taskq);
+		INITLEVEL_CLEAR(lmrc, LMRC_INITLEVEL_COMP_TASKQ);
 	}
 
 	if (INITLEVEL_ACTIVE(lmrc, LMRC_INITLEVEL_NODE)) {

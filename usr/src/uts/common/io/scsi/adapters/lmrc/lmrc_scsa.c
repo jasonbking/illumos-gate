@@ -572,10 +572,8 @@ lmrc_tran_reset(struct scsi_address *sa, int level)
 	case RESET_ALL:
 	case RESET_LUN:
 	case RESET_TARGET:
-		rw_enter(&tgt->tgt_lock, RW_READER);
 		ret = lmrc_task_mgmt(lmrc, tgt,
 		    MPI2_SCSITASKMGMT_TASKTYPE_TARGET_RESET, 0);
-		rw_exit(&tgt->tgt_lock);
 
 		if (ret == -1) {
 			dev_err(lmrc->l_dip, CE_WARN,

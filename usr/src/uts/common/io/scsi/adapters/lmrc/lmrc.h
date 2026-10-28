@@ -77,6 +77,7 @@ enum lmrc_init_level {
 	LMRC_INITLEVEL_FW =		(1 << 12),
 	LMRC_INITLEVEL_RAID =		(1 << 13),
 	LMRC_INITLEVEL_PHYS =		(1 << 14),
+	LMRC_INITLEVEL_COMP_TASKQ =	(1 << 15),
 };
 
 #define	INITLEVEL_SET(_lmrc, name)				\
@@ -151,6 +152,8 @@ struct lmrc_mfi_cmd {
 struct lmrc_scsa_cmd {
 	lmrc_mpt_cmd_t		*sc_mpt;
 	lmrc_tgt_t		*sc_tgt;
+	struct scsi_pkt		*sc_next;
+	taskq_ent_t		sc_comp_tqent;
 };
 
 struct lmrc_tgt {
@@ -250,6 +253,7 @@ struct lmrc {
 	scsi_hba_tran_t		*l_hba_tran;
 	dev_info_t		*l_iport;
 	taskq_t			*l_taskq;
+	taskq_t			*l_comp_taskq;
 
 	ddi_dma_attr_t		l_dma_attr;
 	ddi_dma_attr_t		l_data_dma_attr;

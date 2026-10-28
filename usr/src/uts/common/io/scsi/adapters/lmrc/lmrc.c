@@ -475,6 +475,12 @@ lmrc_poll_for_reply(lmrc_t *lmrc, lmrc_mpt_cmd_t *mpt)
 	return (TRAN_ACCEPT);
 }
 
+static void
+lmrc_complete_pkt(void *arg)
+{
+	scsi_hba_pkt_comp(arg);
+}
+
 /*
  * lmrc_process_replies
  *
@@ -485,6 +491,8 @@ lmrc_process_replies(lmrc_t *lmrc, uint8_t queue)
 {
 	int nprocessed = 0;
 	Mpi2ReplyDescriptorsUnion_t *desc;
+	struct scsi_pkt *done = NULL;
+	struct scsi_pkt **tail = &done;
 
 	for (desc = lmrc_get_next_reply_desc(lmrc, queue);
 	    desc != NULL;
@@ -551,9 +559,13 @@ lmrc_process_replies(lmrc_t *lmrc, uint8_t queue)
 		mutex_exit(&mpt->mpt_lock);
 
 		if (pkt != NULL) {
+			lmrc_scsa_cmd_t *cmd = pkt->pkt_ha_private;
+
 			lmrc_tgt_rem_active_mpt(tgt, mpt);
 			atomic_dec_uint(&lmrc->l_fw_outstanding_cmds);
-			scsi_hba_pkt_comp(pkt);
+			cmd->sc_next = NULL;
+			*tail = pkt;
+			tail = &cmd->sc_next;
 		}
 
 		/* reset descriptor */
@@ -568,6 +580,23 @@ lmrc_process_replies(lmrc_t *lmrc, uint8_t queue)
 
 	if (nprocessed != 0 && nprocessed % LMRC_THRESHOLD_REPLY_COUNT != 0)
 		lmrc_write_rphi(lmrc, queue);
+
+	/*
+	 * Return the reply descriptors to firmware before running callbacks.
+	 * A callback can synchronously reset a target, so it must run outside
+	 * interrupt context. Each packet supplies its own taskq entry, avoiding
+	 * allocations or dispatch failures in the interrupt handler. The
+	 * callback may free or resubmit the packet; do not touch it after
+	 * dispatching it.
+	 */
+	while (done != NULL) {
+		struct scsi_pkt *pkt = done;
+		lmrc_scsa_cmd_t *cmd = pkt->pkt_ha_private;
+
+		done = cmd->sc_next;
+		taskq_dispatch_ent(lmrc->l_comp_taskq, lmrc_complete_pkt, pkt,
+		    TQ_NOSLEEP, &cmd->sc_comp_tqent);
+	}
 
 	return (DDI_INTR_CLAIMED);
 }
