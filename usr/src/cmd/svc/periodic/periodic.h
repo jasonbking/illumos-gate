@@ -35,9 +35,8 @@ struct method_context;
 struct periodic_svc;
 
 typedef struct periodic_exec {
-	char			*pe_exec;
+	char			*pe_exec;	/* tokens expanded */
 	int64_t			pe_timeout_secs;
-	struct method_context	*pe_method_ctx;
 
 	bool			pe_recover;
 } periodic_exec_t;
@@ -185,6 +184,12 @@ typedef enum periodic_svctype {
 
 typedef struct periodic_svc {
 	uu_avl_node_t		ps_avl;		/* protected by svcs_lock */
+	uu_avl_node_t		ps_id_avl;	/* protected by svcs_lock */
+	/*
+	 * Identifies svc in its timer's events (see event_id()), which can
+	 * still arrive after svc is freed.
+	 */
+	uint64_t		ps_id;
 	mutex_t			ps_lock;
 	char			*ps_fmri;
 	/*
@@ -236,6 +241,8 @@ extern char *my_fmri;		/* our own instance's FMRI */
 extern mutex_t tz_lock;
 
 periodic_svc_t *periodic_svc_get(const char *);
+periodic_svc_t *periodic_svc_get_id(uint64_t);
+uint64_t event_id(void);
 void periodic_svc_add(periodic_svc_t *);
 void periodic_svc_del(periodic_svc_t *);
 
@@ -256,6 +263,8 @@ void svc_unschedule(periodic_svc_t *);
 void free_service(periodic_svc_t *);
 char *svc_logfile(const char *);
 bool note_logfile(periodic_svc_t *);
+int get_method_context(periodic_svc_t *, struct method_context **, char *,
+    size_t);
 bool note_run(periodic_svc_t *, pid_t, ctid_t, int64_t);
 bool clear_run(periodic_svc_t *);
 

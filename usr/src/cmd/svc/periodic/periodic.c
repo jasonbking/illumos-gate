@@ -61,8 +61,8 @@ static bool get_boot_time(int64_t *);
 static bool svc_is_online(const periodic_svc_t *);
 static bool svc_arm(periodic_svc_t *);
 static bool sched_port_event(const port_event_t *);
-static bool periodic_svc_valid(const void *);
 static int svc_cmp(const void *, const void *, void *);
+static int svc_id_cmp(const void *, const void *, void *);
 
 static bool do_refresh;
 static bool do_exit;
@@ -111,10 +111,20 @@ int64_t boot_time;
  */
 mutex_t tz_lock = ERRORCHECKMUTEX;
 
-/* All the periodic_svc_t's we manage, sorted by FMRI */
+/* All the periodic_svc_t's we manage, sorted by FMRI and by ID */
 static uu_avl_pool_t *svcs_pool;
 static uu_avl_t *svcs;
+static uu_avl_pool_t *svcs_id_pool;
+static uu_avl_t *svcs_id;
 static mutex_t svcs_lock = ERRORCHECKMUTEX;
+
+/*
+ * The last ID handed out by event_id(). Only the main thread uses it.
+ */
+static uint64_t last_event_id;
+
+/* An event's user value carries an ID */
+CTASSERT(sizeof (void *) >= sizeof (uint64_t));
 
 int
 main(int argc, const char * const argv[])
@@ -324,7 +334,7 @@ svc_arm(periodic_svc_t *svc)
 		struct sigevent sev = { 0 };
 
 		svc->ps_timer_pn.portnfy_port = evport;
-		svc->ps_timer_pn.portnfy_user = svc;
+		svc->ps_timer_pn.portnfy_user = (void *)(uintptr_t)svc->ps_id;
 		sev.sigev_notify = SIGEV_PORT;
 		sev.sigev_value.sival_ptr = &svc->ps_timer_pn;
 
@@ -421,14 +431,16 @@ svc_due(periodic_svc_t *svc)
  * Returns true if it was an instance's run timer (and has been handled).
  * An expiry can still be queued after svc_unschedule() deletes the timer
  * (or even after the instance is freed), so check both that pe's instance
- * is one we manage and that the timer is its current one.
+ * (identified by its ID) is one we manage and that the timer is its current
+ * one.
  */
 static bool
 sched_port_event(const port_event_t *pe)
 {
-	periodic_svc_t *svc = pe->portev_user;
+	periodic_svc_t *svc;
 
-	if (!periodic_svc_valid(svc) || !svc->ps_timer_created ||
+	svc = periodic_svc_get_id((uint64_t)(uintptr_t)pe->portev_user);
+	if (svc == NULL || !svc->ps_timer_created ||
 	    (timer_t)pe->portev_object != svc->ps_timer) {
 		return (false);
 	}
@@ -1192,6 +1204,36 @@ done:
 }
 
 static int
+svc_id_cmp(const void *a, const void *b, void *arg __unused)
+{
+	const periodic_svc_t	*l = a;
+	const periodic_svc_t	*r = b;
+
+	if (l->ps_id < r->ps_id) {
+		return (-1);
+	}
+	if (l->ps_id > r->ps_id) {
+		return (1);
+	}
+	return (0);
+}
+
+/*
+ * A new ID for something that receives events on the event port: an
+ * instance (for its run timer) or a run (for its contract and timeout). As
+ * a timer or fd can be reused once deleted, an event that arrives after its
+ * instance or run is gone could otherwise be mistaken for one of something
+ * else's; IDs are never reused (a 64-bit counter won't wrap), and instances
+ * and runs share them so that one is never mistaken for the other. Only the
+ * main thread calls this.
+ */
+uint64_t
+event_id(void)
+{
+	return (++last_event_id);
+}
+
+static int
 svc_cmp(const void *a, const void *b, void *arg __unused)
 {
 	const periodic_svc_t	*l = a;
@@ -1227,12 +1269,35 @@ svcs_init(void)
 
 	svcs = uu_avl_create(svcs_pool, NULL, SVCS_FLAGS);
 	if (svcs == NULL) {
-		uu_avl_pool_destroy(svcs_pool);
-		svcs_pool = NULL;
-		return (false);
+		goto fail;
+	}
+
+	svcs_id_pool = uu_avl_pool_create("periodic_svcs_id",
+	    sizeof (periodic_svc_t), offsetof(periodic_svc_t, ps_id_avl),
+	    svc_id_cmp, SVCS_POOL_FLAGS);
+	if (svcs_id_pool == NULL) {
+		goto fail;
+	}
+
+	svcs_id = uu_avl_create(svcs_id_pool, NULL, SVCS_FLAGS);
+	if (svcs_id == NULL) {
+		goto fail;
 	}
 
 	return (true);
+
+fail:
+	if (svcs_id_pool != NULL) {
+		uu_avl_pool_destroy(svcs_id_pool);
+		svcs_id_pool = NULL;
+	}
+	if (svcs != NULL) {
+		uu_avl_destroy(svcs);
+		svcs = NULL;
+	}
+	uu_avl_pool_destroy(svcs_pool);
+	svcs_pool = NULL;
+	return (false);
 }
 
 /*
@@ -1254,30 +1319,28 @@ periodic_svc_get(const char *fmri)
 }
 
 /*
- * Whether p (e.g. from an event's user pointer) is a service we manage.
+ * Look up a service by its ID (e.g. from an event). Returns NULL if we
+ * aren't managing it (any more).
  */
-static bool
-periodic_svc_valid(const void *p)
+periodic_svc_t *
+periodic_svc_get_id(uint64_t id)
 {
+	periodic_svc_t	key = { 0 };
 	periodic_svc_t	*svc;
-	bool		found = false;
+
+	key.ps_id = id;
 
 	VERIFY0(mutex_lock(&svcs_lock));
-	for (svc = uu_avl_first(svcs); svc != NULL;
-	    svc = uu_avl_next(svcs, svc)) {
-		if (svc == p) {
-			found = true;
-			break;
-		}
-	}
+	svc = uu_avl_find(svcs_id, &key, NULL, NULL);
 	VERIFY0(mutex_unlock(&svcs_lock));
 
-	return (found);
+	return (svc);
 }
 
 /*
- * Add a service. It is a programming error to add a service whose FMRI is
- * already in the tree.
+ * Add a service, giving it a new ID. It is a programming error to add a
+ * service whose FMRI is already in the tree. Only the main thread calls
+ * this.
  */
 void
 periodic_svc_add(periodic_svc_t *svc)
@@ -1286,11 +1349,15 @@ periodic_svc_add(periodic_svc_t *svc)
 
 	VERIFY3P(svc->ps_fmri, !=, NULL);
 
+	svc->ps_id = event_id();
 	uu_avl_node_init(svc, &svc->ps_avl, svcs_pool);
+	uu_avl_node_init(svc, &svc->ps_id_avl, svcs_id_pool);
 
 	VERIFY0(mutex_lock(&svcs_lock));
 	VERIFY3P(uu_avl_find(svcs, svc, NULL, &idx), ==, NULL);
 	uu_avl_insert(svcs, svc, idx);
+	VERIFY3P(uu_avl_find(svcs_id, svc, NULL, &idx), ==, NULL);
+	uu_avl_insert(svcs_id, svc, idx);
 	VERIFY0(mutex_unlock(&svcs_lock));
 }
 
@@ -1302,9 +1369,11 @@ periodic_svc_del(periodic_svc_t *svc)
 {
 	VERIFY0(mutex_lock(&svcs_lock));
 	uu_avl_remove(svcs, svc);
+	uu_avl_remove(svcs_id, svc);
 	VERIFY0(mutex_unlock(&svcs_lock));
 
 	uu_avl_node_fini(svc, &svc->ps_avl, svcs_pool);
+	uu_avl_node_fini(svc, &svc->ps_id_avl, svcs_id_pool);
 }
 
 static char *

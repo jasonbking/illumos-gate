@@ -90,7 +90,9 @@
  * with the main loop's event port (PORT_SOURCE_FD), as is its timeout
  * (PORT_SOURCE_TIMER, from a timer_create(3C) timer with SIGEV_PORT). The
  * main loop passes every event to exec_port_event(), which claims the ones
- * that belong to a run.
+ * that belong to a run. Each event carries its run's ID (see event_id()), not
+ * a pointer, so an event left over from a run that has finished is simply
+ * not found.
  *
  * Outcomes
  * --------
@@ -194,6 +196,7 @@ typedef enum exec_outcome {
 
 typedef struct exec_run {
 	struct exec_run	*er_next;
+	uint64_t	er_id;		/* in its events; see event_id() */
 	char		*er_fmri;
 	pid_t		er_pid;		/* -1 for an adopted run */
 	ctid_t		er_ctid;
@@ -532,18 +535,19 @@ run_find(const char *fmri)
 }
 
 /*
- * Whether r (from an event's user pointer, which may not be ours) is a run
- * in progress.
+ * The run in progress with the given ID (from an event, which may not be a
+ * run's, or may be from a run that has finished), or NULL. There are only
+ * as many runs as instances running at once, so a list is enough.
  */
-static bool
-run_valid(const void *r)
+static exec_run_t *
+run_find_id(uint64_t id)
 {
-	for (exec_run_t *p = runs; p != NULL; p = p->er_next) {
-		if (p == r) {
-			return (true);
+	for (exec_run_t *r = runs; r != NULL; r = r->er_next) {
+		if (r->er_id == id) {
+			return (r);
 		}
 	}
-	return (false);
+	return (NULL);
 }
 
 static exec_run_t *
@@ -551,6 +555,7 @@ run_create(const char *fmri, pid_t pid, ctid_t ctid, bool adopted)
 {
 	exec_run_t *r = umem_zalloc(sizeof (*r), UMEM_NOFAIL);
 
+	r->er_id = event_id();
 	r->er_fmri = xstrdup(fmri);
 	r->er_pid = pid;
 	r->er_ctid = ctid;
@@ -618,7 +623,7 @@ static bool
 run_associate(exec_run_t *r)
 {
 	if (port_associate(evport, PORT_SOURCE_FD, (uintptr_t)r->er_evfd,
-	    POLLIN, r) != 0) {
+	    POLLIN, (void *)(uintptr_t)r->er_id) != 0) {
 		logmsg(_("%s: failed to watch contract %d: %s"), r->er_fmri,
 		    (int)r->er_ctid, strerror(errno));
 		return (false);
@@ -636,7 +641,7 @@ run_arm_timeout(exec_run_t *r, int64_t secs)
 	struct itimerspec	its = { 0 };
 
 	r->er_pn.portnfy_port = evport;
-	r->er_pn.portnfy_user = r;
+	r->er_pn.portnfy_user = (void *)(uintptr_t)r->er_id;
 	sev.sigev_notify = SIGEV_PORT;
 	sev.sigev_value.sival_ptr = &r->er_pn;
 
@@ -1017,18 +1022,47 @@ exec_tmpl_activate(const periodic_svc_t *svc)
 }
 
 /*
+ * Whether a failure to get a method context, of the given mc_error_t type
+ * (an errno value or scf_error_t), might succeed if tried again: running out
+ * of memory or other resources, or losing the repository. Anything else
+ * (e.g. a user that doesn't exist) is a problem with the configuration.
+ */
+static bool
+mc_error_transient(int type)
+{
+	switch (type) {
+	case EAGAIN:
+	case ENOMEM:
+	case ENFILE:
+	case SCF_ERROR_NO_MEMORY:
+	case SCF_ERROR_NO_RESOURCES:
+	case SCF_ERROR_NO_SERVER:
+	case SCF_ERROR_NOT_BOUND:
+	case SCF_ERROR_CONNECTION_BROKEN:
+	case SCF_ERROR_BACKEND_ACCESS:
+		return (true);
+	default:
+		return (false);
+	}
+}
+
+/*
  * Run svc's start method now. Returns 0 if it was started (or was :true,
  * which finishes immediately), EBUSY if a run is already in progress (the
  * caller should skip this one), or another errno value if it couldn't be
  * started, which has been logged. Failing to fork or to set up the
- * contract counts as a non-fatal fault, as a failed run does, so it may
- * change svc's state. Must be called on the main thread.
+ * contract counts as a non-fatal fault, as a failed run does, and failing
+ * to get the method context is a fatal fault unless it may be transient
+ * (see mc_error_transient()); either may change svc's state. Must be called
+ * on the main thread.
  */
 int
 exec_start(periodic_svc_t *svc)
 {
 	periodic_exec_t		*pe = &svc->ps_exec;
-	struct method_context	*mc = pe->pe_method_ctx;
+	struct method_context	*mc = NULL;
+	char			mc_msg[RESTARTER_ERRMSGSZ];
+	int			mc_type;
 	char			*cmd = NULL;
 	char			**env = NULL;
 	size_t			envslots = 0;
@@ -1056,8 +1090,22 @@ exec_start(periodic_svc_t *svc)
 		return (0);
 	}
 
-	/* get_exec() loads a method context for anything but :true */
-	VERIFY3P(mc, !=, NULL);
+	/*
+	 * As svc.startd does for each method it runs, get the method context
+	 * now rather than when the configuration was loaded, so that a run
+	 * sees the current state of the users, groups, projects and pools it
+	 * names (e.g. from a name service). The context itself still comes
+	 * from the running snapshot, so only a refresh changes that.
+	 */
+	mc_type = get_method_context(svc, &mc, mc_msg, sizeof (mc_msg));
+	if (mc_type != 0) {
+		logmsg(_("%s: failed to get %s method context: %s"),
+		    svc->ps_fmri, EXEC_METHOD, mc_msg);
+		inst_log(svc, "%s", mc_msg);
+		method_done(svc, mc_error_transient(mc_type) ? EO_FAULT :
+		    EO_FATAL);
+		return (EINVAL);
+	}
 
 	/*
 	 * Open the log now, as root, for the method's output; the method
@@ -1150,6 +1198,9 @@ out:
 	xstrfree(cmd);
 	if (logfd >= 0) {
 		(void) close(logfd);
+	}
+	if (mc != NULL) {
+		restarter_free_method_context(mc);
 	}
 
 	if (err != 0) {
@@ -1506,18 +1557,28 @@ exec_running(const char *fmri)
 bool
 exec_port_event(const port_event_t *pe)
 {
-	exec_run_t *r = pe->portev_user;
+	exec_run_t *r;
 
 	switch (pe->portev_source) {
 	case PORT_SOURCE_FD:
-		if (!run_valid(r) || (int)pe->portev_object != r->er_evfd) {
+	case PORT_SOURCE_TIMER:
+		break;
+	default:
+		return (false);
+	}
+
+	r = run_find_id((uint64_t)(uintptr_t)pe->portev_user);
+
+	switch (pe->portev_source) {
+	case PORT_SOURCE_FD:
+		if (r == NULL || (int)pe->portev_object != r->er_evfd) {
 			return (false);
 		}
 		run_ct_event(r);
 		return (true);
 
 	case PORT_SOURCE_TIMER:
-		if (!run_valid(r) || !r->er_timer_armed ||
+		if (r == NULL || !r->er_timer_armed ||
 		    (timer_t)pe->portev_object != r->er_timer) {
 			return (false);
 		}

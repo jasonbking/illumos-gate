@@ -1070,11 +1070,6 @@ free_exec(periodic_exec_t *pe)
 	/* Allocated by parse_str() */
 	free(pe->pe_exec);
 	pe->pe_exec = NULL;
-
-	if (pe->pe_method_ctx != NULL) {
-		restarter_free_method_context(pe->pe_method_ctx);
-		pe->pe_method_ctx = NULL;
-	}
 }
 
 /*
@@ -1086,8 +1081,9 @@ free_exec(periodic_exec_t *pe)
 static bool
 get_exec(const char *svc_fmri, scf_snapshot_t *snapp, periodic_exec_t *pe)
 {
-	mc_error_t	*mc_err;
-	char		*expanded;
+	struct method_context	*mc;
+	mc_error_t		*mc_err;
+	char			*expanded;
 
 	if (!get_values(pg, exec_tbl, ARRAY_SIZE(exec_tbl), pe)) {
 		return (false);
@@ -1129,15 +1125,20 @@ get_exec(const char *svc_fmri, scf_snapshot_t *snapp, periodic_exec_t *pe)
 	free(pe->pe_exec);
 	pe->pe_exec = expanded;
 
+	/*
+	 * Check that the method context is valid now, so that a bad one
+	 * puts the instance into maintenance when it is loaded rather than
+	 * when it next runs. Each run gets its own (get_method_context()).
+	 */
 	mc_err = restarter_get_method_context(RESTARTER_METHOD_CONTEXT_VERSION,
-	    inst, snapp, START_METHOD, pe->pe_exec, &pe->pe_method_ctx);
+	    inst, snapp, START_METHOD, pe->pe_exec, &mc);
 	if (mc_err != NULL) {
 		logmsg(_("%s: failed to get %s method context: %s"), svc_fmri,
 		    START_METHOD, mc_err->msg);
 		restarter_mc_error_destroy(mc_err);
-		pe->pe_method_ctx = NULL;
 		return (false);
 	}
+	restarter_free_method_context(mc);
 
 	return (true);
 }
@@ -1278,6 +1279,69 @@ bool
 get_service(periodic_svc_t *svc)
 {
 	return (with_rebind(svc, load_service, NULL, _("load service")));
+}
+
+typedef struct mc_load {
+	struct method_context	*ml_mc;
+	int			ml_type;	/* mc_error_t type, or 0 */
+	char			*ml_msg;
+	size_t			ml_msglen;
+} mc_load_t;
+
+static bool
+load_method_context(periodic_svc_t *svc, void *arg)
+{
+	mc_load_t	*ml = arg;
+	scf_snapshot_t	*snapp = snap;
+	mc_error_t	*mc_err;
+
+	if (scf_handle_decode_fmri(rep_hdl, svc->ps_fmri, NULL, NULL, inst,
+	    NULL, NULL, 0) != 0) {
+		ml->ml_type = scf_error();
+		(void) snprintf(ml->ml_msg, ml->ml_msglen,
+		    "failed to decode fmri: %s", scf_strerror(ml->ml_type));
+		return (false);
+	}
+
+	/* The running snapshot, as in load_service() */
+	if (scf_instance_get_snapshot(inst, SNAPSHOT_RUNNING, snapp) != 0) {
+		snapp = NULL;
+	}
+
+	mc_err = restarter_get_method_context(RESTARTER_METHOD_CONTEXT_VERSION,
+	    inst, snapp, START_METHOD, svc->ps_exec.pe_exec, &ml->ml_mc);
+	if (mc_err != NULL) {
+		ml->ml_type = mc_err->type;
+		(void) strlcpy(ml->ml_msg, mc_err->msg, ml->ml_msglen);
+		restarter_mc_error_destroy(mc_err);
+		ml->ml_mc = NULL;
+		return (false);
+	}
+
+	ml->ml_type = 0;
+	return (true);
+}
+
+/*
+ * Get the context of svc's start method for a run, as svc.startd's
+ * method_run() does each time it runs a method. Returns 0 and sets *mcp (to
+ * be freed with restarter_free_method_context()), or returns the
+ * mc_error_t type of the failure (an errno value or scf_error_t), with a
+ * message (from librestart, so not localized) in msg.
+ */
+int
+get_method_context(periodic_svc_t *svc, struct method_context **mcp,
+    char *msg, size_t msglen)
+{
+	mc_load_t ml = { .ml_msg = msg, .ml_msglen = msglen };
+
+	*mcp = NULL;
+	if (!with_rebind(svc, load_method_context, &ml,
+	    _("get method context"))) {
+		return ((ml.ml_type != 0) ? ml.ml_type : EINVAL);
+	}
+	*mcp = ml.ml_mc;
+	return (0);
 }
 
 /*
@@ -2441,7 +2505,6 @@ load_service(periodic_svc_t *svc, void *arg __unused)
 	free_exec(&svc->ps_exec);
 	svc->ps_exec.pe_exec = exec.pe_exec;
 	svc->ps_exec.pe_timeout_secs = exec.pe_timeout_secs;
-	svc->ps_exec.pe_method_ctx = exec.pe_method_ctx;
 	svc->ps_exec.pe_recover = exec.pe_recover;
 	svc->ps_saved_boot = saved_boot;
 	svc->ps_fault_count = faults;

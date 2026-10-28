@@ -172,9 +172,10 @@ periodic_after_run(periodic_data_t *p, int64_t now)
  * calendar year, month, ISO week (starting Monday), day, hour, or minute in
  * the schedule's timezone), and it runs at most once per period:
  *
- * Hours are wall clock hours, so an hourly schedule runs once in the hour
- * that occurs twice when the clock falls back, and every n hours counts
- * wall clock hours; minutes are elapsed minutes (see unit_start()).
+ * Hours and minutes are wall clock hours and minutes, so an hourly
+ * schedule runs once in the hour that occurs twice when the clock falls
+ * back, and every n hours or minutes counts wall clock time (see
+ * wall_secs()).
  *
  * - With a frequency of 1, every period is a candidate, and all of the
  *   constraints select which times qualify (e.g. an interval of day with
@@ -324,14 +325,19 @@ mk(struct tm *tm)
 }
 
 /*
- * Hours are wall clock hours. When the clock falls back, the hour that occurs
- * twice is a single hour (two hours long) starting at its first occurrence,
- * so an hourly schedule runs once in it, as it does in every other hour. When
- * the clock springs forward, the skipped hour doesn't exist. Minutes are
- * elapsed minutes: a minute that occurs twice is two minutes.
+ * Hours and minutes are wall clock hours and minutes, each of which occurs
+ * once. When the clock falls back, the stretch of time that repeats (the
+ * second occurrence) is part of no hour or minute: e.g. with a change from
+ * 02:00 CDT to 01:00 CST, the hour 01 is 01:00 CDT to 02:00 CDT (01:00 CST),
+ * and the next hour is 02 CST. Nothing runs in the second occurrence, so an
+ * hourly schedule runs once in the repeated hour, and a schedule by the
+ * minute pauses for it. (For finding unit starts, a time in the second
+ * occurrence is treated as being just before the change; see unit_end().)
+ * When the clock springs forward, the skipped hours and minutes don't
+ * exist.
  *
  * wall_secs() is t's wall clock time as seconds since the epoch (as if the
- * timezone were UTC), which hours are counted in.
+ * timezone were UTC), which hours and minutes are counted in.
  */
 static time_t
 wall_secs(time_t t)
@@ -342,36 +348,73 @@ wall_secs(time_t t)
 	return (timegm(&tm));
 }
 
-/* Whether t and u are in the same wall clock hour of the same day */
-static bool
-same_wall_hour(time_t t, time_t u)
+/* t's offset from UTC */
+static time_t
+utc_off(time_t t)
 {
-	return (wall_secs(t) / 3600 == wall_secs(u) / 3600);
+	return (wall_secs(t) - t);
 }
 
 /*
- * The start of the unit u containing t. Minutes are found by arithmetic
- * rather than mktime(), so that when the clock falls back, a minute that
- * occurs twice is two distinct minutes. An hour is found the same way, then
- * moved back to the first occurrence if it is the second occurrence of a
- * repeated hour.
+ * The longest stretch of time a clock change repeats. Changes are an hour
+ * (or less) in practice; this allows for more, as long as there is only one
+ * change in any REPEAT_MAX window.
+ */
+#define	REPEAT_MAX	(2 * 60 * 60)
+
+/*
+ * If t is in the second occurrence of time the clock fell back over, return
+ * how far it fell back, and set *changep to when it did. Otherwise return 0.
+ */
+static time_t
+repeated(time_t t, time_t *changep)
+{
+	time_t back = utc_off(t - REPEAT_MAX) - utc_off(t);
+	time_t lo, hi;
+
+	/* t is in the second occurrence if t - back is before the change */
+	if (back <= 0 || utc_off(t - back) == utc_off(t)) {
+		return (0);
+	}
+
+	/* The change is in (t - back, t]; find it */
+	lo = t - back;
+	hi = t;
+	while (hi - lo > 1) {
+		time_t mid = lo + (hi - lo) / 2;
+
+		if (utc_off(mid) == utc_off(t)) {
+			hi = mid;
+		} else {
+			lo = mid;
+		}
+	}
+	*changep = hi;
+	return (back);
+}
+
+/*
+ * The start of the unit u containing t. A minute or hour is found by
+ * arithmetic rather than mktime(), which can't tell the two occurrences of a
+ * repeated time apart; a time in a second occurrence is in the minute or
+ * hour that was current just before the clock fell back.
  */
 static time_t
 unit_start(time_t t, sched_unit_t u)
 {
 	struct tm	tm;
-	time_t		h;
+	time_t		change;
+
+	if ((u == SU_MINUTE || u == SU_HOUR) && repeated(t, &change) != 0) {
+		t = change - 1;
+	}
 
 	(void) localtime_r(&t, &tm);
 	switch (u) {
 	case SU_MINUTE:
 		return (t - tm.tm_sec);
 	case SU_HOUR:
-		h = t - tm.tm_min * 60 - tm.tm_sec;
-		if (same_wall_hour(h - 60 * 60, h)) {
-			h -= 60 * 60;
-		}
-		return (h);
+		return (t - tm.tm_min * 60 - tm.tm_sec);
 	default:
 		break;
 	}
@@ -398,34 +441,37 @@ unit_start(time_t t, sched_unit_t u)
 }
 
 /*
- * Add n units u to t (the start of a unit). Minutes are added as seconds, so
- * a daylight saving change doesn't stall or skip them. Hours are added to
- * the wall clock time: the result is the start of the hour n wall clock
- * hours on (its first occurrence, if it is repeated), or the first time
- * after it if the clock sprang forward over it.
+ * Add n units u to t (the start of a unit). Minutes and hours are added to
+ * the wall clock time: the result is the start of the minute or hour that
+ * many wall clock minutes or hours on (its first occurrence, if the clock
+ * fell back over it), or the first time after it if the clock sprang forward
+ * over it.
  */
 static time_t
 unit_add(time_t t, sched_unit_t u, int64_t n)
 {
 	struct tm	tm;
-	time_t		w, r;
+	time_t		w, r, back, change;
 
 	switch (u) {
 	case SU_MINUTE:
-		return (t + n * 60);
 	case SU_HOUR:
-		w = wall_secs(t) + n * 60 * 60;
+		w = wall_secs(t) + n * ((u == SU_MINUTE) ? 60 : 60 * 60);
 		(void) gmtime_r(&w, &tm);
 		r = mk(&tm);
 		/*
-		 * If the clock sprang forward over that hour, mktime() may
+		 * If the clock sprang forward over that time, mktime() may
 		 * have resolved it to the time before the change rather than
 		 * after it; move it to the change.
 		 */
 		if (wall_secs(r) < w) {
 			r += w - wall_secs(r);
 		}
-		return (unit_start(r, SU_HOUR));
+		/* If it is repeated, mktime() may have picked either one */
+		if ((back = repeated(r, &change)) != 0) {
+			r -= back;
+		}
+		return (unit_start(r, u));
 	default:
 		break;
 	}
@@ -460,6 +506,23 @@ next_unit(time_t t, sched_unit_t u)
 	time_t n = unit_add(unit_start(t, u), u, 1);
 
 	return ((n > t) ? n : t + 60);
+}
+
+/*
+ * The end of the unit u starting at start: the start of the next one, or for
+ * a minute or hour just before the clock falls back, the change.
+ */
+static time_t
+unit_end(time_t start, sched_unit_t u)
+{
+	time_t n = next_unit(start, u);
+	time_t change;
+
+	if ((u == SU_MINUTE || u == SU_HOUR) && repeated(n - 1, &change) != 0 &&
+	    change > start) {
+		return (change);
+	}
+	return (n);
 }
 
 static bool
@@ -766,11 +829,11 @@ window_in(const scheduled_data_t *s, const sinfo_t *si, time_t p,
 			return (W_NEVER);
 		}
 		pstart = unit_start(m, si->si_period);
-		pend = next_unit(pstart, si->si_period);
-		*nextp = pend;
+		pend = unit_end(pstart, si->si_period);
+		*nextp = next_unit(pstart, si->si_period);
 	} else {
 		pstart = p;
-		pend = next_unit(p, si->si_period);
+		pend = unit_end(p, si->si_period);
 		/*
 		 * Count the next period from the anchor rather than from p:
 		 * if the clock sprang forward over p's period, p is the time
@@ -798,7 +861,7 @@ window_in(const scheduled_data_t *s, const sinfo_t *si, time_t p,
 
 	ws = unit_start(m, si->si_window);
 	*wsp = MAX(ws, pstart);
-	*wep = MIN(next_unit(ws, si->si_window), pend);
+	*wep = MIN(unit_end(ws, si->si_window), pend);
 	return (W_FOUND);
 }
 
@@ -810,7 +873,7 @@ units_between(time_t a, time_t t, sched_unit_t u)
 
 	switch (u) {
 	case SU_MINUTE:
-		return ((t - a) / 60);
+		return ((wall_secs(t) - wall_secs(a)) / 60);
 	case SU_HOUR:
 		return ((wall_secs(t) - wall_secs(a)) / (60 * 60));
 	case SU_DAY:
