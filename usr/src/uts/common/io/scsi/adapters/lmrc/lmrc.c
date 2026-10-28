@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright 2024-2026 Racktop Systems, Inc.
+ * Copyright 2024-2026 RackTop Systems Inc.
  */
 
 /*
@@ -321,6 +321,35 @@ lmrc_write_rphi(lmrc_t *lmrc, uint32_t queue)
 }
 
 /*
+ * Firmware can refuse START STOP UNIT with MFI_STAT_NOT_POSSIBLE. Report
+ * the refusal as a command error so that callers can handle it without
+ * transport recovery. This status provides no ASC/ASCQ, so do not infer a
+ * more specific reason for the refusal.
+ */
+static void
+lmrc_start_stop_not_possible(struct scsi_pkt *pkt)
+{
+	struct scsi_arq_status *arq = (struct scsi_arq_status *)pkt->pkt_scbp;
+	struct scsi_extended_sense *sense = &arq->sts_sensedata;
+
+	ASSERT3U(pkt->pkt_scblen, >=, sizeof (*arq));
+	bzero(arq, sizeof (*arq));
+	arq->sts_status.sts_chk = 1;
+	arq->sts_rqpkt_reason = CMD_CMPLT;
+	arq->sts_rqpkt_state = STATE_GOT_BUS | STATE_GOT_TARGET |
+	    STATE_SENT_CMD | STATE_XFERRED_DATA | STATE_GOT_STATUS;
+	sense->es_class = CLASS_EXTENDED_SENSE;
+	sense->es_code = CODE_FMT_FIXED_CURRENT;
+	sense->es_key = KEY_ILLEGAL_REQUEST;
+	sense->es_add_len = sizeof (*sense) - ADDL_SENSE_ADJUST;
+
+	pkt->pkt_reason = CMD_CMPLT;
+	pkt->pkt_state = STATE_GOT_BUS | STATE_GOT_TARGET | STATE_SENT_CMD |
+	    STATE_GOT_STATUS | STATE_ARQ_DONE;
+	pkt->pkt_resid = 0;
+}
+
+/*
  * lmrc_process_mpt_pkt
  *
  * Process a reply to a MPT IO request. Update the scsi_pkt according to status,
@@ -371,6 +400,14 @@ lmrc_process_mpt_pkt(lmrc_t *lmrc, struct scsi_pkt *pkt, uint8_t status,
 		pkt->pkt_reason = CMD_INCOMPLETE;
 		break;
 
+	case MFI_STAT_NOT_POSSIBLE:
+		if (pkt->pkt_cdblen == CDB_GROUP0 &&
+		    pkt->pkt_cdbp[0] == SCMD_START_STOP &&
+		    pkt->pkt_dma_len == 0 && ex_status == 0) {
+			lmrc_start_stop_not_possible(pkt);
+			break;
+		}
+		/* FALLTHROUGH */
 	default:
 		dev_err(lmrc->l_dip, CE_WARN, "!command failed, status = %x, "
 		    "ex_status = %x, cdb[0] = %x", status, ex_status,

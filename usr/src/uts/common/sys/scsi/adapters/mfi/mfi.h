@@ -195,6 +195,7 @@ typedef struct mfi_progress		mfi_progress_t;
 #define	MFI_STAT_I2C_ERRORS_DETECTED		0x37
 #define	MFI_STAT_PCI_ERRORS_DETECTED		0x38
 #define	MFI_STAT_CONFIG_SEQ_MISMATCH		0x67
+#define	MFI_STAT_NOT_POSSIBLE			0x76
 
 #define	MFI_STAT_INVALID_STATUS			0xFF
 
