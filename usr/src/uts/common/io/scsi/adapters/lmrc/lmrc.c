@@ -1292,6 +1292,7 @@ lmrc_thread(void *arg)
 			int ret;
 
 			lmrc->l_recovering = B_TRUE;
+			lmrc->l_fw_fault = B_TRUE;
 			lmrc_disable_intr(lmrc);
 
 			/*
@@ -1607,8 +1608,9 @@ lmrc_adapter_init(lmrc_t *lmrc)
 
 
 	reg = lmrc_read_reg(lmrc, MPI26_SCRATCHPAD3_OFFSET);
-	if (LMRC_NVME_PAGE_SHIFT(reg) > LMRC_DEFAULT_NVME_PAGE_SHIFT) {
-		lmrc->l_nvme_page_sz = 1 << LMRC_NVME_PAGE_SHIFT(reg);
+	if (LMRC_NVME_PAGE_SHIFT(reg) >= LMRC_DEFAULT_NVME_PAGE_SHIFT &&
+	    LMRC_NVME_PAGE_SHIFT(reg) < 32) {
+		lmrc->l_nvme_page_sz = 1U << LMRC_NVME_PAGE_SHIFT(reg);
 		dev_err(lmrc->l_dip, CE_NOTE, "!NVME page size: %ld",
 		    lmrc->l_nvme_page_sz);
 	}
@@ -1743,8 +1745,11 @@ lmrc_get_ctrl_info(lmrc_t *lmrc)
 
 	ret = lmrc_issue_blocked_mfi(lmrc, mfi);
 
-	if (ret != DDI_SUCCESS)
+	if (ret != DDI_SUCCESS ||
+	    mfi->mfi_frame->mf_hdr.mh_cmd_status != MFI_STAT_OK) {
+		ret = DDI_FAILURE;
 		goto out;
+	}
 
 	(void) ddi_dma_sync(mfi->mfi_data_dma.ld_hdl, 0,
 	    mfi->mfi_data_dma.ld_len, DDI_DMA_SYNC_FORKERNEL);
@@ -1753,6 +1758,34 @@ lmrc_get_ctrl_info(lmrc_t *lmrc)
 out:
 	lmrc_put_dcmd(lmrc, mfi);
 	return (ret);
+}
+
+/*
+ * Firmware reports request and stripe limits in 512-byte sectors. Start with
+ * the conservative SGL budget used by mrsas: reserve one entry for an initial
+ * partial page. Unknown (zero) firmware limits must not hide other limits.
+ * Cap the result at a whole-sector value representable by SCSA's dma-max.
+ */
+static uint32_t
+lmrc_ctrl_max_xfer(lmrc_t *lmrc)
+{
+	mfi_ctrl_info_t *ci = lmrc->l_ctrl_info;
+	uint64_t sectors = (INT_MAX / 512);
+	uint8_t shift = ci->ci_raid_opts.raid_stripe_sz_min;
+
+	if (lmrc->l_max_num_sge <= 1)
+		return (0);
+	sectors = MIN(sectors, (lmrc->l_max_num_sge - 1) * 8ULL);
+	if (ci->ci_max_request_size != 0)
+		sectors = MIN(sectors, ci->ci_max_request_size);
+	/* Larger stripe sizes cannot reduce the already bounded limit. */
+	if (ci->ci_max_stripes_per_io != 0 && shift < 32) {
+		uint64_t stripes = (1ULL << shift) *
+		    ci->ci_max_stripes_per_io;
+
+		sectors = MIN(sectors, stripes);
+	}
+	return (sectors * 512);
 }
 
 /*
@@ -1769,6 +1802,7 @@ lmrc_fw_init(lmrc_t *lmrc)
 {
 	int drv_max_lds = MFI_MAX_LOGICAL_DRIVES;
 	mfi_ctrl_info_t *ci = lmrc->l_ctrl_info;
+	uint32_t max_xfer;
 	int ret;
 
 	ret = lmrc_get_ctrl_info(lmrc);
@@ -1776,6 +1810,13 @@ lmrc_fw_init(lmrc_t *lmrc)
 		dev_err(lmrc->l_dip, CE_WARN, "!Unable to get FW ctrl info.");
 		return (DDI_FAILURE);
 	}
+
+	/* Never enlarge the limit after DMA handles have been allocated. */
+	max_xfer = lmrc_ctrl_max_xfer(lmrc);
+	if (max_xfer == 0)
+		return (DDI_FAILURE);
+	if (lmrc->l_max_xfer == 0 || max_xfer < lmrc->l_max_xfer)
+		lmrc->l_max_xfer = max_xfer;
 
 	lmrc->l_disable_online_ctrl_reset =
 	    ci->ci_prop.cp_disable_online_ctrl_reset == 1;
@@ -1845,6 +1886,68 @@ lmrc_ctrl_shutdown(lmrc_t *lmrc)
  * is added or removed.
  */
 
+/* Mark completion under mfi_lock, including completion by controller reset. */
+static void
+lmrc_target_props_done(lmrc_t *lmrc, lmrc_mfi_cmd_t *mfi)
+{
+	ASSERT(mutex_owned(&mfi->mfi_lock));
+	mfi->mfi_callback = NULL;
+	cv_signal(&mfi->mfi_cv);
+}
+
+/*
+ * Like megaraid_sas, query only firmware advertising an NVMe page size.
+ * Older firmware does not support this DCMD. On query failure use the Linux
+ * default MDTS of 128 KiB; a successful zero response means no target limit.
+ * Cache this static property at discovery, for both LDs and system PDs.
+ */
+static uint32_t
+lmrc_target_max_xfer(lmrc_t *lmrc, uint16_t dev_id, boolean_t logical)
+{
+	lmrc_mfi_cmd_t *mfi;
+	mfi_dcmd_payload_t *dcmd;
+	mfi_target_props_t *props;
+	uint64_t max_xfer = 128 * 1024;
+
+	if (lmrc->l_nvme_page_sz == 0)
+		return (lmrc->l_max_xfer);
+
+	mfi = lmrc_get_dcmd(lmrc, MFI_FRAME_DIR_READ,
+	    MFI_DCMD_DRV_GET_TARGET_PROP, sizeof (*props), 1);
+	if (mfi == NULL)
+		return (MIN(max_xfer, lmrc->l_max_xfer));
+
+	dcmd = &mfi->mfi_frame->mf_dcmd;
+	dcmd->md_mbox_8[0] = logical;
+	dcmd->md_mbox_16[1] = dev_id;
+	mutex_enter(&mfi->mfi_lock);
+	lmrc_issue_mfi(lmrc, mfi, lmrc_target_props_done);
+	(void) lmrc_wait_mfi(lmrc, mfi, LMRC_INTERNAL_CMD_WAIT_TIME);
+	if (mfi->mfi_callback != NULL) {
+		/*
+		 * A timeout is not a completion. Retain the command and its
+		 * DMA buffer until a late reply or reset ends firmware access.
+		 * Discovery runs only while the housekeeping thread is active.
+		 */
+		lmrc->l_recovering = B_TRUE;
+		cv_signal(&lmrc->l_thread_cv);
+		while (mfi->mfi_callback != NULL)
+			cv_wait(&mfi->mfi_cv, &mfi->mfi_lock);
+	}
+	mutex_exit(&mfi->mfi_lock);
+
+	if (mfi->mfi_frame->mf_hdr.mh_cmd_status == MFI_STAT_OK) {
+		(void) ddi_dma_sync(mfi->mfi_data_dma.ld_hdl, 0,
+		    mfi->mfi_data_dma.ld_len, DDI_DMA_SYNC_FORKERNEL);
+		props = (mfi_target_props_t *)mfi->mfi_data_dma.ld_buf;
+		max_xfer = (uint64_t)props->tp_max_io_size_kb * 1024;
+		if (max_xfer == 0)
+			max_xfer = lmrc->l_max_xfer;
+	}
+	lmrc_put_dcmd(lmrc, mfi);
+	return (MIN(max_xfer, lmrc->l_max_xfer));
+}
+
 /*
  * lmrc_tgt_init
  *
@@ -1859,12 +1962,16 @@ void
 lmrc_tgt_init(lmrc_tgt_t *tgt, uint16_t dev_id, char *addr,
     mfi_pd_info_t *pd_info)
 {
+	uint32_t max_xfer = lmrc_target_max_xfer(tgt->tgt_lmrc, dev_id,
+	    pd_info == NULL);
+
 	rw_enter(&tgt->tgt_lock, RW_WRITER);
 
 	bzero(&tgt->tgt_dev_id,
 	    sizeof (lmrc_tgt_t) - offsetof(lmrc_tgt_t, tgt_dev_id));
 
 	tgt->tgt_dev_id = dev_id;
+	tgt->tgt_max_xfer = max_xfer;
 	tgt->tgt_pd_info = pd_info;
 	tgt->tgt_interconnect_type = INTERCONNECT_SAS;
 

@@ -72,6 +72,18 @@ static void lmrc_tran_teardown_pkt(struct scsi_pkt *);
 
 boolean_t lmrc_relaxed_ordering = B_TRUE;
 
+/* Target properties use tgt_lock; reset may lower the controller cap. */
+static uint32_t
+lmrc_max_xfer(lmrc_tgt_t *tgt)
+{
+	uint32_t max_xfer;
+
+	rw_enter(&tgt->tgt_lock, RW_READER);
+	max_xfer = MIN(tgt->tgt_max_xfer, tgt->tgt_lmrc->l_max_xfer);
+	rw_exit(&tgt->tgt_lock);
+	return (max_xfer);
+}
+
 static int
 lmrc_getcap(struct scsi_address *sa, char *cap, int whom)
 {
@@ -90,9 +102,7 @@ lmrc_getcap(struct scsi_address *sa, char *cap, int whom)
 		return (sizeof (((Mpi25SCSIIORequest_t *)NULL)->CDB.CDB32));
 
 	case SCSI_CAP_DMA_MAX:
-		if (lmrc->l_data_dma_attr.dma_attr_maxxfer > INT_MAX)
-			return (INT_MAX);
-		return (lmrc->l_data_dma_attr.dma_attr_maxxfer);
+		return (lmrc_max_xfer(tgt));
 
 	case SCSI_CAP_SECTOR_SIZE:
 		if (lmrc->l_data_dma_attr.dma_attr_granular > INT_MAX)
@@ -145,7 +155,7 @@ lmrc_setcap(struct scsi_address *sa, char *cap, int value, int whom)
 
 	switch (index) {
 	case SCSI_CAP_DMA_MAX:
-		if (value <= lmrc->l_data_dma_attr.dma_attr_maxxfer)
+		if (value > 0 && value <= lmrc_max_xfer(tgt))
 			return (1);
 		else
 			return (0);
@@ -270,6 +280,14 @@ lmrc_tran_start(struct scsi_address *sa, struct scsi_pkt *pkt)
 	}
 
 	rw_enter(&tgt->tgt_lock, RW_READER);
+
+	/* Protect passthrough callers and mappings made before a reset. */
+	if (pkt->pkt_dma_len > MIN(tgt->tgt_max_xfer, lmrc->l_max_xfer) ||
+	    pkt->pkt_numcookies > lmrc->l_max_num_sge) {
+		rw_exit(&tgt->tgt_lock);
+		atomic_dec_uint(&lmrc->l_fw_outstanding_cmds);
+		return (TRAN_BADPKT);
+	}
 
 	mpt = cmd->sc_mpt;
 	VERIFY(mpt != NULL);
@@ -627,6 +645,8 @@ lmrc_tran_setup_pkt(struct scsi_pkt *pkt, int (*callback)(caddr_t),
 	lmrc_mpt_cmd_t *mpt;
 	Mpi25SCSIIORequest_t *io_req;
 	lmrc_raidctx_g35_t *rc;
+	ddi_dma_attr_t attr;
+	ddi_dma_handle_t handle;
 
 	if (pkt->pkt_cdblen > sizeof (io_req->CDB.CDB32))
 		return (-1);
@@ -648,13 +668,31 @@ lmrc_tran_setup_pkt(struct scsi_pkt *pkt, int (*callback)(caddr_t),
 	cmd = pkt->pkt_ha_private;
 	ASSERT(cmd != NULL);
 
+	/*
+	 * SCSA calls setup before binding the cached packet's DMA handle.
+	 * The cache is shared by all targets, so replace the unbound handle
+	 * with one constrained for this target. SCSA owns and frees the new
+	 * handle in the usual way. Keep the transport's other attributes,
+	 * including its granularity, unchanged.
+	 */
+	attr = sa->a_hba_tran->tran_dma_attr;
+	attr.dma_attr_maxxfer = MIN(tgt->tgt_max_xfer, lmrc->l_max_xfer);
+	if (ddi_dma_alloc_handle(lmrc->l_dip, &attr, callback, arg,
+	    &handle) != DDI_SUCCESS) {
+		rw_exit(&tgt->tgt_lock);
+		return (-1);
+	}
+
 	mpt = lmrc_get_mpt(lmrc);
 	if (mpt == NULL) {
+		ddi_dma_free_handle(&handle);
 		rw_exit(&tgt->tgt_lock);
 		return (-1);
 	}
 	ASSERT(mutex_owned(&mpt->mpt_lock));
 
+	ddi_dma_free_handle(&pkt->pkt_handle);
+	pkt->pkt_handle = handle;
 
 	io_req = mpt->mpt_io_frame;
 
@@ -755,6 +793,7 @@ lmrc_hba_attach(lmrc_t *lmrc)
 	if (lmrc_relaxed_ordering)
 		tran_attr.dma_attr_flags |= DDI_DMA_RELAXED_ORDERING;
 	tran_attr.dma_attr_sgllen = lmrc->l_max_num_sge;
+	tran_attr.dma_attr_maxxfer = lmrc->l_max_xfer;
 
 	if (scsi_hba_attach_setup(lmrc->l_dip, &tran_attr, tran,
 	    SCSI_HBA_HBA | SCSI_HBA_ADDR_COMPLEX) != DDI_SUCCESS)

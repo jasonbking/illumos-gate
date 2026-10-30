@@ -162,6 +162,7 @@ struct lmrc_tgt {
 	list_t			tgt_mpt_active;
 	lmrc_t			*tgt_lmrc;
 	uint16_t		tgt_dev_id;
+	uint32_t		tgt_max_xfer;	/* bytes */
 	uint8_t			tgt_type;
 	uint8_t			tgt_interconnect_type;
 	uint64_t		tgt_wwn;
@@ -230,6 +231,7 @@ struct lmrc {
 
 	size_t			l_max_reply_queues;
 	size_t			l_max_num_sge;
+	uint32_t		l_max_xfer;	/* bytes */
 	size_t			l_max_sge_in_main_msg;
 	size_t			l_max_sge_in_chain;
 

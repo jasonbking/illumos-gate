@@ -220,6 +220,7 @@ typedef struct mfi_progress		mfi_progress_t;
 #define	MFI_DCMD_FLASH_FW_FLASH			0x010f0300
 #define	MFI_DCMD_FLASH_FW_CLOSE			0x010f0400
 #define	MFI_DCMD_SYSTEM_PD_MAP_GET_INFO		0x0200e102
+#define	MFI_DCMD_DRV_GET_TARGET_PROP		0x0200e103
 #define	MFI_DCMD_PD_GET_LIST			0x02010000
 #define	MFI_DCMD_PD_LIST_QUERY			0x02010100
 #define	MFI_DCMD_PD_GET_INFO			0x02020000
@@ -826,6 +827,16 @@ struct mfi_progress {
 	uint16_t	mp_elapsed;
 };
 CTASSERT(sizeof (mfi_progress_t) == 4);
+
+/* Firmware returns zero when the target has no additional I/O size limit. */
+typedef struct mfi_target_props {
+	uint32_t tp_max_io_size_kb;
+	uint32_t tp_device_qdepth;
+	uint32_t tp_sector_size;
+	uint8_t tp_reset_tmo;
+	uint8_t tp_reserved[499];
+} mfi_target_props_t;
+CTASSERT(sizeof (mfi_target_props_t) == 512);
 
 #pragma pack(0)
 

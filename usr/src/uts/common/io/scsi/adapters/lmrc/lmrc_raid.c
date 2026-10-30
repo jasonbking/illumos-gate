@@ -457,14 +457,17 @@ lmrc_raid_get_wwn(lmrc_t *lmrc, uint8_t tgtid)
 	int ret;
 
 	/*
-	 * Make sure we have the target ID set in the target structure.
+	 * A new target needs the controller transfer limit for the INQUIRY
+	 * commands below. Target activation sets its per-target limit later.
 	 */
 	rw_enter(&tgt->tgt_lock, RW_WRITER);
 	VERIFY3U(tgt->tgt_lmrc, ==, lmrc);
-	if (tgt->tgt_dev_id == LMRC_DEVHDL_INVALID)
+	if (tgt->tgt_dev_id == LMRC_DEVHDL_INVALID) {
 		tgt->tgt_dev_id = tgtid;
-	else
+		tgt->tgt_max_xfer = lmrc->l_max_xfer;
+	} else {
 		VERIFY3U(tgt->tgt_dev_id, ==, tgtid);
+	}
 	rw_exit(&tgt->tgt_lock);
 
 	/* Get basic INQUIRY data from device. */
